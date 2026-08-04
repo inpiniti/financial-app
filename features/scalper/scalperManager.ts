@@ -279,6 +279,19 @@ export class ScalperManager {
     this.emitList();
   }
 
+  /** 수량 마틴게일 토글 — 실행 중에도 허용(다음 완료 시점에 반영). setAutoRun과 같은 동선. */
+  setMartingale(id: string, enabled: boolean): void {
+    const instance = this.instances.get(id);
+    const config = this.configs.get(id);
+    if (!instance || !config) {
+      throw new Error('해당 카드를 찾을 수 없어요.');
+    }
+    this.configs.set(id, { ...config, martingale: enabled });
+    instance.setMartingale(enabled);
+    void this.persist();
+    this.emitList();
+  }
+
   // ---- 시작/정지 ----
 
   /** WS 연결 + 전체 인스턴스 Run. */

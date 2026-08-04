@@ -163,6 +163,8 @@ export class ScalperInstance {
 
   // 오토런 상태.
   private autoRunEnabled = true;
+  /** 오토런 재시작 시 수량 조정 여부. 미지정 저장값은 켬(기존 동작). */
+  private martingaleEnabled = true;
   private lastAutoRun: AutoRunNote | null = null;
   /** 사이클이 자연 완료(SELL_SIGNAL)돼 오토런을 시도해야 하면 그 손익을 여기 담아 poll 종료 후 처리한다. */
   private pendingAutoRunPnl: number | null = null;
@@ -184,6 +186,8 @@ export class ScalperInstance {
     this.onFaultCb = deps.onFault;
     this.onAutoRunCb = deps.onAutoRun;
     this.autoRunEnabled = config.autoRun ?? true;
+    // 명시적 false일 때만 끔 — 손상된 저장값(null·0 등)도 기존 동작(켬)으로 안전 폴백한다.
+    this.martingaleEnabled = config.martingale !== false;
 
     this.resampler = new Resampler({
       chunkSeconds: deps.chunkSeconds ?? 3,
@@ -255,6 +259,7 @@ export class ScalperInstance {
       sampleCount: this.sampleCount,
       lastFault: this.faulted,
       autoRun: this.autoRunEnabled,
+      martingale: this.martingaleEnabled,
       lastAutoRun: this.lastAutoRun,
     };
   }
@@ -455,6 +460,13 @@ export class ScalperInstance {
     this.forceEmit();
   }
 
+  /** 수량 마틴게일 토글 — 끄면 오토런이 항상 같은 수량으로 재시작한다. 다음 완료 시점에 반영. */
+  setMartingale(enabled: boolean): void {
+    this.martingaleEnabled = enabled;
+    this.config.martingale = enabled;
+    this.forceEmit();
+  }
+
   /**
    * 사이클이 자연 완료돼 DONE인 지금, 손익에 따라 수량을 조정해 자동 재시작한다.
    * 수량 상한은 없다 — 손실이 이어져 수량이 아무리 커져도 계속 재시작한다(사용자 결정: 무제한).
@@ -467,12 +479,17 @@ export class ScalperInstance {
     if (this.faulted || this.cycle.state !== 'DONE') return;
     if (!this.autoRunEnabled) return;
 
-    const nextQty = nextAutoRunQty(this.qty, pnl);
+    // 마틴게일을 끄면 수량을 조정하지 않고 같은 수량으로 재시작한다.
+    const nextQty = this.martingaleEnabled ? nextAutoRunQty(this.qty, pnl) : this.qty;
+    // ⚠ 수량이 같아도 setQty를 건너뛰지 않는다 — RunCycle을 재생성하는 부수효과가 있어서,
+    //   스킵하면 마틴 ON/OFF의 객체 수명이 달라져 미묘한 상태 잔류 차이가 생긴다.
     this.setQty(nextQty); // RunCycle을 새 수량으로 재생성(DONE 상태라 안전).
     this.lastAutoRun = {
       at: this.clock.now(),
       kind: 'restarted',
-      text: `오토런 · ${nextQty}주로 재시작했어요`,
+      text: this.martingaleEnabled
+        ? `오토런 · ${nextQty}주로 재시작했어요`
+        : `오토런 · ${nextQty}주 그대로 재시작했어요`,
     };
     this.start(); // WATCH_BUY 재개(신선한 버퍼면 이어서, WS는 이미 연결됨).
     this.onAutoRunCb?.(this.id, this.lastAutoRun, nextQty);

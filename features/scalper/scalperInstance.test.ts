@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { TradeRecord } from '../../core/cycle';
 import { ScalperInstance, nextAutoRunQty, type ScalperInstanceDeps } from './scalperInstance';
+import { nextAmountUsd } from './autopilot';
 import type { AutoRunNote } from './types';
 import { FakeBroker, fakeClock, flush, noopScheduler } from './fakes';
 
@@ -533,7 +534,7 @@ describe('ScalperInstance — 오토런(자동 재시작)', () => {
     trades: TradeRecord[];
     notes: Array<{ note: AutoRunNote; qty: number }>;
   }
-  function makeAuto(opts: { qty: number; autoRun?: boolean }): AutoHarness {
+  function makeAuto(opts: { qty: number; autoRun?: boolean; martingale?: boolean }): AutoHarness {
     const broker = new FakeBroker({ autoFill: false });
     const clock = fakeClock(1000);
     const trades: TradeRecord[] = [];
@@ -551,7 +552,7 @@ describe('ScalperInstance — 오토런(자동 재시작)', () => {
       onAutoRun: (_id, note, qty) => notes.push({ note, qty }),
     };
     const inst = new ScalperInstance(
-      { id: 'inst-1', ticker: 'AAPL', qty: opts.qty, autoRun: opts.autoRun },
+      { id: 'inst-1', ticker: 'AAPL', qty: opts.qty, autoRun: opts.autoRun, martingale: opts.martingale },
       deps,
     );
     return { inst, broker, trades, notes };
@@ -686,6 +687,54 @@ describe('ScalperInstance — 오토런(자동 재시작)', () => {
     expect(notes).toHaveLength(0);
     expect(inst.getView().autoRun).toBe(false);
   });
+  it('① 수량 마틴 OFF + 오토런 ON이면 이익 뒤에도 같은 수량으로 재시작한다', async () => {
+    const h = makeAuto({ qty: 4, autoRun: true, martingale: false });
+    h.inst.start();
+    await runNaturalCycle(h.inst, h.broker, 4, 9); // 이익
+    expect(h.trades[0].pnl).toBeGreaterThan(0);
+    expect(h.notes).toHaveLength(1);
+    expect(h.notes[0].qty).toBe(4); // 절반(2)으로 안 줄어든다
+    expect(h.notes[0].note.text).toContain('그대로');
+  });
+
+  it('② 수량 마틴 OFF + 오토런 ON이면 손실 뒤에도 같은 수량으로 재시작한다', async () => {
+    const h = makeAuto({ qty: 4, autoRun: true, martingale: false });
+    h.inst.start();
+    await runNaturalCycle(h.inst, h.broker, 9, 4); // 손실
+    expect(h.trades[0].pnl).toBeLessThan(0);
+    expect(h.notes[0].qty).toBe(4); // 2배(8)로 안 늘어난다
+  });
+
+  it('③ 두 옵션은 직교 — 마틴을 꺼도 autoRun=false면 재시작하지 않는다', async () => {
+    const h = makeAuto({ qty: 4, autoRun: false, martingale: false });
+    h.inst.start();
+    await runNaturalCycle(h.inst, h.broker, 4, 9);
+    expect(h.notes).toHaveLength(0);
+  });
+
+  it('④ 마틴 플래그가 없는 기존 저장값은 배증 그대로다 (하위호환)', async () => {
+    const h = makeAuto({ qty: 4, autoRun: true }); // martingale 미지정
+    h.inst.start();
+    await runNaturalCycle(h.inst, h.broker, 9, 4); // 손실
+    expect(h.notes[0].qty).toBe(8); // 기존 동작 = 2배
+  });
+
+  it('⑤ setMartingale(false)는 실행 중에도 다음 완료부터 반영된다', async () => {
+    const h = makeAuto({ qty: 4, autoRun: true });
+    h.inst.start();
+    h.inst.setMartingale(false);
+    expect(h.inst.getView().martingale).toBe(false);
+    await runNaturalCycle(h.inst, h.broker, 9, 4);
+    expect(h.notes[0].qty).toBe(4);
+  });
+
+  it('⑥ 본전(pnl=0) 규칙이 자동관리(유지)와 수동 카드(2배)에서 다른 것은 의도된 차이다', () => {
+    // 수동 카드: pnl<=0 → 2배 (본전도 배증)
+    expect(nextAutoRunQty(3, 0)).toBe(6);
+    // 자동관리: pnl===0 → 유지. 통일은 별도 작업으로 분리했다(옵션화와 무관한 행동 변경이라).
+    expect(nextAmountUsd(100, 0)).toBe(100);
+  });
+
 });
 
 describe('ScalperInstance — BUY 게이트(거래량 스파이크·체결강도)', () => {

@@ -32,6 +32,7 @@ export {
   AutoPilot,
   AUTOPILOT_STORAGE_KEY,
   AMOUNT_FLOOR_USD,
+  isMartingaleOn,
   DEFAULT_MIN_TICK_RATE,
   etDateOf,
   nextAmountUsd,

@@ -31,6 +31,11 @@ export interface ScalperInstanceConfig {
    * 기본 true. 실행 중에도 토글 가능(다음 완료 시점에 반영). AsyncStorage에 영속화된다.
    */
   autoRun?: boolean;
+  /**
+   * 오토런 재시작 시 수량을 손익에 따라 조정(손실 2배·수익 절반)할지. **미지정이면 켬** — 기존 저장값 하위호환.
+   * 끄면 항상 같은 수량으로 재시작한다. `autoRun`과 직교한다(오토런이 꺼져 있으면 이 값은 무의미).
+   */
+  martingale?: boolean;
 }
 
 /** UI(6단계)가 구독하는 인스턴스 뷰. 신호/상태 전이 시에만, 수치는 1초 이하 스로틀로 발행된다. */
@@ -89,6 +94,8 @@ export interface ScalperInstanceView {
   lastFault: InstanceFault | null;
   /** 오토런 설정(카드 토글) — 사이클 자연 완료 시 자동 재시작 여부. */
   autoRun: boolean;
+  /** 수량 마틴게일 설정(카드 토글) — 끄면 오토런이 같은 수량으로 재시작한다. */
+  martingale: boolean;
   /** 최근 오토런 이벤트(재시작/상한 도달로 중지) — 카드에 안내 문구로 표시. 없으면 null. */
   lastAutoRun: AutoRunNote | null;
 }

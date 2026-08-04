@@ -3,6 +3,7 @@ import { memo, useEffect, useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { TickerAvatar } from '../../../components/TickerAvatar';
+import { ToggleRow } from '../../../components/ToggleRow';
 import type { MinuteChartExchangeCode } from '../../../kis/minuteChart';
 import type { ScalperInstance } from '../scalperInstance';
 import type { ScalperManager } from '../scalperManager';
@@ -53,6 +54,7 @@ export interface InstanceCardProps {
   onEditQty: (id: string, qty: number) => void;
   /** 오토런 토글 — 실행 중에도 켜고 끌 수 있다(다음 사이클 완료 시 반영). 매니저 경유. */
   onToggleAutoRun: (id: string, enabled: boolean) => void;
+  onToggleMartingale: (id: string, enabled: boolean) => void;
   /** 구독 성공 ACK를 (전체 피드 기준) 한 번이라도 받았는지 — 틱이 0개여도 "구독 자체는 됐다"를 구분해 보여준다. */
   hasSubscribeAck?: boolean;
   /** 분봉 차트 거래소 코드 — 부모가 manager.getConfig(id)?.market로 전달(NYS/AMS 종목 오조회 방지). */
@@ -68,6 +70,7 @@ function InstanceCardBase({
   onStop,
   onEditQty,
   onToggleAutoRun,
+  onToggleMartingale,
   hasSubscribeAck,
   chartExcd,
 }: InstanceCardProps) {
@@ -312,28 +315,23 @@ function InstanceCardBase({
         </Pressable>
       </View>
 
-      {/* 오토런 토글 — 사이클이 완료되면 손익에 따라 수량을 조정해 자동으로 다시 시작해요(실행 중에도 켜고 끌 수 있어요). */}
-      <Pressable
-        onPress={() => onToggleAutoRun(view.id, !view.autoRun)}
-        hitSlop={8}
-        className="mt-4 flex-row items-center justify-between rounded-2xl bg-[#f7f9fc] px-3 py-2 active:opacity-80"
-      >
-        <View>
-          <Text className="text-sm font-semibold text-[#191f28]">오토런</Text>
-          <Text className="text-[11px] text-[#8b95a1]">완료되면 수량을 조정해 자동으로 다시 시작해요</Text>
-        </View>
-        <View
-          className="rounded-full px-3 py-1"
-          style={{ backgroundColor: view.autoRun ? '#eaf2ff' : '#e5e8eb' }}
-        >
-          <Text
-            className="text-xs font-semibold"
-            style={{ color: view.autoRun ? '#3182f6' : '#8b95a1' }}
-          >
-            {view.autoRun ? '켜짐' : '꺼짐'}
-          </Text>
-        </View>
-      </Pressable>
+      {/* 오토런 — 사이클이 완료되면 자동으로 다시 시작해요(실행 중에도 켜고 끌 수 있어요). */}
+      <ToggleRow
+        title="오토런"
+        description="완료되면 자동으로 다시 시작해요"
+        value={view.autoRun}
+        onValueChange={(next) => onToggleAutoRun(view.id, next)}
+      />
+
+      {/* 수량 마틴게일 — 오토런이 켜져 있을 때만 의미가 있어요. */}
+      <ToggleRow
+        title="수량 마틴게일"
+        description="손실이 나면 수량 2배, 수익이 나면 절반으로 조정해요"
+        value={view.martingale}
+        onValueChange={(next) => onToggleMartingale(view.id, next)}
+        disabled={!view.autoRun}
+        className="mt-2 flex-row items-center justify-between rounded-2xl bg-[#f7f9fc] px-3 py-2 active:opacity-80"
+      />
 
       <View className="mt-3 flex-row" style={{ gap: 8 }}>
         <Pressable

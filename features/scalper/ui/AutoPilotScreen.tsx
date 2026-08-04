@@ -10,6 +10,7 @@ import { Panel } from '../../../components/Panel';
 import { TickerAvatar } from '../../../components/TickerAvatar';
 import { EmptyState } from '../../inquiry/components';
 import { formatSignedUsd, formatUsd, pnlColor } from '../../../lib/format';
+import { isMartingaleOn } from '../autopilot';
 import type { AutoPilotEvent, AutoPilotState, AutoPilotView } from '../autopilot';
 import type { AutoPilotManager, AutoPilotSlotRow } from '../autopilotManager';
 import { WATCH_SOURCE_LABEL } from '../watchlist';
@@ -221,11 +222,19 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
             <Panel title="자동 단타" headerRight={<StateBadge state={view.state} />}>
               <ListRow
                 title="설정"
-                subtitle={config ? `최소 속도 ${config.minTickRate}틱/초` : '탭해서 설정해 주세요'}
+                subtitle={
+                  config
+                    ? `${isMartingaleOn(config) ? '마틴게일' : '금액 고정'} · 최소 속도 ${config.minTickRate}틱/초`
+                    : '탭해서 설정해 주세요'
+                }
                 trailing={
                   <View className="flex-row items-center" style={{ gap: 6 }}>
                     <Text className="text-base font-bold text-[#191f28]">
-                      {config ? `${formatUsd(config.startAmountUsd)} ~ ${formatUsd(config.maxAmountUsd)}` : '설정 전'}
+                      {config
+                        ? isMartingaleOn(config)
+                          ? `${formatUsd(config.startAmountUsd)} ~ ${formatUsd(config.maxAmountUsd)}`
+                          : formatUsd(config.startAmountUsd)
+                        : '설정 전'}
                     </Text>
                     <Ionicons name="chevron-forward" size={16} color="#8b95a1" />
                   </View>

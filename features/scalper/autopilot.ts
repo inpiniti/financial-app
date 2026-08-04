@@ -34,16 +34,34 @@ export const RESELECT_INTERVAL_MS = 30_000;
 export const HYSTERESIS_RATIO = 1.2;
 /** 최소 속도 기본값(틱/초) — 0 설정 불가(> 0 강제, 사용자 확정 §4-6). */
 export const DEFAULT_MIN_TICK_RATE = 1;
-/** 수익 반감의 하한(USD) — 시작금액과 무관하게 $1 밑으로는 안 내려간다(사용자 확정 §4-1). */
+/**
+ * 수익 반감의 하한(USD) — 시작금액과 무관하게 $1 밑으로는 안 내려간다(사용자 확정 §4-1).
+ * 마틴게일을 켰을 때만 적용된다(끄면 금액 조정 자체가 없다).
+ */
 export const AMOUNT_FLOOR_USD = 1;
 
 export type AutoPilotState = 'IDLE' | 'SCANNING' | 'ENTERING' | 'HOLDING' | 'EXITING' | 'PAUSED' | 'FAULT';
 
-/** 사용자 설정 — 시작금액·최대금액·최소 속도. */
+/** 사용자 설정 — 시작금액·최대금액·최소 속도(+마틴게일 on/off). */
 export interface AutoPilotConfig {
   startAmountUsd: number;
   maxAmountUsd: number;
   minTickRate: number;
+  /**
+   * 마틴게일(손실 2배·수익 절반·세션 완주 판정) 사용 여부. **미지정이면 켬** — 기존 저장값 하위호환.
+   * 끄면 금액이 절대 변하지 않고 세션 완주 판정도 하지 않는다(정지할 때까지 같은 금액으로 반복).
+   * 끌 때는 maxAmountUsd를 startAmountUsd와 같은 값으로 정규화해 저장한다(불변식 유지·ON 복귀 대비).
+   */
+  martingale?: boolean;
+}
+
+/**
+ * 마틴게일 사용 여부 단일 판정. **명시적 false일 때만 끔**이다.
+ * `?? true`가 아니라 `!== false`인 이유: 저장값이 손상돼 null·0·"false" 같은 값이 들어와도
+ * 기존 동작(켬)으로 안전하게 폴백하기 위해서다.
+ */
+export function isMartingaleOn(config: Pick<AutoPilotConfig, 'martingale'>): boolean {
+  return config.martingale !== false;
 }
 
 /** 진행 중 세션 — Stop·FAULT·재시작에도 유지되고, 종료 조건 달성 때만 리셋된다. */
@@ -134,12 +152,19 @@ export function shouldEndSession(
   return cyclePnl > 0 && usedAmountUsd >= maxAmountUsd && sessionPnl >= 0;
 }
 
-/** 설정 검증(순수) — 0 < 시작 ≤ 최대, 최소 속도 > 0. 문제 없으면 null, 있으면 사용자 문구. */
+/**
+ * 설정 검증(순수) — 0 < 시작 ≤ 최대, 최소 속도 > 0. 문제 없으면 null, 있으면 사용자 문구.
+ * 마틴게일을 끄면 최대금액이 의미가 없으므로 그 검사만 건너뛴다(= 규칙이 더 관대해진다).
+ * ⚠ restore()가 이 함수로 저장값을 필터링하므로, 규칙을 **엄격하게** 바꾸면 기존 설정이 조용히 소실된다.
+ */
 export function validateConfig(config: AutoPilotConfig): string | null {
+  const martingaleOn = isMartingaleOn(config);
   if (!Number.isFinite(config.startAmountUsd) || config.startAmountUsd <= 0) {
-    return '시작금액은 0보다 큰 달러 금액으로 입력해 주세요';
+    return martingaleOn
+      ? '시작금액은 0보다 큰 달러 금액으로 입력해 주세요'
+      : '금액은 0보다 큰 달러 금액으로 입력해 주세요';
   }
-  if (!Number.isFinite(config.maxAmountUsd) || config.maxAmountUsd < config.startAmountUsd) {
+  if (martingaleOn && (!Number.isFinite(config.maxAmountUsd) || config.maxAmountUsd < config.startAmountUsd)) {
     return '최대금액은 시작금액 이상으로 입력해 주세요';
   }
   if (!Number.isFinite(config.minTickRate) || config.minTickRate <= 0) {
@@ -252,6 +277,13 @@ export class AutoPilot {
     const error = validateConfig(config);
     if (error) return error;
     this.config = { ...config };
+    // ★ 마틴 OFF에는 "다음 세션"이 없다(세션 완주 판정을 안 하므로). 진행 중 세션을 동기화하지 않으면
+    //   사용자가 금액을 바꿔도 영원히 예전 금액으로 진입한다. ON→OFF 전환 시 불어난 금액도 여기서 내려온다.
+    //   setConfig는 IDLE에서만 통과하므로 진행 중 사이클·미체결 주문과 충돌하지 않는다.
+    //   (OFF→ON은 동기화하지 않는다 — 마틴 진행 중 성과를 임의로 리셋하지 않기 위해.)
+    if (!isMartingaleOn(this.config) && this.session) {
+      this.session.amountUsd = this.config.startAmountUsd;
+    }
     void this.persist();
     this.emit();
     return null;
@@ -327,7 +359,10 @@ export class AutoPilot {
     if (!this.session) {
       this.session = { amountUsd: this.config.startAmountUsd, pnl: 0, cycles: 0, paused: false };
       this.sessionCount += 1;
-      this.event(`세션 #${this.sessionCount} 시작 · $${this.config.startAmountUsd.toFixed(2)}부터`);
+      const amount = `$${this.config.startAmountUsd.toFixed(2)}`;
+      this.event(
+        `세션 #${this.sessionCount} 시작 · ${isMartingaleOn(this.config) ? `${amount}부터` : `${amount} 고정`}`,
+      );
     }
     if (this.session.paused) {
       // 현금 부족으로 멈췄던 세션 — 자동 재개하지 않는다(§4-3). 사람이 재개/초기화를 고른다.
@@ -714,7 +749,14 @@ export class AutoPilot {
         session.pnl += record.pnl;
         session.cycles += 1;
         if (record.exitReason === 'SELL_SIGNAL') {
-          if (this.config && shouldEndSession(record.pnl, usedAmount, session.pnl, this.config.maxAmountUsd)) {
+          // ★ 마틴 OFF 검사가 반드시 shouldEndSession보다 **먼저** 와야 한다.
+          //   뒤로 가면 start=max 설정에서 OFF 세션이 완주해버린다.
+          //   (세션 손익·사이클 수와 일일 통계는 위에서 이미 누적됐다 — OFF에서도 통계는 그대로 쌓인다.)
+          if (this.config && !isMartingaleOn(this.config)) {
+            this.event(
+              `${record.ticker} 청산 · 손익 $${record.pnl.toFixed(2)} · 금액 고정 $${session.amountUsd.toFixed(2)}`,
+            );
+          } else if (this.config && shouldEndSession(record.pnl, usedAmount, session.pnl, this.config.maxAmountUsd)) {
             // 세션 종료 — 금액 조정 없이 새 세션(시작금액·성과 0).
             const endedPnl = session.pnl;
             this.session = { amountUsd: this.config.startAmountUsd, pnl: 0, cycles: 0, paused: false };

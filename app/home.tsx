@@ -240,6 +240,11 @@ function ScalperReadyScreen({ manager, autopilot, defaultQty, bufferSize, chunkS
     (id: string, enabled: boolean) => manager.setAutoRun(id, enabled),
     [manager],
   );
+  // 수량 마틴게일 토글 — 오토런과 직교(오토런이 꺼져 있으면 카드에서 비활성으로 보인다).
+  const handleToggleMartingale = useCallback(
+    (id: string, enabled: boolean) => manager.setMartingale(id, enabled),
+    [manager],
+  );
 
   const renderItem = useCallback(
     ({ item }: { item: ScalperInstance }) => (
@@ -253,6 +258,7 @@ function ScalperReadyScreen({ manager, autopilot, defaultQty, bufferSize, chunkS
         onStop={handleStop}
         onEditQty={handleEditQty}
         onToggleAutoRun={handleToggleAutoRun}
+        onToggleMartingale={handleToggleMartingale}
         hasSubscribeAck={hasSubscribeAck}
         chartExcd={toChartExcd(manager.getConfig(item.id)?.market)}
       />
@@ -262,6 +268,7 @@ function ScalperReadyScreen({ manager, autopilot, defaultQty, bufferSize, chunkS
       chunkSeconds,
       handleEditQty,
       handleToggleAutoRun,
+      handleToggleMartingale,
       handleRemove,
       handleRun,
       handleStop,

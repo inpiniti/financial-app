@@ -6,6 +6,7 @@ import {
   AUTOPILOT_STORAGE_KEY,
   DEFAULT_MIN_TICK_RATE,
   etDateOf,
+  isMartingaleOn,
   nextAmountUsd,
   qtyForAmount,
   shouldEndSession,
@@ -542,5 +543,183 @@ describe('AutoPilot — Stop·FAULT·영속화·마이그레이션', () => {
     expect(h.pilot.setConfig(CONFIG_100)).toBeNull();
     h.pilot.start();
     expect(h.pilot.setConfig(CONFIG_100)).toContain('정지 상태');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 마틴게일 옵션(2026-08-05) — 끄면 금액이 고정되고 세션 완주 판정을 하지 않는다.
+// 미지정은 항상 켬(기존 동작·하위호환).
+// ─────────────────────────────────────────────────────────────────────────────
+describe('AutoPilot — 마틴게일 옵션', () => {
+  /** 저장값 복원만 검증할 때 쓰는 최소 AutoPilot(슬롯·브로커 없이). */
+  function makeBarePilot(storage: FakeStore): AutoPilot {
+    return new AutoPilot({
+      slots: () => [],
+      pin: () => {},
+      unpin: () => {},
+      makeBroker: () => new FakeBroker(),
+      clock: fakeClock(1000),
+      scheduler: noopScheduler(),
+      storage,
+    });
+  }
+
+  /** 마틴 OFF 설정 — 금액 고정. max는 start와 같은 값으로 정규화해 저장한다. */
+  const CONFIG_OFF: AutoPilotConfig = {
+    startAmountUsd: 100,
+    maxAmountUsd: 100,
+    minTickRate: TINY_RATE,
+    martingale: false,
+  };
+
+  it('① isMartingaleOn — 미지정·손상값은 전부 켬으로 읽고, 명시적 false만 끔이다', () => {
+    expect(isMartingaleOn({})).toBe(true);
+    expect(isMartingaleOn({ martingale: undefined })).toBe(true);
+    expect(isMartingaleOn({ martingale: true })).toBe(true);
+    // JSON 손상값이 들어와도 기존 동작(켬)으로 폴백한다.
+    expect(isMartingaleOn({ martingale: null as unknown as boolean })).toBe(true);
+    expect(isMartingaleOn({ martingale: 0 as unknown as boolean })).toBe(true);
+    expect(isMartingaleOn({ martingale: 'false' as unknown as boolean })).toBe(true);
+    expect(isMartingaleOn({ martingale: false })).toBe(false);
+  });
+
+  it('② validateConfig — 마틴을 끄면 최대금액을 보지 않고, 켜면 기존 규칙 그대로다', () => {
+    // OFF: 최대금액이 시작금액보다 작아도 통과한다(그 필드를 안 쓰므로).
+    expect(validateConfig({ startAmountUsd: 100, maxAmountUsd: 1, minTickRate: 1, martingale: false })).toBeNull();
+    // OFF에서도 금액·속도 규칙은 유지된다.
+    expect(
+      validateConfig({ startAmountUsd: 0, maxAmountUsd: 0, minTickRate: 1, martingale: false }),
+    ).toContain('금액');
+    // ON(미지정 포함): 기존 규칙 그대로.
+    expect(validateConfig({ startAmountUsd: 100, maxAmountUsd: 1, minTickRate: 1 })).toContain('최대금액');
+  });
+
+  it('③ 마틴 OFF면 수익 사이클 뒤에도 투입금액이 그대로다', async () => {
+    const h = makeHarness(['A', 'B', 'C'], { config: CONFIG_OFF });
+    h.pilot.start();
+    const n = await replay(h, 'A', PROFIT_RUN);
+    await cap(h, 'A', 24, n);
+
+    expect(h.trades).toHaveLength(1);
+    expect(h.trades[0].pnl).toBeGreaterThan(0);
+    const view = h.pilot.getView();
+    expect(view.session!.amountUsd).toBe(100); // 절반으로 안 줄어든다
+    expect(view.session!.pnl).toBe(h.trades[0].pnl); // 성과는 그대로 누적
+    expect(view.cycles).toBe(1);
+  });
+
+  it('④ 마틴 OFF면 손실 사이클 뒤에도 투입금액이 그대로다', async () => {
+    const h = makeHarness(['A', 'B', 'C'], { config: CONFIG_OFF });
+    h.pilot.start();
+    const n = await replay(h, 'A', DOWN_UP_DOWN);
+    await cap(h, 'A', 2, n);
+
+    expect(h.trades).toHaveLength(1);
+    const view = h.pilot.getView();
+    expect(view.session!.amountUsd).toBe(100); // 2배로 안 늘어난다
+    expect(view.cumPnl).toBe(h.trades[0].pnl);
+  });
+
+  it('⑤ 마틴 OFF면 세션 완주 조건을 만족해도 세션이 끝나지 않는다', async () => {
+    // start=max=100 + 수익 사이클 → 마틴 ON이었다면 즉시 완주할 조건.
+    const h = makeHarness(['A', 'B', 'C'], { config: CONFIG_OFF });
+    h.pilot.start();
+    const before = h.pilot.getView().sessionCount;
+    const n = await replay(h, 'A', PROFIT_RUN);
+    await cap(h, 'A', 24, n);
+
+    expect(h.trades[0].pnl).toBeGreaterThan(0);
+    const view = h.pilot.getView();
+    expect(view.sessionCount).toBe(before); // 새 세션이 열리지 않는다
+    expect(view.session!.cycles).toBe(1); // 세션이 이어진다(리셋 안 됨)
+    expect(h.events.some((e) => e.includes('세션 완주'))).toBe(false);
+    expect(h.events.some((e) => e.includes('금액 고정'))).toBe(true);
+  });
+
+  it('⑥ [사고 재현] 마틴 OFF에서 금액을 바꾸면 진행 중 세션에 즉시 반영된다', async () => {
+    // OFF는 세션이 끝나지 않으므로 "다음 세션부터 적용"이면 영원히 반영되지 않는다.
+    const h = makeHarness(['A'], { config: CONFIG_OFF });
+    h.pilot.start();
+    expect(h.pilot.getView().session!.amountUsd).toBe(100);
+
+    h.pilot.stop(); // setConfig는 IDLE에서만 통과한다
+    const rejected = h.pilot.setConfig({ ...CONFIG_OFF, startAmountUsd: 10, maxAmountUsd: 10 });
+    expect(rejected).toBeNull();
+    expect(h.pilot.getView().session!.amountUsd).toBe(10);
+  });
+
+  it('⑦ 마틴을 켜서 금액이 불어난 뒤 끄면 설정 금액으로 내려온다', async () => {
+    const h = makeHarness(['A', 'B', 'C']); // 기본 CONFIG_100(마틴 ON)
+    h.pilot.start();
+    const n = await replay(h, 'A', DOWN_UP_DOWN); // 손실 사이클 → 금액 2배
+    await cap(h, 'A', 2, n);
+    expect(h.pilot.getView().session!.amountUsd).toBe(200);
+
+    h.pilot.stop();
+    h.pilot.setConfig(CONFIG_OFF);
+    expect(h.pilot.getView().session!.amountUsd).toBe(100);
+  });
+
+  it('⑧ 마틴 OFF에서도 수동 Stop 청산은 기존과 같이 손익만 반영한다', async () => {
+    const h = makeHarness(['A', 'B', 'C'], { config: CONFIG_OFF });
+    h.pilot.start();
+    // 진입까지만 흘린 뒤 Stop으로 청산한다.
+    let i = 0;
+    for (const price of V) {
+      h.slots.get('A')!.pushTick(price, i * 1000);
+      h.pilot.reselect();
+      h.clock.advance(1000);
+      await flush();
+      await h.pilot.pollCycle();
+      await flush();
+      i += 1;
+    }
+    if (h.pilot.getView().activeTicker === 'A') {
+      h.pilot.stop();
+      await flush();
+      await h.pilot.pollCycle();
+      await flush();
+    }
+    // 금액은 어떤 경우에도 고정이다.
+    const view = h.pilot.getView();
+    if (view.session) expect(view.session.amountUsd).toBe(100);
+  });
+
+  it('⑨ 마틴 키가 없는 v2 저장값은 켬으로 복원된다 (하위호환 — 설정 소실 없음)', async () => {
+    const store = new FakeStore();
+    await store.setItem(
+      AUTOPILOT_STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        config: { startAmountUsd: 50, maxAmountUsd: 800, minTickRate: 2 },
+        session: null,
+        daily: null,
+      }),
+    );
+    const pilot = makeBarePilot(store);
+    await pilot.restore();
+
+    const cfg = pilot.getView().config!;
+    expect(cfg).toEqual({ startAmountUsd: 50, maxAmountUsd: 800, minTickRate: 2 });
+    expect(isMartingaleOn(cfg)).toBe(true);
+  });
+
+  it('⑩ 마틴 OFF 저장값은 복원 후에도 OFF다', async () => {
+    const store = new FakeStore();
+    await store.setItem(
+      AUTOPILOT_STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        config: { startAmountUsd: 30, maxAmountUsd: 30, minTickRate: 1, martingale: false },
+        session: null,
+        daily: null,
+      }),
+    );
+    const pilot = makeBarePilot(store);
+    await pilot.restore();
+
+    const cfg = pilot.getView().config!;
+    expect(isMartingaleOn(cfg)).toBe(false);
+    expect(cfg.startAmountUsd).toBe(30);
   });
 });
