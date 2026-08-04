@@ -1,0 +1,311 @@
+// Run 사이클 상태기계 (인스턴스 1개 기준). 1 Run = 1사이클(매수→청산→종료).
+// 진입·청산은 오직 변곡점 신호로만 실행 — 손절/익절/시간손절 없음. (PRD §2·§4-D·§4-F)
+// 주문·체결확인은 주입된 OrderPort로만, 시각은 주입된 Clock으로만 — 실시간/RN/KIS 의존 없음.
+import type { Signal } from '../detector';
+
+export type { Signal };
+
+/**
+ * 상태:
+ *  IDLE       — Run 전
+ *  WATCH_BUY  — BUY 변곡점 대기 (PRD IDLE 의미의 감시 상태)
+ *  BUYING     — 매수 주문 후 체결 대기
+ *  HOLDING    — 포지션 보유, SELL 변곡점 대기 (PRD ENTERED)
+ *  SELLING    — 매도 주문 후 체결 대기
+ *  DONE       — 1사이클 종료 (PRD EXITED)
+ *  FAULT      — 안전 인터록. 체결 확인/발주/취소가 오류로 신뢰 불가 → 동결.
+ *               신규 주문·취소·재진입 없음. onSignal·poll은 무반응. 오직 stop()으로만 빠져나온다.
+ *               ※ RunCycle 스스로는 전이하지 않는다 — 러너(ScalperInstance)가 async 브로커 오류를 감지해 fault()를 호출한다.
+ */
+export type CycleState = 'IDLE' | 'WATCH_BUY' | 'BUYING' | 'HOLDING' | 'SELLING' | 'DONE' | 'FAULT';
+
+export type ExitReason = 'SELL_SIGNAL' | 'STOP';
+
+/** 신호 발생 시점의 스냅샷(거래 기록용). */
+export interface SignalSnapshot {
+  price: number;
+  slope: number;
+  accel: number;
+  ts: number;
+}
+
+export interface OrderRequest {
+  ticker: string;
+  qty: number;
+}
+
+export type OrderRef = string;
+
+export interface FillResult {
+  filled: boolean;
+  price?: number;
+  qty?: number;
+}
+
+/**
+ * 취소 요청의 진행 상태(레이스 방지의 핵심).
+ *  'none'      — 취소 요청 안 함.
+ *  'pending'   — 취소 요청했으나 아직 성공/거절이 확정되지 않음.
+ *  'confirmed' — 취소 성공 = 그 주문은 진짜 미체결이었다(안전하게 미체결 단정 가능).
+ *  'rejected'  — 취소 거절 = 이미 체결됐을 가능성이 높다(미체결 단정 금지 → 체결 확인 경로로).
+ */
+export type CancelState = 'none' | 'pending' | 'confirmed' | 'rejected';
+
+/** 주문·체결확인 포트. 구현(KIS REST)은 5단계 몫. 동기 인터페이스로 코어를 결정적으로 유지. */
+export interface OrderPort {
+  buy(req: OrderRequest): OrderRef;
+  sell(req: OrderRequest): OrderRef;
+  cancel(ref: OrderRef): void;
+  checkFilled(ref: OrderRef): FillResult;
+  /**
+   * 취소 요청의 확정 상태를 동기로 반환한다. RunCycle은 타임아웃으로 취소를 지시한 뒤,
+   * "취소 성공(confirmed)"이 확인되기 전까지는 미체결로 단정하지 않는다(늦은 체결 레이스 방지).
+   */
+  cancelState(ref: OrderRef): CancelState;
+}
+
+/** 시각 주입 — 실시간 의존 금지. */
+export interface Clock {
+  now(): number;
+}
+
+export interface Position {
+  ticker: string;
+  qty: number;
+  entryPrice: number;
+  entryTs: number;
+  entrySnapshot: SignalSnapshot;
+}
+
+export interface TradeRecord {
+  ticker: string;
+  qty: number;
+  entryPrice: number;
+  entryTs: number;
+  exitPrice: number;
+  exitTs: number;
+  /** (exitPrice - entryPrice) * qty */
+  pnl: number;
+  entrySnapshot: SignalSnapshot;
+  /** STOP 청산 등 신호 없이 나간 경우 null. */
+  exitSnapshot: SignalSnapshot | null;
+  exitReason: ExitReason;
+}
+
+export interface RunCycleOptions {
+  ticker: string;
+  qty: number;
+  port: OrderPort;
+  clock: Clock;
+  /**
+   * @deprecated 더 이상 사용하지 않는다(무한 대기). 예전엔 미체결 취소까지의 대기 시간이었으나,
+   * 실기기에서 "취소가 KIS에 거절됐는데 주문은 미체결로 살아있는" 오작동이 재현돼 자동 타임아웃 취소를 없앴다.
+   * 이제 BUYING/SELLING은 체결될 때까지 무한정 대기하며, 취소는 오직 사용자 Stop 경로에서만 시도한다.
+   * 옵션 시그니처는 호출부 호환을 위해 남겨 두되 값은 무시한다.
+   */
+  fillTimeoutMs?: number;
+  /** 사이클 종료 시 거래 기록 발행 콜백. */
+  onTrade?: (record: TradeRecord) => void;
+}
+
+export class RunCycle {
+  private readonly ticker: string;
+  private readonly qty: number;
+  private readonly port: OrderPort;
+  private readonly clock: Clock;
+  private readonly onTrade?: (record: TradeRecord) => void;
+
+  private _state: CycleState = 'IDLE';
+  private _position: Position | null = null;
+
+  // 진행 중 주문 추적
+  private pendingRef: OrderRef | null = null;
+  private pendingSnapshot: SignalSnapshot | null = null;
+  private exitReason: ExitReason = 'SELL_SIGNAL';
+  /**
+   * 사용자 Stop으로 미체결 매수 취소를 지시한 뒤 그 결과를 기다리는 중인가(오직 Stop 경로에서만 set).
+   * true인 동안은 미체결로 단정해 되돌아가지 않는다 — 취소 성공(confirmed)이 확인되면 종료(DONE),
+   * 그 사이 늦은 체결이 관찰되면 정상 보유 전환(HOLDING). 취소 거절은 러너(ScalperInstance)가 FAULT로 승격한다.
+   */
+  private awaitingCancel = false;
+
+  constructor(options: RunCycleOptions) {
+    this.ticker = options.ticker;
+    this.qty = options.qty;
+    this.port = options.port;
+    this.clock = options.clock;
+    this.onTrade = options.onTrade;
+  }
+
+  get state(): CycleState {
+    return this._state;
+  }
+
+  get position(): Position | null {
+    return this._position;
+  }
+
+  /** Run 시작: IDLE 또는 DONE에서만 감시를 개시한다(자동 재진입 아님 — 사용자 재실행). */
+  start(): void {
+    if (this._state !== 'IDLE' && this._state !== 'DONE') return;
+    this._state = 'WATCH_BUY';
+    this._position = null;
+    this.clearPending();
+  }
+
+  /** 변곡점 신호 수신. 상태에 맞는 신호만 반응한다. */
+  onSignal(signal: Signal, snapshot: SignalSnapshot): void {
+    if (this._state === 'WATCH_BUY' && signal === 'BUY') {
+      this.placeBuy(snapshot);
+    } else if (this._state === 'HOLDING' && signal === 'SELL') {
+      this.placeSell(snapshot, 'SELL_SIGNAL');
+    }
+    // 그 외 상태·신호는 무시 (1포지션·1사이클 원칙)
+  }
+
+  /** 체결/타임아웃 점검. 구동 루프가 주기적으로 호출한다(clock.now 사용). */
+  poll(): void {
+    if (this._state === 'BUYING') this.pollBuying();
+    else if (this._state === 'SELLING') this.pollSelling();
+  }
+
+  /**
+   * 안전 인터록 — 러너가 async 브로커 오류(체결 확인/발주/취소 실패)를 감지하면 호출한다.
+   * 진행 중 주문 추적을 버리되(clearPending) **취소는 하지 않는다** — 취소조차 신뢰할 수 없기 때문.
+   * 포지션은 보존한다(사용자가 계좌에서 직접 처리). 이후 onSignal·poll은 무반응, stop()만 빠져나온다.
+   */
+  fault(): void {
+    if (this._state === 'DONE' || this._state === 'FAULT') return;
+    this.clearPending();
+    this._state = 'FAULT';
+  }
+
+  /**
+   * Stop: 포지션 없으면 즉시 종료, 보유 중이면 전량 매도 후 종료. 어느 상태든 가능.
+   * 미체결 취소는 오직 이 경로에서만 일어난다(자동 타임아웃 취소는 제거됨 — 무한 대기).
+   */
+  stop(): void {
+    switch (this._state) {
+      case 'IDLE':
+      case 'WATCH_BUY':
+        this._state = 'DONE';
+        break;
+      case 'FAULT':
+        // 동결 해제 — 오류 상황이므로 추가 주문/취소 없이 종료만 한다(포지션은 계좌에서 수동 처리).
+        this.clearPending();
+        this._state = 'DONE';
+        break;
+      case 'BUYING':
+        // 진행 중 매수를 취소 시도하고, 취소 결과를 기다린다(즉시 DONE 아님).
+        //  · 취소 성공(confirmed) 확인 → DONE (포지션 없음).
+        //  · 그 사이 늦은 체결 관찰 → HOLDING (실제 매수됨 — 계좌에서 확인).
+        //  · 취소 거절(rejected) → 러너가 FAULT로 승격(미체결 주문이 계좌에 남아있을 수 있음).
+        if (this.pendingRef) {
+          this.port.cancel(this.pendingRef);
+          this.awaitingCancel = true;
+        } else {
+          this.clearPending();
+          this._state = 'DONE';
+        }
+        break;
+      case 'HOLDING':
+        this.placeSell(null, 'STOP');
+        break;
+      case 'SELLING':
+        // 이미 청산(매도) 진행 중 — 그 매도가 곧 청산이므로 취소하지 않고 체결을 기다린다(무한 대기).
+        // 사유만 STOP으로 승격해 완료 시 STOP 청산으로 기록되게 한다.
+        this.exitReason = 'STOP';
+        break;
+      case 'DONE':
+        break;
+    }
+  }
+
+  // ---- 내부 전이 ----
+
+  private placeBuy(snapshot: SignalSnapshot): void {
+    this.pendingRef = this.port.buy({ ticker: this.ticker, qty: this.qty });
+    this.pendingSnapshot = snapshot;
+    this.awaitingCancel = false;
+    this._state = 'BUYING';
+  }
+
+  private placeSell(snapshot: SignalSnapshot | null, reason: ExitReason): void {
+    this.pendingRef = this.port.sell({ ticker: this.ticker, qty: this.qty });
+    this.pendingSnapshot = snapshot;
+    this.exitReason = reason;
+    this.awaitingCancel = false;
+    this._state = 'SELLING';
+  }
+
+  private enterHolding(fill: FillResult): void {
+    const entrySnap = this.pendingSnapshot!;
+    this._position = {
+      ticker: this.ticker,
+      qty: this.qty,
+      entryPrice: fill.price ?? entrySnap.price,
+      entryTs: this.clock.now(),
+      entrySnapshot: entrySnap,
+    };
+    this.clearPending();
+    this._state = 'HOLDING';
+  }
+
+  private pollBuying(): void {
+    // 체결 확인이 먼저다 — 러너가 poll 직전 fetchFills로 캐시를 갱신하므로 이 값은 최신이다.
+    // 타임아웃 자동취소는 없다 — 체결될 때까지 무한 대기한다. 취소는 오직 Stop 경로(awaitingCancel)에서만.
+    const fill = this.port.checkFilled(this.pendingRef!);
+    if (fill.filled) {
+      this.enterHolding(fill);
+      return;
+    }
+    if (this.awaitingCancel) {
+      // 사용자 Stop으로 취소를 지시했고 결과를 기다리는 중 — "취소 성공(진짜 미체결)"이 확인되면 종료한다.
+      // 'rejected'(이미 체결 추정)는 위 체결 확인으로 보유 전환되거나, 확인 불가 시 러너가 FAULT로 승격한다.
+      if (this.port.cancelState(this.pendingRef!) === 'confirmed') {
+        this.clearPending();
+        this._state = 'DONE'; // Stop 취소 성공 → 매수 없이 종료
+      }
+      return;
+    }
+    // 그 외에는 아무것도 하지 않는다 — 체결이 올 때까지 BUYING 유지(무한 대기).
+  }
+
+  private pollSelling(): void {
+    // 체결 확인 우선. 타임아웃 자동취소 없음 — 매도가 체결될 때까지 무한 대기한다(SELL_SIGNAL·STOP 청산 모두).
+    const fill = this.port.checkFilled(this.pendingRef!);
+    if (fill.filled) {
+      this.emitTrade(fill);
+      this._position = null;
+      this.clearPending();
+      this._state = 'DONE';
+      return;
+    }
+    // 매도는 Stop 경로에서도 취소하지 않는다(그 매도 자체가 청산) — 체결을 기다린다.
+  }
+
+  private emitTrade(fill: FillResult): void {
+    const pos = this._position!;
+    const exitPrice = fill.price ?? this.pendingSnapshot?.price ?? pos.entryPrice;
+    const record: TradeRecord = {
+      ticker: pos.ticker,
+      qty: pos.qty,
+      entryPrice: pos.entryPrice,
+      entryTs: pos.entryTs,
+      exitPrice,
+      exitTs: this.clock.now(),
+      pnl: (exitPrice - pos.entryPrice) * pos.qty,
+      entrySnapshot: pos.entrySnapshot,
+      exitSnapshot: this.pendingSnapshot,
+      exitReason: this.exitReason,
+    };
+    this.onTrade?.(record);
+  }
+
+  private clearPending(): void {
+    this.pendingRef = null;
+    this.pendingSnapshot = null;
+    this.exitReason = 'SELL_SIGNAL';
+    this.awaitingCancel = false;
+  }
+}

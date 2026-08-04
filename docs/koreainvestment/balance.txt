@@ -1,0 +1,465 @@
+[해외주식] 주문/계좌
+
+
+카테고리 다운로드
+REST
+해외주식 체결기준현재잔고[v1_해외주식-008]
+
+호출테스트
+
+개별문서 다운로드
+해외주식 체결기준현재잔고[v1_해외주식-008]정보 Method, URL, 실전 Domain, 모의 Domain, Format, Content-Type
+Method	GET	URL	/uapi/overseas-stock/v1/trading/inquire-present-balance
+실전 Domain	https://openapi.koreainvestment.com:9443	모의 Domain	https://openapivts.koreainvestment.com:29443 (output3만 이용 가능)
+실전 TR ID	CTRP6504R	모의 TR ID	VTRP6504R
+Format		Content-Type	
+개요
+해외주식 잔고를 체결 기준으로 확인하는 API 입니다. 
+
+HTS(eFriend Plus) [0839] 해외 체결기준잔고 화면을 API로 구현한 사항으로 화면을 함께 보시면 기능 이해가 쉽습니다.
+
+(※모의계좌의 경우 output3(외화평가총액 등 확인 가능)만 정상 출력됩니다. 
+잔고 확인을 원하실 경우에는 해외주식 잔고[v1_해외주식-006] API 사용을 부탁드립니다.)
+
+* 해외주식 서비스 신청 후 이용 가능합니다. (아래 링크 3번 해외증권 거래신청 참고)
+https://securities.koreainvestment.com/main/bond/research/_static/TF03ca010001.jsp
+
+해외주식 체결기준현재잔고 유의사항
+1. 해외증권 체결기준 잔고현황을 조회하는 화면입니다.
+2. 온라인국가는 수수료(국내/해외)가 반영된 최종 정산금액으로 잔고가 변동되며, 결제작업 지연등으로 인해 조회시간은 차이가 발생할 수 있습니다.
+   - 아시아 온라인국가 : 매매일 익일    08:40 ~ 08:45분 경
+   - 미국 온라인국가   : 당일 장 종료후 08:40 ~ 08:45분 경
+  ※ 단, 애프터연장 참여 신청계좌는 10:30 ~ 10:35분 경(Summer Time : 09:30 ~ 09:35분 경)에 최종 정산금액으로 변동됩니다.
+3. 미국 현재가 항목은 주간시세 및 애프터시세는 반영하지 않으며, 정규장 마감 후에는 종가로 조회됩니다.
+4. 온라인국가를 제외한 국가의 현재가는 실시간 시세가 아니므로 주문화면의 잔고 평가금액 등과 차이가 발생할 수 있습니다.
+5. 해외주식 담보대출 매도상환 체결내역은 해당 잔고화면에 반영되지 않습니다.
+   결제가 완료된 이후 외화잔고에 포함되어 반영되오니 참고하여 주시기 바랍니다.
+6. 외화평가금액은 당일 최초고시환율이 적용된 금액으로 실제 환전금액과는 차이가 있습니다. 
+7. 미국은 메인 시스템이 아닌 별도 시스템을 통해 거래되므로, 18시 10~15분 이후 발생하는 미국 매매내역은 해당 화면에 실시간으로 반영되지 않으니 하단 내용을 참고하여 안내하여 주시기 바랍니다. 
+   [외화잔고 및 해외 유가증권 현황 조회]
+   - 일반/통합증거금 계좌 : 미국장 종료 + 30분 후 부터 조회 가능
+                            단, 통합증거금 계좌에 한해 주문금액은 외화잔고 항목에 실시간 반영되며, 해외 유가증권 현황은 반영되지
+                            않아 해외 유가증권 평가금액이 과다 또는 과소 평가될 수 있습니다. 
+   - 애프터연장 신청계좌  : 실시간 반영 
+                            단, 시스템정산작업시간(23:40~00:10) 및 거래량이 많은 경우 메인시스템에 반영되는 시간으로 인해 차이가 
+                            발생할 수 있습니다.
+   ※ 배치작업시간에 따라 시간은 변동될 수 있습니다. 
+요청
+Header
+주식주문(현금[V1_국내주식-001]) 정보 Element, 한글명, Type, Rquired, Length, Description
+Element	한글명	Type	Required	Length	Description
+content-type	컨텐츠타입	String	N	40	application/json; charset=utf-8
+authorization	접근토큰	String	Y	350	OAuth 토큰이 필요한 API 경우 발급한 Access token
+일반고객(Access token 유효기간 1일, OAuth 2.0의 Client Credentials Grant 절차를 준용)
+법인(Access token 유효기간 3개월, Refresh token 유효기간 1년, Oauth 2.0의 Authorization Code Grant 절차를 준용)
+
+※ 토큰 지정시 토큰 타입("Bearer") 지정 필요. 즉, 발급받은 접근토큰 앞에 앞에 "Bearer" 붙여서 호출
+EX) "Bearer eyJ..........8GA"
+appkey	앱키	String	Y	36	한국투자증권 홈페이지에서 발급받은 appkey (절대 노출되지 않도록 주의해주세요.)
+appsecret	앱시크릿키	String	Y	180	한국투자증권 홈페이지에서 발급받은 appsecret (절대 노출되지 않도록 주의해주세요.)
+personalseckey	고객식별키	String	N	180	[법인 필수] 제휴사 회원 관리를 위한 고객식별키
+tr_id	거래ID	String	Y	13	[실전투자]
+CTRP6504R
+
+[모의투자]
+VTRP6504R
+tr_cont	연속 거래 여부	String	N	1	공백 : 초기 조회
+N : 다음 데이터 조회 (output header의 tr_cont가 M일 경우)
+custtype	고객타입	String	N	1	B : 법인
+P : 개인
+seq_no	일련번호	String	N	2	[법인 필수] 001
+mac_address	맥주소	String	N	12	법인고객 혹은 개인고객의 Mac address 값
+phone_number	핸드폰번호	String	N	12	[법인 필수] 제휴사APP을 사용하는 경우 사용자(회원) 핸드폰번호
+ex) 01011112222 (하이픈 등 구분값 제거)
+ip_addr	접속 단말 공인 IP	String	N	12	[법인 필수] 사용자(회원)의 IP Address
+gt_uid	Global UID	String	N	32	[법인 전용] 거래고유번호로 사용하므로 거래별로 UNIQUE해야 함
+Query Parameter
+주식주문(현금[V1_국내주식-001]) 정보 Element, 한글명, Type, Rquired, Length, Description
+Element	한글명	Type	Required	Length	Description
+CANO	종합계좌번호	String	Y	8	계좌번호 체계(8-2)의 앞 8자리
+ACNT_PRDT_CD	계좌상품코드	String	Y	2	계좌번호 체계(8-2)의 뒤 2자리
+WCRC_FRCR_DVSN_CD	원화외화구분코드	String	Y	2	01 : 원화
+02 : 외화
+NATN_CD	국가코드	String	Y	3	000 전체
+840 미국
+344 홍콩
+156 중국
+392 일본
+704 베트남
+TR_MKET_CD	거래시장코드	String	Y	2	[Request body NATN_CD 000 설정]
+00 : 전체
+
+[Request body NATN_CD 840 설정]
+00 : 전체
+01 : 나스닥(NASD)
+02 : 뉴욕거래소(NYSE)
+03 : 미국(PINK SHEETS)
+04 : 미국(OTCBB)
+05 : 아멕스(AMEX)
+
+[Request body NATN_CD 156 설정]
+00 : 전체
+01 : 상해B
+02 : 심천B
+03 : 상해A
+04 : 심천A
+
+[Request body NATN_CD 392 설정]
+01 : 일본
+
+[Request body NATN_CD 704 설정]
+01 : 하노이거래
+02 : 호치민거래소
+
+[Request body NATN_CD 344 설정]
+01 : 홍콩
+02 : 홍콩CNY
+03 : 홍콩USD
+INQR_DVSN_CD	조회구분코드	String	Y	2	00 : 전체
+01 : 일반해외주식
+02 : 미니스탁
+응답
+Header
+주식주문(현금[V1_국내주식-001]) 정보 Element, 한글명, Type, Rquired, Length, Description
+Element	한글명	Type	Required	Length	Description
+content-type	컨텐츠타입	String	Y	40	application/json; charset=utf-8
+tr_id	거래ID	String	Y	13	요청한 tr_id
+tr_cont	연속 거래 여부	String	Y	1	F or M : 다음 데이터 있음
+D or E : 마지막 데이터
+gt_uid	Global UID	String	Y	32	[법인 전용] 거래고유번호로 사용하므로 거래별로 UNIQUE해야 함
+Body
+주식주문(현금[V1_국내주식-001]) 정보 Element, 한글명, Type, Rquired, Length, Description
+Element	한글명	Type	Required	Length	Description
+rt_cd	성공 실패 여부	String	Y	1	0 : 성공
+0 이외의 값 : 실패
+msg_cd	응답코드	String	Y	8	응답코드
+msg1	응답메세지	String	Y	80	응답메세지
+output1	응답상세1 (체결기준 잔고)	Array	Y	-	체결기준현재잔고 없으면 빈값으로 출력
+prdt_name
+
+상품명	String	Y	60	종목명
+cblc_qty13
+
+잔고수량13	String	Y	32	결제보유수량
+thdt_buy_ccld_qty1
+
+당일매수체결수량1	String	Y	32	당일 매수 체결 완료 수량
+thdt_sll_ccld_qty1
+
+당일매도체결수량1	String	Y	32	당일 매도 체결 완료 수량
+ccld_qty_smtl1
+
+체결수량합계1	String	Y	32	체결기준 현재 보유수량
+ord_psbl_qty1
+
+주문가능수량1	String	Y	32	주문 가능한 주문 수량
+frcr_pchs_amt
+
+외화매입금액	String	Y	29	해당 종목의 외화 기준 매입금액
+frcr_evlu_amt2
+
+외화평가금액2	String	Y	30	해당 종목의 외화 기준 평가금액
+evlu_pfls_amt2
+
+평가손익금액2	String	Y	31	해당 종목의 매입금액과 평가금액의 외회기준 비교 손익
+evlu_pfls_rt1
+
+평가손익율1	String	Y	32	해당 종목의 평가손익을 기준으로 한 수익률
+pdno
+
+상품번호	String	Y	12	종목코드
+bass_exrt
+
+기준환율	String	Y	31	원화 평가 시 적용 환율
+buy_crcy_cd
+
+매수통화코드	String	Y	3	USD : 미국달러
+HKD : 홍콩달러
+CNY : 중국위안화
+JPY : 일본엔화
+VND : 베트남동
+ovrs_now_pric1
+
+해외현재가격1	String	Y	29	해당 종목의 현재가
+avg_unpr3
+
+평균단가3	String	Y	29	해당 종목의 매수 평균 단가
+tr_mket_name
+
+거래시장명	String	Y	60	해당 종목의 거래시장명
+natn_kor_name
+
+국가한글명	String	Y	60	거래 국가명
+pchs_rmnd_wcrc_amt
+
+매입잔액원화금액	String	Y	19	
+thdt_buy_ccld_frcr_amt
+
+당일매수체결외화금액	Object	Y	30	당일 매수 외화금액
+(Type: Object X String O)
+thdt_sll_ccld_frcr_amt
+
+당일매도체결외화금액	String	Y	30	당일 매도 외화금액
+unit_amt
+
+단위금액	String	Y	19	
+std_pdno
+
+표준상품번호	String	Y	12	
+prdt_type_cd
+
+상품유형코드	String	Y	3	
+scts_dvsn_name
+
+유가증권구분명	String	Y	60	
+loan_rmnd
+
+대출잔액	String	Y	19	대출 미상환 금액
+loan_dt
+
+대출일자	String	Y	8	대출 실행일자
+loan_expd_dt
+
+대출만기일자	String	Y	8	대출 만기일자
+ovrs_excg_cd
+
+해외거래소코드	String	Y	4	NASD : 나스닥
+NYSE : 뉴욕
+AMEX : 아멕스
+SEHK : 홍콩
+SHAA : 중국상해
+SZAA : 중국심천
+TKSE : 일본
+HASE : 하노이거래소
+VNSE : 호치민거래소
+item_lnkg_excg_cd
+
+종목연동거래소코드	String	Y	4	prdt_dvsn(상품구분) : 직원용 데이터(Type: String, Length:2)
+output2	응답상세2	Array	Y	-	
+crcy_cd
+
+통화코드	String	Y	3	
+crcy_cd_name
+
+통화코드명	String	Y	60	
+frcr_buy_amt_smtl
+
+외화매수금액합계	String	Y	29	해당 통화로 매수한 종목 전체의 매수금액
+frcr_sll_amt_smtl
+
+외화매도금액합계	String	Y	29	해당 통화로 매도한 종목 전체의 매수금액
+frcr_dncl_amt_2
+
+외화예수금액2	String	Y	29	외화로 표시된 외화사용가능금액
+frst_bltn_exrt
+
+최초고시환율	String	Y	31	
+frcr_buy_mgn_amt
+
+외화매수증거금액	String	Y	31	매수증거금으로 사용된 외화금액
+frcr_etc_mgna
+
+외화기타증거금	String	Y	31	
+frcr_drwg_psbl_amt_1
+
+외화출금가능금액1	String	Y	29	출금가능한 외화금액
+frcr_evlu_amt2
+
+출금가능원화금액	String	Y	29	출금가능한 원화금액
+acpl_cstd_crcy_yn
+
+현지보관통화여부	String	Y	1	
+nxdy_frcr_drwg_psbl_amt
+
+익일외화출금가능금액	String	Y	31	
+output3	응답상세3	Object	Y	-	
+pchs_amt_smtl
+
+매입금액합계	String	Y	19	해외유가증권 매수금액의 원화 환산 금액
+evlu_amt_smtl
+
+평가금액합계	String	Y	19	해외유가증권 평가금액의 원화 환산 금액
+evlu_pfls_amt_smtl
+
+평가손익금액합계	String	Y	19	해외유가증권 평가손익의 원화 환산 금액
+dncl_amt
+
+예수금액	String	Y	19	
+cma_evlu_amt
+
+CMA평가금액	String	Y	19	
+tot_dncl_amt
+
+총예수금액	String	Y	19	
+etc_mgna
+
+기타증거금	String	Y	19	
+wdrw_psbl_tot_amt
+
+인출가능총금액	String	Y	19	
+frcr_evlu_tota
+
+외화평가총액	String	Y	19	
+evlu_erng_rt1
+
+평가수익율1	String	Y	31	
+pchs_amt_smtl_amt
+
+매입금액합계금액	String	Y	19	
+evlu_amt_smtl_amt
+
+평가금액합계금액	String	Y	19	
+tot_evlu_pfls_amt
+
+총평가손익금액	String	Y	31	
+tot_asst_amt
+
+총자산금액	String	Y	19	
+buy_mgn_amt
+
+매수증거금액	String	Y	19	
+mgna_tota
+
+증거금총액	String	Y	19	
+frcr_use_psbl_amt
+
+외화사용가능금액	String	Y	20	
+ustl_sll_amt_smtl
+
+미결제매도금액합계	String	Y	19	
+ustl_buy_amt_smtl
+
+미결제매수금액합계	String	Y	19	
+tot_frcr_cblc_smtl
+
+총외화잔고합계	String	Y	29	
+tot_loan_amt
+
+총대출금액	String	Y	19	
+예시
+Request
+Data Class (Python)
+Data Class (Python)
+from dataclasses import dataclass
+
+@dataclass
+class RequestHeader:
+    content-type: Optional[str] = None    #컨텐츠타입
+    authorization: str    #접근토큰
+    appkey: str    #앱키 
+    appsecret: str    #앱시크릿키
+    personalseckey: Optional[str] = None    #고객식별키
+    tr_id: str    #거래ID
+    tr_cont: Optional[str] = None    #연속 거래 여부
+    custtype: Optional[str] = None    #고객타입
+    seq_no: Optional[str] = None    #일련번호
+    mac_address: Optional[str] = None    #맥주소
+    phone_number: Optional[str] = None    #핸드폰번호
+    ip_addr: Optional[str] = None    #접속 단말 공인 IP
+    gt_uid: Optional[str] = None    #Global UID
+
+@dataclass
+class RequestQueryParam:
+    CANO: str    #종합계좌번호
+    ACNT_PRDT_CD: str    #계좌상품코드
+    WCRC_FRCR_DVSN_CD: str    #원화외화구분코드
+    NATN_CD: str    #국가코드
+    TR_MKET_CD: str    #거래시장코드
+    INQR_DVSN_CD: str    #조회구분코드
+
+복사하기
+Response
+Data Class (Python)
+Data Class (Python)
+from dataclasses import dataclass
+from typing import List, Optional
+
+@dataclass
+class ResponseHeader:
+    content-type: str    #컨텐츠타입
+    tr_id: str    #거래ID
+    tr_cont: str    #연속 거래 여부
+    gt_uid: str    #Global UID
+
+@dataclass
+class ResponseBody:
+    rt_cd: str    #성공 실패 여부
+    msg_cd: str    #응답코드
+    msg1: str    #응답메세지
+    output1: List[ResponseBodyoutput1}] = field(default_factory=list)    #응답상세1 (체결기준 잔고)
+    output2: List[ResponseBodyoutput2}] = field(default_factory=list)    #응답상세2
+    output3: ResponseBodyoutput3    #응답상세3
+
+@dataclass
+class ResponseBodyoutput1:
+    prdt_name: str    #상품명
+    cblc_qty13: str    #잔고수량13
+    thdt_buy_ccld_qty1: str    #당일매수체결수량1
+    thdt_sll_ccld_qty1: str    #당일매도체결수량1
+    ccld_qty_smtl1: str    #체결수량합계1
+    ord_psbl_qty1: str    #주문가능수량1
+    frcr_pchs_amt: str    #외화매입금액
+    frcr_evlu_amt2: str    #외화평가금액2
+    evlu_pfls_amt2: str    #평가손익금액2
+    evlu_pfls_rt1: str    #평가손익율1
+    pdno: str    #상품번호
+    bass_exrt: str    #기준환율
+    buy_crcy_cd: str    #매수통화코드
+    ovrs_now_pric1: str    #해외현재가격1
+    avg_unpr3: str    #평균단가3
+    tr_mket_name: str    #거래시장명
+    natn_kor_name: str    #국가한글명
+    pchs_rmnd_wcrc_amt: str    #매입잔액원화금액
+    thdt_buy_ccld_frcr_amt: ResponseBodythdt_buy_ccld_frcr_amt    #당일매수체결외화금액
+    thdt_sll_ccld_frcr_amt: str    #당일매도체결외화금액
+    unit_amt: str    #단위금액
+    std_pdno: str    #표준상품번호
+    prdt_type_cd: str    #상품유형코드
+    scts_dvsn_name: str    #유가증권구분명
+    loan_rmnd: str    #대출잔액
+    loan_dt: str    #대출일자
+    loan_expd_dt: str    #대출만기일자
+    ovrs_excg_cd: str    #해외거래소코드
+    item_lnkg_excg_cd: str    #종목연동거래소코드
+
+@dataclass
+class ResponseBodythdt_buy_ccld_frcr_amt:
+
+@dataclass
+class ResponseBodyoutput2:
+    crcy_cd: str    #통화코드
+    crcy_cd_name: str    #통화코드명
+    frcr_buy_amt_smtl: str    #외화매수금액합계
+    frcr_sll_amt_smtl: str    #외화매도금액합계
+    frcr_dncl_amt_2: str    #외화예수금액2
+    frst_bltn_exrt: str    #최초고시환율
+    frcr_buy_mgn_amt: str    #외화매수증거금액
+    frcr_etc_mgna: str    #외화기타증거금
+    frcr_drwg_psbl_amt_1: str    #외화출금가능금액1
+    frcr_evlu_amt2: str    #출금가능원화금액
+    acpl_cstd_crcy_yn: str    #현지보관통화여부
+    nxdy_frcr_drwg_psbl_amt: str    #익일외화출금가능금액
+
+@dataclass
+class ResponseBodyoutput3:
+    pchs_amt_smtl: str    #매입금액합계
+    evlu_amt_smtl: str    #평가금액합계
+    evlu_pfls_amt_smtl: str    #평가손익금액합계
+    dncl_amt: str    #예수금액
+    cma_evlu_amt: str    #CMA평가금액
+    tot_dncl_amt: str    #총예수금액
+    etc_mgna: str    #기타증거금
+    wdrw_psbl_tot_amt: str    #인출가능총금액
+    frcr_evlu_tota: str    #외화평가총액
+    evlu_erng_rt1: str    #평가수익율1
+    pchs_amt_smtl_amt: str    #매입금액합계금액
+    evlu_amt_smtl_amt: str    #평가금액합계금액
+    tot_evlu_pfls_amt: str    #총평가손익금액
+    tot_asst_amt: str    #총자산금액
+    buy_mgn_amt: str    #매수증거금액
+    mgna_tota: str    #증거금총액
+    frcr_use_psbl_amt: str    #외화사용가능금액
+    ustl_sll_amt_smtl: str    #미결제매도금액합계
+    ustl_buy_amt_smtl: str    #미결제매수금액합계
+    tot_frcr_cblc_smtl: str    #총외화잔고합계
+    tot_loan_amt: str    #총대출금액

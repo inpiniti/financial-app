@@ -1,0 +1,162 @@
+// createKisBroker — ScalperBroker를 kis/ REST 모듈로 구현(실서비스 글루). 테스트는 이 파일을 import하지 않는다.
+//  · placeOrder   → kis/order.placeOverseasOrder (지정가)
+//  · cancelOrder  → kis/orderCancel.cancelOverseasOrder (RVSE_CNCL_DVSN_CD=02)
+//  · fetchFills   → kis/nccs.inquireOverseasUnfilled (미체결내역, TTTS3018R) → odno별 체결 상태 역산
+//
+// 주문체결내역(TTTS3035R)이 이 계좌에서 APTR0058("처리계좌의 ID와 사용자정보가 상이")로 거절되는 것이
+// 실측·재현으로 확정되어(kis/nccs.ts 상단 주석 참조), 체결 확인은 정상 동작이 확인된 미체결내역(TTTS3018R)
+// 폴링으로 대체한다. 이 TR은 "지금 미체결인 주문"만 돌려주므로, 체결 여부는 다음처럼 역산해야 한다:
+//   · 목록에 odno가 있으면 → 부분체결: ft_ord_qty - nccs_qty
+//   · 목록에서 odno가 사라지면 → 전량체결로 "추론"(취소된 주문도 사라지므로 100% 확실하진 않다 — 아래 tracked 참고)
+// 이 추론에 필요한 "우리가 이 odno를 얼마 주문했는지 · 몇 번 조회했는지" 상태는 nccs 응답에 없으므로
+// 이 브로커 인스턴스가 로컬로 들고 있어야 한다(tracked 맵). ScalperBroker 계약(odno별 체결 수량 반환)은 그대로.
+import { placeOverseasOrder } from '../../kis/order';
+import { cancelOrAmendOverseasOrder, cancelOverseasOrder, normalizeOdno } from '../../kis/orderCancel';
+import { inquireOverseasUnfilled } from '../../kis/nccs';
+import type { OverseasExchangeCode } from '../../kis/trId';
+import type { ClockLike, KisAccount, KisCredentials, KisEnvironment } from '../../kis/types';
+import type { BrokerFill, ScalperBroker } from './types';
+
+export interface KisBrokerConfig {
+  environment: KisEnvironment;
+  credentials: KisCredentials;
+  account: KisAccount;
+  /** 이 인스턴스의 종목코드(PDNO). */
+  pdno: string;
+  ovrsExcgCd: OverseasExchangeCode;
+  /** 유효 접근토큰 공급(캐시·갱신은 kis/token 책임). */
+  getToken: () => Promise<string>;
+  clock?: ClockLike;
+}
+
+/** 이 브로커 인스턴스가 발주한 주문 1건의 체결 판정용 로컬 상태(odno 키). */
+interface TrackedOrder {
+  qty: number;
+  /** fetchFills가 이 odno를 최소 1회 조회했는가 — 발주 직후 서버 반영 지연 유예(최소 1폴)에 쓴다. */
+  polled: boolean;
+  /** 미체결 목록에 한 번이라도 나타난 적이 있는가. */
+  everListed: boolean;
+}
+
+function toNum(v: string | undefined): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+export function createKisBroker(config: KisBrokerConfig): ScalperBroker {
+  const { environment, credentials, account, ovrsExcgCd, getToken } = config;
+
+  /** placeOrder가 등록하고 fetchFills가 매 폴 미체결 목록과 대조해 갱신하는 로컬 추적 상태. */
+  const tracked = new Map<string, TrackedOrder>();
+  /**
+   * 정정 요청이 왕복 중인 원주문번호들.
+   * 정정에 성공하면 KIS가 옛 ODNO를 미체결 목록에서 즉시 빼는데, 그 사이 fetchFills가 돌면
+   * "목록 부재 = 전량체결"로 오판해 가짜 DONE이 난다. 왕복 구간에는 그 추론을 보류한다.
+   */
+  const amending = new Set<string>();
+
+  return {
+    async placeOrder(input) {
+      const token = await getToken();
+      const res = await placeOverseasOrder(environment, credentials, token, {
+        account,
+        ovrsExcgCd,
+        side: input.side,
+        pdno: input.pdno,
+        orderQty: input.qty,
+        orderUnitPrice: input.price,
+      });
+      // 주문 응답 odno를 10자리 0패딩으로 정규화해 추적·대조·취소 전 구간에서 키를 일관되게 유지한다.
+      const odno = normalizeOdno(res.odno);
+      tracked.set(odno, { qty: input.qty, polled: false, everListed: false });
+      return { odno };
+    },
+
+    async cancelOrder(input) {
+      const token = await getToken();
+      await cancelOverseasOrder(environment, credentials, token, {
+        account,
+        ovrsExcgCd,
+        pdno: input.pdno,
+        orgnOdno: input.odno,
+        orderQty: input.qty,
+      });
+      // 취소가 성공한 주문만 추적을 끊는다(cancelOrder가 throw 없이 반환한 경우) — 목록에서 사라진 것을
+      // "전량체결"로 오판하지 않도록. 어댑터도 이 성공을 cancelState='confirmed'로 받아 관찰을 멈춘다.
+      // ※ 취소가 거절되면(이미 체결 추정) 이 줄에 오기 전에 throw하므로 tracked가 유지된다 →
+      //   다음 fetchFills에서 "목록 부재→전량체결" 유예 규칙으로 늦은 체결이 정상 레코닝된다.
+      tracked.delete(normalizeOdno(input.odno));
+    },
+
+    async amendOrder(input) {
+      const token = await getToken();
+      const oldOdno = normalizeOdno(input.odno);
+      // 왕복 동안 "목록 부재→전량체결" 추론을 막는다. finally에서 반드시 해제한다.
+      amending.add(oldOdno);
+      try {
+        const res = await cancelOrAmendOverseasOrder(environment, credentials, token, {
+          account,
+          ovrsExcgCd,
+          pdno: input.pdno,
+          orgnOdno: oldOdno,
+          action: 'amend',
+          orderQty: input.qty,
+          orderUnitPrice: input.price,
+          side: input.side,
+        });
+        const newOdno = normalizeOdno(res.odno);
+        // ★ 원자 교체 — await 없는 동기 구간이라 중간 상태를 아무도 관찰하지 못한다.
+        //   옛 odno를 지우지 않으면 다음 폴에서 "목록 부재→전량체결" 오판이 난다(1순위 사고 지점).
+        //   새 odno는 유예 플래그를 초기화해 등록한다(발주 직후와 같은 취급).
+        tracked.delete(oldOdno);
+        tracked.set(newOdno, { qty: input.qty, polled: false, everListed: false });
+        return { odno: newOdno };
+      } finally {
+        amending.delete(oldOdno);
+      }
+    },
+
+    async fetchFills(): Promise<BrokerFill[]> {
+      const token = await getToken();
+      const { output } = await inquireOverseasUnfilled(environment, credentials, token, {
+        account,
+        ovrsExcgCd,
+      });
+      // 미체결 목록의 odno도 정규화해 대조한다 — 앞자리 0 패딩 불일치로 "목록 부재→전량체결" 오판이 나던 문제 방지.
+      const listed = new Map(output.map((item) => [normalizeOdno(item.odno), item]));
+
+      const fills: BrokerFill[] = [];
+      for (const [odno, state] of tracked) {
+        const item = listed.get(odno);
+        if (item) {
+          state.everListed = true;
+          state.polled = true;
+          const filledQty = toNum(item.ft_ord_qty) - toNum(item.nccs_qty);
+          const price = toNum(item.ft_ccld_unpr3);
+          fills.push({ odno, orderQty: state.qty, filledQty, filledPrice: price > 0 ? price : null });
+          continue;
+        }
+        // 정정 왕복 중인 주문은 "사라짐"의 원인이 체결이 아니라 정정일 수 있다 — 추론을 통째로 보류한다.
+        // (정정 성공 시 KIS가 옛 ODNO를 목록에서 빼므로, 이 가드가 없으면 가짜 전량체결이 난다.)
+        if (amending.has(odno)) {
+          fills.push({ odno, orderQty: state.qty, filledQty: 0, filledPrice: null });
+          continue;
+        }
+        // 목록에 없음 — 유예 조건(직전까지 한 번이라도 목록에 보였거나, 이미 1회 이상 조회했음)을
+        // 만족할 때만 전량체결로 확정한다. 발주 직후 첫 조회에서 아직 안 보이는 것은 서버 반영
+        // 지연일 수 있으므로 최소 1폴은 유예하고 미체결로 둔다.
+        const confirmedFilled = state.everListed || state.polled;
+        state.polled = true;
+        fills.push({
+          odno,
+          orderQty: state.qty,
+          filledQty: confirmedFilled ? state.qty : 0,
+          filledPrice: null,
+        });
+      }
+      // TODO(선택): 매도 체결을 "목록 부재→전량체결"로 확정하기 직전, kis/balance.ts
+      // inquireOverseasBalance로 보유 수량 감소를 보조 검증하는 훅을 여기 둘 수 있다(현재는 nccs 단독 판정).
+      return fills;
+    },
+  };
+}
