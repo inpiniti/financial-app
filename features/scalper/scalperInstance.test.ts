@@ -874,3 +874,85 @@ describe('ScalperInstance — 매도 리프라이스 타이머', () => {
     expect(h.broker.amended).toHaveLength(1);
   });
 });
+
+describe('ScalperInstance — 실비용 손익', () => {
+  it('① [사고 재현] 수동 정지(STOP) 청산의 손익이 0으로 기록되지 않는다', async () => {
+    const h = makeInstance({ autoFill: false });
+    // 호가를 주입해 발주가가 호가 기준(매수=ask1, 매도=bid1)으로 결정되게 한다.
+    h.inst.pushQuote(3.9, 4.1, h.clock.now());
+    h.inst.start();
+
+    // V자를 흘려 매수 발주 → 손으로 체결시켜 HOLDING.
+    let ts = 0;
+    for (const p of V) {
+      h.inst.pushTick(p, ts);
+      ts += 1000;
+      await flush();
+      await h.inst.pollCycle();
+      await flush();
+      if (h.inst.state === 'BUYING') {
+        const buy = h.broker.placed.find((o) => o.side === 'buy')!;
+        h.broker.fill(buy.odno, buy.price);
+        await h.inst.pollCycle();
+        await flush();
+      }
+    }
+    expect(h.inst.state).toBe('HOLDING');
+
+    // 사용자 Stop → 전량 매도. 이 매도는 pendingSnapshot이 null이다.
+    h.inst.pushQuote(3.9, 4.1, h.clock.now());
+    h.inst.stop();
+    await flush();
+    expect(h.inst.state).toBe('SELLING');
+
+    // 실물처럼 "미체결 목록에서 사라져 전량체결로 추론"되는 경로를 재현한다 —
+    // 브로커가 체결가를 주지 않으므로 filledPrice가 null이 된다.
+    const sell = h.broker.placed.find((o) => o.side === 'sell')!;
+    h.broker.fillWithoutPrice(sell.odno);
+    await h.inst.pollCycle();
+    await flush();
+
+    expect(h.inst.state).toBe('DONE');
+    expect(h.trades).toHaveLength(1);
+    const rec = h.trades[0].rec;
+    expect(rec.exitReason).toBe('STOP');
+    // 체결가가 없어도 실제 발주가(매수1호가 3.9)가 청산가로 남아야 한다.
+    expect(rec.exitPrice).toBe(3.9);
+    expect(rec.pnl).not.toBe(0);
+  });
+});
+
+describe('ScalperInstance — 수수료 반영 시 행동 변화', () => {
+  it('② 수수료를 켜면 본전 사이클이 손실로 분류돼 다음 수량이 2배가 된다', async () => {
+    // ⚠ 행동 변화 고정 — 수수료를 켜면 "본전(pnl=0)"이 사실상 사라져 마틴게일이 훨씬 자주 2배로 간다.
+    const broker = new FakeBroker({ autoFill: true });
+    const clock = fakeClock(1000);
+    const trades: Array<{ id: string; rec: TradeRecord }> = [];
+    const notes: Array<{ note: AutoRunNote; qty: number }> = [];
+    const inst = new ScalperInstance(
+      { id: 'inst-1', ticker: 'AAPL', qty: 4, autoRun: true },
+      {
+        broker,
+        clock,
+        scheduler: noopScheduler(),
+        chunkSeconds: 1,
+        bufferSize: 7,
+        throttleMs: 0,
+        minSellMomentum: 0,
+        feeRate: 0.0025,
+        onTrade: (id, rec) => trades.push({ id, rec }),
+        onAutoRun: (_id, note, qty) => notes.push({ note, qty }),
+      },
+    );
+    // 매수1호가·매도1호가를 같은 값으로 둬 진입가 = 청산가(총손익 0)를 만든다.
+    inst.pushQuote(10, 10, clock.now());
+    inst.start();
+    await replayWithPoll(inst, DOWN_UP_DOWN);
+
+    expect(trades).toHaveLength(1);
+    const rec = trades[0].rec;
+    expect(rec.grossPnl).toBe(0);
+    expect(rec.pnl).toBeLessThan(0); // 수수료 때문에 손실로 분류된다
+    expect(notes[0].qty).toBe(8); // 손실 → 수량 2배
+  });
+});

@@ -68,6 +68,8 @@ export interface ScalperInstanceDeps {
    * @deprecated 무한 대기로 전환돼 더 이상 쓰이지 않는다(자동 타임아웃 취소 제거). 호출부 호환을 위해만 남긴다.
    */
   fillTimeoutMs?: number;
+  /** 거래 수수료율(소수·편도, 0=끔) — RunCycle로 그대로 넘겨 손익에서 차감한다. */
+  feeRate?: number;
   /**
    * Run 시 버퍼 신선도 판정 기준(ms, 기본 30000). 마지막 틱이 이보다 오래됐으면(끊겼던 데이터로 보고)
    * 리샘플러·detector를 리셋해 처음부터 워밍업한다. 그보다 신선하면 이미 쌓인 버퍼를 이어서 쓴다.
@@ -107,6 +109,8 @@ export class ScalperInstance {
   private readonly pollIntervalMs: number;
   private readonly repriceIntervalMs: number;
   private readonly fillTimeoutMs?: number;
+  /** setQty()가 RunCycle을 재생성하므로 인스턴스 필드로 보관해야 두 경로 모두에 전달된다. */
+  private readonly feeRate?: number;
   private readonly bufferStaleMs: number;
   private readonly throttleMs: number;
   private readonly onTradeCb?: (instanceId: string, record: TradeRecord) => void;
@@ -173,6 +177,7 @@ export class ScalperInstance {
     this.pollIntervalMs = deps.pollIntervalMs ?? 2000;
     this.repriceIntervalMs = deps.repriceIntervalMs ?? 1000;
     this.fillTimeoutMs = deps.fillTimeoutMs;
+    this.feeRate = deps.feeRate;
     this.bufferStaleMs = deps.bufferStaleMs ?? 30000;
     this.throttleMs = deps.throttleMs ?? 1000;
     this.onTradeCb = deps.onTrade;
@@ -204,6 +209,7 @@ export class ScalperInstance {
       port: this.adapter,
       clock: this.clock,
       fillTimeoutMs: this.fillTimeoutMs,
+      feeRate: this.feeRate,
       onTrade: (record) => this.handleTrade(record),
     });
   }

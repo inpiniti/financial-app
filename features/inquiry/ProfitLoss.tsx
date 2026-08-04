@@ -89,10 +89,12 @@ function LocalCycleRow({ item }: { item: StoredTrade }) {
   const isProfit = item.pnl > 0;
   const label =
     item.pnl === 0 ? formatSignedUsd(item.pnl) : `${formatSignedUsd(item.pnl)} (${isProfit ? '벌었어요' : '잃었어요'})`;
+  // 수수료를 켠 뒤 기록에만 fees가 있다(옛 기록은 undefined) — 있을 때만 덧붙인다.
+  const feeNote = item.fees && item.fees > 0 ? ` · 수수료 ${formatUsd(item.fees)}` : '';
   return (
     <ListRow
       leading={<TickerAvatar ticker={item.ticker} />}
-      title={`${item.ticker} · 진입 ${formatUsd(item.entryPrice)} → 청산 ${formatUsd(item.exitPrice)}`}
+      title={`${item.ticker} · 진입 ${formatUsd(item.entryPrice)} → 청산 ${formatUsd(item.exitPrice)}${feeNote}`}
       trailing={
         <Text style={{ color: pnlColor(item.pnl) }} className="text-sm font-bold">
           {label}

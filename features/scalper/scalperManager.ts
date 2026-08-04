@@ -50,6 +50,8 @@ export interface ScalperManagerDeps {
   chunkSeconds?: number;
   bufferSize?: number;
   fillTimeoutMs?: number;
+  /** 거래 수수료율(소수·편도, 0=끔) — 인스턴스 RunCycle로 그대로 흘려보낸다. */
+  feeRate?: number;
   throttleMs?: number;
   /** 매수 모멘텀 문턱(상대 기울기, "%/청크" 소수) — 인스턴스 detector로 그대로 흘려보낸다. 미지정 시 detector 기본. */
   minBuyMomentum?: number;
@@ -353,6 +355,7 @@ export class ScalperManager {
       chunkSeconds: this.deps.chunkSeconds,
       bufferSize: this.deps.bufferSize,
       fillTimeoutMs: this.deps.fillTimeoutMs,
+      feeRate: this.deps.feeRate,
       throttleMs: this.deps.throttleMs,
       minBuyMomentum: this.deps.minBuyMomentum,
       minSellMomentum: this.deps.minSellMomentum,

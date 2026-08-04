@@ -109,6 +109,7 @@ export default function SettingsScreen() {
   );
   const [buyVolumeSpikeRatio, setBuyVolumeSpikeRatio] = useState(DEFAULT_APP_SETTINGS.buyVolumeSpikeRatio);
   const [buyStrengthThreshold, setBuyStrengthThreshold] = useState(DEFAULT_APP_SETTINGS.buyStrengthThreshold);
+  const [commissionRatePct, setCommissionRatePct] = useState(DEFAULT_APP_SETTINGS.commissionRatePct);
 
   const [tokenStatus, setTokenStatus] = useState<TokenStatus>({ kind: 'idle' });
   const [saving, setSaving] = useState(false);
@@ -134,6 +135,7 @@ export default function SettingsScreen() {
       setSellMomentumThresholdPct(appSettings.sellMomentumThresholdPct);
       setBuyVolumeSpikeRatio(appSettings.buyVolumeSpikeRatio);
       setBuyStrengthThreshold(appSettings.buyStrengthThreshold);
+      setCommissionRatePct(appSettings.commissionRatePct);
     })();
   }, []);
 
@@ -166,6 +168,7 @@ export default function SettingsScreen() {
         sellMomentumThresholdPct,
         buyVolumeSpikeRatio,
         buyStrengthThreshold,
+        commissionRatePct,
       });
       // 저장 성공 — 이후 재입력 없이도 배지가 최신 저장값을 가리키게 갱신한다.
       savedAppSecretRef.current = effectiveAppSecret;
@@ -339,6 +342,7 @@ export default function SettingsScreen() {
                   step={0.005}
                   formatValue={(v) => `${v}%`}
                   helper="변곡점 뒤 상승 힘이 이 값 이상일 때만 매수해요. 권장 0.005~0.02 — 0.03부터는 확실한 추세에서만 매수해요."
+                  offAtZero
                 />
 
                 <SettingSlider
@@ -350,6 +354,7 @@ export default function SettingsScreen() {
                   step={0.003}
                   formatValue={(v) => `${v}%`}
                   helper="권장 0.003~0.02 — 낮을수록 빨리 팔아요. 얕은 눌림은 잠깐 지켜보다 힘이 실릴 때 팔아요. 0이면 변곡점에서 바로 팔아요."
+                  offAtZero
                 />
 
                 <SettingSlider
@@ -361,6 +366,7 @@ export default function SettingsScreen() {
                   step={0.1}
                   formatValue={(v) => `${v.toFixed(1)}배`}
                   helper="최근 거래량이 과거 평균의 이 배수 이상일 때만 매수해요. 권장 1.5~2 — 3에 가까울수록 드문 폭증에서만 매수해요. 매도에는 영향이 없어요."
+                  offAtZero
                 />
 
                 <SettingSlider
@@ -372,6 +378,19 @@ export default function SettingsScreen() {
                   step={10}
                   formatValue={(v) => String(v)}
                   helper="체결강도가 이 값 이상일 때만 매수해요 (100이 매수·매도 균형). 권장 80~150 — 150을 넘기면 기회가 많이 줄어요. 매도에는 영향이 없어요."
+                  offAtZero
+                />
+
+                <SettingSlider
+                  label="거래 수수료율 (편도, %)"
+                  value={commissionRatePct}
+                  onChange={setCommissionRatePct}
+                  min={0}
+                  max={0.3}
+                  step={0.005}
+                  formatValue={(v) => `${v}%`}
+                  helper="매수·매도 체결대금에 각각 이만큼 수수료를 빼서 손익을 계산해요. 왕복이면 두 번 빠져요. 증권사 앱에서 해외주식 온라인 수수료를 확인해 넣어 주세요. 0이면 빼지 않아요."
+                  offAtZero
                 />
               </View>
             </Panel>

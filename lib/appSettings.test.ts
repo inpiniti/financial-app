@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isOddBufferSize, snapToStep, DEFAULT_APP_SETTINGS } from './appSettings';
+import { commissionRateToRatio, isOddBufferSize, snapToStep, DEFAULT_APP_SETTINGS } from './appSettings';
 
 describe('isOddBufferSize', () => {
   it('홀수면 true다 (SG 윈도 요건)', () => {
@@ -53,5 +53,24 @@ describe('snapToStep — 슬라이더 격자 스냅', () => {
     expect(snapToStep(1, 1, 10, 1)).toBe(1);
     expect(snapToStep(4.4, 1, 10, 1)).toBe(4);
     expect(snapToStep(10, 1, 10, 1)).toBe(10);
+  });
+});
+
+describe('commissionRateToRatio — 수수료율 %→소수', () => {
+  it('① %를 소수로 바꾼다 (0.25% → 0.0025)', () => {
+    expect(commissionRateToRatio(0.25)).toBeCloseTo(0.0025, 10);
+    expect(commissionRateToRatio(0.1)).toBeCloseTo(0.001, 10);
+  });
+
+  it('② 0·음수·비정상은 0(끔)이다', () => {
+    expect(commissionRateToRatio(0)).toBe(0);
+    expect(commissionRateToRatio(-1)).toBe(0);
+    expect(commissionRateToRatio(Number.NaN)).toBe(0);
+    expect(commissionRateToRatio(Number.POSITIVE_INFINITY)).toBe(0);
+  });
+
+  it('③ 기본 설정은 수수료가 꺼져 있다 (기존 동작 보존)', () => {
+    expect(DEFAULT_APP_SETTINGS.commissionRatePct).toBe(0);
+    expect(commissionRateToRatio(DEFAULT_APP_SETTINGS.commissionRatePct)).toBe(0);
   });
 });

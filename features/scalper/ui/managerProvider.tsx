@@ -8,7 +8,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getAccessToken } from '../../../kis/token';
 import { getApprovalKey } from '../../../kis/wsApproval';
 import type { KisAccount, KisCredentials, KisEnvironment } from '../../../kis/types';
-import { gateThreshold, loadAppSettings, momentumThresholdToRatio } from '../../../lib/appSettings';
+import {
+  commissionRateToRatio,
+  gateThreshold,
+  loadAppSettings,
+  momentumThresholdToRatio,
+} from '../../../lib/appSettings';
 import { loadKisSettings } from '../../../lib/kisSettings';
 import { secureTokenStorage } from '../../../lib/secureTokenStorage';
 import { inquireOverseasBalance } from '../../../kis/balance';
@@ -97,6 +102,8 @@ async function buildManager(): Promise<ManagerBootstrap> {
     // BUY 게이트(거래량 스파이크 배수·체결강도) — 0이면 끔. %가 아니라 변환 없이 정리만 한다.
     minVolumeSpikeRatio: gateThreshold(appSettings.buyVolumeSpikeRatio),
     minStrength: gateThreshold(appSettings.buyStrengthThreshold),
+    // 거래 수수료율(% → 소수). 0이면 손익에서 수수료를 빼지 않는다(기존 동작).
+    feeRate: commissionRateToRatio(appSettings.commissionRatePct),
   });
 
   await manager.restore();
@@ -197,6 +204,7 @@ async function buildManager(): Promise<ManagerBootstrap> {
     minSellMomentum: momentumThresholdToRatio(appSettings.sellMomentumThresholdPct),
     minVolumeSpikeRatio: gateThreshold(appSettings.buyVolumeSpikeRatio),
     minStrength: gateThreshold(appSettings.buyStrengthThreshold),
+    feeRate: commissionRateToRatio(appSettings.commissionRatePct),
     onError: (err) => finalManager.reportFeedError(err),
   });
   // WS 단일 연결 공유 — 수동 매니저의 라우터가 오토파일럿 슬롯으로도 흘려보낸다.

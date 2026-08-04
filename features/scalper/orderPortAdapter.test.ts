@@ -355,3 +355,121 @@ describe('OrderPortAdapter — 매도 리프라이스', () => {
     expect(broker.placed[0].price).toBe(12.34);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 실비용 손익(2026-08-05) — 체결가가 없을 때 "신호 시점 틱 가격" 대신 **실제 발주가**로 폴백해
+// 왕복 스프레드가 손익에 들어오게 한다. 오차는 지정가 성질상 항상 보수적이다.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('OrderPortAdapter — 체결가 폴백(발주가 기준)', () => {
+  function makeAdapter(bid1: number, ask1: number) {
+    const broker = new FakeBroker();
+    const clock = fakeClock(1000);
+    const adapter = new OrderPortAdapter({ broker, clock });
+    adapter.setLimitPrice((bid1 + ask1) / 2);
+    adapter.setQuote(bid1, ask1, clock.now());
+    return { broker, clock, adapter };
+  }
+
+  it('① 전량체결에 체결가가 없으면 실제 발주가를 체결가로 쓴다', async () => {
+    const { broker, adapter } = makeAdapter(99.9, 100.1);
+    const ref = adapter.buy({ ticker: 'AAPL', qty: 2 });
+    await flush();
+
+    broker.fillWithoutPrice(broker.placed[0].odno);
+    await adapter.refreshFills();
+    // 매수는 매도1호가(ask1)에 ceil 절사해 발주 → 그 값이 체결가로 남는다.
+    expect(adapter.checkFilled(ref).price).toBe(100.1);
+  });
+
+  it('② 실제 체결가가 오면 발주가보다 우선한다', async () => {
+    const { broker, adapter } = makeAdapter(99.9, 100.1);
+    const ref = adapter.buy({ ticker: 'AAPL', qty: 2 });
+    await flush();
+
+    broker.fill(broker.placed[0].odno, 100.05);
+    await adapter.refreshFills();
+    expect(adapter.checkFilled(ref).price).toBe(100.05);
+  });
+
+  it('③ [사고 재현] 매도 전량체결에 체결가가 없어도 매수1호가 발주가가 남는다 (손익 0 방지)', async () => {
+    const { broker, adapter } = makeAdapter(99.9, 100.1);
+    const ref = adapter.sell({ ticker: 'AAPL', qty: 2 });
+    await flush();
+
+    broker.fillWithoutPrice(broker.placed[0].odno);
+    await adapter.refreshFills();
+    const fill = adapter.checkFilled(ref);
+    expect(fill.filled).toBe(true);
+    expect(fill.price).toBe(99.9); // undefined가 아니어야 한다
+  });
+
+  it('④ [사고 재현] 정정 후 전량체결이면 옛 체결가가 아니라 새 접수가를 쓴다', async () => {
+    const { broker, clock, adapter } = makeAdapter(12.5, 12.7);
+    const ref = adapter.sell({ ticker: 'AAPL', qty: 10 });
+    await flush();
+
+    // 옛 odno에서 체결가 12.5를 한 번 관찰시킨다(부분체결).
+    broker.fillPartial(broker.placed[0].odno, 3, 12.5);
+    await adapter.refreshFills();
+
+    // 호가가 흘러내려 정정 → 새 odno는 12.3에 접수된다.
+    adapter.setQuote(12.3, 12.5, clock.now());
+    await adapter.repriceSell();
+    expect(broker.amended).toHaveLength(1);
+
+    // 새 odno가 체결가 없이 전량체결 — 옛 12.5가 그대로 쓰이면 안 된다.
+    broker.fillWithoutPrice(broker.amended[0].to);
+    await adapter.refreshFills();
+    const price = adapter.checkFilled(ref).price!;
+    expect(price).toBeLessThan(12.5);
+  });
+
+  it('⑤ 여러 odno에 걸친 부분체결은 수량 가중평균이 된다', async () => {
+    const { broker, clock, adapter } = makeAdapter(12.5, 12.7);
+    const ref = adapter.sell({ ticker: 'AAPL', qty: 10 });
+    await flush();
+
+    // 옛 odno에서 4주를 12.5에 체결.
+    broker.fillPartial(broker.placed[0].odno, 4, 12.5);
+    await adapter.refreshFills();
+
+    // 정정 → 잔량 6주가 12.3에 접수되고 체결가 없이 전량체결.
+    adapter.setQuote(12.3, 12.5, clock.now());
+    await adapter.repriceSell();
+    broker.fillWithoutPrice(broker.amended[0].to);
+    await adapter.refreshFills();
+
+    // (4×12.5 + 6×12.3) / 10 = 12.38
+    expect(adapter.checkFilled(ref).price).toBeCloseTo((4 * 12.5 + 6 * 12.3) / 10, 8);
+  });
+
+  it('⑥ 발주가를 정할 수 없으면 throw하지 않고 발주도 하지 않은 채 FAULT를 남긴다', async () => {
+    const broker = new FakeBroker();
+    const adapter = new OrderPortAdapter({ broker, clock: fakeClock(1000) });
+    // setLimitPrice·setQuote 미호출 → 발주가 0 → 절사 함수가 throw하는 상황.
+    expect(() => adapter.sell({ ticker: 'AAPL', qty: 2 })).not.toThrow();
+    await flush();
+
+    expect(broker.placed).toHaveLength(0); // 발주 자체를 하지 않는다
+    expect(adapter.hasFault()).toBe(true);
+    expect(adapter.takeFault()?.kind).toBe('PLACE');
+  });
+
+  it('⑦ 발주가 미확보 주문은 리프라이스·체결폴링 대상에서 제외된다(유령 주문 방지)', async () => {
+    const broker = new FakeBroker();
+    const clock = fakeClock(1000);
+    const adapter = new OrderPortAdapter({ broker, clock });
+    adapter.sell({ ticker: 'AAPL', qty: 2 });
+    await flush();
+    adapter.takeFault();
+
+    adapter.setQuote(99.9, 100.1, clock.now());
+    await adapter.repriceSell();
+    expect(broker.amended).toHaveLength(0);
+
+    // odno가 없으므로 체결 조회도 나가지 않는다.
+    const before = broker.fetchFillsCalls;
+    await adapter.refreshFills();
+    expect(broker.fetchFillsCalls).toBe(before);
+  });
+});

@@ -63,6 +63,8 @@ export interface AutoPilotManagerDeps {
   minVolumeSpikeRatio?: number;
   /** BUY 체결강도 게이트(STRN, 0=끔) — FeedSlot detector로 그대로 흘려보낸다. */
   minStrength?: number;
+  /** 거래 수수료율(소수·편도, 0=끔) — AutoPilot으로 그대로 흘려보낸다. */
+  feeRate?: number;
   pollIntervalMs?: number;
   /** 매도 리프라이스 주기(ms, 기본 1000) — AutoPilot으로 그대로 흘려보낸다. */
   repriceIntervalMs?: number;
@@ -127,6 +129,7 @@ export class AutoPilotManager {
       clock: deps.clock,
       scheduler,
       storage: deps.storage,
+      feeRate: deps.feeRate,
       pollIntervalMs: deps.pollIntervalMs,
       repriceIntervalMs: deps.repriceIntervalMs,
       reselectIntervalMs: deps.reselectIntervalMs,

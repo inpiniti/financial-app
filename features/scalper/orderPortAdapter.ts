@@ -53,6 +53,14 @@ interface PendingOrder {
    * 체결량이 리셋돼 영원히 전량에 도달하지 못한다.
    */
   filledBase: number;
+  /**
+   * 이전 odno들에서 확정된 누적 체결**대금**(= Σ 수량×가격). filledBase의 금액 쌍둥이.
+   * 정정하면 가격대가 바뀌므로 이걸 들고 있어야 전량 체결가를 수량 가중평균으로 낼 수 있다.
+   *
+   * 근사 가정: 브로커의 체결가(ft_ccld_unpr3)가 해당 odno의 **평균** 체결단가라고 본다. 문서에 평균인지
+   * 마지막 체결가인지 명시가 없다 — 어긋나도 오차는 odno 내부 가격 변동폭(보통 1~2틱)에 그친다.
+   */
+  filledValueBase: number;
   /** 지금까지 관찰된 절대 누적 체결량 = filledBase + 현재 odno 관찰치. 단조 증가. */
   filledQty: number;
   /** 마지막으로 관찰된 체결단가. */
@@ -248,7 +256,7 @@ export class OrderPortAdapter implements OrderPort {
       if (p.filledQty >= p.qty) {
         p.fill = {
           filled: true,
-          price: p.lastFillPrice ?? undefined,
+          price: this.settlePrice(p),
           qty: p.filledQty,
         };
         continue;
@@ -265,11 +273,49 @@ export class OrderPortAdapter implements OrderPort {
     return true;
   }
 
+  /**
+   * 손익 계산에 쓸 체결가를 정한다.
+   *
+   * 실물 브로커는 **전량 체결 시 체결가를 주지 않는다** — "미체결 목록에서 사라짐"으로 체결을 추론하기
+   * 때문이다(createKisBroker). 그래서 대부분의 거래에 체결가가 없다.
+   *
+   * 이때 예전에는 core가 "신호 시점 틱 가격"으로 폴백했는데, 우리는 매수를 매도1호가·매도를 매수1호가에
+   * 내므로 **왕복 스프레드가 손익에서 통째로 빠졌다**(낙관 편향). 대신 **실제 접수된 지정가(orderPrice)**로
+   * 폴백하면 지정가 성질상 매수는 체결가 ≤ 발주가, 매도는 체결가 ≥ 발주가라 **오차가 항상 보수적**이고
+   * 스프레드가 손익에 들어온다.
+   *
+   * ⚠ orderPrice가 0(발주가를 정하지 못한 주문)이면 undefined를 돌려준다 — 0을 체결가로 흘리면
+   *   손익이 -진입금액이 되는 최악의 오염이 된다.
+   */
+  private settlePrice(p: PendingOrder): number | undefined {
+    // 정정을 거쳤으면 odno마다 가격대가 다르므로 수량 가중평균을 낸다.
+    // 정정이 없었으면 filledValueBase=0·filledBase=0이라 아래 식이 단순 폴백과 완전히 같은 값이 된다.
+    const tailQty = p.filledQty - p.filledBase;
+    const tailPrice = p.lastFillPrice !== null && p.lastFillPrice > 0 ? p.lastFillPrice : p.orderPrice;
+    if (tailPrice <= 0 && p.filledValueBase <= 0) return undefined;
+    const value = p.filledValueBase + Math.max(0, tailQty) * tailPrice;
+    const avg = p.filledQty > 0 ? value / p.filledQty : tailPrice;
+    return avg > 0 ? avg : undefined;
+  }
+
   private place(side: 'buy' | 'sell', req: OrderRequest): OrderRef {
     const ref: OrderRef = `${side}-${this.seq++}`;
     // 발주가를 여기서 미리 절사해 둔다 — 정정 트리거가 "실제 접수될 값"끼리 비교하게 만들고,
     // previewOrderPrice(진단 UI)도 실제 접수가와 정확히 일치하게 된다.
-    const price = roundOverseasOrderPrice(this.resolveOrderPrice(side), roundingForSide(side));
+    //
+    // ⚠ roundOverseasOrderPrice는 가격이 0 이하면 throw한다. 이 메서드는 core의 **동기** OrderPort 계약이라
+    //   여기서 예외가 새면 RunCycle.placeBuy/placeSell 호출부까지 역류한다 — 특히 stop()→placeSell 경로에서
+    //   터지면 **사용자 Stop이 통째로 실패하고 포지션이 HOLDING으로 남는다**(정지했다고 믿는데 안 됨).
+    //   그래서 여기서 삼키고 FAULT 채널로 넘긴다: 발주는 하지 않고 주문만 등록해 두면
+    //   러너의 faultBarrier()가 다음 폴에서 회수해 정상적으로 인터록에 진입한다.
+    let price = 0;
+    let priceError: unknown = null;
+    try {
+      price = roundOverseasOrderPrice(this.resolveOrderPrice(side), roundingForSide(side));
+    } catch (err) {
+      priceError = err;
+    }
+
     const p: PendingOrder = {
       ref,
       side,
@@ -282,6 +328,7 @@ export class OrderPortAdapter implements OrderPort {
       orderPrice: price,
       liveQty: req.qty,
       filledBase: 0,
+      filledValueBase: 0,
       filledQty: 0,
       lastFillPrice: null,
       amendInFlight: false,
@@ -290,6 +337,16 @@ export class OrderPortAdapter implements OrderPort {
       amendNotBefore: Number.NEGATIVE_INFINITY,
     };
     this.orders.set(ref, p);
+
+    if (priceError !== null) {
+      // odno가 영영 null이라 refreshFills의 needsPoll·findRepriceablSell에서 자동 제외된다(유령 폴링 없음).
+      p.placeError = priceError;
+      this.setFault(
+        { kind: 'PLACE', reason: '발주가를 정할 수 없어요 — 호가·체결가를 아직 못 받았어요' },
+        priceError,
+      );
+      return ref;
+    }
 
     this.broker
       .placeOrder({ side, pdno: req.ticker, qty: req.qty, price })
@@ -356,7 +413,13 @@ export class OrderPortAdapter implements OrderPort {
       });
       // ↓ await가 없는 동기 구간 — 중간 상태를 아무도 관찰할 수 없어 원자성이 자동 보장된다.
       //   filledBase를 먼저 고정해야 새 odno의 "새 주문 기준" 체결량이 절대 누적으로 이어진다.
+      //   ★ 순서 주의: 옛 odno 몫의 체결대금을 누적한 **뒤에** orderPrice를 새 값으로 덮어야 한다.
+      const tailQty = p.filledQty - p.filledBase;
+      if (tailQty > 0) p.filledValueBase += tailQty * (p.lastFillPrice ?? p.orderPrice);
       p.filledBase = p.filledQty;
+      // ★ 체결가 리셋 — 없으면 옛 주문 가격대의 체결가가 새 주문 체결가로 둔갑한다.
+      //   (새 odno가 "목록 부재→전량체결"로 확정되면 체결가가 안 오므로 옛 값이 그대로 남아버린다.)
+      p.lastFillPrice = null;
       p.odno = r.odno;
       p.orderPrice = price;
       p.liveQty = qty;

@@ -114,6 +114,18 @@ export class FakeBroker implements ScalperBroker {
     }
   }
 
+  /**
+   * 체결가 없이 전량체결 — 실물의 주된 경로를 재현한다.
+   * createKisBroker는 "미체결 목록에서 사라짐"으로 전량체결을 추론하므로 그때 filledPrice가 null이다.
+   */
+  fillWithoutPrice(odno: string): void {
+    const f = this.fills.get(odno);
+    if (f) {
+      f.filledQty = f.orderQty;
+      f.filledPrice = null;
+    }
+  }
+
   /** 부분체결 주입 — 잔량 재정정 시나리오 검증용. */
   fillPartial(odno: string, qty: number, price: number): void {
     const f = this.fills.get(odno);

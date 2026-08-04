@@ -97,6 +97,8 @@ export interface AutoPilotDeps {
   onTrade?: (record: TradeRecord) => void;
   onEvent?: (event: AutoPilotEvent) => void;
   onFault?: (fault: InstanceFault) => void;
+  /** 거래 수수료율(소수·편도, 0=끔) — 사이클 RunCycle로 넘겨 손익에서 차감한다. */
+  feeRate?: number;
   /** 체결 폴링 주기(ms, 기본 2000 — 기존 인스턴스와 동일). */
   pollIntervalMs?: number;
   /** 매도 리프라이스 주기(ms, 기본 1000). 매수1호가가 바뀐 경우에만 정정을 낸다. */
@@ -621,6 +623,7 @@ export class AutoPilot {
           qty,
           port: adapter,
           clock: this.deps.clock,
+          feeRate: this.deps.feeRate,
           onTrade: (record) => {
             this.pendingSettle = record;
             this.deps.onTrade?.(record);

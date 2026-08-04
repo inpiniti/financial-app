@@ -84,8 +84,18 @@ export interface TradeRecord {
   entryTs: number;
   exitPrice: number;
   exitTs: number;
-  /** (exitPrice - entryPrice) * qty */
+  /**
+   * **순손익** = grossPnl - fees. 마틴게일·세션 성과·오토런 수량 판정이 전부 이 값을 기준으로 한다.
+   * (수수료율이 0이면 grossPnl과 같다 — 기존 동작.)
+   */
   pnl: number;
+  /**
+   * 수수료 차감 전 손익 = (exitPrice - entryPrice) * qty.
+   * 사후 분석용 — "수수료가 없었다면?"을 되돌려 볼 수 있다. 옛 기록에는 없어 optional.
+   */
+  grossPnl?: number;
+  /** 이 사이클에 부과된 총 수수료(매수·매도 대금 합산, USD). 수수료율 0이면 0. 옛 기록에는 없어 optional. */
+  fees?: number;
   entrySnapshot: SignalSnapshot;
   /** STOP 청산 등 신호 없이 나간 경우 null. */
   exitSnapshot: SignalSnapshot | null;
@@ -104,8 +114,18 @@ export interface RunCycleOptions {
    * 옵션 시그니처는 호출부 호환을 위해 남겨 두되 값은 무시한다.
    */
   fillTimeoutMs?: number;
+  /**
+   * 거래 수수료율 — **소수**(0.0025 = 0.25%), **편도 기준**. 미지정·0이면 수수료를 반영하지 않는다(기존 동작).
+   * 매수 체결대금과 매도 체결대금에 각각 곱해 손익에서 뺀다(왕복이면 실질 두 번).
+   */
+  feeRate?: number;
   /** 사이클 종료 시 거래 기록 발행 콜백. */
   onTrade?: (record: TradeRecord) => void;
+}
+
+/** 수수료율 정리 — 유한한 양수만 유효, 그 외는 0(끔). NaN이 손익을 오염시키지 않게 막는 유일 지점. */
+function normalizeFeeRate(rate: number | undefined): number {
+  return typeof rate === 'number' && Number.isFinite(rate) && rate > 0 ? rate : 0;
 }
 
 export class RunCycle {
@@ -113,6 +133,7 @@ export class RunCycle {
   private readonly qty: number;
   private readonly port: OrderPort;
   private readonly clock: Clock;
+  private readonly feeRate: number;
   private readonly onTrade?: (record: TradeRecord) => void;
 
   private _state: CycleState = 'IDLE';
@@ -134,6 +155,7 @@ export class RunCycle {
     this.qty = options.qty;
     this.port = options.port;
     this.clock = options.clock;
+    this.feeRate = normalizeFeeRate(options.feeRate);
     this.onTrade = options.onTrade;
   }
 
@@ -287,6 +309,9 @@ export class RunCycle {
   private emitTrade(fill: FillResult): void {
     const pos = this._position!;
     const exitPrice = fill.price ?? this.pendingSnapshot?.price ?? pos.entryPrice;
+    const grossPnl = (exitPrice - pos.entryPrice) * pos.qty;
+    // 편도 요율을 매수·매도 **대금 각각**에 적용한다(증권사 과금 구조와 동일).
+    const fees = this.feeRate * (pos.entryPrice * pos.qty + exitPrice * pos.qty);
     const record: TradeRecord = {
       ticker: pos.ticker,
       qty: pos.qty,
@@ -294,7 +319,9 @@ export class RunCycle {
       entryTs: pos.entryTs,
       exitPrice,
       exitTs: this.clock.now(),
-      pnl: (exitPrice - pos.entryPrice) * pos.qty,
+      pnl: grossPnl - fees,
+      grossPnl,
+      fees,
       entrySnapshot: pos.entrySnapshot,
       exitSnapshot: this.pendingSnapshot,
       exitReason: this.exitReason,

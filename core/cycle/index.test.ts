@@ -384,3 +384,62 @@ describe('RunCycle — Stop', () => {
     expect(trades[0].exitPrice).toBe(55);
   });
 });
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 거래 수수료(2026-08-05) — pnl을 순손익으로 만든다. 미주입·0이면 기존 동작과 완전히 동일.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('RunCycle — 거래 수수료', () => {
+  /** 사이클 1회를 완주시켜 거래 기록을 얻는다(기본 진입 50 / 청산 60 / 3주). */
+  function runCycle(feeRate: number | undefined, entry = 50, exit = 60, qty = 3): TradeRecord {
+    const port = new FakePort({ autoFill: false });
+    const clock = fakeClock(0);
+    const trades: TradeRecord[] = [];
+    const cycle = new RunCycle({
+      ticker: 'AAPL',
+      qty,
+      port,
+      clock,
+      feeRate,
+      onTrade: (r) => trades.push(r),
+    });
+    cycle.start();
+    cycle.onSignal('BUY', snap(entry, 0.1, 0, 0));
+    port.fill(port.lastRef('buy'), entry, qty);
+    cycle.poll();
+    cycle.onSignal('SELL', snap(exit, -0.1, 0, 0));
+    port.fill(port.lastRef('sell'), exit, qty);
+    cycle.poll();
+    return trades[0];
+  }
+
+  it('① 수수료율을 주면 매수·매도 대금에 각각 부과해 pnl에서 뺀다', () => {
+    const r = runCycle(0.0025);
+    expect(r.grossPnl).toBe(30); // (60-50)*3
+    expect(r.fees).toBeCloseTo(0.825, 10); // 0.0025 * (50*3 + 60*3)
+    expect(r.pnl).toBeCloseTo(29.175, 10);
+  });
+
+  it('② 수수료율 미주입이면 pnl은 총손익과 같고 fees는 0이다 (기존 동작 보존)', () => {
+    const r = runCycle(undefined);
+    expect(r.pnl).toBe(30);
+    expect(r.grossPnl).toBe(30);
+    expect(r.fees).toBe(0);
+  });
+
+  it('③ 음수·NaN·무한대 수수료율은 0으로 처리한다 (NaN pnl 차단)', () => {
+    for (const bad of [-0.01, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const r = runCycle(bad);
+      expect(r.fees).toBe(0);
+      expect(r.pnl).toBe(30);
+      expect(Number.isFinite(r.pnl)).toBe(true);
+    }
+  });
+
+  it('④ 손실 사이클에서도 수수료는 손실을 키운다(부호 무관 차감)', () => {
+    const r = runCycle(0.0025, 50, 48, 2);
+    expect(r.grossPnl).toBe(-4);
+    expect(r.fees!).toBeGreaterThan(0);
+    expect(r.pnl).toBeLessThan(r.grossPnl!);
+  });
+});

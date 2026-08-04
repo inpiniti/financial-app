@@ -37,6 +37,12 @@ export interface AppSettings {
    * detector로 넘길 땐 gateThreshold()로 정리만 한다(/100 변환 없음). (2026-08-03 BUY 게이트)
    */
   buyStrengthThreshold: number;
+  /**
+   * 거래 수수료율 — **% 단위 · 편도 기준**. 기본 0(=끔, 기존 동작).
+   * 매수 체결대금과 매도 체결대금에 각각 이 비율을 곱해 손익에서 뺀다(왕복이면 실질 두 번).
+   * core로 넘길 땐 commissionRateToRatio()로 /100 변환한다(0.25% → 0.0025). (2026-08-05 실비용 손익)
+   */
+  commissionRatePct: number;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -48,6 +54,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   sellMomentumThresholdPct: 0.005,
   buyVolumeSpikeRatio: 0,
   buyStrengthThreshold: 0,
+  commissionRatePct: 0,
 };
 
 /** 설정의 % 값을 detector가 쓰는 상대 기울기 소수로 변환한다(0.01% → 0.0001). 음수·비정상은 0(끔)으로 처리. */
@@ -60,6 +67,15 @@ export function momentumThresholdToRatio(pct: number): number {
 export function gateThreshold(value: number): number {
   if (!Number.isFinite(value) || value <= 0) return 0;
   return value;
+}
+
+/**
+ * 수수료율 %를 core가 쓰는 소수로 변환한다(0.25% → 0.0025). 음수·비정상은 0(끔).
+ * momentumThresholdToRatio와 식은 같지만 의미가 달라 별도 함수로 둔다(문턱 vs 비용).
+ */
+export function commissionRateToRatio(pct: number): number {
+  if (!Number.isFinite(pct) || pct <= 0) return 0;
+  return pct / 100;
 }
 
 /**
