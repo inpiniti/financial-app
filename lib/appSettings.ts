@@ -62,6 +62,20 @@ export function gateThreshold(value: number): number {
   return value;
 }
 
+/**
+ * 설정 슬라이더 값을 스텝 격자에 붙이고 범위 안으로 가둔다.
+ *
+ * ⚠ 격자는 **최솟값 기준**으로 잡는다. 0에서 세면(`Math.round(v/step)*step`) 최솟값이 격자 위에 없을 때
+ * 엉뚱한 값이 나온다 — 버퍼(min 7 · step 2)에서 7이 8로, 51이 52로 튀어 "홀수만" 규칙이 깨졌다(실제 버그).
+ * 부동소수 오차(0.015000000002 등)는 step 자릿수로 절사해 없앤다.
+ */
+export function snapToStep(value: number, min: number, max: number, step: number): number {
+  if (!Number.isFinite(value)) return min;
+  const decimals = (String(step).split('.')[1] ?? '').length;
+  const snapped = min + Math.round((value - min) / step) * step;
+  return Number(Math.min(max, Math.max(min, snapped)).toFixed(decimals));
+}
+
 export async function loadAppSettings(): Promise<AppSettings> {
   const raw = await AsyncStorage.getItem(STORAGE_KEY);
   if (!raw) return DEFAULT_APP_SETTINGS;

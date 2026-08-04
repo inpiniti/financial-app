@@ -10,7 +10,12 @@ import { Panel } from '../components/Panel';
 import { getAccessToken } from '../kis/token';
 import { secureTokenStorage } from '../lib/secureTokenStorage';
 import { formatAccountNo, loadKisSettings, parseAccountNo, saveKisSettings } from '../lib/kisSettings';
-import { DEFAULT_APP_SETTINGS, loadAppSettings, saveAppSettings } from '../lib/appSettings';
+import { DEFAULT_APP_SETTINGS, loadAppSettings, saveAppSettings, snapToStep } from '../lib/appSettings';
+
+/** 버퍼 슬라이더 격자 — 최소 7 · 2칸 간격이라 항상 홀수만 나온다(SG 윈도 요건). */
+const BUFFER_MIN = 7;
+const BUFFER_MAX = 51;
+const BUFFER_STEP = 2;
 
 type TokenStatus =
   | { kind: 'idle' }
@@ -32,11 +37,6 @@ function formatHHmm(epochMs: number): string {
   return `${hh}:${mm}`;
 }
 
-/** 슬라이더 값이 부동소수 오차(0.015000000002 등) 없이 스텝 격자에 붙게 반올림한다. */
-function snapToStep(value: number, step: number): number {
-  const decimals = (String(step).split('.')[1] ?? '').length;
-  return Number((Math.round(value / step) * step).toFixed(decimals));
-}
 
 /**
  * 값 조절 슬라이더 한 벌 — 라벨 + 현재 값 + 슬라이더 + 양끝 범위 + 안내 문구.
@@ -64,7 +64,7 @@ function SettingSlider(props: {
       </View>
       <Slider
         value={props.value}
-        onValueChange={(v) => props.onChange(snapToStep(v, props.step))}
+        onValueChange={(v) => props.onChange(snapToStep(v, props.min, props.max, props.step))}
         minimumValue={props.min}
         maximumValue={props.max}
         step={props.step}
@@ -127,7 +127,9 @@ export default function SettingsScreen() {
       }
       setOrderQty(String(appSettings.orderQty));
       setChunkSeconds(appSettings.chunkSeconds);
-      setBufferSize(appSettings.bufferSize);
+      // 격자 밖(짝수) 값이 저장돼 있을 수 있다 — 예전 스냅 버그의 잔재. 표시와 실제를 일치시키려 격자로 맞춘다.
+      // (Resampler가 어차피 홀수로 올림하므로 실제 동작은 늘 홀수였고, 화면 표시만 어긋나 있었다.)
+      setBufferSize(snapToStep(appSettings.bufferSize, BUFFER_MIN, BUFFER_MAX, BUFFER_STEP));
       setMomentumThresholdPct(appSettings.momentumThresholdPct);
       setSellMomentumThresholdPct(appSettings.sellMomentumThresholdPct);
       setBuyVolumeSpikeRatio(appSettings.buyVolumeSpikeRatio);
@@ -311,9 +313,9 @@ export default function SettingsScreen() {
                   label="버퍼 크기 (칸)"
                   value={bufferSize}
                   onChange={setBufferSize}
-                  min={7}
-                  max={51}
-                  step={2}
+                  min={BUFFER_MIN}
+                  max={BUFFER_MAX}
+                  step={BUFFER_STEP}
                   formatValue={(v) => `${v}칸`}
                   helper="변곡점을 볼 때 함께 보는 청크 개수예요. 홀수만 고를 수 있어요 — 권장 15~31, 클수록 안정적이지만 신호가 늦어요."
                 />
