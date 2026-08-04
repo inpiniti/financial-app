@@ -43,6 +43,12 @@ export interface AppSettings {
    * core로 넘길 땐 commissionRateToRatio()로 /100 변환한다(0.25% → 0.0025). (2026-08-05 실비용 손익)
    */
   commissionRatePct: number;
+  /**
+   * 매수 미체결 자동 취소까지의 대기 — **초 단위**. 기본 0(=끔, 체결까지 무한 대기).
+   * 켜면 이 시간 안에 안 붙은 매수를 취소하고 다시 변곡점을 기다린다. 일부라도 체결됐으면 취소하지 않는다.
+   * ⚠ 과거 실계좌 사고로 삭제됐던 기능의 매수 한정 재도입이라 기본값은 끔이다. (2026-08-06)
+   */
+  buyCancelAfterSec: number;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -55,6 +61,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   buyVolumeSpikeRatio: 0,
   buyStrengthThreshold: 0,
   commissionRatePct: 0,
+  buyCancelAfterSec: 0,
 };
 
 /** 설정의 % 값을 detector가 쓰는 상대 기울기 소수로 변환한다(0.01% → 0.0001). 음수·비정상은 0(끔)으로 처리. */
@@ -76,6 +83,12 @@ export function gateThreshold(value: number): number {
 export function commissionRateToRatio(pct: number): number {
   if (!Number.isFinite(pct) || pct <= 0) return 0;
   return pct / 100;
+}
+
+/** 매수 미체결 취소 대기(초)를 ms로 변환한다. 음수·비정상은 0(끔). */
+export function buyCancelAfterToMs(sec: number): number {
+  if (!Number.isFinite(sec) || sec <= 0) return 0;
+  return sec * 1000;
 }
 
 /**

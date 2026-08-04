@@ -12,6 +12,7 @@ import { RunCycle, type SignalSnapshot, type TradeRecord } from '../../core/cycl
 import { OrderPortAdapter } from './orderPortAdapter';
 import type {
   AdapterFault,
+  AbandonNote,
   AutoRunNote,
   ClockLike,
   InstanceFault,
@@ -28,6 +29,11 @@ import type {
  *  · 벌었으면(pnl > 0): 절반(반올림), 최소 1.
  *  · 잃었으면(pnl <= 0): 2배.
  */
+/** 연속 자동 포기가 이 횟수에 닿으면 매수를 잠시 쉰다(톱니장에서 발주·취소가 무한 반복되는 걸 막는다). */
+export const ABANDON_COOLDOWN_STREAK = 3;
+/** 쿨다운 길이(ms). detector 구조상 재매수 최소 간격이 이미 6~9초라, 1분이면 한 국면을 넘긴다. */
+export const ABANDON_COOLDOWN_MS = 60_000;
+
 export function nextAutoRunQty(qty: number, pnl: number): number {
   if (pnl > 0) return Math.max(1, Math.round(qty / 2));
   return qty * 2;
@@ -45,6 +51,12 @@ export interface ScalperInstanceDeps {
    * 호가가 잠잠하면 네트워크 호출이 0회다(유량 절감).
    */
   repriceIntervalMs?: number;
+  /**
+   * 매수 미체결 자동 취소까지의 대기(ms). **0이면 끔** — 체결될 때까지 무한 대기(기존 동작).
+   * 켜면 이 시간 뒤 취소를 시도하고, 취소가 확정되고 0주 체결이 확인되면 감시 모드로 돌아간다.
+   * 부분체결 상태면 취소하지 않는다. (⚠ 과거 사고로 삭제됐던 기능의 매수 한정 재도입 — 기본 끔)
+   */
+  buyCancelAfterMs?: number;
   /** 리샘플 청크 초(기본 3). */
   chunkSeconds?: number;
   /** SG 버퍼 크기(홀수, 기본 31). */
@@ -108,6 +120,7 @@ export class ScalperInstance {
   private readonly scheduler: SchedulerLike;
   private readonly pollIntervalMs: number;
   private readonly repriceIntervalMs: number;
+  private readonly buyCancelAfterMs: number;
   private readonly fillTimeoutMs?: number;
   /** setQty()가 RunCycle을 재생성하므로 인스턴스 필드로 보관해야 두 경로 모두에 전달된다. */
   private readonly feeRate?: number;
@@ -155,6 +168,17 @@ export class ScalperInstance {
   private repriceTimer: unknown = null;
   /** 리프라이스 틱 재진입 방지 — setInterval은 async를 await하지 않는다. */
   private repriceTicking = false;
+  // ── 매수 미체결 자동 포기(2026-08-06) ──
+  /** BUYING 진입 시각(경과 판정 기점). BUYING을 벗어나면 null. */
+  private buyingSince: number | null = null;
+  /** 이 주문에 자동 포기를 이미 요청했는가. */
+  private abandonRequested = false;
+  /** 연속 자동 포기 횟수 — 체결 성공 시 0으로 리셋된다. */
+  private abandonStreak = 0;
+  /** 쿨다운 만료 시각. null이면 쿨다운 아님. */
+  private cooldownUntil: number | null = null;
+  /** 최근 자동 포기 안내(카드 표시용). */
+  private lastAbandon: AbandonNote | null = null;
 
   // 안전 인터록 상태 — set이면 자동매매가 동결됐고 카드에 빨간 경고가 뜬다. stop()으로만 해제.
   private faulted: InstanceFault | null = null;
@@ -178,6 +202,7 @@ export class ScalperInstance {
     this.scheduler = deps.scheduler ?? defaultScheduler;
     this.pollIntervalMs = deps.pollIntervalMs ?? 2000;
     this.repriceIntervalMs = deps.repriceIntervalMs ?? 1000;
+    this.buyCancelAfterMs = deps.buyCancelAfterMs ?? 0;
     this.fillTimeoutMs = deps.fillTimeoutMs;
     this.feeRate = deps.feeRate;
     this.bufferStaleMs = deps.bufferStaleMs ?? 30000;
@@ -261,6 +286,7 @@ export class ScalperInstance {
       autoRun: this.autoRunEnabled,
       martingale: this.martingaleEnabled,
       lastAutoRun: this.lastAutoRun,
+      lastAbandon: this.lastAbandon,
     };
   }
 
@@ -320,6 +346,9 @@ export class ScalperInstance {
     this.qty = qty;
     this.config.qty = qty;
     this.cycle = this.buildCycle(qty);
+    // RunCycle이 새로 태어나므로 자동 포기 추적도 함께 리셋한다(옛 주문 기준 경과가 남지 않게).
+    this.buyingSince = null;
+    this.abandonRequested = false;
     // 새 RunCycle은 IDLE로 태어난다 — 원래 FAULT였다면 그대로 유지해 카드 빨간 경고·버튼 상태를 보존한다
     // (this.faulted 로컬 플래그는 이미 set 상태이므로 start()는 여전히 무시되고, stop()으로만 빠져나간다).
     if (state === 'FAULT') this.cycle.fault();
@@ -513,6 +542,8 @@ export class ScalperInstance {
   private handleSignal(signal: Signal, snapshot: SignalSnapshot): void {
     if (this.faulted) return;
     if (signal === 'BUY' && this.cycle.state === 'WATCH_BUY') {
+      // 연속 취소가 이어져 쉬는 중이면 이번 신호는 넘긴다 — Run·감시·수치 표시는 그대로 살아 있다.
+      if (this.inAbandonCooldown()) return;
       void this.preflightAndBuy(snapshot);
       return;
     }
@@ -538,6 +569,9 @@ export class ScalperInstance {
     // 프리플라이트 대기 사이에 상태가 변했으면(정지 등) 발주하지 않는다.
     if (this.cycle.state !== 'WATCH_BUY') return;
     this.cycle.onSignal('BUY', snapshot);
+    // 자동 포기 경과의 기점 — 발주 순간이 정확한 기준이다.
+    this.buyingSince = this.clock.now();
+    this.abandonRequested = false;
     this.reconcileEmit(true);
   }
 
@@ -580,22 +614,117 @@ export class ScalperInstance {
    * 사용자 Stop 이후에도 SELLING이면 계속한다(그 매도가 곧 청산이라 빨리 붙어야 한다).
    * FAULT면 즉시 멈춘다 — cycle.fault()가 pendingRef를 버려 정정 대상 자체가 사라진다.
    */
+  /**
+   * 빠른 틱(기본 1초) — 상태에 따라 하나만 한다.
+   *  · SELLING → 매도 리프라이스(매수1호가 추종)
+   *  · BUYING  → 매수 미체결 경과 판정 → 자동 포기 요청(설정을 켰을 때만)
+   *
+   * 새 타이머를 만들지 않고 이 틱을 겸용하는 이유: e2e 하네스가 인스턴스당 타이머 2개(폴·빠른 틱)를
+   * 가정해 홀수 인덱스만 발화시킨다(`advanceAndReprice`의 stride 2). 3개로 늘리면 그 가정이 깨진다.
+   */
   private async repriceTick(): Promise<void> {
     if (this.repriceTicking) return; // setInterval 재진입 방지
     if (this.faulted || this.adapter.hasFault()) return;
-    if (this.cycle.state !== 'SELLING') return;
-    this.repriceTicking = true;
-    try {
-      await this.adapter.repriceSell();
-    } finally {
-      this.repriceTicking = false;
+    const state = this.cycle.state;
+    if (state === 'SELLING') {
+      this.repriceTicking = true;
+      try {
+        await this.adapter.repriceSell();
+      } finally {
+        this.repriceTicking = false;
+      }
+      return;
     }
+    if (state === 'BUYING') {
+      this.repriceTicking = true;
+      try {
+        await this.tryAbandonBuy();
+      } finally {
+        this.repriceTicking = false;
+      }
+      return;
+    }
+    this.buyingSince = null; // BUYING을 벗어났으면 경과 시계를 리셋한다
+  }
+
+  /**
+   * 매수 미체결 자동 포기 판정 1회.
+   *
+   * 요청 게이트가 3겹이다 — 발주 응답(odno) 확보 · 취소 미요청 · **관찰 체결량 0**.
+   * 특히 마지막이 사용자 확정 정책이다: 일부라도 체결됐으면 취소하지 않고 기존처럼 기다린다
+   * (부분체결 상태에서 취소가 성공하면 계좌엔 주식이 남는데 앱은 포지션 없음으로 믿게 된다).
+   */
+  private async tryAbandonBuy(): Promise<void> {
+    if (this.buyCancelAfterMs <= 0) return; // 설정 꺼짐 = 완전 무동작(기존 무한 대기)
+    const probe = this.adapter.buyProbe();
+    if (!probe) return;
+
+    if (this.abandonRequested) {
+      // 이미 요청함 — 결과를 지켜본다.
+      if (probe.verified && probe.cancelState === 'confirmed' && probe.filledQty > 0) {
+        // 취소는 확정됐는데 부분체결이 드러났다 → 되돌리면 유령 포지션이 된다. 사람을 부른다.
+        this.enterFault({
+          kind: 'CANCEL',
+          reason: '부분체결 상태에서 취소가 확정됐어요 — 계좌를 확인해 주세요',
+        });
+        return;
+      }
+      // 취소가 확정됐으면 폴을 한 번 킥해 복귀 지연(최대 폴 주기)을 줄인다.
+      if (probe.cancelState === 'confirmed') await this.pollCycle();
+      return;
+    }
+
+    if (this.buyingSince === null) {
+      this.buyingSince = this.clock.now(); // 복원 경로 방어 — 기점이 없으면 지금부터 센다
+      return;
+    }
+    if (this.clock.now() - this.buyingSince < this.buyCancelAfterMs) return;
+    if (this.inAbandonCooldown()) return;
+    if (!probe.hasOdno) return; // 발주 응답 대기 중 — 겹치면 가장 위험한 레이스라 다음 틱에
+    if (probe.cancelState !== 'none') return; // Stop 취소가 진행 중 — 절대 끼어들지 않는다
+    if (probe.filledQty > 0) return; // ★ 부분체결이면 취소하지 않는다(사용자 확정)
+    if (this.cycle.abandonBuy()) this.abandonRequested = true;
+  }
+
+  /** 연속 취소가 상한에 닿아 매수를 쉬는 중인가. */
+  private inAbandonCooldown(): boolean {
+    return this.cooldownUntil !== null && this.clock.now() < this.cooldownUntil;
+  }
+
+  /** 자동 포기가 성사됐다(BUYING → WATCH_BUY). 카운터를 올리고 상한에 닿으면 쉰다. */
+  private noteAbandon(): void {
+    this.abandonRequested = false;
+    this.buyingSince = null;
+    this.abandonStreak += 1;
+    const at = this.clock.now();
+    if (this.abandonStreak >= ABANDON_COOLDOWN_STREAK) {
+      this.cooldownUntil = at + ABANDON_COOLDOWN_MS;
+      this.lastAbandon = {
+        at,
+        text: `취소가 ${this.abandonStreak}번 이어져서 ${ABANDON_COOLDOWN_MS / 1000}초만 쉬어요`,
+      };
+    } else {
+      this.lastAbandon = { at, text: '안 붙어서 취소하고 다시 감시해요' };
+    }
+  }
+
+  /** 체결에 성공했다 — 연속 취소 카운터와 쿨다운을 푼다. */
+  private resetAbandonStreak(): void {
+    this.abandonRequested = false;
+    this.buyingSince = null;
+    this.abandonStreak = 0;
+    this.cooldownUntil = null;
   }
 
   private reconcileEmit(signalFired: boolean): void {
     const state = this.cycle.state;
     const stateChanged = state !== this.prevState;
+    const prev = this.prevState;
     this.prevState = state;
+
+    // 매수 미체결 자동 포기 성사/체결 성공을 여기서 관측한다(상태 전이를 계산하는 유일 지점).
+    if (prev === 'BUYING' && state === 'WATCH_BUY') this.noteAbandon();
+    else if (prev === 'BUYING' && state === 'HOLDING') this.resetAbandonStreak();
 
     // 사이클 종료 시 폴 타이머를 끈다(배터리).
     if (state === 'DONE') this.stopTimer();

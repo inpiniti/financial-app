@@ -1005,3 +1005,105 @@ describe('ScalperInstance — 수수료 반영 시 행동 변화', () => {
     expect(notes[0].qty).toBe(8); // 손실 → 수량 2배
   });
 });
+
+describe('ScalperInstance — 매수 미체결 자동 취소', () => {
+  /** BUY까지 흘려 BUYING 상태로 만든다(체결은 시키지 않는다). */
+  async function toBuying(h: Harness): Promise<void> {
+    h.inst.pushQuote(3.9, 4.1, h.clock.now());
+    h.inst.start();
+    let ts = 0;
+    for (const p of V) {
+      h.inst.pushTick(p, ts);
+      ts += 1000;
+      await flush();
+      await h.inst.pollCycle();
+      await flush();
+      if (h.inst.state === 'BUYING') return;
+    }
+  }
+
+  /** 빠른 틱(fired[1]) 1회 발화 — 리프라이스/자동 포기를 겸용하는 타이머다. */
+  const fastTick = async (h: Harness) => {
+    h.scheduler.fired[1]?.();
+    await flush();
+  };
+
+  it('① 설정이 꺼져 있으면(기본) 아무리 지나도 취소하지 않는다', async () => {
+    const h = makeInstance({ autoFill: false }); // buyCancelAfterMs 미지정 = 0
+    await toBuying(h);
+    expect(h.inst.state).toBe('BUYING');
+
+    for (let i = 0; i < 10; i++) {
+      h.clock.advance(5000);
+      await fastTick(h);
+      await h.inst.pollCycle();
+      await flush();
+    }
+    expect(h.broker.canceled).toHaveLength(0);
+    expect(h.inst.state).toBe('BUYING');
+  });
+
+  it('② 대기 시간이 지나면 취소하고, 확정되면 감시 모드로 돌아간다', async () => {
+    const h = makeInstance({ autoFill: false, extraDeps: { buyCancelAfterMs: 3000 } });
+    await toBuying(h);
+
+    h.clock.advance(3500);
+    await fastTick(h); // 취소 요청
+    expect(h.broker.canceled).toHaveLength(1);
+    expect(h.inst.state).toBe('BUYING'); // 아직 확정 전이라 되돌리지 않는다
+
+    await h.inst.pollCycle(); // 취소 확정 관찰 → 사후 검증 → 복귀
+    await flush();
+    await h.inst.pollCycle();
+    await flush();
+    expect(h.inst.state).toBe('WATCH_BUY');
+  });
+
+  it('③ [사고 재현] 부분체결 상태면 취소하지 않는다', async () => {
+    const h = makeInstance({ autoFill: false, extraDeps: { buyCancelAfterMs: 3000 } });
+    await toBuying(h);
+
+    // 2주 중 1주만 체결된 상태를 만든다.
+    const buy = h.broker.placed.find((o) => o.side === 'buy')!;
+    h.broker.fillPartial(buy.odno, 1, buy.price);
+    await h.inst.pollCycle();
+    await flush();
+
+    h.clock.advance(5000);
+    await fastTick(h);
+    expect(h.broker.canceled).toHaveLength(0); // 일부라도 붙었으면 그대로 기다린다
+    expect(h.inst.state).toBe('BUYING');
+  });
+
+  it('④ 복귀해도 타이머가 살아 있다(DONE을 거치지 않는다)', async () => {
+    const h = makeInstance({ autoFill: false, extraDeps: { buyCancelAfterMs: 3000 } });
+    await toBuying(h);
+    const timersBefore = h.scheduler.fired.length;
+
+    h.clock.advance(3500);
+    await fastTick(h);
+    await h.inst.pollCycle();
+    await flush();
+    await h.inst.pollCycle();
+    await flush();
+
+    expect(h.inst.state).toBe('WATCH_BUY');
+    expect(h.scheduler.fired.length).toBe(timersBefore); // 타이머를 껐다 켜지 않았다
+  });
+
+  it('⑤ 자동 취소 경로는 stop()을 부르지 않는다 — FAULT가 임의 해제되지 않는다', async () => {
+    const h = makeInstance({ autoFill: false, extraDeps: { buyCancelAfterMs: 3000 } });
+    await toBuying(h);
+
+    h.broker.failFetchFills = true; // 체결 확인 실패 → FAULT
+    await h.inst.pollCycle();
+    await flush();
+    expect(h.inst.getView().lastFault).not.toBeNull();
+
+    h.clock.advance(5000);
+    await fastTick(h);
+    // FAULT는 그대로 유지돼야 한다(stop()을 불렀다면 풀렸을 것).
+    expect(h.inst.getView().lastFault).not.toBeNull();
+    expect(h.broker.canceled).toHaveLength(0);
+  });
+});

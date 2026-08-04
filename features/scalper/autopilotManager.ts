@@ -68,6 +68,8 @@ export interface AutoPilotManagerDeps {
   pollIntervalMs?: number;
   /** 매도 리프라이스 주기(ms, 기본 1000) — AutoPilot으로 그대로 흘려보낸다. */
   repriceIntervalMs?: number;
+  /** 매수 미체결 자동 취소 대기(ms, 0=끔) — AutoPilot으로 그대로 흘려보낸다. */
+  buyCancelAfterMs?: number;
   reselectIntervalMs?: number;
   watchlistPollIntervalMs?: number;
   onError?: (err: unknown) => void;
@@ -132,6 +134,7 @@ export class AutoPilotManager {
       feeRate: deps.feeRate,
       pollIntervalMs: deps.pollIntervalMs,
       repriceIntervalMs: deps.repriceIntervalMs,
+      buyCancelAfterMs: deps.buyCancelAfterMs,
       reselectIntervalMs: deps.reselectIntervalMs,
       onTrade: (record) => {
         void appendTradeRecord(deps.storage, AUTOPILOT_TRADE_ID, record).catch((err) =>

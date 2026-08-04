@@ -40,7 +40,22 @@ export interface FillResult {
   filled: boolean;
   price?: number;
   qty?: number;
+  /**
+   * **관찰이 확정된** 누적 체결 수량(부분체결 포함).
+   *
+   * ⚠ `undefined`는 "아직 확정하지 못했다"이지 0이 아니다. 자동 취소 복귀(abandonBuy) 경로는
+   * 이 값이 **명시적으로 0**일 때만 미체결로 단정한다(fail-closed) — 모르는 걸 0으로 취급했다가
+   * 부분체결분이 계좌에 남는 유령 포지션이 생긴 것이 과거 사고의 핵심이었다.
+   */
+  partialQty?: number;
 }
+
+/**
+ * 취소를 요청한 이유. 포트 구현이 거절 처리 정책을 경로별로 나눌 수 있게 한다.
+ *  'stop'    — 사용자 Stop. 거절되면 즉시 FAULT(기존 동작).
+ *  'abandon' — 매수 미체결 자동 포기. "취소 중 체결" 레이스가 잦아 유예 후 FAULT.
+ */
+export type CancelReason = 'stop' | 'abandon';
 
 /**
  * 취소 요청의 진행 상태(레이스 방지의 핵심).
@@ -55,7 +70,8 @@ export type CancelState = 'none' | 'pending' | 'confirmed' | 'rejected';
 export interface OrderPort {
   buy(req: OrderRequest): OrderRef;
   sell(req: OrderRequest): OrderRef;
-  cancel(ref: OrderRef): void;
+  /** 취소 요청. reason 미지정은 'stop'(사용자 Stop) — 기존 구현체는 인자를 무시해도 계약을 만족한다. */
+  cancel(ref: OrderRef, reason?: CancelReason): void;
   checkFilled(ref: OrderRef): FillResult;
   /**
    * 취소 요청의 확정 상태를 동기로 반환한다. RunCycle은 타임아웃으로 취소를 지시한 뒤,
@@ -112,6 +128,10 @@ export interface RunCycleOptions {
    * 실기기에서 "취소가 KIS에 거절됐는데 주문은 미체결로 살아있는" 오작동이 재현돼 자동 타임아웃 취소를 없앴다.
    * 이제 BUYING/SELLING은 체결될 때까지 무한정 대기하며, 취소는 오직 사용자 Stop 경로에서만 시도한다.
    * 옵션 시그니처는 호출부 호환을 위해 남겨 두되 값은 무시한다.
+   *
+   * 후속(2026-08-06): 매수 한정 자동 취소가 `abandonBuy()` + 러너의 `buyCancelAfterMs`로 **다른 이름**으로
+   * 재도입됐다(이 옵션과 무관·기본 끔). 되돌리는 경로에 "취소 확정 + 0주 재확인 + 부분체결 제외"를 요구해
+   * 위 사고의 원인(취소 결과를 확인하지 않고 되돌림)을 구조적으로 막는다.
    */
   fillTimeoutMs?: number;
   /**
@@ -149,6 +169,18 @@ export class RunCycle {
    * 그 사이 늦은 체결이 관찰되면 정상 보유 전환(HOLDING). 취소 거절은 러너(ScalperInstance)가 FAULT로 승격한다.
    */
   private awaitingCancel = false;
+  /**
+   * 매수 미체결 자동 포기(abandonBuy)를 지시하고 결과를 기다리는 중인가. awaitingCancel(Stop)과 **의도적으로 분리**한다.
+   *  · Stop    → 취소 성공 확인 시 DONE (사용자가 멈춘 것)
+   *  · abandon → 취소 성공 **그리고** 0주 체결 확정 시 WATCH_BUY (감시 복귀)
+   * 둘이 겹치면 Stop이 이긴다(사용자 의도 우선).
+   */
+  private abandoning = false;
+  /**
+   * 이 주문에 취소를 이미 한 번 요청했는가 — **재취소 발사 금지**.
+   * 취소를 반복해서 쏘는 동작이 과거 사고에서 오판을 증폭시킨 요인이었다.
+   */
+  private cancelRequested = false;
 
   constructor(options: RunCycleOptions) {
     this.ticker = options.ticker;
@@ -173,6 +205,24 @@ export class RunCycle {
     this._state = 'WATCH_BUY';
     this._position = null;
     this.clearPending();
+  }
+
+  /**
+   * 미체결 매수 포기 요청 — 러너(타이머)가 "N초 안 붙었고 관찰 체결량 0"을 확인한 뒤에만 부른다.
+   *
+   * **여기서 상태를 바꾸지 않는다.** 취소 성공(confirmed)과 0주 확정이 폴에서 모두 확인돼야 WATCH_BUY로 돌아간다.
+   * 과거 사고("취소했으니 미체결이 맞다"고 단정하고 되돌린 것)를 구조적으로 막는 지점이다.
+   *
+   * @returns 요청이 접수되면 true(러너의 이벤트·카운터용).
+   */
+  abandonBuy(): boolean {
+    if (this._state !== 'BUYING') return false;
+    if (this.cancelRequested) return false; // Stop 취소 진행 중이거나 이미 요청함 — 재발사 금지
+    if (!this.pendingRef) return false;
+    this.port.cancel(this.pendingRef, 'abandon');
+    this.cancelRequested = true;
+    this.abandoning = true;
+    return true;
   }
 
   /** 변곡점 신호 수신. 상태에 맞는 신호만 반응한다. */
@@ -223,7 +273,10 @@ export class RunCycle {
         //  · 그 사이 늦은 체결 관찰 → HOLDING (실제 매수됨 — 계좌에서 확인).
         //  · 취소 거절(rejected) → 러너가 FAULT로 승격(미체결 주문이 계좌에 남아있을 수 있음).
         if (this.pendingRef) {
-          this.port.cancel(this.pendingRef);
+          // 자동 포기가 이미 취소를 쐈다면 재발사하지 않는다 — 재취소 반복은 과거 사고의 증폭 요인.
+          // 다만 awaitingCancel은 세운다: Stop이 abandon을 이겨 DONE으로 마감된다(사용자 의도 우선).
+          if (!this.cancelRequested) this.port.cancel(this.pendingRef, 'stop');
+          this.cancelRequested = true;
           this.awaitingCancel = true;
         } else {
           this.clearPending();
@@ -249,6 +302,8 @@ export class RunCycle {
     this.pendingRef = this.port.buy({ ticker: this.ticker, qty: this.qty });
     this.pendingSnapshot = snapshot;
     this.awaitingCancel = false;
+    this.abandoning = false;
+    this.cancelRequested = false;
     this._state = 'BUYING';
   }
 
@@ -257,6 +312,8 @@ export class RunCycle {
     this.pendingSnapshot = snapshot;
     this.exitReason = reason;
     this.awaitingCancel = false;
+    this.abandoning = false;
+    this.cancelRequested = false;
     this._state = 'SELLING';
   }
 
@@ -273,9 +330,15 @@ export class RunCycle {
     this._state = 'HOLDING';
   }
 
+  /**
+   * 매수 체결 대기 폴. **분기 순서가 곧 안전 계약**이다 — 위에서부터 우선순위가 높다.
+   *  ① 체결 확인이 항상 최우선(늦은 체결 구제)
+   *  ② Stop 취소 확정 → DONE (사용자 의도가 자동 포기보다 우선)
+   *  ③ 자동 포기 확정 + 0주 확정 → WATCH_BUY (감시 복귀)
+   * 어디에도 해당하지 않으면 아무것도 하지 않는다 = BUYING 유지(무한 대기, 기본 동작).
+   */
   private pollBuying(): void {
-    // 체결 확인이 먼저다 — 러너가 poll 직전 fetchFills로 캐시를 갱신하므로 이 값은 최신이다.
-    // 타임아웃 자동취소는 없다 — 체결될 때까지 무한 대기한다. 취소는 오직 Stop 경로(awaitingCancel)에서만.
+    // 러너가 poll 직전 fetchFills로 캐시를 갱신하므로 이 값은 최신이다.
     const fill = this.port.checkFilled(this.pendingRef!);
     if (fill.filled) {
       this.enterHolding(fill);
@@ -288,6 +351,18 @@ export class RunCycle {
         this.clearPending();
         this._state = 'DONE'; // Stop 취소 성공 → 매수 없이 종료
       }
+      return;
+    }
+    if (this.abandoning) {
+      // 취소가 확정되기 전에는 절대 되돌리지 않는다(과거 사고: 취소 실패를 무시하고 되돌려 재매수 반복).
+      if (this.port.cancelState(this.pendingRef!) !== 'confirmed') return;
+      // ★ 엄격 비교. undefined(= 관찰 미확정)나 >0(부분체결)이면 되돌리지 않는다 — fail-closed.
+      //   되돌리지 못한 채 부분체결이 드러나면 러너가 FAULT로 승격해 사람을 부른다.
+      if (fill.partialQty !== 0) return;
+      this.clearPending();
+      // DONE을 스치지 않는다 — 러너의 타이머·리샘플 버퍼·detector(prevSlope)가 전부 보존되고,
+      // 그 덕에 재매수에 최소 2~3청크의 구조적 간격이 그대로 유지된다.
+      this._state = 'WATCH_BUY';
       return;
     }
     // 그 외에는 아무것도 하지 않는다 — 체결이 올 때까지 BUYING 유지(무한 대기).
@@ -334,5 +409,7 @@ export class RunCycle {
     this.pendingSnapshot = null;
     this.exitReason = 'SELL_SIGNAL';
     this.awaitingCancel = false;
+    this.abandoning = false;
+    this.cancelRequested = false;
   }
 }

@@ -12,7 +12,14 @@
 //   - checkFilled: 폴러(refreshFills)가 주문체결내역 폴링 결과로 갱신해 둔 캐시를 "동기"로 읽어 반환한다.
 //     이 값이 true가 되기 전까지 RunCycle은 미체결로 보고 무한 대기한다(자동 타임아웃 취소 없음). 취소는 오직 Stop 경로.
 import { decideReprice } from '../../core/reprice';
-import type { CancelState, FillResult, OrderPort, OrderRef, OrderRequest } from '../../core/cycle';
+import type {
+  CancelReason,
+  CancelState,
+  FillResult,
+  OrderPort,
+  OrderRef,
+  OrderRequest,
+} from '../../core/cycle';
 import { roundOverseasOrderPrice, roundingForSide } from '../../kis/order';
 import type { AdapterFault, ClockLike, ScalperBroker } from './types';
 
@@ -20,6 +27,12 @@ import type { AdapterFault, ClockLike, ScalperBroker } from './types';
 export const AMEND_FAIL_LIMIT = 8;
 /** 정정 실패 백오프 상한(ms). kis/에 유량 제어 계층이 없어 자기방어가 필요하다. */
 export const AMEND_BACKOFF_MAX_MS = 30_000;
+/**
+ * 자동 포기 취소가 거절된 뒤 체결도 확인 안 될 때 FAULT로 올리기까지 버티는 폴 횟수(폴 2초 × 3 ≈ 6초).
+ * 2~3초 자동 취소는 "취소 요청 중 체결" 레이스가 잦아, 즉시 FAULT로 올리면 오탐이 폭증한다.
+ * 유예 동안에도 관찰은 계속되므로 늦은 체결이 오면 정상적으로 HOLDING이 된다. Stop 사유는 유예 없이 즉시 FAULT.
+ */
+export const ABANDON_REJECT_GRACE_POLLS = 3;
 
 interface PendingOrder {
   ref: OrderRef;
@@ -73,6 +86,18 @@ interface PendingOrder {
   repriceDisabled: boolean;
   /** 실패 백오프 — 이 시각 전에는 재시도하지 않는다. */
   amendNotBefore: number;
+
+  // ── 매수 미체결 자동 포기(2026-08-06) ──
+  /** 이 취소가 어느 경로에서 왔는가. 미요청이면 null. 거절 처리 정책이 갈린다. */
+  cancelReason: CancelReason | null;
+  /**
+   * 자동 포기 취소가 'confirmed'된 **뒤** 체결내역을 최소 1회 더 조회해 잔량을 확정했는가.
+   * 이게 없으면 "취소 확정과 거의 동시에 들어온 부분체결"을 영영 관찰하지 못한 채 0주로 단정하게 된다
+   * (confirmed가 되면 그 주문은 관찰 대상에서 빠지므로) — 유령 포지션의 유일한 잔여 구멍이었다.
+   */
+  abandonVerified: boolean;
+  /** 자동 포기 취소가 거절된 뒤 체결도 확인 안 된 채 지나간 폴 횟수(FAULT 승격 유예 카운터). */
+  rejectGracePolls: number;
 }
 
 export interface OrderPortAdapterOptions {
@@ -198,17 +223,44 @@ export class OrderPortAdapter implements OrderPort {
     return this.place('sell', req);
   }
 
-  cancel(ref: OrderRef): void {
+  /** 기본 사유는 'stop' — 기본값을 'abandon'으로 두면 Stop 경로의 FAULT가 조용히 느슨해진다. */
+  cancel(ref: OrderRef, reason: CancelReason = 'stop'): void {
     const p = this.orders.get(ref);
     if (!p) return;
     p.cancelRequested = true;
+    if (p.cancelReason === null) p.cancelReason = reason; // 먼저 요청한 쪽의 사유를 보존한다
     if (p.cancelState === 'none') p.cancelState = 'pending';
     if (p.odno) this.fireCancel(p);
     // odno 미도착이면 발주 완료 콜백에서 취소한다.
   }
 
   checkFilled(ref: OrderRef): FillResult {
-    return this.orders.get(ref)?.fill ?? { filled: false };
+    const p = this.orders.get(ref);
+    if (!p) return { filled: false };
+    // 자동 포기 경로가 아니면 기존 그대로 반환한다 — 다른 경로는 partialQty를 읽지 않고,
+    // 필드를 덧붙이면 결과 형태를 단정하는 기존 계약이 바뀐다.
+    if (p.cancelReason !== 'abandon') return p.fill;
+    // 취소가 confirmed됐지만 사후 검증 폴 전이면 undefined를 준다 —
+    // core가 fail-closed로 복귀를 보류하게 해서, 취소 확정과 동시에 들어온 부분체결을 놓치지 않는다.
+    const unverified = p.cancelState === 'confirmed' && !p.abandonVerified;
+    return { ...p.fill, partialQty: unverified ? undefined : p.filledQty };
+  }
+
+  /**
+   * 자동 취소 판단 전용 읽기 스냅샷 — 진행 중(미체결·미확정) 매수 주문 1건. 없으면 null.
+   * ⚠ 판단만 한다. 상태를 바꾸지 않는다.
+   */
+  buyProbe(): { hasOdno: boolean; filledQty: number; cancelState: CancelState; verified: boolean } | null {
+    for (const p of this.orders.values()) {
+      if (p.side !== 'buy' || p.fill.filled || p.placeError) continue;
+      return {
+        hasOdno: p.odno !== null,
+        filledQty: p.filledQty,
+        cancelState: p.cancelState,
+        verified: p.abandonVerified,
+      };
+    }
+    return null;
   }
 
   cancelState(ref: OrderRef): CancelState {
@@ -225,9 +277,7 @@ export class OrderPortAdapter implements OrderPort {
     // 아직 체결/취소가 확정되지 않아 관찰이 필요한 주문이 없으면 네트워크 호출 자체를 아낀다.
     // 취소를 요청한 주문도 "취소 성공(confirmed)"이 확정되기 전까지는 늦은 체결을 잡기 위해 계속 관찰한다
     // (기존엔 cancelRequested면 바로 관찰을 끊어 늦은 체결이 영영 레코닝되지 않는 사고가 났다).
-    const needsPoll = [...this.orders.values()].some(
-      (p) => !p.fill.filled && p.cancelState !== 'confirmed' && p.odno,
-    );
+    const needsPoll = [...this.orders.values()].some(stillObserving);
     if (!needsPoll) return true;
 
     let fills;
@@ -239,8 +289,8 @@ export class OrderPortAdapter implements OrderPort {
     }
     const byOdno = new Map(fills.map((f) => [f.odno, f]));
     for (const p of this.orders.values()) {
-      if (p.fill.filled || p.cancelState === 'confirmed' || !p.odno) continue;
-      const f = byOdno.get(p.odno);
+      if (!stillObserving(p)) continue;
+      const f = byOdno.get(p.odno!);
       if (f) {
         // 부분체결 수량을 버리지 않고 절대 누적으로 보존한다.
         // (예전엔 filledQty >= qty만 보고 부분체결을 통째로 버려서, 잔량이 안 붙으면 SELLING에 갇혔다.)
@@ -261,9 +311,20 @@ export class OrderPortAdapter implements OrderPort {
         };
         continue;
       }
+      // 자동 포기 취소가 확정됐으면, 이번 조회로 잔량이 확정된 것이다 — 이 마킹 뒤에야 관찰이 끝난다.
+      if (p.cancelReason === 'abandon' && p.cancelState === 'confirmed') {
+        p.abandonVerified = true;
+        continue;
+      }
       // 취소가 거절됐는데(이미 체결 추정) 체결도 확인되지 않으면 확인 불가 → FAULT로 승격한다.
       // (취소 성공 확인 전까지 미체결로 단정하지 않는다 — 늦은 체결은 위에서 잡히고, 여기 오면 진짜 확인 불가)
       if (p.cancelState === 'rejected') {
+        // 자동 포기 경로만 유예를 준다 — "취소 요청 중 체결" 레이스가 잦아 즉시 FAULT면 오탐이 폭증한다.
+        // 유예 동안에도 관찰은 계속되므로 늦은 체결이 오면 정상적으로 filled→HOLDING이 된다.
+        if (p.cancelReason === 'abandon') {
+          p.rejectGracePolls += 1;
+          if (p.rejectGracePolls < ABANDON_REJECT_GRACE_POLLS) continue;
+        }
         this.setFault(
           { kind: 'CANCEL', reason: '취소 거절 — 미체결 주문이 계좌에 남아있을 수 있음' },
           new Error('cancel rejected but fill not confirmed'),
@@ -335,6 +396,9 @@ export class OrderPortAdapter implements OrderPort {
       amendFailStreak: 0,
       repriceDisabled: false,
       amendNotBefore: Number.NEGATIVE_INFINITY,
+      cancelReason: null,
+      abandonVerified: false,
+      rejectGracePolls: 0,
     };
     this.orders.set(ref, p);
 
@@ -460,6 +524,20 @@ export class OrderPortAdapter implements OrderPort {
         this.onError?.(err);
       });
   }
+}
+
+/**
+ * 아직 체결내역 관찰이 필요한 주문인가.
+ *
+ * 취소를 요청한 주문도 "취소 성공(confirmed)"이 확정되기 전까지는 늦은 체결을 잡기 위해 계속 관찰한다
+ * (기존엔 cancelRequested면 바로 관찰을 끊어 늦은 체결이 영영 레코닝되지 않는 사고가 났다).
+ * ★ 자동 포기 취소는 confirmed 이후에도 **한 번 더** 관찰한다 — 취소 확정과 거의 동시에 들어온
+ *   부분체결을 놓치면 앱은 "포지션 없음"으로 믿는데 계좌엔 주식이 남는 유령 포지션이 생긴다.
+ */
+function stillObserving(p: PendingOrder): boolean {
+  if (p.fill.filled || !p.odno) return false;
+  if (p.cancelState !== 'confirmed') return true;
+  return p.cancelReason === 'abandon' && !p.abandonVerified;
 }
 
 /** 오류 객체를 짧은 한 줄로 요약(스택은 담지 않는다). */

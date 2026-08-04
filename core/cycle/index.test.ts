@@ -66,10 +66,15 @@ class FakePort implements OrderPort {
   fill(ref: OrderRef, price: number, qty: number) {
     this.fills.set(ref, { filled: true, price, qty });
   }
-  /** 취소 성공 확정(진짜 미체결) — KIS가 취소를 받아들인 상황. */
-  confirmCancel(ref: OrderRef) {
+  /**
+   * 취소 성공 확정(진짜 미체결) — KIS가 취소를 받아들인 상황.
+   * partialQty를 주면 그 시점의 **확정된 관찰 체결량**으로 노출한다(자동 포기 복귀 판정용).
+   * 미지정이면 관찰치 자체가 없는 상태 — 자동 포기는 fail-closed로 복귀를 보류한다.
+   */
+  confirmCancel(ref: OrderRef, partialQty?: number) {
     this.cancels.set(ref, 'confirmed');
-    this.fills.delete(ref);
+    if (partialQty === undefined) this.fills.delete(ref);
+    else this.fills.set(ref, { filled: false, partialQty });
   }
   /** 취소 거절 확정(이미 체결 추정) — KIS가 취소를 거절한 상황. */
   rejectCancel(ref: OrderRef) {
@@ -441,5 +446,128 @@ describe('RunCycle — 거래 수수료', () => {
     expect(r.grossPnl).toBe(-4);
     expect(r.fees!).toBeGreaterThan(0);
     expect(r.pnl).toBeLessThan(r.grossPnl!);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 매수 미체결 자동 포기(2026-08-06) — 과거 사고("취소 실패를 무시하고 되돌려 재매수 반복")를
+// 구조적으로 막기 위해, 되돌리는 경로에 증거 3겹(취소 확정 + 0주 확정 + 사후 검증)을 요구한다.
+// 매도 경로·무한 대기·Stop 경로는 전부 불변이다.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('RunCycle — 매수 미체결 자동 포기(abandonBuy)', () => {
+  /** BUYING 상태의 사이클을 만들어 돌려준다. */
+  function toBuying() {
+    const port = new FakePort({ autoFill: false });
+    const clock = fakeClock(0);
+    const cycle = makeCycle(port, clock);
+    cycle.start();
+    cycle.onSignal('BUY', snap(50, 0.1, 0, 0));
+    const ref = port.lastRef('buy');
+    expect(cycle.state).toBe('BUYING');
+    return { port, clock, cycle, ref };
+  }
+
+  it('① 요청만으로는 상태가 안 바뀐다 — 취소 1회, BUYING 유지', () => {
+    const { port, cycle } = toBuying();
+    expect(cycle.abandonBuy()).toBe(true);
+    expect(port.count('cancel')).toBe(1);
+    expect(cycle.state).toBe('BUYING');
+    cycle.poll();
+    expect(cycle.state).toBe('BUYING'); // 아직 취소가 확정되지 않았다
+  });
+
+  it('② 취소 확정 + 0주 확정 → WATCH_BUY 복귀, 포지션 없음, 재취소 0회', () => {
+    const { port, cycle, ref } = toBuying();
+    cycle.abandonBuy();
+    port.confirmCancel(ref, 0);
+    cycle.poll();
+
+    expect(cycle.state).toBe('WATCH_BUY');
+    expect(cycle.position).toBeNull();
+    expect(port.count('cancel')).toBe(1);
+  });
+
+  it('③ [사고 재현] 취소가 확정돼도 부분체결이면 복귀하지 않는다 — BUYING 유지', () => {
+    const { port, cycle, ref } = toBuying();
+    cycle.abandonBuy();
+    port.confirmCancel(ref, 1); // 3주 중 1주가 이미 체결됨
+    cycle.poll();
+
+    // 되돌리면 계좌엔 1주가 남는데 앱은 "포지션 없음"으로 믿게 된다 — 유령 포지션.
+    expect(cycle.state).toBe('BUYING');
+    expect(cycle.position).toBeNull();
+  });
+
+  it('④ [사고 재현] 관찰이 확정되지 않았으면(undefined) 복귀하지 않는다 — 모름을 0으로 단정 금지', () => {
+    const { port, cycle, ref } = toBuying();
+    cycle.abandonBuy();
+    port.confirmCancel(ref); // partialQty 미제공 = 아직 확정 못 함
+    cycle.poll();
+
+    expect(cycle.state).toBe('BUYING');
+  });
+
+  it('⑤ [사고 재현] 취소가 거절되면 복귀하지 않는다 — BUYING 유지, 재취소 0회', () => {
+    const { port, cycle, ref } = toBuying();
+    cycle.abandonBuy();
+    port.rejectCancel(ref);
+    cycle.poll();
+    cycle.poll();
+
+    expect(cycle.state).toBe('BUYING');
+    expect(port.count('cancel')).toBe(1); // 거절돼도 다시 쏘지 않는다
+  });
+
+  it('⑥ 포기 대기 중 늦은 체결이 관찰되면 HOLDING — 체결 확인이 항상 우선', () => {
+    const { port, cycle, ref } = toBuying();
+    cycle.abandonBuy();
+    port.fill(ref, 50, 3); // 취소 왕복 중 실제로는 체결됨
+    cycle.poll();
+
+    expect(cycle.state).toBe('HOLDING');
+    expect(cycle.position?.qty).toBe(3);
+  });
+
+  it('⑦ 포기 대기 중 Stop이 오면 DONE으로 마감된다(Stop 우선), 취소는 여전히 1회', () => {
+    const { port, cycle, ref } = toBuying();
+    cycle.abandonBuy();
+    cycle.stop(); // 사용자 의도가 자동 포기를 이긴다
+    port.confirmCancel(ref, 0);
+    cycle.poll();
+
+    expect(cycle.state).toBe('DONE');
+    expect(port.count('cancel')).toBe(1); // 재취소 없음
+  });
+
+  it('⑧ WATCH_BUY 복귀 후 다시 BUY 신호가 오면 정상 재발주된다', () => {
+    const { port, cycle, ref } = toBuying();
+    cycle.abandonBuy();
+    port.confirmCancel(ref, 0);
+    cycle.poll();
+    expect(cycle.state).toBe('WATCH_BUY');
+
+    cycle.onSignal('BUY', snap(51, 0.1, 0, 1000));
+    expect(cycle.state).toBe('BUYING');
+    expect(port.count('buy')).toBe(2);
+  });
+
+  it('⑨ BUYING이 아닌 상태에서는 무동작이다 — 매도 취소 금지 불변식의 타입 밖 방어선', () => {
+    const port = new FakePort({ autoFill: true, fillPrice: 50 });
+    const clock = fakeClock(0);
+    const cycle = makeCycle(port, clock);
+
+    expect(cycle.abandonBuy()).toBe(false); // IDLE
+    cycle.start();
+    expect(cycle.abandonBuy()).toBe(false); // WATCH_BUY
+
+    cycle.onSignal('BUY', snap(50, 0.1, 0, 0));
+    cycle.poll();
+    expect(cycle.state).toBe('HOLDING');
+    expect(cycle.abandonBuy()).toBe(false); // HOLDING
+
+    cycle.onSignal('SELL', snap(60, -0.1, 0, 1000));
+    expect(cycle.state).toBe('SELLING');
+    expect(cycle.abandonBuy()).toBe(false); // ★ SELLING — 매도는 절대 취소하지 않는다
+    expect(port.count('cancel')).toBe(0);
   });
 });

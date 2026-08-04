@@ -96,8 +96,16 @@ export interface ScalperInstanceView {
   autoRun: boolean;
   /** 수량 마틴게일 설정(카드 토글) — 끄면 오토런이 같은 수량으로 재시작한다. */
   martingale: boolean;
+  /** 최근 매수 미체결 자동 포기 안내 — 카드에 한 줄로 표시. 없으면 null. */
+  lastAbandon: AbandonNote | null;
   /** 최근 오토런 이벤트(재시작/상한 도달로 중지) — 카드에 안내 문구로 표시. 없으면 null. */
   lastAutoRun: AutoRunNote | null;
+}
+
+/** 매수 미체결 자동 포기 안내 — 카드에 보여줄 완성 문구(해요체)와 발생 시각. */
+export interface AbandonNote {
+  at: number;
+  text: string;
 }
 
 /** 오토런 안내 — 카드/진단에 보여줄 완성 문구(해요체)와 발생 시각. */

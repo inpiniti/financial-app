@@ -32,6 +32,10 @@ export const AUTOPILOT_STORAGE_KEY = 'scalper:autopilot';
 export const WATCH_COUNT = 3;
 export const RESELECT_INTERVAL_MS = 30_000;
 export const HYSTERESIS_RATIO = 1.2;
+/** 연속 매수 취소가 이 횟수에 닿으면 그 종목 매수를 잠시 쉰다. */
+export const ABANDON_COOLDOWN_STREAK = 3;
+/** 매수 취소 쿨다운 길이(ms). */
+export const ABANDON_COOLDOWN_MS = 60_000;
 /** 최소 속도 기본값(틱/초) — 0 설정 불가(> 0 강제, 사용자 확정 §4-6). */
 export const DEFAULT_MIN_TICK_RATE = 1;
 /**
@@ -121,6 +125,8 @@ export interface AutoPilotDeps {
   pollIntervalMs?: number;
   /** 매도 리프라이스 주기(ms, 기본 1000). 매수1호가가 바뀐 경우에만 정정을 낸다. */
   repriceIntervalMs?: number;
+  /** 매수 미체결 자동 취소 대기(ms, 0=끔). 부분체결이면 취소하지 않는다. */
+  buyCancelAfterMs?: number;
   reselectIntervalMs?: number;
   hysteresisRatio?: number;
   watchCount?: number;
@@ -208,6 +214,7 @@ export class AutoPilot {
   private readonly deps: AutoPilotDeps;
   private readonly pollIntervalMs: number;
   private readonly repriceIntervalMs: number;
+  private readonly buyCancelAfterMs: number;
   private readonly reselectIntervalMs: number;
   private readonly hysteresisRatio: number;
   private readonly watchCount: number;
@@ -222,6 +229,12 @@ export class AutoPilot {
   private pendingBuy: PendingBuy | null = null;
   private buyCommitting = false;
   private pendingSettle: TradeRecord | null = null;
+  /** BUYING 진입 시각(자동 포기 경과 기점). */
+  private buyingSince: number | null = null;
+  /** 이 주문에 자동 포기를 이미 요청했는가. */
+  private abandonRequested = false;
+  /** 티커별 연속 취소 기록 — 사이클마다 종목이 바뀌므로 맵으로 둔다. */
+  private readonly abandonState = new Map<string, { streak: number; until: number }>();
   private stopRequested = false;
   private cycles = 0;
   private cumPnl = 0;
@@ -240,6 +253,7 @@ export class AutoPilot {
     this.deps = deps;
     this.pollIntervalMs = deps.pollIntervalMs ?? 2000;
     this.repriceIntervalMs = deps.repriceIntervalMs ?? 1000;
+    this.buyCancelAfterMs = deps.buyCancelAfterMs ?? 0;
     this.reselectIntervalMs = deps.reselectIntervalMs ?? RESELECT_INTERVAL_MS;
     this.hysteresisRatio = deps.hysteresisRatio ?? HYSTERESIS_RATIO;
     this.watchCount = deps.watchCount ?? WATCH_COUNT;
@@ -483,11 +497,11 @@ export class AutoPilot {
     const rateOf = (t: string) => byTicker.get(t)?.tickRate(now) ?? 0;
 
     // 리스트에서 사라졌거나 자격 미달이 된 감시 종목은 즉시 정리.
-    let watched = this.watchedTickers.filter((t) => byTicker.has(t) && rateOf(t) >= minRate);
+    let watched = this.watchedTickers.filter((t) => byTicker.has(t) && rateOf(t) >= minRate && !this.inAbandonCooldown(t));
 
     const candidates = slots
       .map((s) => s.ticker)
-      .filter((t) => !watched.includes(t) && rateOf(t) >= minRate)
+      .filter((t) => !watched.includes(t) && rateOf(t) >= minRate && !this.inAbandonCooldown(t))
       .sort((a, b) => rateOf(b) - rateOf(a));
 
     // 빈 자리는 자격자로만 채운다(히스테리시스 없음 — 신규 편입).
@@ -677,6 +691,8 @@ export class AutoPilot {
 
         cycle.start();
         cycle.onSignal('BUY', this.toSnapshot(ctx));
+    this.buyingSince = this.deps.clock.now();
+    this.abandonRequested = false;
         this.startPollTimer();
         this.syncStateFromCycle();
         this.event(`${ctx.ticker} 진입 · ${qty}주 × $${ctx.price} (목표 $${session.amountUsd.toFixed(2)})`);
@@ -720,8 +736,75 @@ export class AutoPilot {
       return;
     }
 
+    // ★ 자동 포기로 감시 복귀한 사이클 — syncStateFromCycle보다 먼저 잡아야 한다.
+    //   (그 함수가 WATCH_BUY를 'ENTERING'으로 매핑해 버려 상태가 갇힌다.)
+    if (active.cycle.state === 'WATCH_BUY') {
+      this.abandonActive(active.ticker);
+      return;
+    }
+    if (active.cycle.state === 'HOLDING') {
+      // 체결에 성공했다 — 경과 시계와 연속 취소 카운터를 푼다.
+      this.buyingSince = null;
+      this.abandonRequested = false;
+      this.clearAbandon(active.ticker);
+    }
     this.syncStateFromCycle();
     if (active.cycle.state === 'DONE') this.settle();
+  }
+
+  /**
+   * 진행 중 사이클의 자원을 정리한다 — 폴·리프라이스 타이머 정지, detector 해제, 핀 해제.
+   * ⚠ 핀(`pin`)은 `commitBuy`에서 걸리고 여기서만 풀린다. 이 경로를 거치지 않으면 워치리스트가 영구 오염된다.
+   */
+  private teardownActive(active: ActiveCycle): void {
+    this.stopPollTimer();
+    active.slot.detachDetector();
+    this.active = null;
+    this.deps.unpin(active.ticker);
+  }
+
+  /**
+   * 매수 미체결 자동 포기로 사이클을 접고 감시(SCANNING)로 복귀한다 — 거래 기록이 없는 유일한 종료 경로.
+   * ⚠ `AutoPilot.stop()`을 부르면 `stopRequested`가 서서 IDLE로 종료돼 버리므로 절대 재활용하지 않는다.
+   */
+  private abandonActive(ticker: string): void {
+    const active = this.active;
+    if (!active) return;
+    active.cycle.stop(); // WATCH_BUY→DONE (이 전이는 포트를 호출하지 않는다 — 폐기 위생용)
+    this.teardownActive(active);
+    this.markAbandon(ticker);
+    this.event(`${ticker} 매수 취소 · 안 붙어서 다시 감시해요`);
+    if (this.stopRequested) {
+      this.finishStop();
+      return;
+    }
+    this.state = 'SCANNING';
+    this.watchedTickers = [];
+    this.reselect(); // ⚠ state를 SCANNING으로 세운 **뒤**에 불러야 동작한다
+    this.emit();
+  }
+
+  /** 자동 포기 1회 기록 — 연속 상한에 닿으면 그 종목 매수를 잠시 쉰다. */
+  private markAbandon(ticker: string): void {
+    const now = this.deps.clock.now();
+    const prev = this.abandonState.get(ticker);
+    const streak = (prev?.streak ?? 0) + 1;
+    const until = streak >= ABANDON_COOLDOWN_STREAK ? now + ABANDON_COOLDOWN_MS : (prev?.until ?? 0);
+    this.abandonState.set(ticker, { streak, until });
+    if (streak >= ABANDON_COOLDOWN_STREAK) {
+      this.event(`${ticker} 매수 취소가 ${streak}번 이어져서 ${ABANDON_COOLDOWN_MS / 1000}초간 쉬어요`);
+    }
+  }
+
+  /** 그 종목이 자동 포기 쿨다운 중인가 — 감시 후보에서도 빠지고 매수 신호도 넘긴다. */
+  private inAbandonCooldown(ticker: string): boolean {
+    const s = this.abandonState.get(ticker);
+    return s !== undefined && this.deps.clock.now() < s.until;
+  }
+
+  /** 체결에 성공했다 — 그 종목의 연속 취소 기록을 지운다. */
+  private clearAbandon(ticker: string): void {
+    this.abandonState.delete(ticker);
   }
 
   /**
@@ -734,10 +817,7 @@ export class AutoPilot {
     const record = this.pendingSettle;
     this.pendingSettle = null;
 
-    this.stopPollTimer();
-    active.slot.detachDetector();
-    this.active = null;
-    this.deps.unpin(active.ticker);
+    this.teardownActive(active);
 
     if (record) {
       this.rolloverDailyIfNeeded();
@@ -878,19 +958,62 @@ export class AutoPilot {
    * ⚠ 자동관리는 호가를 pollCycle(2초)에서만 어댑터에 넣으므로, 여기서 슬롯의 최신 호가를 **먼저** 반영하지
    * 않으면 최대 2초 낡은 값으로 정정하게 되어 리프라이스가 사실상 무의미해진다.
    */
+  /**
+   * 빠른 틱(기본 1초) — 상태에 따라 하나만 한다.
+   *  · SELLING → 매도 리프라이스(슬롯 최신 호가를 먼저 반영)
+   *  · BUYING  → 매수 미체결 경과 판정 → 자동 포기 요청(설정을 켰을 때만)
+   * 새 타이머를 만들지 않고 겸용한다 — 하네스가 인스턴스당 타이머 2개를 가정한다.
+   */
   private async repriceTick(): Promise<void> {
-    if (this.repriceTicking) return; // setInterval 재진입 방지
+    if (this.repriceTicking) return;
     const active = this.active;
     if (!active || this.state === 'FAULT' || active.adapter.hasFault()) return;
-    if (active.cycle.state !== 'SELLING') return;
+    const cycleState = active.cycle.state;
+    if (cycleState !== 'SELLING' && cycleState !== 'BUYING') {
+      this.buyingSince = null;
+      return;
+    }
     this.repriceTicking = true;
     try {
-      const quote = active.slot.quote;
-      if (quote) active.adapter.setQuote(quote.bid1, quote.ask1, quote.at);
-      await active.adapter.repriceSell();
+      if (cycleState === 'SELLING') {
+        const quote = active.slot.quote;
+        if (quote) active.adapter.setQuote(quote.bid1, quote.ask1, quote.at);
+        await active.adapter.repriceSell();
+      } else {
+        await this.tryAbandonBuy(active);
+      }
     } finally {
       this.repriceTicking = false;
     }
+  }
+
+  /** 매수 미체결 자동 포기 판정 1회 — 요청 게이트 3겹(odno 확보·취소 미요청·관찰 체결량 0). */
+  private async tryAbandonBuy(active: ActiveCycle): Promise<void> {
+    if (this.buyCancelAfterMs <= 0) return;
+    const probe = active.adapter.buyProbe();
+    if (!probe) return;
+
+    if (this.abandonRequested) {
+      if (probe.verified && probe.cancelState === 'confirmed' && probe.filledQty > 0) {
+        this.enterFault({
+          kind: 'CANCEL',
+          reason: '부분체결 상태에서 취소가 확정됐어요 — 계좌를 확인해 주세요',
+        });
+        return;
+      }
+      if (probe.cancelState === 'confirmed') await this.pollCycle();
+      return;
+    }
+
+    if (this.buyingSince === null) {
+      this.buyingSince = this.deps.clock.now();
+      return;
+    }
+    if (this.deps.clock.now() - this.buyingSince < this.buyCancelAfterMs) return;
+    if (!probe.hasOdno) return;
+    if (probe.cancelState !== 'none') return;
+    if (probe.filledQty > 0) return; // ★ 부분체결이면 취소하지 않는다
+    if (active.cycle.abandonBuy()) this.abandonRequested = true;
   }
 
   private event(text: string): void {

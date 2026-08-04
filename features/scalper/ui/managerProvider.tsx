@@ -9,6 +9,7 @@ import { getAccessToken } from '../../../kis/token';
 import { getApprovalKey } from '../../../kis/wsApproval';
 import type { KisAccount, KisCredentials, KisEnvironment } from '../../../kis/types';
 import {
+  buyCancelAfterToMs,
   commissionRateToRatio,
   gateThreshold,
   loadAppSettings,
@@ -104,6 +105,8 @@ async function buildManager(): Promise<ManagerBootstrap> {
     minStrength: gateThreshold(appSettings.buyStrengthThreshold),
     // 거래 수수료율(% → 소수). 0이면 손익에서 수수료를 빼지 않는다(기존 동작).
     feeRate: commissionRateToRatio(appSettings.commissionRatePct),
+    // 매수 미체결 자동 취소(0=끔). 과거 사고로 삭제됐던 기능의 매수 한정 재도입이라 기본은 꺼져 있다.
+    buyCancelAfterMs: buyCancelAfterToMs(appSettings.buyCancelAfterSec),
   });
 
   await manager.restore();
@@ -205,6 +208,7 @@ async function buildManager(): Promise<ManagerBootstrap> {
     minVolumeSpikeRatio: gateThreshold(appSettings.buyVolumeSpikeRatio),
     minStrength: gateThreshold(appSettings.buyStrengthThreshold),
     feeRate: commissionRateToRatio(appSettings.commissionRatePct),
+    buyCancelAfterMs: buyCancelAfterToMs(appSettings.buyCancelAfterSec),
     onError: (err) => finalManager.reportFeedError(err),
   });
   // WS 단일 연결 공유 — 수동 매니저의 라우터가 오토파일럿 슬롯으로도 흘려보낸다.

@@ -47,6 +47,8 @@ export interface ScalperManagerDeps {
   pollIntervalMs?: number;
   /** 매도 리프라이스 주기(ms, 기본 1000) — 인스턴스로 그대로 흘려보낸다. */
   repriceIntervalMs?: number;
+  /** 매수 미체결 자동 취소 대기(ms, 0=끔) — 인스턴스로 그대로 흘려보낸다. */
+  buyCancelAfterMs?: number;
   chunkSeconds?: number;
   bufferSize?: number;
   fillTimeoutMs?: number;
@@ -365,6 +367,7 @@ export class ScalperManager {
       scheduler: this.deps.scheduler,
       pollIntervalMs: this.deps.pollIntervalMs,
       repriceIntervalMs: this.deps.repriceIntervalMs,
+      buyCancelAfterMs: this.deps.buyCancelAfterMs,
       chunkSeconds: this.deps.chunkSeconds,
       bufferSize: this.deps.bufferSize,
       fillTimeoutMs: this.deps.fillTimeoutMs,
