@@ -8,7 +8,7 @@
 // routeTick/routeQuote를 통해 같은 연결의 수신을 나눠 받는다(수동/자동 상호 배타는 start 가드).
 
 import { appendTradeRecord } from './tradeStore';
-import { AutoPilot, type AutoPilotEvent, type AutoPilotView } from './autopilot';
+import { AutoPilot, type AutoPilotEvent, type AutoPilotView, type GridExitConfig } from './autopilot';
 import { FeedSlot, type FeedSlotView } from './feedSlot';
 import { ScalperWatchlist, type RankingSnapshot, type WatchEntry } from './watchlist';
 import {
@@ -52,6 +52,8 @@ export interface AutoPilotManagerDeps {
   isManualBusy?: () => boolean;
   /** 매수가능금액(USD) 사전 조회 — 현금 부족 PAUSED 판정(세션 확장 plan §2-4). 실패/미주입 시 판정 생략. */
   fetchBuyableUsd?: (ticker: string, price: number) => Promise<number | null>;
+  /** 매도 관리 그리드 설정(폭·매수배율) — 주입되면 진입 후 청산을 ±w OCO 그리드가 인계한다(D5). 미주입이면 기존 청산. */
+  gridConfig?: GridExitConfig;
   /** 재시작 보유 감지(잔고조회 → 보유 티커 목록) — 감지되면 경고 이벤트만 낸다(차단 안 함, plan §2-6). */
   fetchHoldings?: () => Promise<string[]>;
   keepAwake?: KeepAwakeControl;
@@ -128,6 +130,7 @@ export class AutoPilotManager {
       unpin: (t) => this.watchlist.unpin(t),
       makeBroker: deps.makeBroker,
       fetchBuyableUsd: deps.fetchBuyableUsd,
+      gridConfig: deps.gridConfig,
       clock: deps.clock,
       scheduler,
       storage: deps.storage,

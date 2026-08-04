@@ -200,6 +200,8 @@ async function buildManager(): Promise<ManagerBootstrap> {
     isManualBusy: () => finalManager.anyRunning,
     fetchBuyableUsd,
     fetchHoldings,
+    // 매도 관리 그리드 인계(D5) — 폭·매수배율은 설정 탭(매매파라미터)에서 조절한다(Phase B).
+    gridConfig: { width: appSettings.gridWidthPct / 100, buyMultiplier: appSettings.gridBuyMultiplier },
     keepAwake: expoKeepAwake,
     chunkSeconds: appSettings.chunkSeconds,
     bufferSize: appSettings.bufferSize,

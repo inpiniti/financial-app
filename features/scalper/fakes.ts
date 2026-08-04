@@ -105,6 +105,14 @@ export class FakeBroker implements ScalperBroker {
     return [...this.fills.values()];
   }
 
+  /** 잔고 포지션 심(그리드 D1) — 테스트가 세팅한다. failFetchPosition=true면 throw. */
+  position: { qty: number; avgPrice: number } | null = null;
+  failFetchPosition = false;
+  async fetchPosition(): Promise<{ qty: number; avgPrice: number } | null> {
+    if (this.failFetchPosition) throw new Error('잔고 조회 거절(모의)');
+    return this.position;
+  }
+
   /** 수동 체결(미체결 시나리오에서 특정 odno 체결 처리). */
   fill(odno: string, price: number): void {
     const f = this.fills.get(odno);

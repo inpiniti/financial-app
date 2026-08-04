@@ -19,6 +19,7 @@ import { AmountSheet } from './AmountSheet';
 import { ChartSheet } from './ChartSheet';
 import { CommentsSheet } from './CommentsSheet';
 import { formatHHMM, formatPrice } from './format';
+import { GridGauge } from './GridGauge';
 import { WatchQuoteSheet } from './WatchQuoteSheet';
 
 /** 리스트 분봉 조회 EXCD — 리스트가 NAS 전용(autopilotManager.ts MARKET 상수)이므로 고정. */
@@ -320,6 +321,11 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
                 )}
               </View>
             </Panel>
+            {view.grid && (
+              <Panel title="그리드 관리">
+                <GridGauge grid={view.grid} />
+              </Panel>
+            )}
             {/* "단타 리스트" 패널 헤더 — 행들은 FlatList 아이템으로 이어진다. */}
             <View className="bg-white">
               <View className="flex-row items-center justify-between px-5 pb-2 pt-4">

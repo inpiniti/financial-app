@@ -49,6 +49,17 @@ export interface AppSettings {
    * ⚠ 과거 실계좌 사고로 삭제됐던 기능의 매수 한정 재도입이라 기본값은 끔이다. (2026-08-06)
    */
   buyCancelAfterSec: number;
+  /**
+   * 매도 관리 그리드 폭 — **% 단위**. 기본 10(=10%). 진입 체결 후 평단 ±이 %에 매수·매도 지정가를 건다
+   * (buyPrice=평단×(1−w), sellPrice=평단×(1+w)). managerProvider가 /100 해서 core/grid의 width(소수)로 넘긴다.
+   * (매도 관리 그리드 Phase B — 2026-08-05)
+   */
+  gridWidthPct: number;
+  /**
+   * 매도 관리 그리드 매수 배율 — 기본 1(=보유수량과 같은 수량). 리브래킷 매수 수량은
+   * floor(보유수량 × 이 배율)로 계산된다(core/grid 몫, 여기서는 값만 전달). (Phase B)
+   */
+  gridBuyMultiplier: number;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -62,6 +73,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   buyStrengthThreshold: 0,
   commissionRatePct: 0,
   buyCancelAfterSec: 0,
+  gridWidthPct: 10,
+  gridBuyMultiplier: 1,
 };
 
 /** 설정의 % 값을 detector가 쓰는 상대 기울기 소수로 변환한다(0.01% → 0.0001). 음수·비정상은 0(끔)으로 처리. */

@@ -32,6 +32,7 @@ export {
   AutoPilot,
   AUTOPILOT_STORAGE_KEY,
   AMOUNT_FLOOR_USD,
+  GRID_EXIT,
   isMartingaleOn,
   DEFAULT_MIN_TICK_RATE,
   etDateOf,
@@ -44,8 +45,10 @@ export type {
   AutoPilotConfig,
   AutoPilotDeps,
   AutoPilotEvent,
+  AutoPilotGridView,
   AutoPilotState,
   AutoPilotView,
+  GridExitConfig,
   SessionState,
 } from './autopilot';
 export { AutoPilotManager, AUTOPILOT_TRADE_ID } from './autopilotManager';

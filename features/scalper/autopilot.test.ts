@@ -46,6 +46,7 @@ function makeHarness(
     autoFill?: boolean;
     config?: AutoPilotConfig | null;
     fetchBuyableUsd?: AutoPilotDeps['fetchBuyableUsd'];
+    gridConfig?: AutoPilotDeps['gridConfig'];
   } = {},
 ): Harness {
   const clock = fakeClock(1000);
@@ -71,6 +72,7 @@ function makeHarness(
       return b;
     },
     fetchBuyableUsd: opts.fetchBuyableUsd,
+    gridConfig: opts.gridConfig,
     clock,
     scheduler: noopScheduler(),
     storage: store,
@@ -721,5 +723,99 @@ describe('AutoPilot — 마틴게일 옵션', () => {
     const cfg = pilot.getView().config!;
     expect(isMartingaleOn(cfg)).toBe(false);
     expect(cfg.startAmountUsd).toBe(30);
+  });
+});
+
+describe('AutoPilot — 매도 관리 그리드 인계(D5·GRID_EXIT)', () => {
+  /** 자동체결 없이 진입 buy만 발주된 상태까지 재생하고, 진입 체결을 수동으로 만든다. */
+  async function enterAndFill(h: Harness, ticker: string, position: { qty: number; avgPrice: number }) {
+    h.pilot.start();
+    await replay(h, ticker, DOWN_UP_DOWN);
+    const broker = h.brokers.get(ticker)!;
+    // 진입 buy가 발주됐다(아직 미체결 — autoFill=false).
+    const entry = broker.placed.find((p) => p.side === 'buy');
+    expect(entry).toBeDefined();
+    // 잔고(D1) 심 세팅 — 그리드는 이 값으로 브래킷을 세운다.
+    broker.position = position;
+    // 진입 체결을 수동으로 만든다 → 다음 폴에서 HOLDING → 그리드 인계.
+    broker.fill(entry!.odno, position.avgPrice);
+    await flush();
+    await h.pilot.pollCycle();
+    await flush();
+    return broker;
+  }
+
+  it('진입 체결 → 그리드가 매수(−10%)·매도(+10%) 두 주문을 건다', async () => {
+    const h = makeHarness(['A', 'B', 'C'], { autoFill: false, gridConfig: { width: 0.1, buyMultiplier: 1 } });
+    const broker = await enterAndFill(h, 'A', { qty: 5, avgPrice: 100 });
+
+    // 그리드 두 다리: 매도 5주@110, 매수 5주@90 (진입 buy 1건 + 그리드 buy 1건 = buy 2건).
+    expect(broker.placed.filter((p) => p.side === 'sell')).toEqual([
+      { side: 'sell', pdno: 'A', qty: 5, price: 110, odno: expect.any(String) },
+    ]);
+    const gridBuy = broker.placed.filter((p) => p.side === 'buy').at(-1);
+    expect(gridBuy).toMatchObject({ pdno: 'A', qty: 5, price: 90 });
+
+    const view = h.pilot.getView();
+    expect(view.state).toBe('HOLDING');
+    expect(view.grid).toMatchObject({
+      ticker: 'A',
+      avgPrice: 100,
+      buyPrice: 90,
+      sellPrice: 110,
+      holdingQty: 5,
+      buyMultiplier: 1,
+      gridActive: true,
+    });
+  });
+
+  it('매도(+10%) 체결 → 매수 취소(OCO) → 정산 → SCANNING 복귀', async () => {
+    const h = makeHarness(['A', 'B', 'C'], { autoFill: false, gridConfig: { width: 0.1, buyMultiplier: 1 } });
+    const broker = await enterAndFill(h, 'A', { qty: 5, avgPrice: 100 });
+
+    const gridSell = broker.placed.find((p) => p.side === 'sell')!;
+    const gridBuy = broker.placed.filter((p) => p.side === 'buy').at(-1)!;
+    // 매도 다리만 체결.
+    broker.fill(gridSell.odno, 110);
+    await flush();
+    await h.pilot.pollCycle();
+    await flush();
+
+    // 반대편 매수 취소(OCO) 1회.
+    expect(broker.canceled).toContain(gridBuy.odno);
+    // 정산 — 평단 100 → 매도 110, 5주 → +$50.
+    expect(h.trades).toHaveLength(1);
+    expect(h.trades[0]).toMatchObject({ ticker: 'A', qty: 5, entryPrice: 100, exitPrice: 110, exitReason: 'SELL_SIGNAL' });
+    expect(h.trades[0].pnl).toBe(50);
+    // 포지션 0 → 변곡점 스캔 복귀.
+    const view = h.pilot.getView();
+    expect(view.state).toBe('SCANNING');
+    expect(view.activeTicker).toBeNull();
+    expect(view.grid).toBeNull();
+    expect(h.unpins).toContain('A');
+  });
+
+  it('매수(−10%) 체결 → 잔고 재조회로 리브래킷(수량↑·평단↓), 관리 지속', async () => {
+    const h = makeHarness(['A', 'B', 'C'], { autoFill: false, gridConfig: { width: 0.1, buyMultiplier: 1 } });
+    const broker = await enterAndFill(h, 'A', { qty: 5, avgPrice: 100 });
+
+    const firstSell = broker.placed.find((p) => p.side === 'sell')!;
+    const gridBuy = broker.placed.filter((p) => p.side === 'buy').at(-1)!;
+    // 매수 다리 체결 → 리브래킷 전에 잔고가 10주·평단 95로 갱신됐다고 가정.
+    broker.position = { qty: 10, avgPrice: 95 };
+    broker.fill(gridBuy.odno, 90);
+    await flush();
+    await h.pilot.pollCycle();
+    await flush();
+
+    // 옛 매도 취소(OCO).
+    expect(broker.canceled).toContain(firstSell.odno);
+    // 리브래킷 — 새 평단 95 기준(95×1.1=104.5, 95×0.9=85.5), 여전히 관리 중.
+    const view = h.pilot.getView();
+    expect(view.state).toBe('HOLDING');
+    expect(view.grid).toMatchObject({ avgPrice: 95, buyPrice: 85.5, sellPrice: 104.5, holdingQty: 10 });
+    expect(h.trades).toHaveLength(0); // 아직 청산 아님.
+    // 새 매도/매수 다리가 다시 걸렸다.
+    expect(broker.placed.filter((p) => p.side === 'sell')).toHaveLength(2);
   });
 });

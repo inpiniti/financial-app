@@ -192,6 +192,12 @@ export interface ScalperBroker {
   amendOrder(input: BrokerAmendInput): Promise<{ odno: string }>;
   /** 오늘 주문들의 체결 상태 스냅샷(odno 기준). checkFilled 폴러가 주기 호출. */
   fetchFills(): Promise<BrokerFill[]>;
+  /**
+   * KIS 잔고에서 이 브로커의 종목(생성 시 pdno) 포지션을 읽는다 — 매도 관리 그리드가 브래킷을
+   * 세울 때 평단·수량 출처로 쓴다(D1). 보유가 없거나 아직 반영 전이면 null.
+   * 실서비스는 inquireOverseasBalance(output1)로, 테스트는 심으로 구현한다.
+   */
+  fetchPosition(): Promise<{ qty: number; avgPrice: number } | null>;
 }
 
 /** AsyncStorage 최소 계약(거래기록·구성 영속화). 테스트는 Map 기반 심을 주입. */

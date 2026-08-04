@@ -15,8 +15,10 @@
 
 import { RunCycle, type SignalSnapshot, type TradeRecord } from '../../core/cycle';
 import type { Signal } from '../../core/detector';
+import { Grid, type GridPollResult } from '../../core/grid';
 import { FeedSlot, type SlotSignalContext } from './feedSlot';
 import { OrderPortAdapter } from './orderPortAdapter';
+import { createGridOrderPort } from './gridOrderPort';
 import type {
   AdapterFault,
   ClockLike,
@@ -43,6 +45,22 @@ export const DEFAULT_MIN_TICK_RATE = 1;
  * 마틴게일을 켰을 때만 적용된다(끄면 금액 조정 자체가 없다).
  */
 export const AMOUNT_FLOOR_USD = 1;
+
+/**
+ * 매도 관리 그리드로 진입 후 청산을 대체할지(D5). true면 진입 체결 후 관리를 ±w OCO 지정가 그리드가
+ * 인계한다(변곡점 매도 신호 무시). false로 두면 기존 변곡점 청산 경로로 **한 줄 롤백**된다.
+ * ⚠ 실제 활성화는 이 상수 **그리고** deps.gridConfig 주입이 모두 있어야 한다 —
+ *    gridConfig가 없으면(기존 테스트 하네스) 항상 기존 청산 경로로 동작한다.
+ */
+export const GRID_EXIT = true;
+
+/** 그리드 설정 — 폭(w)·매수 배율(buyMultiplier). 설정 화면 노출은 다음 단계, 지금은 주입 기본값. */
+export interface GridExitConfig {
+  /** 폭 w(기본 0.10). buyPrice=P×(1−w), sellPrice=P×(1+w). */
+  width: number;
+  /** 매수 배율(기본 1). 매수수량 = floor(N×배율), 매도는 항상 N 전량. */
+  buyMultiplier: number;
+}
 
 export type AutoPilotState = 'IDLE' | 'SCANNING' | 'ENTERING' | 'HOLDING' | 'EXITING' | 'PAUSED' | 'FAULT';
 
@@ -97,6 +115,30 @@ export interface AutoPilotView {
   readonly cumPnl: number;
   readonly lastEvent: AutoPilotEvent | null;
   readonly lastFault: InstanceFault | null;
+  /**
+   * 매도 관리 그리드 상태 — 진입 후 그리드가 인계 중일 때만 채워진다(그 외 null).
+   * 다음 단계 게이지 UI가 읽는 필드: 평단·매수가·매도가·현재가·보유수량·매수배율·활성여부.
+   */
+  readonly grid: AutoPilotGridView | null;
+}
+
+/** 게이지 UI가 소비할 그리드 뷰(관리 중 종목 1개). */
+export interface AutoPilotGridView {
+  ticker: string;
+  /** 평단가 P(그리드가 관리하는 평균 — 리브래킷하면 낮아진다). */
+  avgPrice: number;
+  /** 매수 지정가 P×(1−w). */
+  buyPrice: number;
+  /** 매도 지정가 P×(1+w). */
+  sellPrice: number;
+  /** 최근 틱 현재가 — 게이지 화살표 위치용. 아직 없으면 null. */
+  currentPrice: number | null;
+  /** 보유수량 N. */
+  holdingQty: number;
+  /** 매수 배율. */
+  buyMultiplier: number;
+  /** 그리드가 두 주문을 실제로 걸고 관리 중인가(ARMED). */
+  gridActive: boolean;
 }
 
 export interface AutoPilotDeps {
@@ -107,6 +149,11 @@ export interface AutoPilotDeps {
   unpin: (ticker: string) => void;
   /** 티커별 주문 게이트웨이(실서비스 createKisBroker, 테스트 가짜 심). */
   makeBroker: (ticker: string) => ScalperBroker;
+  /**
+   * 매도 관리 그리드 설정(폭·매수배율). **주입되면** 진입 체결 후 관리를 ±w OCO 그리드가 인계한다(D5·GRID_EXIT).
+   * 미주입이면(기존 하네스) 기존 변곡점 청산 경로로 동작한다 — 하위호환·회귀 안전.
+   */
+  gridConfig?: GridExitConfig;
   /**
    * 매수가능금액(USD) 사전 조회 — 현금 부족 PAUSED 판정용. null 반환/미주입/throw면
    * 판정 없이 진행한다(주문 거절은 기존 FAULT 인터록이 받는다 — plan §2-4 폴백).
@@ -194,6 +241,12 @@ interface ActiveCycle {
   slot: FeedSlot;
   adapter: OrderPortAdapter;
   cycle: RunCycle;
+  /** 이 사이클의 브로커 — 그리드 발주에 재사용한다(진입 어댑터와 같은 브로커). */
+  broker: ScalperBroker;
+  /** 매도 관리 그리드(진입 후 인계). 미인계면 null. */
+  grid: Grid | null;
+  /** 그리드가 두 주문을 실제로 발주했는가(arm 성공). */
+  gridArmed: boolean;
 }
 
 interface PendingBuy {
@@ -280,7 +333,30 @@ export class AutoPilot {
       cumPnl: this.cumPnl,
       lastEvent: this.lastEvent,
       lastFault: this.lastFault,
+      grid: this.gridView(),
     };
+  }
+
+  /** 관리 중 그리드 뷰 조립 — 그리드가 인계된 활성 사이클이 있을 때만. */
+  private gridView(): AutoPilotGridView | null {
+    const active = this.active;
+    if (!active || !active.grid) return null;
+    const v = active.grid.view;
+    return {
+      ticker: active.ticker,
+      avgPrice: v.avgPrice,
+      buyPrice: v.buyPrice,
+      sellPrice: v.sellPrice,
+      currentPrice: active.slot.getView().price,
+      holdingQty: v.holdingQty,
+      buyMultiplier: v.buyMultiplier,
+      gridActive: v.gridActive,
+    };
+  }
+
+  /** 그리드 인계가 켜져 있는가 — 상수 롤백 스위치 AND 설정 주입. */
+  private gridEnabled(): boolean {
+    return GRID_EXIT && this.deps.gridConfig !== undefined;
   }
 
   // ---- 설정/영속화 ----
@@ -562,6 +638,8 @@ export class AutoPilot {
     }
     // SELL — 보유 종목의 매도 변곡점만 의미 있다(유동성이 죽어도 사이클은 반드시 완주 — §4-4).
     if (this.active && ctx.ticker === this.active.ticker) {
+      // 그리드가 청산을 관리하면 변곡점 매도는 무시한다(D5) — 매도는 +w 지정가 체결로만 일어난다.
+      if (this.gridEnabled()) return;
       this.active.adapter.setLimitPrice(ctx.price);
       this.active.cycle.onSignal('SELL', this.toSnapshot(ctx));
       this.syncStateFromCycle();
@@ -678,7 +756,7 @@ export class AutoPilot {
             this.deps.onTrade?.(record);
           },
         });
-        this.active = { ticker: ctx.ticker, slot, adapter, cycle };
+        this.active = { ticker: ctx.ticker, slot, adapter, cycle, broker, grid: null, gridArmed: false };
         this.deps.pin(ctx.ticker);
         for (const t of this.watchedTickers) {
           if (t !== ctx.ticker) this.slotOf(t)?.detachDetector();
@@ -717,6 +795,12 @@ export class AutoPilot {
       return;
     }
 
+    // 그리드가 인계됐으면 진입 어댑터 대신 그리드를 구동한다(매도 체결→SCANNING, 매수 체결→리브래킷).
+    if (active.grid && active.gridArmed) {
+      await this.pollGrid(active);
+      return;
+    }
+
     const ok = await active.adapter.refreshFills();
     if (!ok) {
       this.enterFault(active.adapter.takeFault() ?? { kind: 'FILL_CHECK', reason: '체결 확인 실패' });
@@ -747,9 +831,109 @@ export class AutoPilot {
       this.buyingSince = null;
       this.abandonRequested = false;
       this.clearAbandon(active.ticker);
+      // 진입 체결 → 매도 관리 그리드 인계(D5). 그리드가 켜져 있고 아직 안 걸었으면 지금 두 주문을 건다.
+      if (this.gridEnabled() && !active.grid) {
+        await this.armGrid(active);
+        // arm이 FAULT면 gridArmed=false로 남는다 — 인터록은 armGrid가 이미 걸었으니 그대로 반환한다.
+        if (!active.gridArmed) return;
+        this.syncStateFromCycle(); // 그리드가 관리해도 뷰 상태는 HOLDING을 유지한다.
+        return;
+      }
     }
     this.syncStateFromCycle();
     if (active.cycle.state === 'DONE') this.settle();
+  }
+
+  // ---- 매도 관리 그리드(D5) ----
+
+  /**
+   * 진입 체결 후 그리드 인계 — 잔고에서 평단·수량을 읽어(D1, 폴백=진입 체결) 두 지정가를 건다.
+   * 현금은 fetchBuyableUsd로 미리 조회해 매수 다리 축소/생략에 쓴다(D2). 발주 실패는 FAULT.
+   */
+  private async armGrid(active: ActiveCycle): Promise<void> {
+    const cfg = this.deps.gridConfig!;
+    const pos = active.cycle.position;
+    const fallback = pos ? { qty: pos.qty, avgPrice: pos.entryPrice } : undefined;
+    const buyPrice = (pos?.entryPrice ?? 0) * (1 - cfg.width);
+    let availableCashUsd: number | undefined;
+    try {
+      const cash = await this.deps.fetchBuyableUsd?.(active.ticker, buyPrice);
+      if (typeof cash === 'number' && Number.isFinite(cash)) availableCashUsd = cash;
+    } catch {
+      // 현금 판정 생략 — 전량 매수 다리로 진행(주문 거절은 FAULT 인터록이 받는다).
+    }
+    if (this.stopRequested) return;
+    const grid = new Grid({
+      port: createGridOrderPort(active.broker, active.ticker),
+      clock: this.deps.clock,
+      config: { width: cfg.width, buyMultiplier: cfg.buyMultiplier, availableCashUsd },
+    });
+    active.grid = grid;
+    await grid.arm(fallback);
+    if (grid.state === 'FAULT') {
+      this.enterFault({ kind: 'PLACE', reason: grid.faultText ?? '그리드 발주 실패' });
+      return;
+    }
+    active.gridArmed = true;
+    const v = grid.view;
+    this.event(
+      `${active.ticker} 그리드 관리 인계 · 매수 $${v.buyPrice}(평단 −${Math.round(cfg.width * 100)}%) · 매도 $${v.sellPrice}(평단 +${Math.round(cfg.width * 100)}%)`,
+    );
+    this.emit();
+  }
+
+  /** 그리드 폴 1회 — 매도 체결→정산·SCANNING, 매수 체결→리브래킷, 취소 거절→FAULT. */
+  private async pollGrid(active: ActiveCycle): Promise<void> {
+    const result = await active.grid!.poll();
+    switch (result.kind) {
+      case 'sold':
+        this.settleGrid(active, result);
+        break;
+      case 'rebracket':
+        this.event(
+          `${active.ticker} 그리드 리브래킷 · 평단 $${result.position.avgPrice.toFixed(2)} · ${result.position.qty}주`,
+        );
+        this.emit();
+        break;
+      case 'fault':
+        this.enterFault({ kind: 'CANCEL', reason: result.reason });
+        break;
+      default:
+        this.emit(); // armed — 현재가 화살표 갱신용.
+        break;
+    }
+  }
+
+  /**
+   * 그리드 매도(+w) 체결 정산 — 관리 평단→매도가 손익으로 TradeRecord를 합성해 기존 settle 경로로 넘긴다.
+   * (RunCycle은 HOLDING에 파킹돼 있었을 뿐 — 실제 매도는 그리드가 냈으므로 cycle.stop()을 부르지 않는다.)
+   */
+  private settleGrid(active: ActiveCycle, result: Extract<GridPollResult, { kind: 'sold' }>): void {
+    const pos = active.cycle.position;
+    const entryPrice = result.avgPrice;
+    const exitPrice = result.exitPrice;
+    const qty = result.qty;
+    const grossPnl = (exitPrice - entryPrice) * qty;
+    const feeRate = this.deps.feeRate ?? 0;
+    const fees = feeRate * (entryPrice * qty + exitPrice * qty);
+    const now = this.deps.clock.now();
+    const record: TradeRecord = {
+      ticker: active.ticker,
+      qty,
+      entryPrice,
+      entryTs: pos?.entryTs ?? now,
+      exitPrice,
+      exitTs: now,
+      pnl: grossPnl - fees,
+      grossPnl,
+      fees,
+      entrySnapshot: pos?.entrySnapshot ?? { price: entryPrice, slope: 0, accel: 0, ts: now },
+      exitSnapshot: null,
+      exitReason: 'SELL_SIGNAL',
+    };
+    this.pendingSettle = record;
+    this.deps.onTrade?.(record);
+    this.settle();
   }
 
   /**

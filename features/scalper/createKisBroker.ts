@@ -12,6 +12,7 @@
 // 이 브로커 인스턴스가 로컬로 들고 있어야 한다(tracked 맵). ScalperBroker 계약(odno별 체결 수량 반환)은 그대로.
 import { placeOverseasOrder } from '../../kis/order';
 import { cancelOrAmendOverseasOrder, cancelOverseasOrder, normalizeOdno } from '../../kis/orderCancel';
+import { inquireOverseasBalance } from '../../kis/balance';
 import { inquireOverseasUnfilled } from '../../kis/nccs';
 import type { OverseasExchangeCode } from '../../kis/trId';
 import type { ClockLike, KisAccount, KisCredentials, KisEnvironment } from '../../kis/types';
@@ -44,7 +45,7 @@ function toNum(v: string | undefined): number {
 }
 
 export function createKisBroker(config: KisBrokerConfig): ScalperBroker {
-  const { environment, credentials, account, ovrsExcgCd, getToken } = config;
+  const { environment, credentials, account, ovrsExcgCd, pdno, getToken } = config;
 
   /** placeOrder가 등록하고 fetchFills가 매 폴 미체결 목록과 대조해 갱신하는 로컬 추적 상태. */
   const tracked = new Map<string, TrackedOrder>();
@@ -157,6 +158,19 @@ export function createKisBroker(config: KisBrokerConfig): ScalperBroker {
       // TODO(선택): 매도 체결을 "목록 부재→전량체결"로 확정하기 직전, kis/balance.ts
       // inquireOverseasBalance로 보유 수량 감소를 보조 검증하는 훅을 여기 둘 수 있다(현재는 nccs 단독 판정).
       return fills;
+    },
+
+    async fetchPosition(): Promise<{ qty: number; avgPrice: number } | null> {
+      const token = await getToken();
+      const { output1 } = await inquireOverseasBalance(environment, credentials, token, { account });
+      // 이 브로커의 종목(pdno)과 일치하는 잔고 원소를 찾아 평단(avg_unpr3)·수량(cblc_qty13)을 읽는다(D1).
+      const want = String(pdno ?? '').trim();
+      const row = output1.find((p) => String(p.pdno ?? '').trim() === want);
+      if (!row) return null;
+      const qty = toNum(row.cblc_qty13);
+      const avgPrice = toNum(row.avg_unpr3);
+      if (qty <= 0 || avgPrice <= 0) return null;
+      return { qty, avgPrice };
     },
   };
 }

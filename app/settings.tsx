@@ -111,6 +111,9 @@ export default function SettingsScreen() {
   const [buyStrengthThreshold, setBuyStrengthThreshold] = useState(DEFAULT_APP_SETTINGS.buyStrengthThreshold);
   const [commissionRatePct, setCommissionRatePct] = useState(DEFAULT_APP_SETTINGS.commissionRatePct);
   const [buyCancelAfterSec, setBuyCancelAfterSec] = useState(DEFAULT_APP_SETTINGS.buyCancelAfterSec);
+  // 매도 관리 그리드 폭·매수 배율 — 주문 수량과 같은 텍스트 입력 + 저장 시 검증 패턴.
+  const [gridWidthPct, setGridWidthPct] = useState(String(DEFAULT_APP_SETTINGS.gridWidthPct));
+  const [gridBuyMultiplier, setGridBuyMultiplier] = useState(String(DEFAULT_APP_SETTINGS.gridBuyMultiplier));
 
   const [tokenStatus, setTokenStatus] = useState<TokenStatus>({ kind: 'idle' });
   const [saving, setSaving] = useState(false);
@@ -138,6 +141,8 @@ export default function SettingsScreen() {
       setBuyStrengthThreshold(appSettings.buyStrengthThreshold);
       setCommissionRatePct(appSettings.commissionRatePct);
       setBuyCancelAfterSec(appSettings.buyCancelAfterSec);
+      setGridWidthPct(String(appSettings.gridWidthPct));
+      setGridBuyMultiplier(String(appSettings.gridBuyMultiplier));
     })();
   }, []);
 
@@ -157,6 +162,18 @@ export default function SettingsScreen() {
       return;
     }
 
+    const parsedGridWidthPct = Number(gridWidthPct);
+    if (!Number.isFinite(parsedGridWidthPct) || parsedGridWidthPct <= 0) {
+      Alert.alert('알림', '그리드 폭은 0보다 큰 숫자로 입력해 주세요.');
+      return;
+    }
+
+    const parsedGridBuyMultiplier = Number(gridBuyMultiplier);
+    if (!Number.isFinite(parsedGridBuyMultiplier) || parsedGridBuyMultiplier <= 0) {
+      Alert.alert('알림', '매수 배율은 0보다 큰 숫자로 입력해 주세요.');
+      return;
+    }
+
     setSaving(true);
     try {
       await saveKisSettings({ appKey: appKey.trim(), appSecret: effectiveAppSecret, ...account });
@@ -172,6 +189,8 @@ export default function SettingsScreen() {
         buyStrengthThreshold,
         commissionRatePct,
         buyCancelAfterSec,
+        gridWidthPct: parsedGridWidthPct,
+        gridBuyMultiplier: parsedGridBuyMultiplier,
       });
       // 저장 성공 — 이후 재입력 없이도 배지가 최신 저장값을 가리키게 갱신한다.
       savedAppSecretRef.current = effectiveAppSecret;
@@ -303,6 +322,28 @@ export default function SettingsScreen() {
                   keyboardType="number-pad"
                   className="mb-4 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
                 />
+
+                <Text className="mb-1 text-xs text-[#8b95a1]">그리드 폭 (%)</Text>
+                <TextInput
+                  value={gridWidthPct}
+                  onChangeText={setGridWidthPct}
+                  keyboardType="decimal-pad"
+                  placeholder="예: 10"
+                  placeholderTextColor="#8b95a1"
+                  className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
+                />
+                <Text className="mb-4 text-xs text-[#8b95a1]">평단 ±이 %에 매도·매수 지정가를 걸어요.</Text>
+
+                <Text className="mb-1 text-xs text-[#8b95a1]">매수 배율</Text>
+                <TextInput
+                  value={gridBuyMultiplier}
+                  onChangeText={setGridBuyMultiplier}
+                  keyboardType="decimal-pad"
+                  placeholder="예: 1"
+                  placeholderTextColor="#8b95a1"
+                  className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
+                />
+                <Text className="mb-4 text-xs text-[#8b95a1]">매수는 보유수량 × 이 배율만큼 발주해요.</Text>
 
                 <SettingSlider
                   label="리샘플 청크 (초)"
