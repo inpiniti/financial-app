@@ -4,9 +4,12 @@ import type { TradeRecord } from '../../core/cycle';
 import {
   AutoPilot,
   AUTOPILOT_STORAGE_KEY,
+  DEFAULT_MAX_GRIDS,
   DEFAULT_MIN_TICK_RATE,
   etDateOf,
   isMartingaleOn,
+  MAX_GRIDS_LIMIT,
+  maxGridsOf,
   nextAmountUsd,
   qtyForAmount,
   shouldEndSession,
@@ -141,6 +144,27 @@ describe('순수 규칙 — 금액·수량·세션 종료·검증·기준일', (
     expect(validateConfig({ startAmountUsd: 100, maxAmountUsd: 99, minTickRate: 1 })).toContain('최대금액');
     expect(validateConfig({ startAmountUsd: 100, maxAmountUsd: 400, minTickRate: 0 })).toContain('최소 속도');
     expect(DEFAULT_MIN_TICK_RATE).toBe(1);
+  });
+
+  it('동시 그리드 수 — 미지정·손상값은 기본값, 상한은 클램프, 검증은 범위만 본다', () => {
+    // 미지정(기존 v2 저장값)은 조용히 기본값으로 읽힌다 — 설정 소실 없음.
+    expect(maxGridsOf(null)).toBe(DEFAULT_MAX_GRIDS);
+    expect(maxGridsOf({})).toBe(DEFAULT_MAX_GRIDS);
+    expect(maxGridsOf({ maxConcurrentGrids: 0 })).toBe(DEFAULT_MAX_GRIDS);
+    expect(maxGridsOf({ maxConcurrentGrids: NaN })).toBe(DEFAULT_MAX_GRIDS);
+    expect(maxGridsOf({ maxConcurrentGrids: 2 })).toBe(2);
+    expect(maxGridsOf({ maxConcurrentGrids: 99 })).toBe(MAX_GRIDS_LIMIT);
+    // 검증: 미지정은 통과, 범위 밖은 문구.
+    expect(validateConfig({ startAmountUsd: 100, maxAmountUsd: 400, minTickRate: 1 })).toBeNull();
+    expect(
+      validateConfig({ startAmountUsd: 100, maxAmountUsd: 400, minTickRate: 1, maxConcurrentGrids: 3 }),
+    ).toBeNull();
+    expect(
+      validateConfig({ startAmountUsd: 100, maxAmountUsd: 400, minTickRate: 1, maxConcurrentGrids: 0 }),
+    ).toContain('동시 그리드');
+    expect(
+      validateConfig({ startAmountUsd: 100, maxAmountUsd: 400, minTickRate: 1, maxConcurrentGrids: 99 }),
+    ).toContain('동시 그리드');
   });
 
   it('기준일 — 미국 동부(America/New_York) 날짜, 서머타임 자동(§4-7)', () => {
@@ -311,7 +335,7 @@ describe('AutoPilot — 사이클 e2e (진입 1종목·정산·금액 조정·�
     expect(h.events.some((e) => e.includes('진입 포기') && e.includes('속도'))).toBe(true);
   });
 
-  it('동시 매수신호 — 프리플라이트 창 안에 더 높은 틱/초의 BUY가 오면 그쪽으로 진입한다', async () => {
+  it('동시 매수신호 — 슬롯이 남아 있으면 두 종목 모두 각자 진입한다(다중 그리드)', async () => {
     let releaseGate: (() => void) | null = null;
     const gate = new Promise<void>((resolve) => {
       releaseGate = resolve;
@@ -341,8 +365,8 @@ describe('AutoPilot — 사이클 e2e (진입 1종목·정산·금액 조정·�
     pilot.setConfig(CONFIG_100);
     pilot.start();
 
-    // A·B를 같은 V자 궤적으로 나란히 재생 — B는 틱을 2배로 흘려 틱/초를 A보다 높인다.
-    // A가 먼저 BUY를 내고(게이트에 붙잡힘), 같은 청크에서 B의 BUY가 후보를 교체한다.
+    // A·B를 같은 V자 궤적으로 나란히 재생 — A의 프리플라이트만 게이트에 붙잡힌다.
+    // 예전(단일 사이클)에는 둘 중 하나만 살아남았지만, 이제는 슬롯이 남아 있으므로 둘 다 진입한다.
     let i = 0;
     for (const price of [...V, 20]) {
       h.slots.get('A')!.pushTick(price, i * 1000);
@@ -353,16 +377,17 @@ describe('AutoPilot — 사이클 e2e (진입 1종목·정산·금액 조정·�
       i += 1;
     }
     await flush();
-    expect(pilot.getView().activeTicker).toBeNull(); // 게이트에 막혀 아직 발주 전.
-    expect(h.events.some((e) => e.includes('동시 신호'))).toBe(true);
+    // B는 게이트가 없어 이미 진입했고, A는 프리플라이트 대기 중이다.
+    expect(pilot.getView().activeTickers).toEqual(['B']);
+    expect(pilot.getView().state).toBe('ENTERING'); // A가 아직 대기 중.
 
     releaseGate!();
     await flush();
     await flush();
 
-    expect(pilot.getView().activeTicker).toBe('B');
+    expect([...pilot.getView().activeTickers].sort()).toEqual(['A', 'B']);
+    expect(h.brokers.get('A')!.placed.filter((p) => p.side === 'buy')).toHaveLength(1);
     expect(h.brokers.get('B')!.placed.filter((p) => p.side === 'buy')).toHaveLength(1);
-    expect(h.brokers.get('A')!.placed).toHaveLength(0);
   });
 
   it('qty<1(금액 < 1주 가격)이면 진입을 포기하고 SCANNING을 유지한다', async () => {
@@ -817,5 +842,203 @@ describe('AutoPilot — 매도 관리 그리드 인계(D5·GRID_EXIT)', () => {
     expect(h.trades).toHaveLength(0); // 아직 청산 아님.
     // 새 매도/매수 다리가 다시 걸렸다.
     expect(broker.placed.filter((p) => p.side === 'sell')).toHaveLength(2);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 다중 그리드(2026-08-05) — 진입 뒤에도 변곡점 감시가 계속 돌고, 보유 종목만 후보에서 빠진다.
+// 진입금액은 설정 고정값이고 세션 금액(마틴게일)과 분리돼 있다.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('AutoPilot — 다중 그리드', () => {
+  /** 신호가 나지 않는 배경 궤적(단조 상승 — 하락→상승 전환이 없어 BUY가 안 뜬다). 틱/초 자격만 만들어 준다. */
+  const RISING = Array.from({ length: 20 }, (_, i) => 10 + i);
+
+  /** 여러 종목을 같은 시각축으로 나란히 재생한다(길이는 가장 긴 궤적 기준, 짧은 쪽은 마지막 값 유지). */
+  async function replayMulti(h: Harness, paths: Record<string, number[]>): Promise<void> {
+    const len = Math.max(...Object.values(paths).map((p) => p.length));
+    for (let i = 0; i < len; i += 1) {
+      for (const [ticker, prices] of Object.entries(paths)) {
+        h.slots.get(ticker)!.pushTick(prices[Math.min(i, prices.length - 1)], i * 1000);
+      }
+      h.pilot.reselect();
+      h.clock.advance(1000);
+      await flush();
+      await h.pilot.pollCycle();
+      await flush();
+    }
+  }
+
+  it('진입해도 감시가 멈추지 않고, 보유 종목만 감시 후보에서 빠진다', async () => {
+    const h = makeHarness(['A', 'B', 'C']);
+    h.pilot.start();
+    // A만 V자(BUY 발생 후 보유 유지), B·C는 단조 상승(신호 없음 — 감시 자격만 유지).
+    // ⚠ A에 DOWN_UP_DOWN을 쓰면 마지막 하락 구간에서 SELL이 나 청산돼 버린다(그리드 미주입 하네스).
+    const bg = RISING.slice(0, V.length);
+    await replayMulti(h, { A: V, B: bg, C: bg });
+
+    const view = h.pilot.getView();
+    expect(view.activeTickers).toContain('A');
+    // ★ 예전에는 여기서 watched가 ['A'] 하나로 접혔다. 이제는 A가 빠지고 나머지가 계속 감시된다.
+    expect(view.watched).not.toContain('A');
+    expect([...view.watched].sort()).toEqual(['B', 'C']);
+    expect(h.slots.get('B')!.watched).toBe(true);
+    expect(h.slots.get('C')!.watched).toBe(true);
+  });
+
+  it('이미 보유 중인 종목은 다시 사지 않는다 — 같은 종목의 BUY 신호는 무시된다', async () => {
+    const h = makeHarness(['A', 'B']);
+    h.pilot.start();
+    // DOWN_UP_DOWN을 두 번 흘려 A에서 BUY 신호가 다시 나게 한다(그리드 미사용이라 SELL로 청산될 수 있어
+    // 매수 발주 건수로 검증한다 — 보유 중 재진입이 있었다면 2건 이상이 된다).
+    await replay(h, 'A', V);
+    expect(h.pilot.getView().activeTickers).toEqual(['A']);
+    const before = h.brokers.get('A')!.placed.filter((p) => p.side === 'buy').length;
+    // 보유 중 같은 궤적을 한 번 더 — BUY 신호가 또 떠도 진입은 없어야 한다.
+    await replay(h, 'A', V, 20);
+    expect(h.brokers.get('A')!.placed.filter((p) => p.side === 'buy')).toHaveLength(before);
+  });
+
+  it('동시 그리드 상한이 1이면 두 번째 종목은 진입하지 않는다', async () => {
+    const h = makeHarness(['A', 'B'], {
+      config: { startAmountUsd: 100, maxAmountUsd: 400, minTickRate: TINY_RATE, maxConcurrentGrids: 1 },
+    });
+    h.pilot.start();
+    await replayMulti(h, { A: V, B: V });
+
+    const view = h.pilot.getView();
+    expect(view.maxGrids).toBe(1);
+    expect(view.activeTickers).toHaveLength(1); // 슬롯 만석 — 둘 중 하나만.
+  });
+
+  it('상한이 3이면 두 종목이 나란히 진입한다', async () => {
+    const h = makeHarness(['A', 'B'], {
+      config: { startAmountUsd: 100, maxAmountUsd: 400, minTickRate: TINY_RATE, maxConcurrentGrids: 3 },
+    });
+    h.pilot.start();
+    await replayMulti(h, { A: V, B: V });
+
+    expect([...h.pilot.getView().activeTickers].sort()).toEqual(['A', 'B']);
+    expect(h.brokers.get('A')!.placed.filter((p) => p.side === 'buy')).toHaveLength(1);
+    expect(h.brokers.get('B')!.placed.filter((p) => p.side === 'buy')).toHaveLength(1);
+  });
+
+  it('두 종목이 각자 그리드를 연다 — 게이지가 종목별로 따로 뜬다', async () => {
+    const h = makeHarness(['A', 'B'], { autoFill: false, gridConfig: { width: 0.1, buyMultiplier: 1 } });
+    h.pilot.start();
+
+    // A 진입 → 체결 → 그리드 인계.
+    await replay(h, 'A', DOWN_UP_DOWN);
+    const ba = h.brokers.get('A')!;
+    ba.position = { qty: 5, avgPrice: 100 };
+    ba.fill(ba.placed.find((p) => p.side === 'buy')!.odno, 100);
+    await flush();
+    await h.pilot.pollCycle();
+    await flush();
+
+    // B 진입 → 체결 → 그리드 인계(A의 그리드는 그대로 관리 중).
+    await replay(h, 'B', DOWN_UP_DOWN);
+    const bb = h.brokers.get('B')!;
+    bb.position = { qty: 4, avgPrice: 50 };
+    bb.fill(bb.placed.find((p) => p.side === 'buy')!.odno, 50);
+    await flush();
+    await h.pilot.pollCycle();
+    await flush();
+
+    const view = h.pilot.getView();
+    expect([...view.activeTickers].sort()).toEqual(['A', 'B']);
+    expect(view.grids.map((g) => g.ticker).sort()).toEqual(['A', 'B']);
+    expect(view.grids.find((g) => g.ticker === 'A')).toMatchObject({
+      avgPrice: 100,
+      buyPrice: 90,
+      sellPrice: 110,
+      holdingQty: 5,
+      gridActive: true,
+    });
+    expect(view.grids.find((g) => g.ticker === 'B')).toMatchObject({
+      avgPrice: 50,
+      buyPrice: 45,
+      sellPrice: 55,
+      holdingQty: 4,
+      gridActive: true,
+    });
+  });
+
+  it('진입금액은 설정 고정값 — 세션 금액이 마틴게일로 2배가 돼도 진입 수량은 그대로다', async () => {
+    const h = makeHarness(['A', 'B']);
+    h.pilot.start();
+    // A: 손실 사이클 → 세션 금액 100 → 200.
+    const n = await replay(h, 'A', DOWN_UP_DOWN);
+    await cap(h, 'A', 2, n);
+    expect(h.pilot.getView().session!.amountUsd).toBe(200);
+
+    // B: 다음 진입. 세션 금액(200)이 아니라 설정 진입금액(100) 기준이어야 한다.
+    await replay(h, 'B', V);
+    const buy = h.brokers.get('B')!.placed.find((p) => p.side === 'buy')!;
+    expect(buy.qty).toBe(qtyForAmount(100, buy.price));
+    expect(buy.qty).not.toBe(qtyForAmount(200, buy.price));
+  });
+
+  it('[사고 재현] setGridConfig — 폭·배율을 바꾸면 다음에 여는 그리드부터 그 값으로 발주한다', async () => {
+    // 매니저가 모듈 스코프 싱글턴이라 설정 탭에서 폭을 바꿔도 앱 재시작 전에는 반영되지 않던 버그.
+    const h = makeHarness(['A', 'B'], { autoFill: false, gridConfig: { width: 0.1, buyMultiplier: 1 } });
+    h.pilot.start();
+
+    // A는 기본값(±10%·배율 1)으로 인계된다.
+    await replay(h, 'A', DOWN_UP_DOWN);
+    const ba = h.brokers.get('A')!;
+    ba.position = { qty: 10, avgPrice: 100 };
+    ba.fill(ba.placed.find((p) => p.side === 'buy')!.odno, 100);
+    await flush();
+    await h.pilot.pollCycle();
+    await flush();
+    expect(h.pilot.getView().grids.find((g) => g.ticker === 'A')).toMatchObject({ buyPrice: 90, sellPrice: 110 });
+
+    // 실행 중에 설정을 바꾼다(설정 탭 저장 → managerProvider가 포커스에서 흘려 넣는 경로).
+    h.pilot.setGridConfig({ width: 0.05, buyMultiplier: 0.5 });
+    expect(h.pilot.gridSettings).toEqual({ width: 0.05, buyMultiplier: 0.5 });
+
+    // B는 새 값(±5%·배율 0.5)으로 열린다.
+    await replay(h, 'B', DOWN_UP_DOWN);
+    const bb = h.brokers.get('B')!;
+    bb.position = { qty: 10, avgPrice: 200 };
+    bb.fill(bb.placed.find((p) => p.side === 'buy')!.odno, 200);
+    await flush();
+    await h.pilot.pollCycle();
+    await flush();
+
+    const view = h.pilot.getView();
+    expect(view.grids.find((g) => g.ticker === 'B')).toMatchObject({
+      avgPrice: 200,
+      buyPrice: 190, // 200 × 0.95
+      sellPrice: 210, // 200 × 1.05
+      buyMultiplier: 0.5,
+    });
+    // 매수 다리는 floor(10 × 0.5) = 5주(= 총 15주). 배율 1이었다면 10주(총 20주)였다.
+    const gridBuyB = bb.placed.filter((p) => p.side === 'buy').at(-1)!;
+    expect(gridBuyB).toMatchObject({ qty: 5, price: 190 });
+    // ★ 이미 걸린 A의 그리드는 옛 폭 그대로다(주문이 이미 접수돼 있다).
+    expect(view.grids.find((g) => g.ticker === 'A')).toMatchObject({ buyPrice: 90, sellPrice: 110 });
+  });
+
+  it('[사고 방지] 그리드가 살아 있는데 현금이 모자라면 PAUSED로 가지 않고 신규 진입만 쉰다', async () => {
+    // 첫 진입은 통과, 두 번째부터 현금 부족.
+    let calls = 0;
+    const h = makeHarness(['A', 'B'], {
+      fetchBuyableUsd: async () => (calls++ === 0 ? 1_000_000 : 1),
+    });
+    h.pilot.start();
+    const n = await replay(h, 'A', V);
+    await cap(h, 'A', 20, n);
+    expect(h.pilot.getView().state).toBe('HOLDING'); // A 보유 중.
+
+    await replay(h, 'B', V);
+
+    const view = h.pilot.getView();
+    // ★ PAUSED로 갔다면 폴 타이머가 꺼져 A의 포지션이 방치된다 — 그래서 절대 PAUSED가 아니어야 한다.
+    expect(view.state).toBe('HOLDING');
+    expect(view.session!.paused).toBe(false);
+    expect(view.activeTickers).toEqual(['A']);
+    expect(h.brokers.get('B')!.placed).toHaveLength(0);
+    expect(h.events.some((e) => e.includes('신규 진입을'))).toBe(true);
   });
 });

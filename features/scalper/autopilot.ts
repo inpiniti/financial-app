@@ -1,17 +1,24 @@
-// AutoPilot — 단타 관리자 (plan: 2026-07-31_단타-자동관리 + 2026-08-01_단타-세션-확장).
+// AutoPilot — 단타 관리자 (plan: 2026-07-31_단타-자동관리 + 2026-08-01_단타-세션-확장
+//              + 2026-08-05_다중그리드).
 //
 // 단타 도메인의 중앙 관리자: 상태·금액(세션)·종목을 한 곳에서 관리한다.
 //  · 리스트(FeedSlot들)는 전부 시세를 받지만, 변곡점 감시(detector)는
 //    **최소 속도(minTickRate) 이상인 종목 중** 틱/초 상위 최대 3개에만 부착(자격자가 없으면 0개 — 진입 없음).
-//  · RUN(매매 사이클)은 동시에 1종목만 — RunCycle + OrderPortAdapter를 사이클마다 새로 만든다.
-//  · 세션: 시작금액으로 개시, 사이클마다 수익 절반(하한 $1)·손실 2배(상한 없음)로 조정.
-//    종료 조건(AND, 금액 조정 **전** 판정): 마지막 사이클 수익 + 투입금액 ≥ 최대금액 + 세션 성과 ≥ 0
-//    → 달성 시 새 세션(시작금액·성과 0) 자동 개시.
-//  · 현금 부족(매수가능금액 < 필요금액) → PAUSED. 새 세션 자동 개시 금지 —
-//    사람이 "이어서 재개" 또는 "세션 초기화"를 선택한다(사용자 확정 §4-3).
+//  · RUN(매매 사이클)은 **동시에 여러 종목**이 가능하다(maxConcurrentGrids, 기본 3).
+//    종목마다 RunCycle + OrderPortAdapter + Grid를 따로 만들고, 이미 보유·진입 중인 종목은
+//    감시 후보에서 제외한다 — 즉 진입 뒤에도 변곡점 감시는 멈추지 않고 계속 돈다.
+//  · 진입금액은 **설정한 고정 금액(config.startAmountUsd)**이다. 세션의 마틴게일 금액
+//    (session.amountUsd)은 진입 수량 계산에 쓰지 않는다 — 세션과 그리드는 따로 움직인다.
+//    (그리드가 스스로 물타기로 수량을 늘리므로, 진입금액까지 배증하면 노출이 두 겹으로 폭주한다.)
+//  · 세션: 시작금액으로 개시, 사이클마다 수익 절반(하한 $1)·손실 2배(상한 없음)로 조정 —
+//    이제는 **성과 집계·세션 완주 판정 전용** 회계다(진입 수량과 무관).
+//  · 현금 부족(매수가능금액 < 필요금액):
+//      보유 그리드가 하나도 없으면 → PAUSED(사람이 재개/초기화 선택, 사용자 확정 §4-3)
+//      보유 그리드가 있으면      → 그 진입만 포기하고 신규 진입만 잠시 쉰다(기존 그리드는 계속 관리).
 //
 // 안전장치는 ScalperInstance와 같은 원칙: 매수 전 프리플라이트, FAULT 인터록(사용자 Stop으로만 해제),
-// 미체결 무한 대기(취소는 사용자 Stop 경로에서만).
+// 미체결 무한 대기(취소는 사용자 Stop 경로에서만). FAULT는 **전역**이다 — 한 종목이라도 주문 신뢰가
+// 깨지면 전체를 동결한다(부분 동결은 계좌 상태 추론을 사람이 못 하게 만든다).
 
 import { RunCycle, type SignalSnapshot, type TradeRecord } from '../../core/cycle';
 import type { Signal } from '../../core/detector';
@@ -34,10 +41,16 @@ export const AUTOPILOT_STORAGE_KEY = 'scalper:autopilot';
 export const WATCH_COUNT = 3;
 export const RESELECT_INTERVAL_MS = 30_000;
 export const HYSTERESIS_RATIO = 1.2;
+/** 동시에 열 수 있는 그리드(포지션) 최대 개수의 기본값 — 설정 미지정 시. */
+export const DEFAULT_MAX_GRIDS = 3;
+/** 동시 그리드 개수의 상한 — WS 호가(R) 구독 예산과 현금 분할이 감당하는 선. */
+export const MAX_GRIDS_LIMIT = 6;
 /** 연속 매수 취소가 이 횟수에 닿으면 그 종목 매수를 잠시 쉰다. */
 export const ABANDON_COOLDOWN_STREAK = 3;
 /** 매수 취소 쿨다운 길이(ms). */
 export const ABANDON_COOLDOWN_MS = 60_000;
+/** 현금 부족(보유 그리드가 있어 PAUSED로 안 가는 경우)에 신규 진입을 쉬는 시간(ms). */
+export const CASH_COOLDOWN_MS = 60_000;
 /** 최소 속도 기본값(틱/초) — 0 설정 불가(> 0 강제, 사용자 확정 §4-6). */
 export const DEFAULT_MIN_TICK_RATE = 1;
 /**
@@ -54,7 +67,7 @@ export const AMOUNT_FLOOR_USD = 1;
  */
 export const GRID_EXIT = true;
 
-/** 그리드 설정 — 폭(w)·매수 배율(buyMultiplier). 설정 화면 노출은 다음 단계, 지금은 주입 기본값. */
+/** 그리드 설정 — 폭(w)·매수배율(buyMultiplier). 설정 탭(매매 파라미터)에서 조절한다. */
 export interface GridExitConfig {
   /** 폭 w(기본 0.10). buyPrice=P×(1−w), sellPrice=P×(1+w). */
   width: number;
@@ -64,17 +77,24 @@ export interface GridExitConfig {
 
 export type AutoPilotState = 'IDLE' | 'SCANNING' | 'ENTERING' | 'HOLDING' | 'EXITING' | 'PAUSED' | 'FAULT';
 
-/** 사용자 설정 — 시작금액·최대금액·최소 속도(+마틴게일 on/off). */
+/** 사용자 설정 — 진입금액·최대금액·최소 속도(+마틴게일 on/off·동시 그리드 수). */
 export interface AutoPilotConfig {
+  /**
+   * **종목당 진입금액(USD)** — 진입 수량은 항상 floor(이 금액 ÷ 현재가)다.
+   * 세션 금액(마틴게일로 조정되는 session.amountUsd)은 진입에 관여하지 않는다.
+   * (이름은 세션 개시금액과 겸용이라 startAmountUsd 그대로 둔다 — 저장 포맷 하위호환.)
+   */
   startAmountUsd: number;
   maxAmountUsd: number;
   minTickRate: number;
   /**
    * 마틴게일(손실 2배·수익 절반·세션 완주 판정) 사용 여부. **미지정이면 켬** — 기존 저장값 하위호환.
-   * 끄면 금액이 절대 변하지 않고 세션 완주 판정도 하지 않는다(정지할 때까지 같은 금액으로 반복).
-   * 끌 때는 maxAmountUsd를 startAmountUsd와 같은 값으로 정규화해 저장한다(불변식 유지·ON 복귀 대비).
+   * 끄면 세션 금액이 절대 변하지 않고 세션 완주 판정도 하지 않는다.
+   * ⚠ 다중 그리드 도입 이후 이 값은 **세션 회계에만** 영향을 준다 — 진입 수량은 항상 startAmountUsd 기준이다.
    */
   martingale?: boolean;
+  /** 동시에 열 수 있는 그리드(포지션) 최대 개수. 미지정이면 DEFAULT_MAX_GRIDS. */
+  maxConcurrentGrids?: number;
 }
 
 /**
@@ -84,6 +104,13 @@ export interface AutoPilotConfig {
  */
 export function isMartingaleOn(config: Pick<AutoPilotConfig, 'martingale'>): boolean {
   return config.martingale !== false;
+}
+
+/** 동시 그리드 개수 단일 판정 — 미지정·손상값은 기본값으로, 상한은 MAX_GRIDS_LIMIT. */
+export function maxGridsOf(config: Pick<AutoPilotConfig, 'maxConcurrentGrids'> | null | undefined): number {
+  const raw = config?.maxConcurrentGrids;
+  if (!Number.isFinite(raw) || (raw as number) < 1) return DEFAULT_MAX_GRIDS;
+  return Math.min(Math.floor(raw as number), MAX_GRIDS_LIMIT);
 }
 
 /** 진행 중 세션 — Stop·FAULT·재시작에도 유지되고, 종료 조건 달성 때만 리셋된다. */
@@ -107,18 +134,22 @@ export interface AutoPilotView {
   readonly session: SessionState | null;
   /** 오늘(미국 장 기준일) 열린 세션 수. */
   readonly sessionCount: number;
-  /** 변곡점 감시 중인 티커(자격자 중 상위 — 0~3개). */
+  /** 변곡점 감시 중인 티커(자격자 중 상위 — 0~3개). 보유·진입 중 종목은 여기 없다. */
   readonly watched: readonly string[];
+  /** 사이클(진입~그리드 관리)이 열려 있는 모든 티커. */
+  readonly activeTickers: readonly string[];
+  /** 하위호환 — activeTickers의 첫 종목(없으면 null). */
   readonly activeTicker: string | null;
+  /** 동시 그리드 최대 개수(설정값). */
+  readonly maxGrids: number;
   /** 오늘(미국 장 기준일) 전체 완료 사이클 수·누적 실현손익(세션과 무관). */
   readonly cycles: number;
   readonly cumPnl: number;
   readonly lastEvent: AutoPilotEvent | null;
   readonly lastFault: InstanceFault | null;
-  /**
-   * 매도 관리 그리드 상태 — 진입 후 그리드가 인계 중일 때만 채워진다(그 외 null).
-   * 다음 단계 게이지 UI가 읽는 필드: 평단·매수가·매도가·현재가·보유수량·매수배율·활성여부.
-   */
+  /** 관리 중인 모든 그리드(진입 후 인계된 것만). 게이지 UI가 이 배열을 그대로 그린다. */
+  readonly grids: readonly AutoPilotGridView[];
+  /** 하위호환 — grids의 첫 그리드(없으면 null). */
   readonly grid: AutoPilotGridView | null;
 }
 
@@ -155,7 +186,7 @@ export interface AutoPilotDeps {
    */
   gridConfig?: GridExitConfig;
   /**
-   * 매수가능금액(USD) 사전 조회 — 현금 부족 PAUSED 판정용. null 반환/미주입/throw면
+   * 매수가능금액(USD) 사전 조회 — 현금 부족 판정용. null 반환/미주입/throw면
    * 판정 없이 진행한다(주문 거절은 기존 FAULT 인터록이 받는다 — plan §2-4 폴백).
    */
   fetchBuyableUsd?: (ticker: string, price: number) => Promise<number | null>;
@@ -206,9 +237,10 @@ export function shouldEndSession(
 }
 
 /**
- * 설정 검증(순수) — 0 < 시작 ≤ 최대, 최소 속도 > 0. 문제 없으면 null, 있으면 사용자 문구.
+ * 설정 검증(순수) — 0 < 시작 ≤ 최대, 최소 속도 > 0, 동시 그리드 ≥ 1. 문제 없으면 null, 있으면 사용자 문구.
  * 마틴게일을 끄면 최대금액이 의미가 없으므로 그 검사만 건너뛴다(= 규칙이 더 관대해진다).
  * ⚠ restore()가 이 함수로 저장값을 필터링하므로, 규칙을 **엄격하게** 바꾸면 기존 설정이 조용히 소실된다.
+ *    그래서 maxConcurrentGrids는 미지정(undefined)을 허용한다 — 기존 v2 저장값이 살아남아야 한다.
  */
 export function validateConfig(config: AutoPilotConfig): string | null {
   const martingaleOn = isMartingaleOn(config);
@@ -223,6 +255,12 @@ export function validateConfig(config: AutoPilotConfig): string | null {
   if (!Number.isFinite(config.minTickRate) || config.minTickRate <= 0) {
     return '최소 속도는 0보다 크게 입력해 주세요 (기본 1틱/초)';
   }
+  if (config.maxConcurrentGrids !== undefined) {
+    const n = config.maxConcurrentGrids;
+    if (!Number.isFinite(n) || n < 1 || n > MAX_GRIDS_LIMIT) {
+      return `동시 그리드 수는 1~${MAX_GRIDS_LIMIT} 사이로 입력해 주세요`;
+    }
+  }
   return null;
 }
 
@@ -236,6 +274,11 @@ export function etDateOf(epochMs: number): string {
   }).format(new Date(epochMs));
 }
 
+/**
+ * 종목 하나의 진행 중 사이클. 예전에는 AutoPilot이 이 상태를 통째로 필드로 들고 있었지만(단일 사이클),
+ * 다중 그리드에서는 **종목마다 한 벌**이어야 한다 — 특히 buyingSince·abandonRequested·pendingSettle을
+ * 전역으로 두면 A 종목의 미체결 시계가 B 종목의 자동 포기를 오발동시킨다.
+ */
 interface ActiveCycle {
   ticker: string;
   slot: FeedSlot;
@@ -247,6 +290,14 @@ interface ActiveCycle {
   grid: Grid | null;
   /** 그리드가 두 주문을 실제로 발주했는가(arm 성공). */
   gridArmed: boolean;
+  /** BUYING 진입 시각(자동 포기 경과 기점). */
+  buyingSince: number | null;
+  /** 이 주문에 자동 포기를 이미 요청했는가. */
+  abandonRequested: boolean;
+  /** RunCycle이 onTrade로 흘린 마지막 기록 — settle이 회수한다. */
+  pendingSettle: TradeRecord | null;
+  /** 그리드 arm이 진행 중 — 같은 종목에 두 번 걸지 않기 위한 가드. */
+  arming: boolean;
 }
 
 interface PendingBuy {
@@ -272,22 +323,30 @@ export class AutoPilot {
   private readonly hysteresisRatio: number;
   private readonly watchCount: number;
 
-  private state: AutoPilotState = 'IDLE';
+  /** start()~finishStop() 사이인가. 전역 state는 이 플래그·faulted·session.paused에서 파생된다. */
+  private running = false;
+  /** 전역 인터록 — 사용자 Stop으로만 해제. */
+  private faulted = false;
   private config: AutoPilotConfig | null = null;
   private session: SessionState | null = null;
   private dailyDate: string | null = null;
   private sessionCount = 0;
   private watchedTickers: string[] = [];
-  private active: ActiveCycle | null = null;
-  private pendingBuy: PendingBuy | null = null;
-  private buyCommitting = false;
-  private pendingSettle: TradeRecord | null = null;
-  /** BUYING 진입 시각(자동 포기 경과 기점). */
-  private buyingSince: number | null = null;
-  /** 이 주문에 자동 포기를 이미 요청했는가. */
-  private abandonRequested = false;
+  /**
+   * 매도 관리 그리드 설정(폭·매수배율). deps에서 **초기값만** 받고 이후 setGridConfig로 갈아끼운다 —
+   * 설정 탭에서 폭을 바꿔도 매니저 싱글턴이 캐시돼 옛 값으로 돌던 버그를 여기서 막는다.
+   * ⚠ 이미 걸려 있는 Grid는 생성자에서 폭·배율을 캡처하므로 **다음에 새로 여는 그리드부터** 적용된다
+   *   (돌고 있는 그리드의 폭을 바꾸려면 접수된 두 주문을 취소·재발주해야 한다 — 하지 않는다).
+   */
+  private gridConfig: GridExitConfig | undefined;
+  /** 진행 중 사이클 — 티커당 하나, 최대 maxGrids개. */
+  private readonly actives = new Map<string, ActiveCycle>();
+  /** 프리플라이트~발주 확정 사이의 진입 후보 — 슬롯 점유를 여기서부터 계산한다(동시 신호 과진입 방지). */
+  private readonly pendingBuys = new Map<string, PendingBuy>();
   /** 티커별 연속 취소 기록 — 사이클마다 종목이 바뀌므로 맵으로 둔다. */
   private readonly abandonState = new Map<string, { streak: number; until: number }>();
+  /** 현금 부족으로 신규 진입을 쉬는 기한(보유 그리드가 있어 PAUSED로 가지 않은 경우). */
+  private cashCooldownUntil = 0;
   private stopRequested = false;
   private cycles = 0;
   private cumPnl = 0;
@@ -304,6 +363,7 @@ export class AutoPilot {
 
   constructor(deps: AutoPilotDeps) {
     this.deps = deps;
+    this.gridConfig = deps.gridConfig;
     this.pollIntervalMs = deps.pollIntervalMs ?? 2000;
     this.repriceIntervalMs = deps.repriceIntervalMs ?? 1000;
     this.buyCancelAfterMs = deps.buyCancelAfterMs ?? 0;
@@ -322,41 +382,117 @@ export class AutoPilot {
   }
 
   getView(): AutoPilotView {
+    const activeTickers = [...this.actives.keys()];
+    const grids = this.gridViews();
     return {
       state: this.state,
       config: this.config ? { ...this.config } : null,
       session: this.session ? { ...this.session } : null,
       sessionCount: this.sessionCount,
       watched: [...this.watchedTickers],
-      activeTicker: this.active?.ticker ?? null,
+      activeTickers,
+      activeTicker: activeTickers[0] ?? null,
+      maxGrids: this.maxGrids,
       cycles: this.cycles,
       cumPnl: this.cumPnl,
       lastEvent: this.lastEvent,
       lastFault: this.lastFault,
-      grid: this.gridView(),
+      grids,
+      grid: grids[0] ?? null,
     };
   }
 
-  /** 관리 중 그리드 뷰 조립 — 그리드가 인계된 활성 사이클이 있을 때만. */
-  private gridView(): AutoPilotGridView | null {
-    const active = this.active;
-    if (!active || !active.grid) return null;
-    const v = active.grid.view;
-    return {
-      ticker: active.ticker,
-      avgPrice: v.avgPrice,
-      buyPrice: v.buyPrice,
-      sellPrice: v.sellPrice,
-      currentPrice: active.slot.getView().price,
-      holdingQty: v.holdingQty,
-      buyMultiplier: v.buyMultiplier,
-      gridActive: v.gridActive,
-    };
+  /**
+   * 전역 상태(파생) — 배지 하나로 요약한다. 우선순위는 사람이 먼저 봐야 하는 순:
+   * IDLE > FAULT > PAUSED > 진입 중 > 청산 중 > 보유 중 > 감시 중.
+   * ⚠ 다중 그리드에서는 "보유 중"이어도 감시는 계속 돈다 — 배지는 요약일 뿐 감시 여부의 근거가 아니다.
+   */
+  private get state(): AutoPilotState {
+    if (!this.running) return 'IDLE';
+    if (this.faulted) return 'FAULT';
+    if (this.session?.paused) return 'PAUSED';
+    let entering = this.pendingBuys.size > 0;
+    let exiting = false;
+    let holding = false;
+    for (const a of this.actives.values()) {
+      switch (a.cycle.state) {
+        case 'WATCH_BUY':
+        case 'BUYING':
+          entering = true;
+          break;
+        case 'SELLING':
+          exiting = true;
+          break;
+        case 'HOLDING':
+          holding = true;
+          break;
+        default:
+          break;
+      }
+    }
+    if (entering) return 'ENTERING';
+    if (exiting) return 'EXITING';
+    if (holding) return 'HOLDING';
+    return 'SCANNING';
+  }
+
+  private get maxGrids(): number {
+    return maxGridsOf(this.config);
+  }
+
+  /** 관리 중 그리드 뷰 — 그리드가 인계된 사이클만(진입 직후·비그리드 경로는 빠진다). */
+  private gridViews(): AutoPilotGridView[] {
+    const out: AutoPilotGridView[] = [];
+    for (const active of this.actives.values()) {
+      if (!active.grid) continue;
+      const v = active.grid.view;
+      out.push({
+        ticker: active.ticker,
+        avgPrice: v.avgPrice,
+        buyPrice: v.buyPrice,
+        sellPrice: v.sellPrice,
+        currentPrice: active.slot.getView().price,
+        holdingQty: v.holdingQty,
+        buyMultiplier: v.buyMultiplier,
+        gridActive: v.gridActive,
+      });
+    }
+    return out;
   }
 
   /** 그리드 인계가 켜져 있는가 — 상수 롤백 스위치 AND 설정 주입. */
   private gridEnabled(): boolean {
-    return GRID_EXIT && this.deps.gridConfig !== undefined;
+    return GRID_EXIT && this.gridConfig !== undefined;
+  }
+
+  /**
+   * 그리드 폭·매수배율 교체 — 설정 탭 저장 후 매니저가 부른다. **실행 중에도 안전하다.**
+   * 이미 걸린 그리드는 자기 폭을 그대로 유지하고(주문이 이미 접수돼 있다), 다음 진입부터 새 값이 쓰인다.
+   * 현재 값과 같으면 아무것도 하지 않는다(불필요한 이벤트·리렌더 방지).
+   */
+  setGridConfig(config: GridExitConfig | undefined): void {
+    const prev = this.gridConfig;
+    if (
+      prev === config ||
+      (prev !== undefined &&
+        config !== undefined &&
+        prev.width === config.width &&
+        prev.buyMultiplier === config.buyMultiplier)
+    ) {
+      return;
+    }
+    this.gridConfig = config;
+    if (config) {
+      this.event(
+        `그리드 설정 적용 · 폭 ±${(config.width * 100).toFixed(1)}% · 매수 배율 ${config.buyMultiplier}배 (다음 그리드부터)`,
+      );
+    }
+    this.emit();
+  }
+
+  /** 현재 그리드 설정(읽기 전용) — UI 표시용. 그리드를 쓰지 않는 하네스면 undefined. */
+  get gridSettings(): GridExitConfig | undefined {
+    return this.gridConfig ? { ...this.gridConfig } : undefined;
   }
 
   // ---- 설정/영속화 ----
@@ -368,7 +504,7 @@ export class AutoPilot {
     if (error) return error;
     this.config = { ...config };
     // ★ 마틴 OFF에는 "다음 세션"이 없다(세션 완주 판정을 안 하므로). 진행 중 세션을 동기화하지 않으면
-    //   사용자가 금액을 바꿔도 영원히 예전 금액으로 진입한다. ON→OFF 전환 시 불어난 금액도 여기서 내려온다.
+    //   세션 표시 금액이 영원히 예전 값으로 남는다. ON→OFF 전환 시 불어난 금액도 여기서 내려온다.
     //   setConfig는 IDLE에서만 통과하므로 진행 중 사이클·미체결 주문과 충돌하지 않는다.
     //   (OFF→ON은 동기화하지 않는다 — 마틴 진행 중 성과를 임의로 리셋하지 않기 위해.)
     if (!isMartingaleOn(this.config) && this.session) {
@@ -441,10 +577,13 @@ export class AutoPilot {
   start(): void {
     if (this.state !== 'IDLE') return;
     if (!this.config) {
-      this.event('시작금액·최대금액·최소 속도를 먼저 설정해 주세요');
+      this.event('진입금액·최소 속도를 먼저 설정해 주세요');
       return;
     }
     this.stopRequested = false;
+    this.faulted = false;
+    this.cashCooldownUntil = 0;
+    this.running = true;
     this.rolloverDailyIfNeeded();
     if (!this.session) {
       this.session = { amountUsd: this.config.startAmountUsd, pnl: 0, cycles: 0, paused: false };
@@ -456,39 +595,33 @@ export class AutoPilot {
     }
     if (this.session.paused) {
       // 현금 부족으로 멈췄던 세션 — 자동 재개하지 않는다(§4-3). 사람이 재개/초기화를 고른다.
-      this.state = 'PAUSED';
       this.reselectTimer = this.deps.scheduler.setInterval(() => this.reselect(), this.reselectIntervalMs);
       this.event('현금 부족으로 멈춘 세션이 있어요 — 이어서 재개하거나 세션을 초기화해 주세요');
       this.emit();
       return;
     }
-    this.state = 'SCANNING';
     this.reselect();
     this.reselectTimer = this.deps.scheduler.setInterval(() => this.reselect(), this.reselectIntervalMs);
-    this.event('자동 단타를 시작했어요');
+    this.event(`자동 단타를 시작했어요 · 종목당 $${this.config.startAmountUsd.toFixed(2)} · 그리드 최대 ${this.maxGrids}개`);
     void this.persist();
     this.emit();
   }
 
   stop(): void {
     this.stopRequested = true;
-    this.pendingBuy = null;
-    if (this.state === 'FAULT') {
+    this.pendingBuys.clear();
+    if (this.faulted) {
       // 인터록 해제 — 추가 주문·취소 없이 정리만(포지션은 계좌에서 수동 처리).
-      const active = this.active;
-      if (active) {
+      for (const active of [...this.actives.values()]) {
         active.cycle.stop(); // FAULT→DONE(코어가 주문 없이 종료).
-        active.slot.detachDetector();
-        this.deps.unpin(active.ticker);
-        this.active = null;
-        this.pendingSettle = null;
+        this.teardownActive(active);
       }
       this.finishStop();
       return;
     }
-    if (this.active) {
-      this.active.cycle.stop();
-      // SELLING→DONE은 pollCycle이 진행 — settle에서 stopRequested를 보고 IDLE로 마감한다.
+    if (this.actives.size > 0) {
+      for (const active of this.actives.values()) active.cycle.stop();
+      // SELLING→DONE은 pollCycle이 진행 — settle에서 stopRequested를 보고 마지막 사이클에서 IDLE로 마감한다.
       void this.pollCycle();
       this.emit();
       return;
@@ -497,7 +630,7 @@ export class AutoPilot {
   }
 
   private finishStop(): void {
-    if (this.state === 'IDLE') return;
+    if (!this.running) return;
     this.detachAll();
     this.stopPollTimer();
     if (this.reselectTimer !== null) {
@@ -505,7 +638,8 @@ export class AutoPilot {
       this.reselectTimer = null;
     }
     this.lastFault = null;
-    this.state = 'IDLE';
+    this.faulted = false;
+    this.running = false;
     this.event('자동 단타를 정지했어요');
     void this.persist();
     this.emit();
@@ -517,7 +651,7 @@ export class AutoPilot {
   resume(): void {
     if (this.state !== 'PAUSED' || !this.session) return;
     this.session.paused = false;
-    this.state = 'SCANNING';
+    this.cashCooldownUntil = 0;
     this.reselect();
     this.event('세션을 이어서 재개했어요');
     void this.persist();
@@ -530,20 +664,23 @@ export class AutoPilot {
     this.rolloverDailyIfNeeded();
     this.session = { amountUsd: this.config.startAmountUsd, pnl: 0, cycles: 0, paused: false };
     this.sessionCount += 1;
-    this.state = 'SCANNING';
+    this.cashCooldownUntil = 0;
     this.reselect();
     this.event(`세션 #${this.sessionCount} 시작 · $${this.config.startAmountUsd.toFixed(2)}부터 (초기화)`);
     void this.persist();
     this.emit();
   }
 
+  /**
+   * 현금 부족으로 전면 정지 — **보유 그리드가 하나도 없을 때만** 부른다.
+   * (그리드가 살아 있는데 여기 들어오면 폴 타이머가 꺼져 관리 중인 포지션이 방치된다.)
+   */
   private enterPaused(reason: string): void {
     if (!this.session) return;
     this.session.paused = true;
-    this.pendingBuy = null;
+    this.pendingBuys.clear();
     this.detachAll();
     this.stopPollTimer();
-    this.state = 'PAUSED';
     this.event(reason);
     void this.persist();
     this.emit();
@@ -562,22 +699,31 @@ export class AutoPilot {
   /**
    * 자격자(틱/초 ≥ minTickRate) 중 상위 watchCount 재평가. 자격자가 모자라면 빈 자리를 비워 둔다(0개 허용).
    * 감시 중 종목이 자격을 잃으면 히스테리시스와 무관하게 즉시 해제한다(저유동성 이탈이 목적).
-   * 히스테리시스(기본 1.2배)는 자격자끼리의 교체에만 적용. 사이클 진행 중엔 재평가하지 않는다.
+   * 히스테리시스(기본 1.2배)는 자격자끼리의 교체에만 적용.
+   *
+   * ★ 다중 그리드의 핵심: **사이클이 진행 중이어도 재평가를 멈추지 않는다.**
+   *   대신 이미 보유·진입 중인 종목(actives·pendingBuys)을 후보에서 제외해, 감시는 늘 "새로 살 종목"만 본다.
    */
   reselect(): void {
-    if (this.state !== 'SCANNING') return;
+    if (!this.running || this.faulted || this.session?.paused) return;
     const minRate = this.config?.minTickRate ?? DEFAULT_MIN_TICK_RATE;
     const now = this.deps.clock.now();
     const slots = this.deps.slots();
     const byTicker = new Map(slots.map((s) => [s.ticker, s]));
     const rateOf = (t: string) => byTicker.get(t)?.tickRate(now) ?? 0;
+    const eligible = (t: string) =>
+      byTicker.has(t) &&
+      rateOf(t) >= minRate &&
+      !this.inAbandonCooldown(t) &&
+      !this.actives.has(t) &&
+      !this.pendingBuys.has(t);
 
-    // 리스트에서 사라졌거나 자격 미달이 된 감시 종목은 즉시 정리.
-    let watched = this.watchedTickers.filter((t) => byTicker.has(t) && rateOf(t) >= minRate && !this.inAbandonCooldown(t));
+    // 리스트에서 사라졌거나 자격 미달이 된(또는 방금 보유가 된) 감시 종목은 즉시 정리.
+    let watched = this.watchedTickers.filter(eligible);
 
     const candidates = slots
       .map((s) => s.ticker)
-      .filter((t) => !watched.includes(t) && rateOf(t) >= minRate && !this.inAbandonCooldown(t))
+      .filter((t) => !watched.includes(t) && eligible(t))
       .sort((a, b) => rateOf(b) - rateOf(a));
 
     // 빈 자리는 자격자로만 채운다(히스테리시스 없음 — 신규 편입).
@@ -605,7 +751,10 @@ export class AutoPilot {
     if (!changed) return;
 
     for (const t of prev) {
-      if (!next.includes(t)) byTicker.get(t)?.detachDetector();
+      // ⚠ 보유·진입 중 종목의 detector는 떼지 않는다 — 그리드 미사용 경로에서 SELL 청산 신호가 거기서 온다.
+      if (!next.includes(t) && !this.actives.has(t) && !this.pendingBuys.has(t)) {
+        byTicker.get(t)?.detachDetector();
+      }
     }
     for (const t of next) {
       const slot = byTicker.get(t);
@@ -637,158 +786,181 @@ export class AutoPilot {
       return;
     }
     // SELL — 보유 종목의 매도 변곡점만 의미 있다(유동성이 죽어도 사이클은 반드시 완주 — §4-4).
-    if (this.active && ctx.ticker === this.active.ticker) {
+    const active = this.actives.get(ctx.ticker);
+    if (active) {
       // 그리드가 청산을 관리하면 변곡점 매도는 무시한다(D5) — 매도는 +w 지정가 체결로만 일어난다.
       if (this.gridEnabled()) return;
-      this.active.adapter.setLimitPrice(ctx.price);
-      this.active.cycle.onSignal('SELL', this.toSnapshot(ctx));
-      this.syncStateFromCycle();
+      active.adapter.setLimitPrice(ctx.price);
+      active.cycle.onSignal('SELL', this.toSnapshot(ctx));
+      this.emit();
       void this.pollCycle();
     }
   }
 
   /**
-   * 매수 신호 — SCANNING에서만. 프리플라이트가 도는 짧은 창 안에 다른 감시 종목의
-   * BUY가 오면 틱/초 높은 쪽으로 후보를 교체한다(동시 신호 중재).
+   * 매수 신호 — 빈 그리드 슬롯이 있을 때만 받는다.
+   * 슬롯 점유는 pendingBuys 등록(동기)으로 **먼저** 확정한다 — 프리플라이트가 async라
+   * 그 사이에 들어온 다른 신호가 같은 슬롯을 중복 점유하면 maxGrids를 넘겨 진입한다.
    */
   private handleBuySignal(ctx: SlotSignalContext): void {
-    if (this.stopRequested || this.state === 'FAULT' || this.state === 'PAUSED') return;
-    const rate = this.slotOf(ctx.ticker)?.tickRate(this.deps.clock.now()) ?? 0;
+    if (this.stopRequested || !this.running || this.faulted || this.session?.paused) return;
+    if (this.actives.has(ctx.ticker) || this.pendingBuys.has(ctx.ticker)) return; // 이미 보유·진입 중
+    if (this.inAbandonCooldown(ctx.ticker)) return;
+    if (this.deps.clock.now() < this.cashCooldownUntil) return;
+    if (this.actives.size + this.pendingBuys.size >= this.maxGrids) return; // 그리드 슬롯 만석
 
-    if (this.state === 'SCANNING' && this.pendingBuy === null) {
-      this.pendingBuy = { ctx, tickRate: rate };
-      this.state = 'ENTERING';
-      this.emit();
-      void this.commitBuy();
-      return;
-    }
-    if (this.state === 'ENTERING' && this.pendingBuy !== null && rate > this.pendingBuy.tickRate) {
-      this.pendingBuy = { ctx, tickRate: rate };
-      this.event(`동시 신호 · 더 활발한 ${ctx.ticker}(으)로 교체했어요`);
-    }
+    const rate = this.slotOf(ctx.ticker)?.tickRate(this.deps.clock.now()) ?? 0;
+    this.pendingBuys.set(ctx.ticker, { ctx, tickRate: rate });
+    this.emit();
+    void this.commitBuy(ctx.ticker);
   }
 
-  /** 프리플라이트 → 속도 재검사 → 현금 검사 → 발주 확정. 대기 중 후보가 교체되면 재시도. */
-  private async commitBuy(): Promise<void> {
-    if (this.buyCommitting) return;
-    this.buyCommitting = true;
-    try {
-      for (;;) {
-        const candidate = this.pendingBuy;
-        const session = this.session;
-        const config = this.config;
-        if (candidate === null || session === null || config === null || this.stopRequested) {
-          this.backToScanning();
-          return;
-        }
-        const { ctx } = candidate;
-        const qty = qtyForAmount(session.amountUsd, ctx.price);
-        if (qty < 1) {
-          this.pendingBuy = null;
-          this.event(
-            `${ctx.ticker} 진입 포기 · 투입 금액($${session.amountUsd.toFixed(2)})이 1주 가격($${ctx.price})보다 작아요`,
-          );
-          this.backToScanning();
-          return;
-        }
+  /**
+   * 프리플라이트 → 속도 재검사 → 현금 검사 → 발주 확정 (종목 1개).
+   * 진입금액은 **설정 고정값(config.startAmountUsd)** — 세션 금액과 무관하다.
+   */
+  private async commitBuy(ticker: string): Promise<void> {
+    const candidate = this.pendingBuys.get(ticker);
+    const config = this.config;
+    if (!candidate || !config) {
+      this.pendingBuys.delete(ticker);
+      this.emit();
+      return;
+    }
+    const { ctx } = candidate;
 
-        const slot = this.slotOf(ctx.ticker);
-        if (!slot) {
-          this.pendingBuy = null;
-          this.backToScanning();
-          return;
-        }
-
-        const broker = this.deps.makeBroker(ctx.ticker);
-        const adapter = new OrderPortAdapter({ broker, clock: this.deps.clock });
-        const fault = await adapter.preflightCheckFills();
-        if (this.stopRequested) {
-          this.backToScanning();
-          return;
-        }
-        if (fault) {
-          this.enterFault(fault);
-          return;
-        }
-        if (this.pendingBuy !== candidate) continue; // 대기 중 교체 — 새 후보로 다시.
-
-        // 진입 직전 속도 재검사(§4-4) — 감시 선정과 신호 사이에 유동성이 죽었으면 포기.
-        const rateNow = slot.tickRate(this.deps.clock.now());
-        if (rateNow < config.minTickRate) {
-          this.pendingBuy = null;
-          this.event(
-            `${ctx.ticker} 진입 포기 · 속도가 ${rateNow.toFixed(1)}틱/초로 떨어져 기준(${config.minTickRate})에 못 미쳐요`,
-          );
-          this.backToScanning();
-          return;
-        }
-
-        // 현금 부족 사전 판정(§2-4) — 조회 실패(null/throw)면 판정 없이 진행(FAULT 인터록이 최후 방어선).
-        const needed = qty * ctx.price;
-        let buyable: number | null = null;
-        try {
-          buyable = (await this.deps.fetchBuyableUsd?.(ctx.ticker, ctx.price)) ?? null;
-        } catch {
-          buyable = null;
-        }
-        if (this.stopRequested) {
-          this.backToScanning();
-          return;
-        }
-        if (this.pendingBuy !== candidate) continue;
-        if (buyable !== null && buyable < needed) {
-          this.enterPaused(
-            `현금이 부족해서 쉬고 있어요 · 필요 $${needed.toFixed(2)} > 주문가능 $${buyable.toFixed(2)} — 입금 후 재개하거나 세션을 초기화해 주세요`,
-          );
-          return;
-        }
-
-        // 확정 — 사이클 개시.
-        this.pendingBuy = null;
-        const cycle = new RunCycle({
-          ticker: ctx.ticker,
-          qty,
-          port: adapter,
-          clock: this.deps.clock,
-          feeRate: this.deps.feeRate,
-          onTrade: (record) => {
-            this.pendingSettle = record;
-            this.deps.onTrade?.(record);
-          },
-        });
-        this.active = { ticker: ctx.ticker, slot, adapter, cycle, broker, grid: null, gridArmed: false };
-        this.deps.pin(ctx.ticker);
-        for (const t of this.watchedTickers) {
-          if (t !== ctx.ticker) this.slotOf(t)?.detachDetector();
-        }
-        this.watchedTickers = [ctx.ticker];
-
-        adapter.setLimitPrice(ctx.price);
-        const quote = slot.quote;
-        if (quote) adapter.setQuote(quote.bid1, quote.ask1, quote.at);
-
-        cycle.start();
-        cycle.onSignal('BUY', this.toSnapshot(ctx));
-    this.buyingSince = this.deps.clock.now();
-    this.abandonRequested = false;
-        this.startPollTimer();
-        this.syncStateFromCycle();
-        this.event(`${ctx.ticker} 진입 · ${qty}주 × $${ctx.price} (목표 $${session.amountUsd.toFixed(2)})`);
-        this.emit();
+    /** 진입을 포기하고 슬롯을 반납한다(사유는 호출부가 이벤트로 남긴다). */
+    const giveUp = (): void => {
+      this.pendingBuys.delete(ticker);
+      if (this.stopRequested && this.actives.size === 0) {
+        this.finishStop();
         return;
       }
-    } finally {
-      this.buyCommitting = false;
+      this.reselect();
+      this.emit();
+    };
+
+    if (this.stopRequested) return giveUp();
+
+    const entryAmountUsd = config.startAmountUsd;
+    const qty = qtyForAmount(entryAmountUsd, ctx.price);
+    if (qty < 1) {
+      this.event(
+        `${ctx.ticker} 진입 포기 · 진입금액($${entryAmountUsd.toFixed(2)})이 1주 가격($${ctx.price})보다 작아요`,
+      );
+      return giveUp();
     }
+
+    const slot = this.slotOf(ctx.ticker);
+    if (!slot) return giveUp();
+
+    const broker = this.deps.makeBroker(ctx.ticker);
+    const adapter = new OrderPortAdapter({ broker, clock: this.deps.clock });
+    const fault = await adapter.preflightCheckFills();
+    if (this.stopRequested) return giveUp();
+    if (fault) {
+      this.pendingBuys.delete(ticker);
+      this.enterFault(fault);
+      return;
+    }
+
+    // 진입 직전 속도 재검사(§4-4) — 감시 선정과 신호 사이에 유동성이 죽었으면 포기.
+    const rateNow = slot.tickRate(this.deps.clock.now());
+    if (rateNow < config.minTickRate) {
+      this.event(
+        `${ctx.ticker} 진입 포기 · 속도가 ${rateNow.toFixed(1)}틱/초로 떨어져 기준(${config.minTickRate})에 못 미쳐요`,
+      );
+      return giveUp();
+    }
+
+    // 현금 부족 사전 판정(§2-4) — 조회 실패(null/throw)면 판정 없이 진행(FAULT 인터록이 최후 방어선).
+    const needed = qty * ctx.price;
+    let buyable: number | null = null;
+    try {
+      buyable = (await this.deps.fetchBuyableUsd?.(ctx.ticker, ctx.price)) ?? null;
+    } catch {
+      buyable = null;
+    }
+    if (this.stopRequested) return giveUp();
+    if (buyable !== null && buyable < needed) {
+      this.pendingBuys.delete(ticker);
+      if (this.actives.size === 0) {
+        // 관리 중인 포지션이 없다 — 세션을 통째로 멈추고 사람의 선택을 기다린다(기존 동작).
+        this.enterPaused(
+          `현금이 부족해서 쉬고 있어요 · 필요 $${needed.toFixed(2)} > 주문가능 $${buyable.toFixed(2)} — 입금 후 재개하거나 세션을 초기화해 주세요`,
+        );
+        return;
+      }
+      // ★ 관리 중인 그리드가 있으면 절대 PAUSED로 가지 않는다(폴 타이머가 꺼져 포지션이 방치된다).
+      //   신규 진입만 잠시 쉰다 — 기존 그리드가 매도되면 현금이 돌아온다.
+      this.cashCooldownUntil = this.deps.clock.now() + CASH_COOLDOWN_MS;
+      this.event(
+        `${ctx.ticker} 진입 포기 · 현금 부족(필요 $${needed.toFixed(2)} > 주문가능 $${buyable.toFixed(2)}) — 신규 진입을 ${CASH_COOLDOWN_MS / 1000}초 쉬어요`,
+      );
+      this.reselect();
+      this.emit();
+      return;
+    }
+
+    // 확정 — 사이클 개시.
+    this.pendingBuys.delete(ticker);
+    const active: ActiveCycle = {
+      ticker: ctx.ticker,
+      slot,
+      adapter,
+      cycle: null as unknown as RunCycle, // 아래에서 즉시 채운다(onTrade 클로저가 active를 참조해야 한다).
+      broker,
+      grid: null,
+      gridArmed: false,
+      buyingSince: this.deps.clock.now(),
+      abandonRequested: false,
+      pendingSettle: null,
+      arming: false,
+    };
+    active.cycle = new RunCycle({
+      ticker: ctx.ticker,
+      qty,
+      port: adapter,
+      clock: this.deps.clock,
+      feeRate: this.deps.feeRate,
+      onTrade: (record) => {
+        active.pendingSettle = record;
+        this.deps.onTrade?.(record);
+      },
+    });
+    this.actives.set(ctx.ticker, active);
+    this.deps.pin(ctx.ticker);
+    // 이 종목은 이제 "감시 후보"가 아니다 — 목록에서 빼고 빈 자리를 다른 종목으로 채운다(감시 계속).
+    this.watchedTickers = this.watchedTickers.filter((t) => t !== ctx.ticker);
+
+    adapter.setLimitPrice(ctx.price);
+    const quote = slot.quote;
+    if (quote) adapter.setQuote(quote.bid1, quote.ask1, quote.at);
+
+    active.cycle.start();
+    active.cycle.onSignal('BUY', this.toSnapshot(ctx));
+    this.startPollTimer();
+    this.event(
+      `${ctx.ticker} 진입 · ${qty}주 × $${ctx.price} (진입금액 $${entryAmountUsd.toFixed(2)}) · 그리드 ${this.actives.size}/${this.maxGrids}`,
+    );
+    this.reselect(); // 빈 감시 자리를 즉시 채운다.
+    this.emit();
   }
 
   // ---- 사이클 폴링/정산 ----
 
-  /** 체결 폴링 1회 — 인스턴스와 같은 순서: fault 회수 → refreshFills → cycle.poll → 정산. */
+  /** 체결 폴링 1회 — 진행 중인 모든 사이클을 순회한다(종목 간 독립, 한 종목 FAULT면 전역 인터록). */
   async pollCycle(): Promise<void> {
-    const active = this.active;
-    if (!active || this.state === 'FAULT') return;
+    if (this.faulted) return;
+    for (const active of [...this.actives.values()]) {
+      if (this.faulted) return;
+      if (!this.actives.has(active.ticker)) continue; // 이번 순회 중 정산돼 사라졌다.
+      await this.pollOne(active);
+    }
+  }
 
+  /** 사이클 1개 폴 — 인스턴스와 같은 순서: fault 회수 → refreshFills → cycle.poll → 정산. */
+  private async pollOne(active: ActiveCycle): Promise<void> {
     const pending = active.adapter.takeFault();
     if (pending) {
       this.enterFault(pending);
@@ -820,28 +992,27 @@ export class AutoPilot {
       return;
     }
 
-    // ★ 자동 포기로 감시 복귀한 사이클 — syncStateFromCycle보다 먼저 잡아야 한다.
-    //   (그 함수가 WATCH_BUY를 'ENTERING'으로 매핑해 버려 상태가 갇힌다.)
+    // ★ 자동 포기로 감시 복귀한 사이클.
     if (active.cycle.state === 'WATCH_BUY') {
-      this.abandonActive(active.ticker);
+      this.abandonActive(active);
       return;
     }
     if (active.cycle.state === 'HOLDING') {
       // 체결에 성공했다 — 경과 시계와 연속 취소 카운터를 푼다.
-      this.buyingSince = null;
-      this.abandonRequested = false;
+      active.buyingSince = null;
+      active.abandonRequested = false;
       this.clearAbandon(active.ticker);
       // 진입 체결 → 매도 관리 그리드 인계(D5). 그리드가 켜져 있고 아직 안 걸었으면 지금 두 주문을 건다.
-      if (this.gridEnabled() && !active.grid) {
+      if (this.gridEnabled() && !active.grid && !active.arming) {
         await this.armGrid(active);
         // arm이 FAULT면 gridArmed=false로 남는다 — 인터록은 armGrid가 이미 걸었으니 그대로 반환한다.
         if (!active.gridArmed) return;
-        this.syncStateFromCycle(); // 그리드가 관리해도 뷰 상태는 HOLDING을 유지한다.
+        this.emit();
         return;
       }
     }
-    this.syncStateFromCycle();
-    if (active.cycle.state === 'DONE') this.settle();
+    this.emit();
+    if (active.cycle.state === 'DONE') this.settle(active);
   }
 
   // ---- 매도 관리 그리드(D5) ----
@@ -849,40 +1020,49 @@ export class AutoPilot {
   /**
    * 진입 체결 후 그리드 인계 — 잔고에서 평단·수량을 읽어(D1, 폴백=진입 체결) 두 지정가를 건다.
    * 현금은 fetchBuyableUsd로 미리 조회해 매수 다리 축소/생략에 쓴다(D2). 발주 실패는 FAULT.
+   *
+   * ⚠ 다중 그리드에서는 가용현금을 **동시 그리드 수로 나눠** 배정한다. 안 그러면 그리드 3개가
+   *    같은 현금을 각자 "전부 내 것"으로 보고 물타기 매수를 걸어, 셋 다 걸리면 계좌가 즉시 잠긴다.
    */
   private async armGrid(active: ActiveCycle): Promise<void> {
-    const cfg = this.deps.gridConfig!;
-    const pos = active.cycle.position;
-    const fallback = pos ? { qty: pos.qty, avgPrice: pos.entryPrice } : undefined;
-    const buyPrice = (pos?.entryPrice ?? 0) * (1 - cfg.width);
-    let availableCashUsd: number | undefined;
+    // ★ 여기서 읽는 값이 이 그리드의 폭·배율로 고정된다(Grid 생성자가 캡처) — 설정 변경은 다음 그리드부터.
+    const cfg = this.gridConfig!;
+    active.arming = true;
     try {
-      const cash = await this.deps.fetchBuyableUsd?.(active.ticker, buyPrice);
-      if (typeof cash === 'number' && Number.isFinite(cash)) availableCashUsd = cash;
-    } catch {
-      // 현금 판정 생략 — 전량 매수 다리로 진행(주문 거절은 FAULT 인터록이 받는다).
+      const pos = active.cycle.position;
+      const fallback = pos ? { qty: pos.qty, avgPrice: pos.entryPrice } : undefined;
+      const buyPrice = (pos?.entryPrice ?? 0) * (1 - cfg.width);
+      let availableCashUsd: number | undefined;
+      try {
+        const cash = await this.deps.fetchBuyableUsd?.(active.ticker, buyPrice);
+        if (typeof cash === 'number' && Number.isFinite(cash)) availableCashUsd = cash / this.maxGrids;
+      } catch {
+        // 현금 판정 생략 — 전량 매수 다리로 진행(주문 거절은 FAULT 인터록이 받는다).
+      }
+      if (this.stopRequested) return;
+      const grid = new Grid({
+        port: createGridOrderPort(active.broker, active.ticker),
+        clock: this.deps.clock,
+        config: { width: cfg.width, buyMultiplier: cfg.buyMultiplier, availableCashUsd },
+      });
+      active.grid = grid;
+      await grid.arm(fallback);
+      if (grid.state === 'FAULT') {
+        this.enterFault({ kind: 'PLACE', reason: grid.faultText ?? '그리드 발주 실패' });
+        return;
+      }
+      active.gridArmed = true;
+      const v = grid.view;
+      this.event(
+        `${active.ticker} 그리드 관리 인계 · 매수 $${v.buyPrice}(평단 −${Math.round(cfg.width * 100)}%) · 매도 $${v.sellPrice}(평단 +${Math.round(cfg.width * 100)}%)`,
+      );
+      this.emit();
+    } finally {
+      active.arming = false;
     }
-    if (this.stopRequested) return;
-    const grid = new Grid({
-      port: createGridOrderPort(active.broker, active.ticker),
-      clock: this.deps.clock,
-      config: { width: cfg.width, buyMultiplier: cfg.buyMultiplier, availableCashUsd },
-    });
-    active.grid = grid;
-    await grid.arm(fallback);
-    if (grid.state === 'FAULT') {
-      this.enterFault({ kind: 'PLACE', reason: grid.faultText ?? '그리드 발주 실패' });
-      return;
-    }
-    active.gridArmed = true;
-    const v = grid.view;
-    this.event(
-      `${active.ticker} 그리드 관리 인계 · 매수 $${v.buyPrice}(평단 −${Math.round(cfg.width * 100)}%) · 매도 $${v.sellPrice}(평단 +${Math.round(cfg.width * 100)}%)`,
-    );
-    this.emit();
   }
 
-  /** 그리드 폴 1회 — 매도 체결→정산·SCANNING, 매수 체결→리브래킷, 취소 거절→FAULT. */
+  /** 그리드 폴 1회 — 매도 체결→정산·감시 복귀, 매수 체결→리브래킷, 취소 거절→FAULT. */
   private async pollGrid(active: ActiveCycle): Promise<void> {
     const result = await active.grid!.poll();
     switch (result.kind) {
@@ -931,40 +1111,37 @@ export class AutoPilot {
       exitSnapshot: null,
       exitReason: 'SELL_SIGNAL',
     };
-    this.pendingSettle = record;
+    active.pendingSettle = record;
     this.deps.onTrade?.(record);
-    this.settle();
+    this.settle(active);
   }
 
   /**
-   * 진행 중 사이클의 자원을 정리한다 — 폴·리프라이스 타이머 정지, detector 해제, 핀 해제.
+   * 진행 중 사이클의 자원을 정리한다 — detector 해제, 핀 해제, 맵에서 제거.
    * ⚠ 핀(`pin`)은 `commitBuy`에서 걸리고 여기서만 풀린다. 이 경로를 거치지 않으면 워치리스트가 영구 오염된다.
    */
   private teardownActive(active: ActiveCycle): void {
-    this.stopPollTimer();
     active.slot.detachDetector();
-    this.active = null;
+    this.actives.delete(active.ticker);
     this.deps.unpin(active.ticker);
+    if (this.actives.size === 0) this.stopPollTimer();
   }
 
   /**
-   * 매수 미체결 자동 포기로 사이클을 접고 감시(SCANNING)로 복귀한다 — 거래 기록이 없는 유일한 종료 경로.
+   * 매수 미체결 자동 포기로 사이클을 접고 감시로 복귀한다 — 거래 기록이 없는 유일한 종료 경로.
    * ⚠ `AutoPilot.stop()`을 부르면 `stopRequested`가 서서 IDLE로 종료돼 버리므로 절대 재활용하지 않는다.
    */
-  private abandonActive(ticker: string): void {
-    const active = this.active;
-    if (!active) return;
+  private abandonActive(active: ActiveCycle): void {
+    const ticker = active.ticker;
     active.cycle.stop(); // WATCH_BUY→DONE (이 전이는 포트를 호출하지 않는다 — 폐기 위생용)
     this.teardownActive(active);
     this.markAbandon(ticker);
     this.event(`${ticker} 매수 취소 · 안 붙어서 다시 감시해요`);
-    if (this.stopRequested) {
+    if (this.stopRequested && this.actives.size === 0) {
       this.finishStop();
       return;
     }
-    this.state = 'SCANNING';
-    this.watchedTickers = [];
-    this.reselect(); // ⚠ state를 SCANNING으로 세운 **뒤**에 불러야 동작한다
+    this.reselect();
     this.emit();
   }
 
@@ -994,12 +1171,11 @@ export class AutoPilot {
   /**
    * 사이클 종료 정산 — 세션 성과 반영 → 종료 조건(AND, 금액 조정 전 판정) → 조정 또는 새 세션.
    * 수동 Stop 청산(STOP)은 금액 조정도 세션 종료 판정도 하지 않는다(성과에는 반영).
+   * ⚠ 여기서 조정되는 session.amountUsd는 **성과 회계용**이다 — 진입 수량은 config.startAmountUsd만 본다.
    */
-  private settle(): void {
-    const active = this.active;
-    if (!active) return;
-    const record = this.pendingSettle;
-    this.pendingSettle = null;
+  private settle(active: ActiveCycle): void {
+    const record = active.pendingSettle;
+    active.pendingSettle = null;
 
     this.teardownActive(active);
 
@@ -1044,61 +1220,28 @@ export class AutoPilot {
       void this.persist();
     }
 
-    if (this.stopRequested) {
+    // 매도가 나면 현금이 돌아온다 — 현금 쿨다운을 즉시 푼다.
+    this.cashCooldownUntil = 0;
+
+    if (this.stopRequested && this.actives.size === 0) {
       this.finishStop();
       return;
     }
-    this.state = 'SCANNING';
-    this.watchedTickers = [];
     this.reselect();
     this.emit();
   }
 
   // ---- 내부 ----
 
-  private backToScanning(): void {
-    if (this.state === 'ENTERING' && this.active === null) {
-      if (this.stopRequested) {
-        this.finishStop();
-        return;
-      }
-      this.state = 'SCANNING';
-      this.emit();
-    }
-  }
-
-  private syncStateFromCycle(): void {
-    const active = this.active;
-    if (!active) return;
-    const prev = this.state;
-    switch (active.cycle.state) {
-      case 'WATCH_BUY':
-      case 'BUYING':
-        this.state = 'ENTERING';
-        break;
-      case 'HOLDING':
-        this.state = 'HOLDING';
-        break;
-      case 'SELLING':
-        this.state = 'EXITING';
-        break;
-      case 'FAULT':
-        this.state = 'FAULT';
-        break;
-      default:
-        break; // DONE은 settle에서.
-    }
-    if (this.state !== prev) this.emit();
-  }
-
-  /** 인터록 발동 — 자동매매 동결. 사용자 Stop만 해제한다(기존 인스턴스와 동일 원칙). */
+  /** 인터록 발동 — 자동매매 **전역** 동결. 사용자 Stop만 해제한다(기존 인스턴스와 동일 원칙). */
   private enterFault(fault: AdapterFault): void {
-    if (this.state === 'FAULT') return;
+    if (this.faulted) return;
     const text = `자동매매를 멈췄어요 · ${faultKindLabel(fault)} — ${fault.reason}. 계좌를 확인한 뒤 Stop으로 해제해 주세요`;
     this.lastFault = { at: this.deps.clock.now(), text };
-    this.active?.cycle.fault();
+    this.faulted = true;
+    for (const active of this.actives.values()) active.cycle.fault();
+    this.pendingBuys.clear();
     this.stopPollTimer();
-    this.state = 'FAULT';
     this.deps.onFault?.(this.lastFault);
     this.event(text);
     this.emit();
@@ -1136,35 +1279,33 @@ export class AutoPilot {
   }
 
   /**
-   * 매도 리프라이스 1틱 — 청산(EXITING/SELLING) 중에만 매수1호가를 따라간다.
-   * Stop 요청 뒤에도 계속한다(그 매도가 곧 청산). FAULT면 멈춘다.
+   * 빠른 틱(기본 1초) — 진행 중인 사이클마다 상태에 따라 하나만 한다.
+   *  · SELLING → 매도 리프라이스(슬롯 최신 호가를 먼저 반영)
+   *  · BUYING  → 매수 미체결 경과 판정 → 자동 포기 요청(설정을 켰을 때만)
+   * 새 타이머를 만들지 않고 겸용한다 — 하네스가 인스턴스당 타이머 2개를 가정한다.
    *
    * ⚠ 자동관리는 호가를 pollCycle(2초)에서만 어댑터에 넣으므로, 여기서 슬롯의 최신 호가를 **먼저** 반영하지
    * 않으면 최대 2초 낡은 값으로 정정하게 되어 리프라이스가 사실상 무의미해진다.
    */
-  /**
-   * 빠른 틱(기본 1초) — 상태에 따라 하나만 한다.
-   *  · SELLING → 매도 리프라이스(슬롯 최신 호가를 먼저 반영)
-   *  · BUYING  → 매수 미체결 경과 판정 → 자동 포기 요청(설정을 켰을 때만)
-   * 새 타이머를 만들지 않고 겸용한다 — 하네스가 인스턴스당 타이머 2개를 가정한다.
-   */
   private async repriceTick(): Promise<void> {
-    if (this.repriceTicking) return;
-    const active = this.active;
-    if (!active || this.state === 'FAULT' || active.adapter.hasFault()) return;
-    const cycleState = active.cycle.state;
-    if (cycleState !== 'SELLING' && cycleState !== 'BUYING') {
-      this.buyingSince = null;
-      return;
-    }
+    if (this.repriceTicking || this.faulted) return;
     this.repriceTicking = true;
     try {
-      if (cycleState === 'SELLING') {
-        const quote = active.slot.quote;
-        if (quote) active.adapter.setQuote(quote.bid1, quote.ask1, quote.at);
-        await active.adapter.repriceSell();
-      } else {
-        await this.tryAbandonBuy(active);
+      for (const active of [...this.actives.values()]) {
+        if (this.faulted) return;
+        if (active.adapter.hasFault()) continue;
+        const cycleState = active.cycle.state;
+        if (cycleState !== 'SELLING' && cycleState !== 'BUYING') {
+          active.buyingSince = null;
+          continue;
+        }
+        if (cycleState === 'SELLING') {
+          const quote = active.slot.quote;
+          if (quote) active.adapter.setQuote(quote.bid1, quote.ask1, quote.at);
+          await active.adapter.repriceSell();
+        } else {
+          await this.tryAbandonBuy(active);
+        }
       }
     } finally {
       this.repriceTicking = false;
@@ -1177,7 +1318,7 @@ export class AutoPilot {
     const probe = active.adapter.buyProbe();
     if (!probe) return;
 
-    if (this.abandonRequested) {
+    if (active.abandonRequested) {
       if (probe.verified && probe.cancelState === 'confirmed' && probe.filledQty > 0) {
         this.enterFault({
           kind: 'CANCEL',
@@ -1185,19 +1326,19 @@ export class AutoPilot {
         });
         return;
       }
-      if (probe.cancelState === 'confirmed') await this.pollCycle();
+      if (probe.cancelState === 'confirmed') await this.pollOne(active);
       return;
     }
 
-    if (this.buyingSince === null) {
-      this.buyingSince = this.deps.clock.now();
+    if (active.buyingSince === null) {
+      active.buyingSince = this.deps.clock.now();
       return;
     }
-    if (this.deps.clock.now() - this.buyingSince < this.buyCancelAfterMs) return;
+    if (this.deps.clock.now() - active.buyingSince < this.buyCancelAfterMs) return;
     if (!probe.hasOdno) return;
     if (probe.cancelState !== 'none') return;
     if (probe.filledQty > 0) return; // ★ 부분체결이면 취소하지 않는다
-    if (active.cycle.abandonBuy()) this.abandonRequested = true;
+    if (active.cycle.abandonBuy()) active.abandonRequested = true;
   }
 
   private event(text: string): void {

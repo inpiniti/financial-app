@@ -1,8 +1,9 @@
 // AutoPilotManager — 자동관리 모드 배선 (plan §3-5단계).
 //
 // watchlist(순위 폴링) → FeedSlot(WS 수신) → AutoPilot(감시·사이클)을 조립하고,
-// WS 구독 예산을 지킨다(plan §4-11): 체결가(D)는 리스트 전 종목, 호가(R)는 감시 중(틱/초 top3,
-// 사이클 중엔 보유 1종목)만 — 리스트 원천 4종 확장 후 최대 16건(체결가 12 + 핀 유예 1 + 호가 3).
+// WS 구독 예산을 지킨다(plan §4-11): 체결가(D)는 리스트 전 종목, 호가(R)는 **감시 top3 ∪ 보유 전 종목**.
+// 다중 그리드(2026-08-05) 이후 보유 중에도 감시가 계속 돌기 때문에 둘의 합집합이다 —
+// 리스트 원천 4종 기준 최대 (체결가 12 + 핀 유예 1) + 호가 (3 + 동시 그리드 수, 최대 6) ≈ 22건.
 //
 // WS 핸들러는 ScalperManager가 유일 소유하므로, 이 매니저는 setAuxRoutes로 등록된
 // routeTick/routeQuote를 통해 같은 연결의 수신을 나눠 받는다(수동/자동 상호 배타는 start 가드).
@@ -179,6 +180,15 @@ export class AutoPilotManager {
     await this.pilot.restore();
   }
 
+  /**
+   * 그리드 폭·매수배율 교체 — 설정 탭에서 저장한 값을 반영한다(managerProvider가 단타 탭 포커스마다 호출).
+   * ⚠ 이 매니저는 모듈 스코프 싱글턴이라 앱을 껐다 켜기 전에는 buildManager()가 다시 돌지 않는다.
+   *   이 경로가 없으면 설정 탭에서 폭을 바꿔도 최초 부팅 때 읽은 값으로 계속 발주한다(실제 사고).
+   */
+  setGridConfig(config: GridExitConfig | undefined): void {
+    this.pilot.setGridConfig(config);
+  }
+
   dispose(): void {
     this.pilot.dispose();
     this.watchlist.stop();
@@ -273,9 +283,14 @@ export class AutoPilotManager {
     }
   }
 
-  /** 호가(R) 구독을 감시 대상에 맞춘다 — 사이클 중엔 보유 1종목, 평시엔 top3(plan §4-11). */
+  /**
+   * 호가(R) 구독을 감시·보유 대상에 맞춘다(plan §4-11).
+   * 다중 그리드에서는 **감시 top3 ∪ 보유 전 종목**이 대상이다 — 보유 중에도 감시가 계속 돌기 때문에
+   * 둘 중 하나만 구독하면 그리드 게이지(현재가)나 신규 진입 판단 중 하나가 눈이 먼다.
+   * 예산: 체결가(D) 리스트 전 종목 + 호가(R) 최대 (3 + maxGrids)건.
+   */
   private reconcileQuoteSubs(view: AutoPilotView): void {
-    const targets = new Set(view.activeTicker ? [view.activeTicker] : view.watched);
+    const targets = new Set([...view.watched, ...view.activeTickers]);
     for (const ticker of [...this.quoteSubs]) {
       if (!targets.has(ticker)) {
         this.quoteSubs.delete(ticker);

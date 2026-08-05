@@ -10,7 +10,6 @@ import { Panel } from '../../../components/Panel';
 import { TickerAvatar } from '../../../components/TickerAvatar';
 import { EmptyState } from '../../inquiry/components';
 import { formatSignedUsd, formatUsd, pnlColor } from '../../../lib/format';
-import { isMartingaleOn } from '../autopilot';
 import type { AutoPilotEvent, AutoPilotState, AutoPilotView } from '../autopilot';
 import type { AutoPilotManager, AutoPilotSlotRow } from '../autopilotManager';
 import { WATCH_SOURCE_LABEL } from '../watchlist';
@@ -47,8 +46,8 @@ function StateBadge({ state }: { state: AutoPilotState }) {
 }
 
 /** 리스트 행의 우측 상태 표시 — 보유 > 감시 > 핀(정리 대기) 순으로 하나만. */
-function SlotBadge({ row, activeTicker }: { row: AutoPilotSlotRow; activeTicker: string | null }) {
-  if (activeTicker === row.entry.ticker) {
+function SlotBadge({ row, activeTickers }: { row: AutoPilotSlotRow; activeTickers: readonly string[] }) {
+  if (activeTickers.includes(row.entry.ticker)) {
     return (
       <View className="mt-0.5 flex-row items-center" style={{ gap: 3 }}>
         <Ionicons name="ellipse" size={8} color="#03b26c" />
@@ -79,11 +78,11 @@ function SlotBadge({ row, activeTicker }: { row: AutoPilotSlotRow; activeTicker:
  * 탭하면 부모가 액션시트(댓글/차트/호가)를 띄운다 — onPress는 표시용 UI 상태만 바꾼다(매매 로직 무관). */
 function SlotRow({
   item,
-  activeTicker,
+  activeTickers,
   onPress,
 }: {
   item: AutoPilotSlotRow;
-  activeTicker: string | null;
+  activeTickers: readonly string[];
   onPress: (ticker: string) => void;
 }) {
   return (
@@ -95,7 +94,7 @@ function SlotRow({
         trailing={
           <View className="items-end">
             <Text className="text-base font-bold text-[#191f28]">{formatPrice(item.view.price)}</Text>
-            <SlotBadge row={item} activeTicker={activeTicker} />
+            <SlotBadge row={item} activeTickers={activeTickers} />
           </View>
         }
       />
@@ -176,9 +175,9 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
 
   const renderRow = useCallback(
     ({ item }: { item: AutoPilotSlotRow }) => (
-      <SlotRow item={item} activeTicker={view.activeTicker} onPress={handleRowPress} />
+      <SlotRow item={item} activeTickers={view.activeTickers} onPress={handleRowPress} />
     ),
-    [view.activeTicker, handleRowPress],
+    [view.activeTickers, handleRowPress],
   );
 
   // 액션시트(Modal)가 닫히는 애니메이션 중에 대상 시트(또 다른 Modal)를 동시에 띄우면 iOS에서 프리즈가 난다
@@ -225,17 +224,13 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
                 title="설정"
                 subtitle={
                   config
-                    ? `${isMartingaleOn(config) ? '마틴게일' : '금액 고정'} · 최소 속도 ${config.minTickRate}틱/초`
+                    ? `종목당 진입 · 그리드 최대 ${view.maxGrids}개 · 최소 속도 ${config.minTickRate}틱/초`
                     : '탭해서 설정해 주세요'
                 }
                 trailing={
                   <View className="flex-row items-center" style={{ gap: 6 }}>
                     <Text className="text-base font-bold text-[#191f28]">
-                      {config
-                        ? isMartingaleOn(config)
-                          ? `${formatUsd(config.startAmountUsd)} ~ ${formatUsd(config.maxAmountUsd)}`
-                          : formatUsd(config.startAmountUsd)
-                        : '설정 전'}
+                      {config ? formatUsd(config.startAmountUsd) : '설정 전'}
                     </Text>
                     <Ionicons name="chevron-forward" size={16} color="#8b95a1" />
                   </View>
@@ -245,7 +240,7 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
               {session && (
                 <ListRow
                   title={`세션 #${view.sessionCount}`}
-                  subtitle={`이번 세션 ${session.cycles}사이클 · 투입 ${formatUsd(session.amountUsd)}`}
+                  subtitle={`이번 세션 ${session.cycles}사이클 · 그리드 ${view.activeTickers.length}/${view.maxGrids}개 관리 중`}
                   trailing={
                     <Text className="text-base font-bold" style={{ color: pnlColor(session.pnl) }}>
                       {formatSignedUsd(session.pnl)}
@@ -321,9 +316,18 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
                 )}
               </View>
             </Panel>
-            {view.grid && (
-              <Panel title="그리드 관리">
-                <GridGauge grid={view.grid} />
+            {view.grids.length > 0 && (
+              <Panel
+                title="그리드 관리"
+                headerRight={`${view.grids.length}/${view.maxGrids}개`}
+              >
+                {view.grids.map((grid, i) => (
+                  <View key={grid.ticker}>
+                    {/* 그리드 사이 구분선 — 게이지가 연달아 붙으면 어느 종목 것인지 읽기 어렵다. */}
+                    {i > 0 && <View className="mx-5 h-px bg-[#f2f4f6]" />}
+                    <GridGauge grid={grid} />
+                  </View>
+                ))}
               </Panel>
             )}
             {/* "단타 리스트" 패널 헤더 — 행들은 FlatList 아이템으로 이어진다. */}

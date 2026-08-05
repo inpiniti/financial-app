@@ -245,8 +245,24 @@ function getOrCreateManager(): Promise<ManagerBootstrap> {
 }
 
 /**
+ * 캐시된 매니저에 최신 설정을 다시 흘려 넣는다 — 지금은 그리드 폭·매수배율만.
+ *
+ * ⚠ 매니저는 모듈 스코프 싱글턴이라 buildManager()가 앱 부팅에 딱 한 번만 돈다. 그래서 설정 탭에서
+ *   그리드 폭을 바꿔 저장해도 앱을 완전히 껐다 켜기 전에는 반영되지 않았다(실제 사고 — 항상 10%·1배).
+ *   나머지 파라미터(청크·버퍼·문턱 등)는 이미 만들어진 FeedSlot/detector에 박혀 있어 여기서 못 바꾼다.
+ */
+async function refreshLiveSettings(boot: ManagerBootstrap): Promise<void> {
+  const appSettings = await loadAppSettings();
+  boot.autopilot.setGridConfig({
+    width: appSettings.gridWidthPct / 100,
+    buyMultiplier: appSettings.gridBuyMultiplier,
+  });
+}
+
+/**
  * 단타 탭 진입 시 매니저를 준비한다. KIS 키 미설정/네트워크 오류를 상태로 노출하고,
  * 설정 탭에서 키를 저장한 뒤 다시 단타 탭으로 돌아오면(포커스) 자동으로 재시도한다.
+ * 이미 만들어진 매니저가 있으면 재생성 대신 **바꿀 수 있는 설정만** 갱신한다(refreshLiveSettings).
  */
 export function useScalperManager(): ManagerBootstrapState {
   const [state, setState] = useState<ManagerBootstrapState>(cached ? { kind: 'ready', ...cached } : { kind: 'loading' });
@@ -254,7 +270,11 @@ export function useScalperManager(): ManagerBootstrapState {
   useFocusEffect(
     useCallback(() => {
       if (cached) {
-        setState({ kind: 'ready', ...cached });
+        const boot = cached;
+        setState({ kind: 'ready', ...boot });
+        void refreshLiveSettings(boot).catch(() => {
+          // 설정 로드 실패 — 기존 값을 그대로 쓴다(매매를 막을 이유는 없다).
+        });
         return;
       }
       let cancelled = false;

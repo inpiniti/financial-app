@@ -30,6 +30,11 @@ const MENU_ITEMS: BottomMenuItem<SettingsSection>[] = [
   { key: 'params', label: '매매파라미터', icon: 'options-outline', activeIcon: 'options' },
 ];
 
+/** 그리드 폭 상한(%) — 오타 방어. 평단 ±50%를 넘는 브래킷은 사실상 관리가 아니다. */
+const GRID_WIDTH_MAX_PCT = 50;
+/** 매수 배율 상한 — 1이면 보유수량만큼 더 사서 총 2배가 된다. 5면 한 번에 6배라 그 위는 막는다. */
+const GRID_BUY_MULTIPLIER_MAX = 5;
+
 function formatHHmm(epochMs: number): string {
   const d = new Date(epochMs);
   const hh = String(d.getHours()).padStart(2, '0');
@@ -162,15 +167,20 @@ export default function SettingsScreen() {
       return;
     }
 
+    // 상한을 둔다 — 오타 하나(10 → 100)가 그대로 발주가에 들어가면 되돌릴 수 없다.
     const parsedGridWidthPct = Number(gridWidthPct);
-    if (!Number.isFinite(parsedGridWidthPct) || parsedGridWidthPct <= 0) {
-      Alert.alert('알림', '그리드 폭은 0보다 큰 숫자로 입력해 주세요.');
+    if (!Number.isFinite(parsedGridWidthPct) || parsedGridWidthPct <= 0 || parsedGridWidthPct > GRID_WIDTH_MAX_PCT) {
+      Alert.alert('알림', `그리드 폭은 0보다 크고 ${GRID_WIDTH_MAX_PCT} 이하인 숫자로 입력해 주세요.`);
       return;
     }
 
     const parsedGridBuyMultiplier = Number(gridBuyMultiplier);
-    if (!Number.isFinite(parsedGridBuyMultiplier) || parsedGridBuyMultiplier <= 0) {
-      Alert.alert('알림', '매수 배율은 0보다 큰 숫자로 입력해 주세요.');
+    if (
+      !Number.isFinite(parsedGridBuyMultiplier) ||
+      parsedGridBuyMultiplier <= 0 ||
+      parsedGridBuyMultiplier > GRID_BUY_MULTIPLIER_MAX
+    ) {
+      Alert.alert('알림', `매수 배율은 0보다 크고 ${GRID_BUY_MULTIPLIER_MAX} 이하인 숫자로 입력해 주세요.`);
       return;
     }
 
@@ -225,6 +235,23 @@ export default function SettingsScreen() {
   // 신호 지연 — SG 미분은 창 "중심점" 기준이라 변곡점 판정이 (버퍼-1)/2 청크만큼 늦게 잡힌다.
   // 버퍼·청크를 키우면 노이즈에 둔감해지는 대신 이 지연이 커지므로, 값을 조절할 때 바로 보이게 표시한다.
   const signalLagSeconds = ((bufferSize - 1) / 2) * chunkSeconds;
+
+  /**
+   * 그리드 폭·배율의 즉시 미리보기 — 입력값이 실제 발주가·수량으로 어떻게 번역되는지 그 자리에서 보여준다.
+   * ("매수 배율 1"이 왜 수량 2배가 되는지가 숫자로 보이지 않아 오해가 잦았다.)
+   * 입력이 유효 범위를 벗어나면 null — 저장 시 Alert로 막히므로 여기서는 미리보기만 숨긴다.
+   */
+  const gridPreview = (() => {
+    const w = Number(gridWidthPct);
+    const m = Number(gridBuyMultiplier);
+    if (!Number.isFinite(w) || w <= 0 || w > GRID_WIDTH_MAX_PCT) return null;
+    if (!Number.isFinite(m) || m <= 0 || m > GRID_BUY_MULTIPLIER_MAX) return null;
+    return {
+      buy: (100 * (1 - w / 100)).toFixed(2),
+      sell: (100 * (1 + w / 100)).toFixed(2),
+      addQty: Math.floor(10 * m),
+    };
+  })();
 
   return (
     <View className="flex-1 bg-[#f2f4f6]">
@@ -323,7 +350,7 @@ export default function SettingsScreen() {
                   className="mb-4 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
                 />
 
-                <Text className="mb-1 text-xs text-[#8b95a1]">그리드 폭 (%)</Text>
+                <Text className="mb-1 text-xs text-[#8b95a1]">그리드 폭 (%) — 최대 {GRID_WIDTH_MAX_PCT}</Text>
                 <TextInput
                   value={gridWidthPct}
                   onChangeText={setGridWidthPct}
@@ -332,9 +359,18 @@ export default function SettingsScreen() {
                   placeholderTextColor="#8b95a1"
                   className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
                 />
-                <Text className="mb-4 text-xs text-[#8b95a1]">평단 ±이 %에 매도·매수 지정가를 걸어요.</Text>
+                <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
+                  평단 ±이 %에 매도·매수 지정가를 걸어요.
+                  {gridPreview && (
+                    <Text className="text-[#4e5968]">
+                      {' '}평단 $100이면 매수 ${gridPreview.buy} · 매도 ${gridPreview.sell}에 걸려요.
+                    </Text>
+                  )}
+                </Text>
 
-                <Text className="mb-1 text-xs text-[#8b95a1]">매수 배율</Text>
+                <Text className="mb-1 text-xs text-[#8b95a1]">
+                  매수 배율 — 최대 {GRID_BUY_MULTIPLIER_MAX}
+                </Text>
                 <TextInput
                   value={gridBuyMultiplier}
                   onChangeText={setGridBuyMultiplier}
@@ -343,7 +379,24 @@ export default function SettingsScreen() {
                   placeholderTextColor="#8b95a1"
                   className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
                 />
-                <Text className="mb-4 text-xs text-[#8b95a1]">매수는 보유수량 × 이 배율만큼 발주해요.</Text>
+                <Text className="mb-1 text-xs leading-5 text-[#8b95a1]">
+                  물타기 매수는 보유수량 × 이 배율만큼 발주해요.
+                  {gridPreview && (
+                    <Text className="text-[#4e5968]">
+                      {' '}10주를 갖고 있으면 {gridPreview.addQty}주를 더 사서 총 {10 + gridPreview.addQty}주가 돼요.
+                    </Text>
+                  )}
+                </Text>
+                <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
+                  배율을 1로 두면 물타기마다 수량이 2배가 돼요. 0.5로 낮추면 1.5배씩 늘어나요.
+                </Text>
+
+                <View className="mb-4 rounded-2xl bg-[#f2f4f6] px-4 py-3">
+                  <Text className="text-xs leading-5 text-[#4e5968]">
+                    폭·배율은 <Text className="font-semibold text-[#191f28]">다음에 새로 여는 그리드부터</Text>{' '}
+                    적용돼요. 지금 돌고 있는 그리드는 이미 주문이 접수돼 있어서 그대로 관리돼요.
+                  </Text>
+                </View>
 
                 <SettingSlider
                   label="리샘플 청크 (초)"
