@@ -14,6 +14,7 @@ import type { AutoPilotEvent, AutoPilotState, AutoPilotView } from '../autopilot
 import type { AutoPilotManager, AutoPilotSlotRow } from '../autopilotManager';
 import { WATCH_SOURCE_LABEL } from '../watchlist';
 import type { MinuteChartExchangeCode } from '../../../kis/minuteChart';
+import { AdoptSheet } from './AdoptSheet';
 import { AmountSheet } from './AmountSheet';
 import { ChartSheet } from './ChartSheet';
 import { CommentsSheet } from './CommentsSheet';
@@ -111,6 +112,8 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
   const [rows, setRows] = useState<readonly AutoPilotSlotRow[]>(() => autopilot.getRows());
   const [events, setEvents] = useState<readonly AutoPilotEvent[]>(() => autopilot.recentEvents);
   const [sheetVisible, setSheetVisible] = useState(false);
+  // 계좌 잔고 보유분을 그리드에 다시 태우는 시트(FAULT 이후 복구 경로).
+  const [adoptVisible, setAdoptVisible] = useState(false);
   // 리스트 행 탭 → 액션시트(댓글/차트/호가) → 셋 중 하나의 조회 전용 시트. InstanceCard.tsx의 3버튼과 동일 대상.
   const [actionSheetTicker, setActionSheetTicker] = useState<string | null>(null);
   const [commentsTicker, setCommentsTicker] = useState<string | null>(null);
@@ -260,6 +263,10 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
               {view.lastFault && (
                 <View className="px-5 pb-2">
                   <Text className="text-xs leading-5 text-[#f04452]">{view.lastFault.text}</Text>
+                  <Text className="mt-1 text-xs leading-5 text-[#8b95a1]">
+                    해제하면 계좌에 남은 물량은 앱이 더 이상 관리하지 않아요. 다시 시작한 뒤 &quot;보유 종목
+                    등록&quot;으로 그리드에 태울 수 있어요.
+                  </Text>
                 </View>
               )}
               {idleWatch && config && (
@@ -290,13 +297,26 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
                   </>
                 )}
                 {running && (
-                  <Pressable
-                    onPress={handleStop}
-                    className="items-center rounded-2xl bg-[#f7f9fc] py-4 active:opacity-80"
-                    style={{ minHeight: 48 }}
-                  >
-                    <Text className="text-base font-semibold text-[#4e5968]">정지하기</Text>
-                  </Pressable>
+                  <>
+                    {/* 그리드 자리가 남아 있을 때만 — 만석이면 등록해도 거절되므로 버튼을 감춘다. */}
+                    {view.activeTickers.length < view.maxGrids && (
+                      <Pressable
+                        onPress={() => setAdoptVisible(true)}
+                        className="flex-row items-center justify-center rounded-2xl bg-[#eaf2ff] py-4 active:opacity-80"
+                        style={{ minHeight: 48, gap: 6 }}
+                      >
+                        <Ionicons name="wallet-outline" size={16} color="#3182f6" />
+                        <Text className="text-base font-semibold text-[#3182f6]">보유 종목 등록</Text>
+                      </Pressable>
+                    )}
+                    <Pressable
+                      onPress={handleStop}
+                      className="items-center rounded-2xl bg-[#f7f9fc] py-4 active:opacity-80"
+                      style={{ minHeight: 48 }}
+                    >
+                      <Text className="text-base font-semibold text-[#4e5968]">정지하기</Text>
+                    </Pressable>
+                  </>
                 )}
                 {view.state === 'PAUSED' && (
                   <Pressable onPress={handleStop} className="items-center py-2 active:opacity-60">
@@ -370,6 +390,7 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
           </>
         }
       />
+      <AdoptSheet visible={adoptVisible} autopilot={autopilot} onClose={() => setAdoptVisible(false)} />
       <AmountSheet
         visible={sheetVisible}
         initial={view.config}

@@ -281,9 +281,19 @@ export function etDateOf(epochMs: number): string {
  */
 interface ActiveCycle {
   ticker: string;
-  slot: FeedSlot;
+  /**
+   * 이 종목의 시세 슬롯. **입양(adopt) 포지션은 null일 수 있다** — 잔고에는 있지만 단타 리스트에
+   * 올라와 있지 않은 종목(어제 남은 물량 등)이면 슬롯이 없다. 현재가 화살표만 못 그릴 뿐 관리는 된다.
+   */
+  slot: FeedSlot | null;
   adapter: OrderPortAdapter;
-  cycle: RunCycle;
+  /**
+   * 변곡점 진입 사이클. **입양 포지션은 null이다** — 우리가 산 게 아니라 계좌에 이미 있던 물량이라
+   * 진입 기록도, 매수 주문도 없다. 관리는 처음부터 그리드가 전담한다.
+   */
+  cycle: RunCycle | null;
+  /** 잔고에서 주워 온 포지션인가(= cycle === null). 정산·Stop 문구가 갈린다. */
+  adopted: boolean;
   /** 이 사이클의 브로커 — 그리드 발주에 재사용한다(진입 어댑터와 같은 브로커). */
   broker: ScalperBroker;
   /** 매도 관리 그리드(진입 후 인계). 미인계면 null. */
@@ -415,6 +425,10 @@ export class AutoPilot {
     let exiting = false;
     let holding = false;
     for (const a of this.actives.values()) {
+      if (!a.cycle) {
+        holding = true; // 입양 포지션 — 진입 사이클 없이 곧장 보유 상태다.
+        continue;
+      }
       switch (a.cycle.state) {
         case 'WATCH_BUY':
         case 'BUYING':
@@ -451,7 +465,7 @@ export class AutoPilot {
         avgPrice: v.avgPrice,
         buyPrice: v.buyPrice,
         sellPrice: v.sellPrice,
-        currentPrice: active.slot.getView().price,
+        currentPrice: active.slot?.getView().price ?? null,
         holdingQty: v.holdingQty,
         buyMultiplier: v.buyMultiplier,
         gridActive: v.gridActive,
@@ -611,16 +625,34 @@ export class AutoPilot {
     this.stopRequested = true;
     this.pendingBuys.clear();
     if (this.faulted) {
-      // 인터록 해제 — 추가 주문·취소 없이 정리만(포지션은 계좌에서 수동 처리).
+      // 인터록 해제 — 추가 주문·취소 없이 정리만(포지션은 계좌에서 수동 처리하거나 adoptPosition으로 다시 태운다).
+      const abandoned = [...this.actives.keys()];
       for (const active of [...this.actives.values()]) {
-        active.cycle.stop(); // FAULT→DONE(코어가 주문 없이 종료).
+        active.cycle?.stop(); // FAULT→DONE(코어가 주문 없이 종료).
         this.teardownActive(active);
+      }
+      if (abandoned.length > 0) {
+        this.event(
+          `${abandoned.join(', ')} 관리를 놓았어요 — 계좌에 남은 물량은 "보유 종목 등록"으로 그리드에 다시 태울 수 있어요`,
+        );
       }
       this.finishStop();
       return;
     }
     if (this.actives.size > 0) {
-      for (const active of this.actives.values()) active.cycle.stop();
+      const adoptedOnly = [...this.actives.values()].filter((a) => a.adopted);
+      // 입양 포지션은 청산할 진입 사이클이 없다 — 그리드 주문이 계좌에 그대로 남는다는 걸 분명히 알린다.
+      if (adoptedOnly.length > 0) {
+        this.event(
+          `${adoptedOnly.map((a) => a.ticker).join(', ')}의 그리드 주문은 계좌에 남아 있어요 — 필요하면 증권사 앱에서 취소해 주세요`,
+        );
+        for (const active of adoptedOnly) this.teardownActive(active);
+      }
+      if (this.actives.size === 0) {
+        this.finishStop();
+        return;
+      }
+      for (const active of this.actives.values()) active.cycle?.stop();
       // SELLING→DONE은 pollCycle이 진행 — settle에서 stopRequested를 보고 마지막 사이클에서 IDLE로 마감한다.
       void this.pollCycle();
       this.emit();
@@ -789,7 +821,8 @@ export class AutoPilot {
     const active = this.actives.get(ctx.ticker);
     if (active) {
       // 그리드가 청산을 관리하면 변곡점 매도는 무시한다(D5) — 매도는 +w 지정가 체결로만 일어난다.
-      if (this.gridEnabled()) return;
+      // 입양 포지션(cycle 없음)도 마찬가지 — 청산은 오직 그리드 몫이다.
+      if (this.gridEnabled() || !active.cycle) return;
       active.adapter.setLimitPrice(ctx.price);
       active.cycle.onSignal('SELL', this.toSnapshot(ctx));
       this.emit();
@@ -908,7 +941,8 @@ export class AutoPilot {
       ticker: ctx.ticker,
       slot,
       adapter,
-      cycle: null as unknown as RunCycle, // 아래에서 즉시 채운다(onTrade 클로저가 active를 참조해야 한다).
+      cycle: null, // 바로 아래에서 채운다 — onTrade 클로저가 active를 참조해야 해서 두 단계로 나눈다.
+      adopted: false,
       broker,
       grid: null,
       gridArmed: false,
@@ -973,6 +1007,13 @@ export class AutoPilot {
       return;
     }
 
+    // 입양 포지션은 그리드가 유일한 관리 주체다 — arm에 실패했다면 폴할 것이 없다(슬롯만 반납).
+    if (!active.cycle || !active.slot) {
+      this.teardownActive(active);
+      this.emit();
+      return;
+    }
+
     const ok = await active.adapter.refreshFills();
     if (!ok) {
       this.enterFault(active.adapter.takeFault() ?? { kind: 'FILL_CHECK', reason: '체결 확인 실패' });
@@ -1004,7 +1045,7 @@ export class AutoPilot {
       this.clearAbandon(active.ticker);
       // 진입 체결 → 매도 관리 그리드 인계(D5). 그리드가 켜져 있고 아직 안 걸었으면 지금 두 주문을 건다.
       if (this.gridEnabled() && !active.grid && !active.arming) {
-        await this.armGrid(active);
+        await this.armGrid(active, { interlockOnFailure: true });
         // arm이 FAULT면 gridArmed=false로 남는다 — 인터록은 armGrid가 이미 걸었으니 그대로 반환한다.
         if (!active.gridArmed) return;
         this.emit();
@@ -1024,42 +1065,112 @@ export class AutoPilot {
    * ⚠ 다중 그리드에서는 가용현금을 **동시 그리드 수로 나눠** 배정한다. 안 그러면 그리드 3개가
    *    같은 현금을 각자 "전부 내 것"으로 보고 물타기 매수를 걸어, 셋 다 걸리면 계좌가 즉시 잠긴다.
    */
-  private async armGrid(active: ActiveCycle): Promise<void> {
+  private async armGrid(active: ActiveCycle, opts: { interlockOnFailure: boolean }): Promise<boolean> {
     // ★ 여기서 읽는 값이 이 그리드의 폭·배율로 고정된다(Grid 생성자가 캡처) — 설정 변경은 다음 그리드부터.
     const cfg = this.gridConfig!;
     active.arming = true;
     try {
-      const pos = active.cycle.position;
-      const fallback = pos ? { qty: pos.qty, avgPrice: pos.entryPrice } : undefined;
-      const buyPrice = (pos?.entryPrice ?? 0) * (1 - cfg.width);
-      let availableCashUsd: number | undefined;
-      try {
-        const cash = await this.deps.fetchBuyableUsd?.(active.ticker, buyPrice);
-        if (typeof cash === 'number' && Number.isFinite(cash)) availableCashUsd = cash / this.maxGrids;
-      } catch {
-        // 현금 판정 생략 — 전량 매수 다리로 진행(주문 거절은 FAULT 인터록이 받는다).
+      // 진입 사이클이 있으면 그 체결을 폴백 포지션으로 쓴다. 입양 포지션은 사이클이 없으므로
+      // 잔고를 직접 한 번 읽어 평단을 확보한다 — 현금 조회의 기준가(−w)를 정하려면 평단이 먼저 필요하다.
+      const entry = active.cycle?.position;
+      let seed = entry ? { qty: entry.qty, avgPrice: entry.entryPrice } : null;
+      if (!seed) {
+        try {
+          seed = await active.broker.fetchPosition();
+        } catch {
+          seed = null;
+        }
       }
-      if (this.stopRequested) return;
+      const buyPrice = (seed?.avgPrice ?? 0) * (1 - cfg.width);
+      let availableCashUsd: number | undefined;
+      if (buyPrice > 0) {
+        try {
+          const cash = await this.deps.fetchBuyableUsd?.(active.ticker, buyPrice);
+          if (typeof cash === 'number' && Number.isFinite(cash)) availableCashUsd = cash / this.maxGrids;
+        } catch {
+          // 현금 판정 생략 — 전량 매수 다리로 진행(주문 거절은 FAULT 인터록이 받는다).
+        }
+      }
+      if (this.stopRequested) return false;
       const grid = new Grid({
         port: createGridOrderPort(active.broker, active.ticker),
         clock: this.deps.clock,
         config: { width: cfg.width, buyMultiplier: cfg.buyMultiplier, availableCashUsd },
       });
       active.grid = grid;
-      await grid.arm(fallback);
+      await grid.arm(seed ?? undefined);
       if (grid.state === 'FAULT') {
-        this.enterFault({ kind: 'PLACE', reason: grid.faultText ?? '그리드 발주 실패' });
-        return;
+        // 진입 직후 인계 실패는 "우리가 방금 산 주식이 방치되는" 상황이라 인터록을 건다.
+        // 입양 실패는 계좌 상태가 달라진 것 뿐이라(이미 팔렸다 등) 전체를 동결하지 않고 그 종목만 포기한다.
+        if (opts.interlockOnFailure) this.enterFault({ kind: 'PLACE', reason: grid.faultText ?? '그리드 발주 실패' });
+        return false;
       }
       active.gridArmed = true;
       const v = grid.view;
       this.event(
-        `${active.ticker} 그리드 관리 인계 · 매수 $${v.buyPrice}(평단 −${Math.round(cfg.width * 100)}%) · 매도 $${v.sellPrice}(평단 +${Math.round(cfg.width * 100)}%)`,
+        `${active.ticker} 그리드 관리 ${active.adopted ? '등록' : '인계'} · ${v.holdingQty}주 · 평단 $${v.avgPrice.toFixed(2)} · 매수 $${v.buyPrice}(−${Math.round(cfg.width * 100)}%) · 매도 $${v.sellPrice}(+${Math.round(cfg.width * 100)}%)`,
       );
       this.emit();
+      return true;
     } finally {
       active.arming = false;
     }
+  }
+
+  // ---- 잔고 보유분 입양(FAULT 이후 복구·수동 편입) ----
+
+  /**
+   * 계좌에 이미 있는 보유분을 그리드 관리에 등록한다 — FAULT로 관리를 놓친 물량을 되찾는 주 경로.
+   *
+   * 진입 사이클 없이 그리드만 만들고, 수량·평단은 **KIS 잔고에서 그대로 읽는다**(Grid.arm → fetchPosition).
+   * 성공하면 null, 실패하면 사용자에게 보여줄 문구를 반환한다.
+   *
+   * ⚠ 계좌에는 자동매매와 무관한 장기 보유분이 섞여 있을 수 있다 — 그래서 전 종목 자동 편입은 하지 않고
+   *   **호출자(사용자)가 종목을 하나씩 지정**하게 한다.
+   */
+  async adoptPosition(ticker: string): Promise<string | null> {
+    if (!this.running) return '자동 단타를 먼저 시작해 주세요';
+    if (this.faulted) return '멈춤 상태예요 — 먼저 Stop으로 해제해 주세요';
+    if (this.session?.paused) return '일시정지 중이에요 — 재개한 뒤 다시 시도해 주세요';
+    if (!this.gridEnabled()) return '그리드 관리가 꺼져 있어 등록할 수 없어요';
+    if (this.actives.has(ticker) || this.pendingBuys.has(ticker)) return `${ticker}은(는) 이미 관리 중이에요`;
+    if (this.actives.size + this.pendingBuys.size >= this.maxGrids) {
+      return `동시 그리드 수(${this.maxGrids}개)가 꽉 찼어요 — 설정에서 늘리거나 기다려 주세요`;
+    }
+
+    const broker = this.deps.makeBroker(ticker);
+    const active: ActiveCycle = {
+      ticker,
+      slot: this.slotOf(ticker), // 리스트에 없으면 null — 현재가 화살표만 안 뜬다.
+      adapter: new OrderPortAdapter({ broker, clock: this.deps.clock }),
+      cycle: null,
+      adopted: true,
+      broker,
+      grid: null,
+      gridArmed: false,
+      buyingSince: null,
+      abandonRequested: false,
+      pendingSettle: null,
+      arming: false,
+    };
+    // 슬롯을 먼저 잡는다 — arm이 await라, 그 사이 들어온 변곡점 신호가 같은 자리를 가져가면 안 된다.
+    this.actives.set(ticker, active);
+    this.deps.pin(ticker);
+    this.watchedTickers = this.watchedTickers.filter((t) => t !== ticker);
+
+    const armed = await this.armGrid(active, { interlockOnFailure: false });
+    if (!armed) {
+      this.actives.delete(ticker);
+      this.deps.unpin(ticker);
+      this.reselect();
+      this.emit();
+      return `${ticker} 등록에 실패했어요 — 잔고에 수량이 없거나 주문이 거절됐어요`;
+    }
+
+    this.startPollTimer();
+    this.reselect();
+    this.emit();
+    return null;
   }
 
   /** 그리드 폴 1회 — 매도 체결→정산·감시 복귀, 매수 체결→리브래킷, 취소 거절→FAULT. */
@@ -1089,7 +1200,7 @@ export class AutoPilot {
    * (RunCycle은 HOLDING에 파킹돼 있었을 뿐 — 실제 매도는 그리드가 냈으므로 cycle.stop()을 부르지 않는다.)
    */
   private settleGrid(active: ActiveCycle, result: Extract<GridPollResult, { kind: 'sold' }>): void {
-    const pos = active.cycle.position;
+    const pos = active.cycle?.position ?? null;
     const entryPrice = result.avgPrice;
     const exitPrice = result.exitPrice;
     const qty = result.qty;
@@ -1121,7 +1232,7 @@ export class AutoPilot {
    * ⚠ 핀(`pin`)은 `commitBuy`에서 걸리고 여기서만 풀린다. 이 경로를 거치지 않으면 워치리스트가 영구 오염된다.
    */
   private teardownActive(active: ActiveCycle): void {
-    active.slot.detachDetector();
+    active.slot?.detachDetector();
     this.actives.delete(active.ticker);
     this.deps.unpin(active.ticker);
     if (this.actives.size === 0) this.stopPollTimer();
@@ -1133,7 +1244,7 @@ export class AutoPilot {
    */
   private abandonActive(active: ActiveCycle): void {
     const ticker = active.ticker;
-    active.cycle.stop(); // WATCH_BUY→DONE (이 전이는 포트를 호출하지 않는다 — 폐기 위생용)
+    active.cycle?.stop(); // WATCH_BUY→DONE (이 전이는 포트를 호출하지 않는다 — 폐기 위생용)
     this.teardownActive(active);
     this.markAbandon(ticker);
     this.event(`${ticker} 매수 취소 · 안 붙어서 다시 감시해요`);
@@ -1239,7 +1350,7 @@ export class AutoPilot {
     const text = `자동매매를 멈췄어요 · ${faultKindLabel(fault)} — ${fault.reason}. 계좌를 확인한 뒤 Stop으로 해제해 주세요`;
     this.lastFault = { at: this.deps.clock.now(), text };
     this.faulted = true;
-    for (const active of this.actives.values()) active.cycle.fault();
+    for (const active of this.actives.values()) active.cycle?.fault();
     this.pendingBuys.clear();
     this.stopPollTimer();
     this.deps.onFault?.(this.lastFault);
@@ -1293,6 +1404,7 @@ export class AutoPilot {
     try {
       for (const active of [...this.actives.values()]) {
         if (this.faulted) return;
+        if (!active.cycle || !active.slot) continue; // 입양 포지션 — 리프라이스할 주문도, 매수 시계도 없다.
         if (active.adapter.hasFault()) continue;
         const cycleState = active.cycle.state;
         if (cycleState !== 'SELLING' && cycleState !== 'BUYING') {
@@ -1338,7 +1450,7 @@ export class AutoPilot {
     if (!probe.hasOdno) return;
     if (probe.cancelState !== 'none') return;
     if (probe.filledQty > 0) return; // ★ 부분체결이면 취소하지 않는다
-    if (active.cycle.abandonBuy()) active.abandonRequested = true;
+    if (active.cycle?.abandonBuy()) active.abandonRequested = true;
   }
 
   private event(text: string): void {

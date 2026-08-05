@@ -189,6 +189,24 @@ export class AutoPilotManager {
     this.pilot.setGridConfig(config);
   }
 
+  // ---- 잔고 보유분 입양(FAULT 이후 복구) ----
+
+  /**
+   * 계좌 보유 종목 티커 — 이미 관리 중인 종목은 빼고 돌려준다(등록 시트가 고를 목록).
+   * fetchHoldings가 주입되지 않았으면 빈 배열.
+   */
+  async listAdoptableHoldings(): Promise<string[]> {
+    if (!this.deps.fetchHoldings) return [];
+    const managed = new Set(this.pilot.getView().activeTickers);
+    const holdings = await this.deps.fetchHoldings();
+    return holdings.filter((t) => !managed.has(t));
+  }
+
+  /** 보유분 1종목을 그리드 관리에 등록한다. 성공하면 null, 실패하면 사용자 문구. */
+  adoptHolding(ticker: string): Promise<string | null> {
+    return this.pilot.adoptPosition(ticker);
+  }
+
   dispose(): void {
     this.pilot.dispose();
     this.watchlist.stop();

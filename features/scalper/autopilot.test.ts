@@ -50,6 +50,8 @@ function makeHarness(
     config?: AutoPilotConfig | null;
     fetchBuyableUsd?: AutoPilotDeps['fetchBuyableUsd'];
     gridConfig?: AutoPilotDeps['gridConfig'];
+    /** 티커별 잔고 심 — makeBroker가 브로커를 만들 때마다 심어 준다(입양 테스트용). */
+    positions?: Record<string, { qty: number; avgPrice: number }>;
   } = {},
 ): Harness {
   const clock = fakeClock(1000);
@@ -71,6 +73,8 @@ function makeHarness(
     unpin: (t) => unpins.push(t),
     makeBroker: (t) => {
       const b = new FakeBroker({ autoFill: opts.autoFill ?? true });
+      // ⚠ makeBroker는 진입·입양마다 **새** 브로커를 만든다 — 잔고 심은 여기서 매번 다시 붙여야 한다.
+      b.position = opts.positions?.[t] ?? null;
       brokers.set(t, b);
       return b;
     },
@@ -1018,6 +1022,115 @@ describe('AutoPilot — 다중 그리드', () => {
     expect(gridBuyB).toMatchObject({ qty: 5, price: 190 });
     // ★ 이미 걸린 A의 그리드는 옛 폭 그대로다(주문이 이미 접수돼 있다).
     expect(view.grids.find((g) => g.ticker === 'A')).toMatchObject({ buyPrice: 90, sellPrice: 110 });
+  });
+
+  it('FAULT로 놓친 물량을 잔고에서 다시 그리드에 태운다(adoptPosition)', async () => {
+    const h = makeHarness(['A', 'B'], {
+      autoFill: false,
+      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      // 계좌에 7주 @ $100이 있다 — 진입 인계도, 그 뒤 재등록도 이 잔고를 읽는다.
+      positions: { A: { qty: 7, avgPrice: 100 } },
+    });
+    h.pilot.start();
+
+    // A에 진입해 그리드까지 인계된 상태를 만든다.
+    await replay(h, 'A', DOWN_UP_DOWN);
+    const ba = h.brokers.get('A')!;
+    ba.fill(ba.placed.find((p) => p.side === 'buy')!.odno, 100);
+    await flush();
+    await h.pilot.pollCycle();
+    await flush();
+    expect(h.pilot.getView().grids).toHaveLength(1);
+
+    // 체결 확인이 죽어 FAULT → Stop으로 인터록 해제. 앱은 A를 잊지만 계좌에는 7주가 남아 있다.
+    ba.failFetchFills = true;
+    await h.pilot.pollCycle();
+    expect(h.pilot.getView().state).toBe('FAULT');
+    h.pilot.stop();
+    expect(h.pilot.getView().state).toBe('IDLE');
+    expect(h.pilot.getView().grids).toHaveLength(0);
+    expect(h.unpins).toContain('A'); // 핀은 반드시 풀려야 한다(워치리스트 영구 오염 방지).
+
+    // 사람이 계좌를 확인하고 다시 시작 → 잔고 보유분을 등록한다.
+    ba.failFetchFills = false;
+    h.pilot.start();
+    const rejected = await h.pilot.adoptPosition('A');
+    expect(rejected).toBeNull();
+
+    const view = h.pilot.getView();
+    expect(view.activeTickers).toEqual(['A']);
+    // 잔고의 수량·평단(7주 @ $100)을 그대로 읽어 ±10% 브래킷을 세운다.
+    expect(view.grids).toHaveLength(1);
+    expect(view.grids[0]).toMatchObject({
+      ticker: 'A',
+      avgPrice: 100,
+      buyPrice: 90,
+      sellPrice: 110,
+      holdingQty: 7,
+      gridActive: true,
+    });
+    // 새 그리드의 두 다리가 실제로 발주됐다(등록 후 브로커가 새로 만들어진다).
+    const adopted = h.brokers.get('A')!;
+    expect(adopted.placed.filter((p) => p.side === 'sell')).toEqual([
+      { side: 'sell', pdno: 'A', qty: 7, price: 110, odno: expect.any(String) },
+    ]);
+    expect(adopted.placed.filter((p) => p.side === 'buy').at(-1)).toMatchObject({ qty: 7, price: 90 });
+    expect(h.events.some((e) => e.includes('그리드 관리 등록'))).toBe(true);
+  });
+
+  it('잔고가 비어 있으면 등록에 실패하되 전역 FAULT로 번지지 않는다', async () => {
+    const h = makeHarness(['A'], { autoFill: false, gridConfig: { width: 0.1, buyMultiplier: 1 } });
+    h.pilot.start();
+    // positions 미주입 → 잔고 조회가 null. 계좌 상태가 달라진 것뿐이라 그 종목만 포기해야 한다.
+    expect(await h.pilot.adoptPosition('A')).toContain('실패');
+    expect(h.pilot.getView().state).not.toBe('FAULT');
+    expect(h.pilot.getView().activeTickers).toEqual([]);
+    expect(h.unpins).toContain('A'); // 슬롯·핀을 반드시 반납한다.
+  });
+
+  it('입양 포지션도 +폭 매도가 체결되면 정상 정산된다(진입 사이클이 없어도)', async () => {
+    const h = makeHarness(['A'], {
+      autoFill: false,
+      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      positions: { A: { qty: 3, avgPrice: 200 } },
+    });
+    h.pilot.start();
+
+    // 진입 없이 곧장 잔고 보유분을 등록한다.
+    expect(await h.pilot.adoptPosition('A')).toBeNull();
+
+    const broker = h.brokers.get('A')!;
+    const sell = broker.placed.find((p) => p.side === 'sell')!;
+    broker.fill(sell.odno, 220);
+    await flush();
+    await h.pilot.pollCycle();
+    await flush();
+
+    // 평단 200 → 매도 220, 3주 → +$60. 진입 스냅샷이 없어도 기록이 남는다.
+    expect(h.trades).toHaveLength(1);
+    expect(h.trades[0]).toMatchObject({ ticker: 'A', qty: 3, entryPrice: 200, exitPrice: 220 });
+    expect(h.trades[0].pnl).toBe(60);
+    expect(h.pilot.getView().activeTickers).toEqual([]);
+    expect(h.unpins).toContain('A');
+  });
+
+  it('등록 거절 — 이미 관리 중이거나 슬롯이 꽉 찼거나 정지 상태면 문구를 돌려준다', async () => {
+    const h = makeHarness(['A', 'B'], {
+      autoFill: false,
+      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      config: { startAmountUsd: 100, maxAmountUsd: 400, minTickRate: TINY_RATE, maxConcurrentGrids: 1 },
+      positions: { A: { qty: 2, avgPrice: 50 }, B: { qty: 5, avgPrice: 20 } },
+    });
+    // 정지 상태.
+    expect(await h.pilot.adoptPosition('A')).toContain('시작');
+
+    h.pilot.start();
+    expect(await h.pilot.adoptPosition('A')).toBeNull();
+
+    // 같은 종목 재등록 거절.
+    expect(await h.pilot.adoptPosition('A')).toContain('이미 관리 중');
+    // 상한 1이라 다른 종목도 거절.
+    expect(await h.pilot.adoptPosition('B')).toContain('꽉 찼어요');
   });
 
   it('[사고 방지] 그리드가 살아 있는데 현금이 모자라면 PAUSED로 가지 않고 신규 진입만 쉰다', async () => {
