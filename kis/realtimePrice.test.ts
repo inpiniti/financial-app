@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  buildDaytimeQuoteTrKey,
   buildFreeQuoteTrKey,
   buildQuoteTrKey,
   OverseasRealtimePriceClient,
@@ -142,6 +143,17 @@ describe('parseOverseasRealtimeQuote (① HDFSASP0 1호가 추출)', () => {
 describe('buildQuoteTrKey', () => {
   it('D+시장구분+종목코드 형태로 조립한다 (공식 샘플 asking_price("1","DNASAAPL") 근거 — R 키는 실계좌에서 mci send failed 거절)', () => {
     expect(buildQuoteTrKey('NAS', 'AAPL')).toBe('DNASAAPL');
+  });
+});
+
+describe('buildDaytimeQuoteTrKey', () => {
+  it('R+시장구분+종목코드 형태로 조립한다 (문서 예시: RBAQAAPL, 나스닥-주간)', () => {
+    expect(buildDaytimeQuoteTrKey('BAQ', 'AAPL')).toBe('RBAQAAPL');
+  });
+
+  it('뉴욕-주간(BAY)·아멕스-주간(BAA)도 동일 규칙으로 조립한다', () => {
+    expect(buildDaytimeQuoteTrKey('BAY', 'TSLA')).toBe('RBAYTSLA');
+    expect(buildDaytimeQuoteTrKey('BAA', 'F')).toBe('RBAAF');
   });
 });
 

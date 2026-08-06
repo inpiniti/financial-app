@@ -114,6 +114,20 @@ export function buildQuoteTrKey(market: RealtimeMarketCode, symbol: string): str
 }
 
 /**
+ * 주간거래(미국, 10:00~16:00 KST) 전용 시장구분 — docs/koreainvestment/실시간지연체결가.txt/실시간호가.txt
+ * 원문: "미국 주간거래 실시간 조회 시 R+시장구분(3자리)+종목코드, 예) RBAQAAPL". D(무료시세) 옵션 자체가
+ * 없다 — 유료시세 신청 여부와 무관하게 주간거래는 R 고정(KIS 공식 GitHub 예제 asking_price("1","RBAQAAPL")
+ * 도 동일). RealtimeMarketCode(D 전용 빌더가 쓰는 시장구분)와 값 공간이 겹치지 않게 별도 타입으로 분리해,
+ * 실수로 buildQuoteTrKey(D 접두)에 BAY/BAQ/BAA를 넣어 구독이 조용히 실패하는 걸 원천 차단한다.
+ */
+export type DaytimeMarketCode = 'BAY' | 'BAQ' | 'BAA';
+
+/** R+시장구분(3자리)+종목코드 조립 — 주간거래 체결가·호가 구독 공용(둘 다 같은 tr_key, tr_id로만 구분). */
+export function buildDaytimeQuoteTrKey(market: DaytimeMarketCode, symbol: string): string {
+  return `R${market}${symbol}`;
+}
+
+/**
  * 실시간호가(HDFSASP0) 필드 인덱스 — **KIS 공식 샘플(asking_price.py)의 columns 순서를 정본**으로 한다:
  *   symb, zdiv, xymd, xhms, kymd, khms, bvol, avol, bdvl, advl, pbid1, pask1, vbid1, vask1, dbid1, dask1 (16개)
  * ⚠ 포탈 문서 표는 맨 앞에 RSYM이 있고 3호가 그룹 중복 표기까지 있어 실데이터와 다르다(실시간호가.md 특이사항).
