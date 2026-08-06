@@ -16,12 +16,14 @@ import {
   type AutoPilotView,
   type GridExitConfig,
 } from './autopilot';
+import { isDaytimeSessionOpen } from './daySession';
 import { FeedSlot, type FeedSlotView } from './feedSlot';
 import { ScalperWatchlist, type RankingSnapshot, type WatchEntry } from './watchlist';
 import {
+  buildDaytimeQuoteTrKey,
   buildFreeQuoteTrKey,
-  buildQuoteTrKey,
   REALTIME_QUOTE_TR_ID,
+  type DaytimeMarketCode,
   type RealtimeMarketCode,
 } from '../../kis/realtimePrice';
 import type {
@@ -40,6 +42,11 @@ export const AUTOPILOT_TRADE_ID = 'autopilot';
 
 /** 리스트는 NAS 전용(plan §1-A) — trKey 시장구분도 고정. */
 const MARKET: RealtimeMarketCode = 'NAS';
+/**
+ * 주간거래(2026-08-06 주간거래 plan v4, 사용자 확정: 정규장과 동일 종목군 공유) — 같은 워치리스트를
+ * 그대로 쓰되, 주간거래 창(KST 10~16시)에는 나스닥-주간(BAQ) 시장구분 + R 접두로 구독한다.
+ */
+const DAYTIME_MARKET: DaytimeMarketCode = 'BAQ';
 
 const defaultScheduler: SchedulerLike = {
   setInterval: (fn, ms) => setInterval(fn, ms),
@@ -109,8 +116,14 @@ export class AutoPilotManager {
 
   private readonly deps: AutoPilotManagerDeps;
   private readonly slots = new Map<string, FeedSlot>();
-  /** 호가(R) 구독 중인 티커 — 감시 top3(또는 보유 1)만 유지한다. */
-  private readonly quoteSubs = new Set<string>();
+  /**
+   * 체결가 구독 중인 티커 → 실제 구독에 쓴 trKey 문자열. 구독 시점의 세션(정규장 D / 주간거래 R)으로
+   * 고정해 기억해둔다 — unsubscribe 시점에 세션이 바뀌어 있어도(예: 구독은 주간거래 중, 해제는 정규장
+   * 중) 엉뚱한 키로 취소 요청을 보내 구독이 고아로 남는 사고를 막는다.
+   */
+  private readonly tickTrKeys = new Map<string, string>();
+  /** 호가(R) 구독 중인 티커 → 실제 구독 trKey — 감시 top3(또는 보유 1)만 유지한다. tickTrKeys와 동일한 이유로 Map. */
+  private readonly quoteSubs = new Map<string, string>();
   /**
    * 체결가(D) 구독 유지 홀드(티커별 참조 카운트) — **트레이딩 중인 종목은 리스트 탈락과 무관하게
    * WS 구독을 유지한다**(시뮬레이션 plan §5-4, 사용자 확정: 실전 포함 필수 수정).
@@ -301,6 +314,13 @@ export class AutoPilotManager {
 
   // ---- 내부 ----
 
+  /** 지금(clock.now())이 주간거래 창이면 R+BAQ, 아니면 D+NAS — 체결가·호가 구독 공용(같은 trKey 문자열). */
+  private marketTrKeyOf(ticker: string): string {
+    return isDaytimeSessionOpen(this.deps.clock.now())
+      ? buildDaytimeQuoteTrKey(DAYTIME_MARKET, ticker)
+      : buildFreeQuoteTrKey(MARKET, ticker);
+  }
+
   private addSlot(ticker: string): void {
     if (this.slots.has(ticker)) return;
     this.slots.set(
@@ -316,7 +336,9 @@ export class AutoPilotManager {
         minStrength: this.deps.minStrength,
       }),
     );
-    this.deps.realtime.subscribe(buildFreeQuoteTrKey(MARKET, ticker)); // 체결가(D) — 전 종목.
+    const trKey = this.marketTrKeyOf(ticker); // 체결가 — 전 종목(정규장 D 또는 주간거래 R).
+    this.tickTrKeys.set(ticker, trKey);
+    this.deps.realtime.subscribe(trKey);
   }
 
   private dropSlot(ticker: string): void {
@@ -327,9 +349,13 @@ export class AutoPilotManager {
     if (!slot) return;
     slot.detachDetector();
     this.slots.delete(ticker);
-    this.deps.realtime.unsubscribe(buildFreeQuoteTrKey(MARKET, ticker));
-    if (this.quoteSubs.delete(ticker)) {
-      this.deps.realtime.unsubscribe(buildQuoteTrKey(MARKET, ticker), REALTIME_QUOTE_TR_ID);
+    const tickTrKey = this.tickTrKeys.get(ticker);
+    this.tickTrKeys.delete(ticker);
+    if (tickTrKey) this.deps.realtime.unsubscribe(tickTrKey);
+    const quoteTrKey = this.quoteSubs.get(ticker);
+    if (quoteTrKey) {
+      this.quoteSubs.delete(ticker);
+      this.deps.realtime.unsubscribe(quoteTrKey, REALTIME_QUOTE_TR_ID);
     }
   }
 
@@ -341,16 +367,17 @@ export class AutoPilotManager {
    */
   private reconcileQuoteSubs(view: AutoPilotView): void {
     const targets = new Set([...view.watched, ...view.activeTickers]);
-    for (const ticker of [...this.quoteSubs]) {
+    for (const [ticker, trKey] of [...this.quoteSubs]) {
       if (!targets.has(ticker)) {
         this.quoteSubs.delete(ticker);
-        this.deps.realtime.unsubscribe(buildQuoteTrKey(MARKET, ticker), REALTIME_QUOTE_TR_ID);
+        this.deps.realtime.unsubscribe(trKey, REALTIME_QUOTE_TR_ID);
       }
     }
     for (const ticker of targets) {
       if (!this.quoteSubs.has(ticker) && this.slots.has(ticker)) {
-        this.quoteSubs.add(ticker);
-        this.deps.realtime.subscribe(buildQuoteTrKey(MARKET, ticker), REALTIME_QUOTE_TR_ID);
+        const trKey = this.marketTrKeyOf(ticker);
+        this.quoteSubs.set(ticker, trKey);
+        this.deps.realtime.subscribe(trKey, REALTIME_QUOTE_TR_ID);
       }
     }
   }

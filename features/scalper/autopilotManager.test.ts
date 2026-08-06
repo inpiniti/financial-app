@@ -134,6 +134,37 @@ describe('AutoPilotManager — 배선(구독 예산·라우팅·상호 배타)',
     expect(feed.pairs.has('HDFSCNT0|DNASA')).toBe(false);
   });
 
+  it('주간거래 창(KST 10~16시)에는 D+NAS가 아니라 R+BAQ trKey로 체결가를 구독한다', async () => {
+    const { manager, feed, clock } = makeManager();
+    clock.set(Date.UTC(2026, 7, 6, 2, 0)); // 2026-08-06 11:00 KST — 주간거래 창.
+    manager.start();
+    await vi.waitFor(() => expect(manager.watchlist.size).toBe(12));
+    await flush();
+
+    expect(feed.tickPairs()).toHaveLength(12);
+    expect(feed.pairs.has('HDFSCNT0|RBAQA')).toBe(true); // 정규장이었다면 DNASA.
+    expect(feed.pairs.has('HDFSCNT0|DNASA')).toBe(false);
+  });
+
+  it('구독 중 세션이 바뀌어도(주간거래→정규장) 실제 구독했던 키 그대로 해제한다 — 고아 구독 방지', async () => {
+    const { manager, feed, fetchSnapshot, clock } = makeManager();
+    clock.set(Date.UTC(2026, 7, 6, 2, 0)); // 주간거래 창에서 시작 — R+BAQ로 구독됨.
+    manager.start();
+    await vi.waitFor(() => expect(manager.watchlist.size).toBe(12));
+    await flush();
+    expect(feed.pairs.has('HDFSCNT0|RBAQA')).toBe(true);
+
+    clock.set(Date.UTC(2026, 7, 6, 14, 0)); // 정규장 시각으로 이동 — 이 시점의 MARKET 판정은 D+NAS.
+    fetchSnapshot.mockResolvedValue(snapshotOf(['Z', ...TWELVE.slice(1)])); // A → Z 교체(A 드롭).
+    await manager.watchlist.refresh();
+    await flush();
+
+    // A는 원래 R+BAQ로 구독했으므로 그 키로 해제돼야 한다 — D+NAS로 해제 시도하면 고아로 남는다.
+    expect(feed.pairs.has('HDFSCNT0|RBAQA')).toBe(false);
+    expect(feed.pairs.has('HDFSCNT0|DNASA')).toBe(false); // 애초에 그 키로 구독한 적 없음.
+    expect(feed.pairs.has('HDFSCNT0|DNASZ')).toBe(true); // 새로 들어온 Z는 지금(정규장) 시각 기준 D+NAS.
+  });
+
   it('수동 카드 실행 중이면 start를 거부한다(상호 배타)', () => {
     const { manager } = makeManager({ manualBusy: true });
     expect(() => manager.start()).toThrow(/수동 단타 카드가 실행 중/);
