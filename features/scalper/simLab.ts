@@ -1,16 +1,19 @@
-// SimLab — 가상 전략 매트릭스 (시뮬레이션 plan 2026-08-06 §B-1).
+// SimLab — 가상 전략 매트릭스 (시뮬레이션 plan 2026-08-06 §B-1, 재진입 규칙 개정 2026-08-06).
 //
-// 오토파일럿의 진입 체결 1건을 신호로, 폭×배율 ~20조합의 "가상 계좌"가 같은 진입가로 에피소드를 열고
-// 각자 자기 그리드(평단×(1∓w))를 관리한다. 주문은 내지 않는다 — 체결 판정은 SimExchange와 같은
-// 트레이드스루 규칙(매수 P → tick < P, 매도 P → tick > P)의 순수 계산이다.
+// 오토파일럿의 진입 체결 1건을 신호로, 폭×배율 ~20조합의 "가상 계좌"가 같은 진입가로 자기 그리드
+// (평단×(1∓w))를 관리한다. 주문은 내지 않는다 — 체결 판정은 SimExchange와 같은 트레이드스루 규칙
+// (매수 P → tick < P, 매도 P → tick > P)의 순수 계산이다.
+//
+// ★ 재진입 규칙(사용자 확정): 전략은 **각자 독립된 가상 계좌**다. 같은 종목에 재진입이 와도
+//   보유 중인 전략은 그대로 자기 에피소드를 이어가고, **놀고 있는(이미 탈출한) 전략만** 새 진입가로
+//   새 에피소드를 시작한다. 예전처럼 재진입이 이전 에피소드를 강제 마감하면 넓은 폭 전략의 측정이
+//   조직적으로 잘려 통계가 불리하게 편향된다(ONFO 데이터로 확인된 실측 문제).
 //
 // 시뮬 모드뿐 아니라 **실거래 중에도** 돈다(mode='live'로 기록) — 실제 주문은 하나만 나가고
 // 뒤에서 20개 전략이 같은 시세를 평가하며 데이터를 쌓는 구조(사용자 원안).
 //
-// 에피소드 종료: ① 매도 다리 체결(escaped) ② closeEpisode(틱 공백·수동 마감) ③ 슬롯 초과 축출(evicted).
 // 진행 중 앱이 죽으면 그 에피소드는 기록 없이 소실된다(plan §5 — 주기 flush는 다음 단계).
-//
-// 시각은 전부 **한국시간(KST)** 문자열로 기록한다(사용자 확정 §5-7) — DB에서 바로 읽어도 헷갈리지 않게.
+// 시각은 전부 **한국시간(KST)** 문자열로 기록한다(사용자 확정 §5-7).
 
 import { roundGridPrice } from '../../core/grid';
 import { isDaytimeSessionOpen } from './daySession';
@@ -28,7 +31,7 @@ export interface SimStrategyConfig {
 export const SIM_MATRIX_WIDTHS_PCT = [2, 3, 5, 7, 10] as const;
 export const SIM_MATRIX_MULTIPLIERS = [0.5, 1, 2, 3] as const;
 
-/** 동시에 열어 둘 수 있는 에피소드(티커) 수 — WS 구독 예산 보호(초과 시 가장 오래된 것을 축출 기록). */
+/** 동시에 열어 둘 수 있는 종목 수 — WS 구독 예산 보호(초과 시 가장 오래된 종목을 축출 기록). */
 export const DEFAULT_MAX_EPISODES = 8;
 
 /**
@@ -86,8 +89,13 @@ export interface SimEntryContext {
   mode: 'sim' | 'live';
 }
 
+/** 전략 1개의 진행 중 에피소드 — 진입 정보를 각자 들고 있다(전략별 독립 계좌·재진입 규칙의 핵심). */
 interface StrategyState {
   cfg: SimStrategyConfig;
+  mode: 'sim' | 'live';
+  entryPrice: number;
+  enteredAtMs: number;
+  tickRate: number | null;
   qty: number;
   avgPrice: number;
   buyLegPrice: number;
@@ -99,19 +107,13 @@ interface StrategyState {
   maxQty: number;
   minPrice: number;
   rebuyCount: number;
-  done: boolean;
 }
 
-interface Episode {
-  ticker: string;
-  mode: 'sim' | 'live';
-  entryPrice: number;
-  enteredAtMs: number;
-  tickRate: number | null;
-  strategies: StrategyState[];
+/** 종목 1개의 장부 — 진행 중 전략들 + 최근 시세. 전략이 다 끝나면 장부째 정리(구독 해제). */
+interface TickerBook {
+  strategies: Map<string, StrategyState>;
   lastPrice: number;
   lastTsMs: number;
-  openCount: number;
 }
 
 export interface SimLabDeps {
@@ -119,7 +121,7 @@ export interface SimLabDeps {
   matrix: SimStrategyConfig[];
   /** 에피소드 결과 1행 — Supabase 기록기로 연결(호출부가 fire-and-forget·큐잉을 책임진다). */
   onRecord: (record: SimEpisodeRecord) => void;
-  /** 에피소드 시작/끝의 WS 구독 유지 훅 — AutoPilotManager.holdTick/releaseTick으로 연결. */
+  /** 종목 감시 시작/끝의 WS 구독 유지 훅 — AutoPilotManager.holdTick/releaseTick으로 연결. */
   hold?: (ticker: string) => void;
   release?: (ticker: string) => void;
   maxEpisodes?: number;
@@ -127,36 +129,50 @@ export interface SimLabDeps {
 
 export class SimLab {
   private readonly deps: SimLabDeps;
-  private readonly episodes = new Map<string, Episode>();
+  private readonly books = new Map<string, TickerBook>();
 
   constructor(deps: SimLabDeps) {
     this.deps = deps;
   }
 
-  /** 진행 중 에피소드 티커(진단·테스트용). */
+  /** 진행 중 전략이 남아 있는 티커(진단·테스트용). */
   get activeTickers(): string[] {
-    return [...this.episodes.keys()];
+    return [...this.books.keys()];
   }
 
   /**
-   * 진입 체결 1건 → 전 전략이 같은 진입가·수량으로 에피소드 개시.
-   * 같은 티커에 이미 에피소드가 있으면(오토파일럿이 탈출 후 재진입) 옛 것을 stopped로 마감하고 새로 연다.
+   * 진입 체결 1건 → **놀고 있는 전략만** 이 진입가로 새 에피소드를 연다.
+   * 이미 보유 중인 전략(직전 진입에서 아직 탈출 못 함)은 건드리지 않는다 — 각자 독립 계좌(사용자 확정).
    */
   onEntry(ticker: string, qty: number, entryPrice: number, ctx: SimEntryContext): void {
     if (!Number.isFinite(entryPrice) || entryPrice <= 0 || !Number.isFinite(qty) || qty < 1) return;
-    if (this.episodes.has(ticker)) this.closeEpisode(ticker, 'stopped');
-    // 슬롯 초과 — 가장 오래된 에피소드를 축출 기록으로 마감(WS 구독 예산 보호, plan §B-1).
-    const limit = this.deps.maxEpisodes ?? DEFAULT_MAX_EPISODES;
-    while (this.episodes.size >= limit) {
-      const oldest = this.episodes.keys().next().value as string;
-      this.closeEpisode(oldest, 'evicted');
+
+    let book = this.books.get(ticker);
+    if (!book) {
+      // 새 종목 — 슬롯 초과면 가장 오래된 종목(가장 이른 진입을 품은 장부)을 축출 기록으로 마감.
+      const limit = this.deps.maxEpisodes ?? DEFAULT_MAX_EPISODES;
+      while (this.books.size >= limit) {
+        const oldest = this.oldestTicker();
+        if (!oldest) break;
+        this.closeEpisode(oldest, 'evicted');
+      }
+      book = { strategies: new Map(), lastPrice: entryPrice, lastTsMs: this.deps.clock.now() };
+      this.books.set(ticker, book);
+      this.deps.hold?.(ticker);
     }
 
     const now = this.deps.clock.now();
-    const strategies = this.deps.matrix.map((cfg): StrategyState => {
+    const tickRate = Number.isFinite(ctx.tickRate) ? (ctx.tickRate as number) : null;
+    for (const cfg of this.deps.matrix) {
+      const key = strategyKey(cfg);
+      if (book.strategies.has(key)) continue; // 보유 중 — 자기 에피소드를 계속 간다.
       const w = cfg.widthPct / 100;
-      return {
+      book.strategies.set(key, {
         cfg,
+        mode: ctx.mode,
+        entryPrice,
+        enteredAtMs: now,
+        tickRate,
         qty,
         avgPrice: entryPrice,
         buyLegPrice: roundGridPrice(entryPrice * (1 - w)),
@@ -167,37 +183,26 @@ export class SimLab {
         maxQty: qty,
         minPrice: entryPrice,
         rebuyCount: 0,
-        done: false,
-      };
-    });
-    this.episodes.set(ticker, {
-      ticker,
-      mode: ctx.mode,
-      entryPrice,
-      enteredAtMs: now,
-      tickRate: Number.isFinite(ctx.tickRate) ? (ctx.tickRate as number) : null,
-      strategies,
-      lastPrice: entryPrice,
-      lastTsMs: now,
-      openCount: strategies.length,
-    });
-    this.deps.hold?.(ticker);
+      });
+    }
+    book.lastPrice = entryPrice;
+    book.lastTsMs = now;
   }
 
-  /** WS 체결 틱 — 해당 티커 에피소드의 전 전략을 트레이드스루 규칙으로 판정한다. */
+  /** WS 체결 틱 — 해당 티커의 진행 중 전략 전부를 트레이드스루 규칙으로 판정한다. */
   onTick(symb: string, price: number, tsMs?: number): void {
-    const ep = this.episodes.get(symb);
-    if (!ep || !Number.isFinite(price) || price <= 0) return;
-    ep.lastPrice = price;
-    ep.lastTsMs = tsMs ?? this.deps.clock.now();
+    const book = this.books.get(symb);
+    if (!book || !Number.isFinite(price) || price <= 0) return;
+    book.lastPrice = price;
+    book.lastTsMs = tsMs ?? this.deps.clock.now();
 
-    for (const s of ep.strategies) {
-      if (s.done) continue;
+    for (const [key, s] of [...book.strategies]) {
       if (price < s.minPrice) s.minPrice = price;
 
       // 매도(+w) 우선 — SOLD가 리브래킷보다 우선한다는 core/grid 원칙과 동일.
       if (price > s.sellLegPrice) {
-        this.finishStrategy(ep, s, s.sellLegPrice, 'escaped');
+        book.strategies.delete(key);
+        this.emitRecord(symb, book, s, s.sellLegPrice, 'escaped');
         continue;
       }
       // 매수(−w) 트레이드스루 → 물타기·리브래킷.
@@ -216,47 +221,64 @@ export class SimLab {
         s.sellLegPrice = roundGridPrice(s.avgPrice * (1 + w));
       }
     }
-    if (ep.openCount === 0) this.dropEpisode(ep.ticker);
+    if (book.strategies.size === 0) this.dropBook(symb);
   }
 
-  /** 미탈출 마감 — 남은 전 전략을 그 시점 상태로 기록한다(미탈출 데이터가 더 귀중하다 — plan §B-1). */
+  /** 미탈출 마감 — 그 종목의 진행 중 전략 전부를 그 시점 상태로 기록한다(미탈출 데이터가 더 귀중하다). */
   closeEpisode(ticker: string, reason: 'data_lost' | 'stopped' | 'evicted'): void {
-    const ep = this.episodes.get(ticker);
-    if (!ep) return;
-    for (const s of ep.strategies) {
-      if (!s.done) this.finishStrategy(ep, s, ep.lastPrice, reason);
+    const book = this.books.get(ticker);
+    if (!book) return;
+    for (const [key, s] of [...book.strategies]) {
+      book.strategies.delete(key);
+      this.emitRecord(ticker, book, s, book.lastPrice, reason);
     }
-    this.dropEpisode(ticker);
+    this.dropBook(ticker);
   }
 
-  /** 전체 마감(Stop·모드 전환) — 열려 있는 모든 에피소드를 같은 사유로 닫는다. */
+  /** 전체 마감(Stop·모드 전환) — 진행 중인 모든 전략을 같은 사유로 닫는다. */
   closeAll(reason: 'data_lost' | 'stopped' | 'evicted'): void {
-    for (const ticker of [...this.episodes.keys()]) this.closeEpisode(ticker, reason);
+    for (const ticker of [...this.books.keys()]) this.closeEpisode(ticker, reason);
   }
 
   // ---- 내부 ----
 
-  private finishStrategy(
-    ep: Episode,
+  /** 가장 이른 진입을 품고 있는 티커 — 축출 대상 선정용. */
+  private oldestTicker(): string | null {
+    let best: string | null = null;
+    let bestTs = Infinity;
+    for (const [ticker, book] of this.books) {
+      for (const s of book.strategies.values()) {
+        if (s.enteredAtMs < bestTs) {
+          bestTs = s.enteredAtMs;
+          best = ticker;
+        }
+      }
+      // 전략이 없는 장부(이론상 없음)는 즉시 축출 후보.
+      if (book.strategies.size === 0 && best === null) best = ticker;
+    }
+    return best ?? this.books.keys().next().value ?? null;
+  }
+
+  private emitRecord(
+    ticker: string,
+    book: TickerBook,
     s: StrategyState,
     exitPrice: number,
     reason: SimEpisodeRecord['exit_reason'],
   ): void {
-    s.done = true;
-    ep.openCount -= 1;
-    const exitedAtMs = ep.lastTsMs;
+    const exitedAtMs = book.lastTsMs;
     this.deps.onRecord({
-      mode: ep.mode,
-      ticker: ep.ticker,
-      trade_date: kstDateOf(ep.enteredAtMs),
-      entered_at: kstTimeOf(ep.enteredAtMs),
+      mode: s.mode,
+      ticker,
+      trade_date: kstDateOf(s.enteredAtMs),
+      entered_at: kstTimeOf(s.enteredAtMs),
       exited_at: kstTimeOf(exitedAtMs),
-      duration_s: Math.max(0, Math.round((exitedAtMs - ep.enteredAtMs) / 1000)),
-      entry_price: ep.entryPrice,
+      duration_s: Math.max(0, Math.round((exitedAtMs - s.enteredAtMs) / 1000)),
+      entry_price: s.entryPrice,
       exit_price: exitPrice,
       min_price: s.minPrice,
       // 소수 4자리로 절사 — 부동소수 잔재(7.000000000000001)가 DB에 그대로 남지 않게.
-      mae_pct: ep.entryPrice > 0 ? Math.round(((ep.entryPrice - s.minPrice) / ep.entryPrice) * 100 * 10_000) / 10_000 : 0,
+      mae_pct: s.entryPrice > 0 ? Math.round(((s.entryPrice - s.minPrice) / s.entryPrice) * 100 * 10_000) / 10_000 : 0,
       max_qty: s.maxQty,
       max_invested_usd: s.maxInvestedUsd,
       rebuy_count: s.rebuyCount,
@@ -265,16 +287,20 @@ export class SimLab {
       is_primary: s.cfg.isPrimary === true,
       escaped: reason === 'escaped',
       exit_reason: reason,
-      tick_rate_at_entry: ep.tickRate,
+      tick_rate_at_entry: s.tickRate,
       // 주간거래 창(KST 10:00~16:00)이 정규장(ET 기준)보다 먼저 판정된다 — 두 창은 겹치지 않으므로
       // 순서는 결과에 영향 없지만, 주간거래 라벨을 정규장 4종(pre/regular/after/off)과 구분해야 한다.
-      entry_session: isDaytimeSessionOpen(ep.enteredAtMs) ? 'daytime' : sessionOf(ep.enteredAtMs),
+      entry_session: isDaytimeSessionOpen(s.enteredAtMs) ? 'daytime' : sessionOf(s.enteredAtMs),
     });
   }
 
-  private dropEpisode(ticker: string): void {
-    if (this.episodes.delete(ticker)) this.deps.release?.(ticker);
+  private dropBook(ticker: string): void {
+    if (this.books.delete(ticker)) this.deps.release?.(ticker);
   }
+}
+
+function strategyKey(cfg: SimStrategyConfig): string {
+  return `${cfg.widthPct}|${cfg.buyMultiplier}${cfg.isPrimary ? '|p' : ''}`;
 }
 
 // ---- 시각/세션 헬퍼 (순수) ----

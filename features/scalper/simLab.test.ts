@@ -134,14 +134,44 @@ describe('SimLab — 에피소드 수명주기', () => {
     expect(releases).toEqual(['A']);
   });
 
-  it('같은 티커 재진입 — 옛 에피소드를 stopped로 마감하고 새로 연다', () => {
-    const { lab, clock, records } = makeLab();
+  it('재진입 — 보유 중인 전략은 그대로 이어가고 강제 마감되지 않는다(사용자 확정)', () => {
+    const { lab, clock, records } = makeLab(); // 10%/1x 하나 — 탈출선 110.
     lab.onEntry('A', 10, 100, { mode: 'sim' });
     lab.onTick('A', 99, clock.now());
+    // 보유 중인데 재진입 — 예전에는 여기서 stopped 기록이 생겼다(측정 잘림 편향의 원인).
     lab.onEntry('A', 5, 99, { mode: 'sim' });
-    expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({ exit_reason: 'stopped', entry_price: 100 });
+    expect(records).toHaveLength(0); // 아무도 마감되지 않는다.
     expect(lab.activeTickers).toEqual(['A']);
+
+    // 원래 진입(100) 기준 탈출선 110을 뚫으면 — 첫 진입 정보 그대로 탈출한다.
+    lab.onTick('A', 110.01, clock.now());
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ entry_price: 100, exit_price: 110, escaped: true });
+  });
+
+  it('재진입 — 탈출해서 놀고 있는 전략만 새 진입가로 새 에피소드를 시작한다', () => {
+    const { lab, clock, records } = makeLab({
+      matrix: [
+        { widthPct: 2, buyMultiplier: 1 }, // 좁은 폭 — 먼저 탈출해 놀게 된다.
+        { widthPct: 10, buyMultiplier: 1, isPrimary: true }, // 넓은 폭 — 계속 보유.
+      ],
+    });
+    lab.onEntry('A', 10, 100, { mode: 'sim' });
+    lab.onTick('A', 102.1, clock.now()); // 2%(102) 뚫림 — 좁은 폭 탈출, 10%는 보유 지속.
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ width_pct: 2, entry_price: 100 });
+
+    // 재진입 @102 — 놀고 있던 2%만 새로 열리고, 10%는 진입 100짜리 에피소드를 계속 간다.
+    clock.advance(30_000);
+    lab.onEntry('A', 10, 102, { mode: 'sim' });
+    lab.onTick('A', 104.05, clock.now()); // 2% 새 탈출선 102×1.02=104.04 뚫림.
+    expect(records).toHaveLength(2);
+    expect(records[1]).toMatchObject({ width_pct: 2, entry_price: 102, exit_price: 104.04, escaped: true });
+
+    // 10%는 여전히 첫 진입(100) 기준으로 보유 중이다.
+    lab.closeEpisode('A', 'stopped');
+    expect(records).toHaveLength(3);
+    expect(records[2]).toMatchObject({ width_pct: 10, entry_price: 100, escaped: false });
   });
 
   it('에피소드 상한 초과 — 가장 오래된 것을 evicted로 마감한다(WS 예산 보호)', () => {
