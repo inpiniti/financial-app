@@ -18,6 +18,7 @@ import { AdoptSheet } from './AdoptSheet';
 import { AmountSheet } from './AmountSheet';
 import { ChartSheet } from './ChartSheet';
 import { CommentsSheet } from './CommentsSheet';
+import { isDaytimeSessionOpen } from '../daySession';
 import { formatHHMM, formatPrice } from './format';
 import { GridGauge } from './GridGauge';
 import { WatchQuoteSheet } from './WatchQuoteSheet';
@@ -52,6 +53,21 @@ function SimBadge() {
     <View className="rounded-full px-3 py-1" style={{ backgroundColor: '#fff4e5' }}>
       <Text className="text-xs font-semibold" style={{ color: '#ff9500' }}>
         시뮬레이션
+      </Text>
+    </View>
+  );
+}
+
+/**
+ * 주간거래 전용 배지 — KST 10~16시엔 전역 "시뮬레이션 모드" 설정과 무관하게 항상 시뮬레이션이 강제된다
+ * (주간거래 plan v4 §3-3, §3-5). SimBadge와 같은 조건(autopilot.simulation===true)에서도 뜰 수 있지만,
+ * 사용자가 "왜 시뮬레이션이지?"를 바로 알 수 있게 문구를 분리한다 — 이 배지가 뜨면 설정 탭 토글과 무관하다.
+ */
+function DaytimeBadge() {
+  return (
+    <View className="rounded-full px-3 py-1" style={{ backgroundColor: '#fff4e5' }}>
+      <Text className="text-xs font-semibold" style={{ color: '#ff9500' }}>
+        주간거래 · 항상 시뮬레이션
       </Text>
     </View>
   );
@@ -237,7 +253,7 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
               title="자동 단타"
               headerRight={
                 <View className="flex-row items-center" style={{ gap: 6 }}>
-                  {autopilot.simulation && <SimBadge />}
+                  {isDaytimeSessionOpen(Date.now()) ? <DaytimeBadge /> : autopilot.simulation && <SimBadge />}
                   <StateBadge state={view.state} />
                 </View>
               }
