@@ -1,6 +1,7 @@
 // 해외주식 현재가상세 [v1_해외주식-029] — docs/koreainvestment/현재가상세.md 그대로.
 // 판단(문서: "모의 Domain: 모의투자 미지원"): environment와 무관하게 항상 실전 도메인을 쓴다.
 // (kis-openapi 함정 목록의 "웹소켓 시세는 모의 미지원 → 실전 도메인 우회"와 동일한 취급.)
+import { kisFlowFetch } from './flow';
 import { REST_DOMAIN } from './domain';
 import { appendQuery, assertRtCdOk, buildAuthHeaders, type KisRtCdResponse } from './http';
 import type { FetchLike, KisCredentials } from './types';
@@ -87,7 +88,7 @@ export async function inquireOverseasPriceDetail(
   params: InquirePriceDetailParams,
   deps: InquirePriceDetailDeps = {},
 ): Promise<OverseasPriceDetail> {
-  const fetchImpl = deps.fetchImpl ?? fetch;
+  const fetchImpl = deps.fetchImpl ?? kisFlowFetch;
   // 모의투자 미지원 — 항상 실전 도메인.
   const url = appendQuery(`${REST_DOMAIN.live}/uapi/overseas-price/v1/quotations/price-detail`, {
     AUTH: params.auth ?? '',

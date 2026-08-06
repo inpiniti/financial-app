@@ -2,6 +2,7 @@
 // 판단(문서: "모의 Domain: 모의투자 미지원"): priceDetail.ts·nccs.ts와 동일 취급 — environment와 무관하게 항상 실전 도메인.
 // v1 범위: 첫 페이지(최대 120건)만 사용한다 — NEXT/KEYB 다음조회는 구현하지 않는다(문서상 tr_cont 방식이 아니라
 // NEXT="1"+KEYB(마지막 분봉 시각)로 재요청하는 방식이며, 이번 바텀시트는 최근 80봉만 보여주면 충분하다).
+import { kisFlowFetch } from './flow';
 import { REST_DOMAIN } from './domain';
 import { appendQuery, assertRtCdOk, buildAuthHeaders, type KisRtCdResponse } from './http';
 import type { FetchLike, KisCredentials } from './types';
@@ -64,7 +65,7 @@ export async function inquireOverseasMinuteChart(
   params: InquireOverseasMinuteChartParams,
   deps: InquireOverseasMinuteChartDeps = {},
 ): Promise<InquireOverseasMinuteChartResult> {
-  const fetchImpl = deps.fetchImpl ?? fetch;
+  const fetchImpl = deps.fetchImpl ?? kisFlowFetch;
   // 모의투자 미지원 — 항상 실전 도메인(priceDetail.ts·nccs.ts와 동일 판단).
   const url = appendQuery(`${REST_DOMAIN.live}/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice`, {
     AUTH: '',

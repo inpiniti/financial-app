@@ -4,6 +4,7 @@
 //   그 설명(Description)은 "N분전 : 0(1분전), 1(2분전), ... 9(120분전)"으로 분(分) 단위다.
 //   나머지 5종(거래량순위·거래증가율순위·거래회전율순위는 NDAY=일 단위, 거래량급증·가격급등락은 MINX=분 단위)과
 //   달리 필드명만 보고 "NDAY=일"이라 오해하면 안 된다 — 문서 원문 그대로 옮기고 타입/주석/테스트로 고정한다.
+import { kisFlowFetch } from './flow';
 import { REST_DOMAIN } from './domain';
 import { appendQuery, assertRtCdOk, buildAuthHeaders, type KisRtCdResponse } from './http';
 import type { FetchLike, KisCredentials } from './types';
@@ -58,7 +59,7 @@ async function callRanking<T extends RankingRowBase>(
   query: Record<string, string | undefined>,
   deps: RankingDeps,
 ): Promise<{ output1: Record<string, unknown>; output2: T[] }> {
-  const fetchImpl = deps.fetchImpl ?? fetch;
+  const fetchImpl = deps.fetchImpl ?? kisFlowFetch;
   // 6종 전부 모의투자 미지원 — 항상 실전 도메인(REST_DOMAIN.live)으로 호출한다.
   const url = appendQuery(`${REST_DOMAIN.live}/uapi/overseas-stock/v1/ranking/${path}`, {
     KEYB: '',

@@ -8,6 +8,7 @@
 // APTR0058로 거절되어 더 이상 쓰지 않는다(createKisBroker.ts 상단 주석 참조). 가짜 fetch도 이에 맞춰
 // "완전 체결·취소된 주문은 미체결 목록에서 사라진다"만 흉내내고, 체결 여부 역산은 실물 createKisBroker가 한다.
 import { vi } from 'vitest';
+import { kisFlowConfig } from '../../kis/flow';
 import { ScalperManager, type ScalperManagerDeps } from '../../features/scalper/scalperManager';
 import { createKisBroker } from '../../features/scalper/createKisBroker';
 import { createRealtimeFeed } from '../../features/scalper/createRealtimeFeed';
@@ -324,6 +325,9 @@ export function makeHarness(opts: MakeHarnessOptions = {}): Harness {
   const clock = fakeClock(0);
   const api = new FakeKisApi();
   vi.stubGlobal('fetch', api.fetch);
+  // 유량 제어(kis/flow) 대기를 끈다 — 대기는 실제 setTimeout이라 이 하네스의 가짜 시계와 어긋나
+  // 발주가 단정 시점 뒤로 밀린다. 가짜 fetch는 즉답이므로 유량 방어가 필요 없다.
+  kisFlowConfig.minIntervalMs = 0;
 
   const store = new FakeStore();
   // 인스턴스들이 공유하는 스케줄러 — 등록 순서가 [폴, 리프라이스] 쌍이라 홀수 인덱스가 리프라이스다.

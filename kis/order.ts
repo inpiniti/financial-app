@@ -1,5 +1,6 @@
 // 해외주식 주문 [v1_해외주식-001] — docs/koreainvestment/주문.md 그대로 (지정가 기준).
 // 안전장치: TR ID가 코드에서 해석되지 않으면 fetch 호출 전에 throw한다 (kis-openapi 철칙 2).
+import { kisFlowFetch } from './flow';
 import { REST_DOMAIN } from './domain';
 import { assertRtCdOk, buildAuthHeaders, type KisRtCdResponse } from './http';
 import { resolveOrderTrId, type OrderSide, type OverseasExchangeCode } from './trId';
@@ -104,7 +105,7 @@ export async function placeOverseasOrder(
     );
   }
 
-  const fetchImpl = deps.fetchImpl ?? fetch;
+  const fetchImpl = deps.fetchImpl ?? kisFlowFetch;
   const body: Record<string, string> = {
     CANO: params.account.cano,
     ACNT_PRDT_CD: params.account.acntPrdtCd,

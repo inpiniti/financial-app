@@ -2,6 +2,7 @@
 // 주문체결내역(TTTS3035R)이 일부 계좌에서 APTR0058("처리계좌의 ID와 사용자정보가 상이")로 거절되어
 // 미체결 조회는 이 TR(TTTS3018R)로 대체한다 (README.md 주문체결내역 행 비고 참조).
 // 모의투자 완전 미지원 — 문서 "모의 TR ID: 모의투자 미지원" 그대로.
+import { kisFlowFetch } from './flow';
 import { REST_DOMAIN } from './domain';
 import { appendQuery, assertRtCdOk, buildAuthHeaders, type KisRtCdResponse } from './http';
 import type { FetchLike, KisAccount, KisCredentials, KisEnvironment } from './types';
@@ -76,7 +77,7 @@ export async function inquireOverseasUnfilled(
   params: InquireOverseasUnfilledParams,
   deps: InquireOverseasUnfilledDeps = {},
 ): Promise<InquireOverseasUnfilledResult> {
-  const fetchImpl = deps.fetchImpl ?? fetch;
+  const fetchImpl = deps.fetchImpl ?? kisFlowFetch;
 
   const url = appendQuery(`${REST_DOMAIN[environment]}/uapi/overseas-stock/v1/trading/inquire-nccs`, {
     CANO: params.account.cano,

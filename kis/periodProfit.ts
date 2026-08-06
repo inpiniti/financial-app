@@ -1,6 +1,7 @@
 // 해외주식 기간손익 [v1_해외주식-032] — docs/koreainvestment/기간손익.md 그대로. TR TTTS3039R(실전 전용).
 // 문서: "모의 Domain: 모의투자 미지원" — priceDetail.ts/ranking.ts와 동일 판단으로 environment 파라미터 없이
 // 항상 REST_DOMAIN.live로 호출한다.
+import { kisFlowFetch } from './flow';
 import { REST_DOMAIN } from './domain';
 import { appendQuery, assertRtCdOk, buildAuthHeaders, type KisRtCdResponse } from './http';
 import type { FetchLike, KisAccount, KisCredentials } from './types';
@@ -175,7 +176,7 @@ export async function inquireOverseasPeriodProfit(
   params: InquirePeriodProfitParams,
   deps: InquirePeriodProfitDeps = {},
 ): Promise<InquirePeriodProfitResult> {
-  const fetchImpl = deps.fetchImpl ?? fetch;
+  const fetchImpl = deps.fetchImpl ?? kisFlowFetch;
 
   const url = appendQuery(`${REST_DOMAIN.live}/uapi/overseas-stock/v1/trading/inquire-period-profit`, {
     CANO: params.account.cano,

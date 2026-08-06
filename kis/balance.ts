@@ -1,5 +1,6 @@
 // 해외주식 체결기준현재잔고 [v1_해외주식-008] — docs/koreainvestment/balance.md 그대로.
 // 주의(문서): 모의계좌는 output3(외화평가총액 등)만 정상 출력된다.
+import { kisFlowFetch } from './flow';
 import { REST_DOMAIN } from './domain';
 import { appendQuery, assertRtCdOk, buildAuthHeaders, type KisRtCdResponse } from './http';
 import { BALANCE_TR, resolveTrPair } from './trId';
@@ -66,7 +67,7 @@ export async function inquireOverseasBalance(
   deps: InquireBalanceDeps = {},
 ): Promise<InquireBalanceResult> {
   const trId = resolveTrPair(BALANCE_TR, environment);
-  const fetchImpl = deps.fetchImpl ?? fetch;
+  const fetchImpl = deps.fetchImpl ?? kisFlowFetch;
 
   const url = appendQuery(`${REST_DOMAIN[environment]}/uapi/overseas-stock/v1/trading/inquire-present-balance`, {
     CANO: params.account.cano,

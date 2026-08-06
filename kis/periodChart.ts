@@ -1,6 +1,7 @@
 // 해외주식 기간별시세 [v1_해외주식-010] — docs/koreainvestment/기간별시세.md 그대로.
 // minuteChart.ts(분봉)와 짝을 이루는 일/주/월봉 소스. 문서상 유일하게 "실전/모의 동일 TR"이며
 // 실전·모의 도메인이 모두 존재하므로(REST_DOMAIN[environment]) minuteChart와 달리 environment를 받는다.
+import { kisFlowFetch } from './flow';
 import { REST_DOMAIN } from './domain';
 import { appendQuery, assertRtCdOk, buildAuthHeaders, type KisRtCdResponse } from './http';
 import type { FetchLike, KisCredentials, KisEnvironment } from './types';
@@ -87,7 +88,7 @@ export async function inquireOverseasPeriodChart(
   params: InquireOverseasPeriodChartParams,
   deps: InquireOverseasPeriodChartDeps = {},
 ): Promise<InquireOverseasPeriodChartResult> {
-  const fetchImpl = deps.fetchImpl ?? fetch;
+  const fetchImpl = deps.fetchImpl ?? kisFlowFetch;
   const url = appendQuery(`${REST_DOMAIN[environment]}/uapi/overseas-price/v1/quotations/dailyprice`, {
     AUTH: '',
     EXCD: params.excd,

@@ -1,5 +1,6 @@
 // 해외주식 매수가능금액조회 [v1_해외주식-014] — docs/koreainvestment/매수가능금액조회.md 그대로.
 // 자동 단타의 현금 부족 일시정지(PAUSED) 사전 판정에 쓴다(세션 확장 plan §2-4).
+import { kisFlowFetch } from './flow';
 import { REST_DOMAIN } from './domain';
 import { appendQuery, assertRtCdOk, buildAuthHeaders, type KisRtCdResponse } from './http';
 import { PSAMOUNT_TR, resolveTrPair, type OverseasExchangeCode } from './trId';
@@ -44,7 +45,7 @@ export async function inquirePsAmount(
   deps: InquirePsAmountDeps = {},
 ): Promise<PsAmountOutput> {
   const trId = resolveTrPair(PSAMOUNT_TR, environment);
-  const fetchImpl = deps.fetchImpl ?? fetch;
+  const fetchImpl = deps.fetchImpl ?? kisFlowFetch;
 
   const url = appendQuery(`${REST_DOMAIN[environment]}/uapi/overseas-stock/v1/trading/inquire-psamount`, {
     CANO: params.account.cano,

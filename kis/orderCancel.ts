@@ -1,6 +1,7 @@
 // 해외주식 정정취소주문 [v1_해외주식-003] — docs/koreainvestment/정정취소주문.md 그대로.
 // 미체결 취소 정책용으로 취소(RVSE_CNCL_DVSN_CD=02)를 기본 동선으로 삼되, 정정(01)도 지원한다.
 // 상해/심천/베트남은 문서상 취소만 지원 — 정정 요청 시 fetch 전에 차단한다.
+import { kisFlowFetch } from './flow';
 import { REST_DOMAIN } from './domain';
 import { assertRtCdOk, buildAuthHeaders, type KisRtCdResponse } from './http';
 import { formatOverseasOrderPrice, roundingForSide } from './order';
@@ -69,7 +70,7 @@ export async function cancelOrAmendOverseasOrder(
     );
   }
 
-  const fetchImpl = deps.fetchImpl ?? fetch;
+  const fetchImpl = deps.fetchImpl ?? kisFlowFetch;
   const body: Record<string, string> = {
     CANO: params.account.cano,
     ACNT_PRDT_CD: params.account.acntPrdtCd,

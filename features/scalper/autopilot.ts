@@ -991,13 +991,23 @@ export class AutoPilot {
 
   // ---- 사이클 폴링/정산 ----
 
+  private pollingCycle = false;
+
   /** 체결 폴링 1회 — 진행 중인 모든 사이클을 순회한다(종목 간 독립, 한 종목 FAULT면 전역 인터록). */
   async pollCycle(): Promise<void> {
     if (this.faulted) return;
-    for (const active of [...this.actives.values()]) {
-      if (this.faulted) return;
-      if (!this.actives.has(active.ticker)) continue; // 이번 순회 중 정산돼 사라졌다.
-      await this.pollOne(active);
+    // 재진입 방지 — 리브래킷 버스트(REST 4~6 왕복)가 폴 주기(2초)를 넘기면 다음 타이머 폴이
+    // 겹쳐 들어와 같은 그리드에 fetchFills·발주가 중복 실행되고 KIS 유량(EGW00201)을 배로 태운다.
+    if (this.pollingCycle) return;
+    this.pollingCycle = true;
+    try {
+      for (const active of [...this.actives.values()]) {
+        if (this.faulted) return;
+        if (!this.actives.has(active.ticker)) continue; // 이번 순회 중 정산돼 사라졌다.
+        await this.pollOne(active);
+      }
+    } finally {
+      this.pollingCycle = false;
     }
   }
 

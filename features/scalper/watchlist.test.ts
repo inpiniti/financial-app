@@ -64,34 +64,40 @@ describe('parseSignedRate / isOrderable', () => {
 });
 
 describe('computeDesired — 필터·중복 우선권·차순위 충원', () => {
-  it('각 순위에서 +등락 상위 3개씩, 합계 12개(서로 다른 티커)', () => {
+  it('각 순위에서 +등락 상위 5개씩, 합계 20개(서로 다른 티커)', () => {
+    const rows = (prefix: string, n: number) =>
+      Array.from({ length: n }, (_, i) => row(`${prefix}${i + 1}`, '1'));
     const desired = computeDesired(
       snapshot({
-        tradeVolume: [row('A', '1'), row('B', '2'), row('C', '3'), row('D', '4')],
-        tradeGrowth: [row('E', '1'), row('F', '2'), row('G', '3')],
-        tradeTurnover: [row('H', '1'), row('I', '2'), row('J', '3')],
-        upDownRate: [row('K', '9'), row('L', '8'), row('M', '7'), row('N', '6')],
+        tradeVolume: rows('V', 6),
+        tradeGrowth: rows('G', 5),
+        tradeTurnover: rows('T', 5),
+        upDownRate: rows('U', 6),
       }),
     );
     expect(desired).toHaveLength(WATCHLIST_MAX_SIZE);
-    expect(WATCHLIST_MAX_SIZE).toBe(12);
+    expect(WATCHLIST_MAX_SIZE).toBe(20);
     expect(desired.map((e) => e.ticker)).toEqual([
-      'A', 'B', 'C', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+      'V1', 'V2', 'V3', 'V4', 'V5',
+      'G1', 'G2', 'G3', 'G4', 'G5',
+      'T1', 'T2', 'T3', 'T4', 'T5',
+      'U1', 'U2', 'U3', 'U4', 'U5',
     ]);
     expect(desired.filter((e) => e.source === 'tradeVolume')).toHaveLength(WATCH_SLOTS_PER_SOURCE);
     expect(desired.filter((e) => e.source === 'upDownRate')).toHaveLength(WATCH_SLOTS_PER_SOURCE);
   });
 
-  it('상승률 원천이 비어도(조회 실패 등) 나머지 3종으로 9개를 유지한다', () => {
+  it('상승률 원천이 비어도(조회 실패 등) 나머지 3종으로 15개를 유지한다', () => {
+    const rows = (prefix: string) => Array.from({ length: 5 }, (_, i) => row(`${prefix}${i + 1}`, '1'));
     const desired = computeDesired(
       snapshot({
-        tradeVolume: [row('A', '1'), row('B', '1'), row('C', '1')],
-        tradeGrowth: [row('D', '1'), row('E', '1'), row('F', '1')],
-        tradeTurnover: [row('G', '1'), row('H', '1'), row('I', '1')],
+        tradeVolume: rows('V'),
+        tradeGrowth: rows('G'),
+        tradeTurnover: rows('T'),
         upDownRate: [],
       }),
     );
-    expect(desired).toHaveLength(9);
+    expect(desired).toHaveLength(15);
   });
 
   it('음전(-)·보합(0)·주문불가·빈 티커는 건너뛰고 차순위로 충원한다', () => {
@@ -146,7 +152,7 @@ describe('computeDesired — 필터·중복 우선권·차순위 충원', () => 
       }),
       1,
     );
-    expect(desired.map((e) => e.ticker)).toEqual(['EDGE', 'PENNY', 'CHEAP']);
+    expect(desired.map((e) => e.ticker)).toEqual(['EDGE', 'PENNY', 'CHEAP', 'SPARE']);
   });
 
   it('상한 미지정이면 가격 필터 없이 기존과 동일하게 동작한다', () => {

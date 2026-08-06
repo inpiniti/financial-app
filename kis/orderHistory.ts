@@ -1,5 +1,6 @@
 // 해외주식 주문체결내역 [v1_해외주식-007] — docs/koreainvestment/주문체결내역.md 그대로.
 // 미체결 카드(CCLD_NCCS_DVSN=02)와 오늘 거래 내역(당일 ORD_STRT_DT=ORD_END_DT) 조회에 쓰인다.
+import { kisFlowFetch } from './flow';
 import { REST_DOMAIN } from './domain';
 import { appendQuery, assertRtCdOk, buildAuthHeaders, type KisRtCdResponse } from './http';
 import { ORDER_HISTORY_TR, resolveTrPair } from './trId';
@@ -68,7 +69,7 @@ export async function inquireOverseasOrderHistory(
   deps: InquireOrderHistoryDeps = {},
 ): Promise<InquireOrderHistoryResult> {
   const trId = resolveTrPair(ORDER_HISTORY_TR, environment);
-  const fetchImpl = deps.fetchImpl ?? fetch;
+  const fetchImpl = deps.fetchImpl ?? kisFlowFetch;
 
   const url = appendQuery(`${REST_DOMAIN[environment]}/uapi/overseas-stock/v1/trading/inquire-ccnl`, {
     CANO: params.account.cano,

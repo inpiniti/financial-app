@@ -2,7 +2,7 @@
 // 원천 확장(3종→4종, 상승률 추가): docs/development/2026-08-03_단타-리스트-상승률확장-plan.md.
 //
 // 순위 4종(거래량·거래증가율·거래회전율·상승률, NAS·당일)을 3분 간격으로 폴링해
-// "등락률 +, 주문가능, 진입금액 이하" 상위 3종목씩 → 서로 다른 12티커를 상시 유지한다.
+// "등락률 +, 주문가능, 진입금액 이하" 상위 5종목씩 → 서로 다른 20티커를 상시 유지한다.
 //  · 현재가 > 진입금액이면 어차피 1주도 못 사서(qtyForAmount=0) 감시·WS 구독이 낭비다 —
 //    리스트 구성 단계에서 걸러내고 차순위로 충원한다(maxPriceUsd).
 //  · 랭킹 간 중복 티커는 우선권(거래량→증가율→회전율→상승률)에 따라 1개만 올리고 차순위로 충원.
@@ -29,9 +29,9 @@ export const WATCH_SOURCE_LABEL: Record<WatchSource, string> = {
   upDownRate: '상승률',
 };
 
-/** 순위별 채용 슬롯 수(상위 3) · 폴링 주기 3분(plan §4-10). */
-export const WATCH_SLOTS_PER_SOURCE = 3;
-/** 평시 리스트 최대 크기(원천 수 × 슬롯 수 = 12) — 핀 유예 중에는 이보다 커질 수 있다. */
+/** 순위별 채용 슬롯 수(상위 5 — 2026-08-06 사용자 요청으로 3→5 확대) · 폴링 주기 3분(plan §4-10). */
+export const WATCH_SLOTS_PER_SOURCE = 5;
+/** 평시 리스트 최대 크기(원천 수 × 슬롯 수 = 20) — 핀 유예 중에는 이보다 커질 수 있다. */
 export const WATCHLIST_MAX_SIZE = WATCH_SOURCES.length * WATCH_SLOTS_PER_SOURCE;
 export const WATCHLIST_POLL_INTERVAL_MS = 180_000;
 
