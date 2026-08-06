@@ -60,6 +60,13 @@ export interface AppSettings {
    * floor(보유수량 × 이 배율)로 계산된다(core/grid 몫, 여기서는 값만 전달). (Phase B)
    */
   gridBuyMultiplier: number;
+  /**
+   * 시뮬레이션 모드 — 기본 false(실거래). 켜면 **오토파일럿만** 주문을 KIS에 내지 않고
+   * SimExchange(가상 체결)로 돌린다. 시세·감시·그리드 로직은 실거래와 완전히 동일하다.
+   * 수동 단타 카드는 이 플래그와 무관하게 항상 실거래다(사용자 확정 2026-08-06).
+   * ⚠ 실행 중 전환은 반영되지 않는다 — 오토파일럿 IDLE + 단타 탭 재진입 시 적용(managerProvider 가드).
+   */
+  simulationMode: boolean;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -75,6 +82,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   buyCancelAfterSec: 0,
   gridWidthPct: 10,
   gridBuyMultiplier: 1,
+  simulationMode: false,
 };
 
 /** 설정의 % 값을 detector가 쓰는 상대 기울기 소수로 변환한다(0.01% → 0.0001). 음수·비정상은 0(끔)으로 처리. */

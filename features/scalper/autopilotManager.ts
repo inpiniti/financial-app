@@ -9,7 +9,13 @@
 // routeTick/routeQuote를 통해 같은 연결의 수신을 나눠 받는다(수동/자동 상호 배타는 start 가드).
 
 import { appendTradeRecord } from './tradeStore';
-import { AutoPilot, type AutoPilotEvent, type AutoPilotView, type GridExitConfig } from './autopilot';
+import {
+  AutoPilot,
+  type AutoPilotDeps,
+  type AutoPilotEvent,
+  type AutoPilotView,
+  type GridExitConfig,
+} from './autopilot';
 import { FeedSlot, type FeedSlotView } from './feedSlot';
 import { ScalperWatchlist, type RankingSnapshot, type WatchEntry } from './watchlist';
 import {
@@ -57,6 +63,14 @@ export interface AutoPilotManagerDeps {
   gridConfig?: GridExitConfig;
   /** 재시작 보유 감지(잔고조회 → 보유 티커 목록) — 감지되면 경고 이벤트만 낸다(차단 안 함, plan §2-6). */
   fetchHoldings?: () => Promise<string[]>;
+  /**
+   * 시뮬레이션 모드 판정 — true면 거래 기록을 tradeStore(실거래 손익 화면)에 쓰지 않고
+   * 이벤트에 [시뮬] 접두를 붙인다. **함수**인 이유: 모드는 IDLE에서 재빌드 없이 전환되므로(mutable ref)
+   * 생성 시점 값을 캡처하면 전환이 반영되지 않는다. 미주입이면 항상 실거래.
+   */
+  isSimulation?: () => boolean;
+  /** 진입 체결 확정 훅 — AutoPilot으로 그대로 흘려보낸다(SimLab 에피소드 개시). */
+  onEntryFilled?: AutoPilotDeps['onEntryFilled'];
   keepAwake?: KeepAwakeControl;
   chunkSeconds?: number;
   bufferSize?: number;
@@ -97,6 +111,15 @@ export class AutoPilotManager {
   private readonly slots = new Map<string, FeedSlot>();
   /** 호가(R) 구독 중인 티커 — 감시 top3(또는 보유 1)만 유지한다. */
   private readonly quoteSubs = new Set<string>();
+  /**
+   * 체결가(D) 구독 유지 홀드(티커별 참조 카운트) — **트레이딩 중인 종목은 리스트 탈락과 무관하게
+   * WS 구독을 유지한다**(시뮬레이션 plan §5-4, 사용자 확정: 실전 포함 필수 수정).
+   * 잡는 쪽: ① 보유·진입 중 사이클(pilot view의 activeTickers를 여기서 diff) ② SimLab 에피소드.
+   * 홀드가 남아 있는 동안 dropSlot을 건너뛰고, 마지막 해제 때 리스트에 없으면 그때 정리한다.
+   */
+  private readonly tickHolds = new Map<string, number>();
+  /** 직전 view의 activeTickers — 홀드 diff 계산용. */
+  private prevActive = new Set<string>();
   private readonly events: AutoPilotEvent[] = [];
   private readonly viewListeners = new Set<ViewListener>();
   private readonly eventListeners = new Set<EventListener>();
@@ -141,15 +164,19 @@ export class AutoPilotManager {
       buyCancelAfterMs: deps.buyCancelAfterMs,
       reselectIntervalMs: deps.reselectIntervalMs,
       onTrade: (record) => {
+        // 시뮬 거래는 실거래 손익 화면(trades.* 키)을 오염시키지 않는다 — 기록은 SimLab→Supabase 몫.
+        if (this.deps.isSimulation?.()) return;
         void appendTradeRecord(deps.storage, AUTOPILOT_TRADE_ID, record).catch((err) =>
           this.deps.onError?.(err),
         );
       },
       onEvent: (e) => this.pushEvent(e),
       onFault: (fault: InstanceFault) => this.pushEvent({ at: fault.at, text: fault.text }),
+      onEntryFilled: deps.onEntryFilled,
     });
 
     this.pilot.subscribe((view) => {
+      this.reconcileTickHolds(view);
       this.reconcileQuoteSubs(view);
       this.refreshKeepAwake(view);
       for (const l of this.viewListeners) l(view);
@@ -210,6 +237,8 @@ export class AutoPilotManager {
   dispose(): void {
     this.pilot.dispose();
     this.watchlist.stop();
+    this.tickHolds.clear(); // 홀드 가드보다 먼저 비워야 아래 dropSlot이 실제로 구독을 정리한다.
+    this.prevActive.clear();
     for (const ticker of [...this.slots.keys()]) this.dropSlot(ticker);
   }
 
@@ -291,6 +320,9 @@ export class AutoPilotManager {
   }
 
   private dropSlot(ticker: string): void {
+    // 홀드가 남아 있으면(트레이딩 중·에피소드 진행 중) 리스트에서 빠져도 슬롯·구독을 유지한다(§5-4).
+    // 마지막 releaseTick이 리스트 부재를 확인하고 다시 이리로 온다.
+    if ((this.tickHolds.get(ticker) ?? 0) > 0) return;
     const slot = this.slots.get(ticker);
     if (!slot) return;
     slot.detachDetector();
@@ -351,7 +383,55 @@ export class AutoPilotManager {
     }
   }
 
+  /** 현재 시뮬레이션 모드인가 — UI 배지가 읽는다(설정값이 아니라 실제 적용 모드). */
+  get simulation(): boolean {
+    return this.deps.isSimulation?.() === true;
+  }
+
+  /** 외부(managerProvider 등)가 타임라인에 안내 한 줄을 남길 때 쓴다 — 모드 전환 안내 등. */
+  notify(text: string): void {
+    this.pushEvent({ at: this.deps.clock.now(), text });
+  }
+
+  // ---- 체결가(D) 구독 유지 홀드 ----
+
+  /**
+   * 티커의 체결가(D) 구독을 리스트와 무관하게 유지한다(참조 카운트).
+   * 슬롯이 없으면 만들어 구독까지 건다 — 입양(리스트 밖) 종목·SimLab 에피소드 종목이 여기에 해당.
+   */
+  holdTick(ticker: string): void {
+    this.tickHolds.set(ticker, (this.tickHolds.get(ticker) ?? 0) + 1);
+    this.addSlot(ticker);
+  }
+
+  /** 홀드 해제 — 마지막 해제이고 워치리스트에도 없으면 그때 슬롯·구독을 정리한다. */
+  releaseTick(ticker: string): void {
+    const count = this.tickHolds.get(ticker) ?? 0;
+    if (count <= 1) {
+      this.tickHolds.delete(ticker);
+      if (!this.watchlist.list.some((e) => e.ticker === ticker)) this.dropSlot(ticker);
+    } else {
+      this.tickHolds.set(ticker, count - 1);
+    }
+  }
+
+  /** 보유·진입 중 사이클의 홀드를 view 변화에 맞춘다 — 진입 시 잡고 정산·포기 시 푼다. */
+  private reconcileTickHolds(view: AutoPilotView): void {
+    const next = new Set(view.activeTickers);
+    for (const ticker of next) {
+      if (!this.prevActive.has(ticker)) this.holdTick(ticker);
+    }
+    for (const ticker of this.prevActive) {
+      if (!next.has(ticker)) this.releaseTick(ticker);
+    }
+    this.prevActive = next;
+  }
+
   private pushEvent(event: AutoPilotEvent): void {
+    // 시뮬 모드 이벤트는 접두로 구분한다 — 타임라인만 봐도 실거래가 아님이 즉시 보이게.
+    if (this.deps.isSimulation?.() && !event.text.startsWith('[시뮬]')) {
+      event = { ...event, text: `[시뮬] ${event.text}` };
+    }
     this.events.unshift(event);
     if (this.events.length > EVENT_LIMIT) this.events.length = EVENT_LIMIT;
     for (const l of this.eventListeners) l(event);

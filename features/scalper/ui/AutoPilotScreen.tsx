@@ -46,6 +46,17 @@ function StateBadge({ state }: { state: AutoPilotState }) {
   );
 }
 
+/** 시뮬레이션 모드 배지 — 실제 적용 모드(autopilot.simulation)를 읽는다. 실거래와 혼동 방지가 목적이라 주황 고정. */
+function SimBadge() {
+  return (
+    <View className="rounded-full px-3 py-1" style={{ backgroundColor: '#fff4e5' }}>
+      <Text className="text-xs font-semibold" style={{ color: '#ff9500' }}>
+        시뮬레이션
+      </Text>
+    </View>
+  );
+}
+
 /** 리스트 행의 우측 상태 표시 — 보유 > 감시 > 핀(정리 대기) 순으로 하나만. */
 function SlotBadge({ row, activeTickers }: { row: AutoPilotSlotRow; activeTickers: readonly string[] }) {
   if (activeTickers.includes(row.entry.ticker)) {
@@ -222,7 +233,15 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
         contentContainerStyle={{ paddingBottom: 32 }}
         ListHeaderComponent={
           <>
-            <Panel title="자동 단타" headerRight={<StateBadge state={view.state} />}>
+            <Panel
+              title="자동 단타"
+              headerRight={
+                <View className="flex-row items-center" style={{ gap: 6 }}>
+                  {autopilot.simulation && <SimBadge />}
+                  <StateBadge state={view.state} />
+                </View>
+              }
+            >
               <ListRow
                 title="설정"
                 subtitle={

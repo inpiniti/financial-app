@@ -195,6 +195,11 @@ export interface AutoPilotDeps {
   storage: KeyValueStore;
   /** 사이클 종료 기록 — 매니저가 tradeStore에 연결. */
   onTrade?: (record: TradeRecord) => void;
+  /**
+   * 진입 체결 확정(HOLDING 첫 확인) 훅 — SimLab(가상 전략 매트릭스)이 같은 진입으로 에피소드를 연다.
+   * 사이클당 1회만 불린다. 입양(adopt) 포지션은 진입이 아니므로 부르지 않는다.
+   */
+  onEntryFilled?: (info: { ticker: string; qty: number; avgPrice: number; tickRate: number | null; at: number }) => void;
   onEvent?: (event: AutoPilotEvent) => void;
   onFault?: (fault: InstanceFault) => void;
   /** 거래 수수료율(소수·편도, 0=끔) — 사이클 RunCycle로 넘겨 손익에서 차감한다. */
@@ -308,6 +313,8 @@ interface ActiveCycle {
   pendingSettle: TradeRecord | null;
   /** 그리드 arm이 진행 중 — 같은 종목에 두 번 걸지 않기 위한 가드. */
   arming: boolean;
+  /** onEntryFilled를 이미 알렸는가 — HOLDING은 폴마다 재확인되므로 1회 발화 가드가 필요하다. */
+  entryNotified: boolean;
 }
 
 interface PendingBuy {
@@ -950,6 +957,7 @@ export class AutoPilot {
       abandonRequested: false,
       pendingSettle: null,
       arming: false,
+      entryNotified: false,
     };
     active.cycle = new RunCycle({
       ticker: ctx.ticker,
@@ -1043,6 +1051,18 @@ export class AutoPilot {
       active.buyingSince = null;
       active.abandonRequested = false;
       this.clearAbandon(active.ticker);
+      // 진입 체결 확정 1회 통지 — SimLab이 이 진입으로 가상 전략 에피소드를 연다.
+      if (!active.entryNotified) {
+        active.entryNotified = true;
+        const pos = active.cycle.position;
+        this.deps.onEntryFilled?.({
+          ticker: active.ticker,
+          qty: pos?.qty ?? 0,
+          avgPrice: pos?.entryPrice ?? 0,
+          tickRate: active.slot ? active.slot.tickRate(this.deps.clock.now()) : null,
+          at: this.deps.clock.now(),
+        });
+      }
       // 진입 체결 → 매도 관리 그리드 인계(D5). 그리드가 켜져 있고 아직 안 걸었으면 지금 두 주문을 건다.
       if (this.gridEnabled() && !active.grid && !active.arming) {
         await this.armGrid(active, { interlockOnFailure: true });
@@ -1152,6 +1172,7 @@ export class AutoPilot {
       abandonRequested: false,
       pendingSettle: null,
       arming: false,
+      entryNotified: true, // 입양은 진입이 아니다 — onEntryFilled를 부르지 않는다.
     };
     // 슬롯을 먼저 잡는다 — arm이 await라, 그 사이 들어온 변곡점 신호가 같은 자리를 가져가면 안 된다.
     this.actives.set(ticker, active);

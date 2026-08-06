@@ -7,6 +7,7 @@ import Slider from '@react-native-community/slider';
 import { BackHeader } from '../components/BackHeader';
 import { BottomMenu, type BottomMenuItem } from '../components/BottomMenu';
 import { Panel } from '../components/Panel';
+import { ToggleRow } from '../components/ToggleRow';
 import { getAccessToken } from '../kis/token';
 import { secureTokenStorage } from '../lib/secureTokenStorage';
 import { formatAccountNo, loadKisSettings, parseAccountNo, saveKisSettings } from '../lib/kisSettings';
@@ -119,6 +120,7 @@ export default function SettingsScreen() {
   // 매도 관리 그리드 폭·매수 배율 — 주문 수량과 같은 텍스트 입력 + 저장 시 검증 패턴.
   const [gridWidthPct, setGridWidthPct] = useState(String(DEFAULT_APP_SETTINGS.gridWidthPct));
   const [gridBuyMultiplier, setGridBuyMultiplier] = useState(String(DEFAULT_APP_SETTINGS.gridBuyMultiplier));
+  const [simulationMode, setSimulationMode] = useState(DEFAULT_APP_SETTINGS.simulationMode);
 
   const [tokenStatus, setTokenStatus] = useState<TokenStatus>({ kind: 'idle' });
   const [saving, setSaving] = useState(false);
@@ -148,6 +150,7 @@ export default function SettingsScreen() {
       setBuyCancelAfterSec(appSettings.buyCancelAfterSec);
       setGridWidthPct(String(appSettings.gridWidthPct));
       setGridBuyMultiplier(String(appSettings.gridBuyMultiplier));
+      setSimulationMode(appSettings.simulationMode);
     })();
   }, []);
 
@@ -201,6 +204,7 @@ export default function SettingsScreen() {
         buyCancelAfterSec,
         gridWidthPct: parsedGridWidthPct,
         gridBuyMultiplier: parsedGridBuyMultiplier,
+        simulationMode,
       });
       // 저장 성공 — 이후 재입력 없이도 배지가 최신 저장값을 가리키게 갱신한다.
       savedAppSecretRef.current = effectiveAppSecret;
@@ -340,6 +344,22 @@ export default function SettingsScreen() {
 
         {section === 'params' && (
           <>
+            <Panel title="시뮬레이션">
+              <View className="px-5 pb-5">
+                <ToggleRow
+                  title="시뮬레이션 모드"
+                  description="자동 단타의 주문을 KIS로 보내지 않고 실시세로만 모의 체결해요"
+                  value={simulationMode}
+                  onValueChange={setSimulationMode}
+                  className="flex-row items-center justify-between rounded-2xl bg-[#f7f9fc] px-3 py-2 active:opacity-80"
+                />
+                <Text className="mt-2 text-xs leading-5 text-[#8b95a1]">
+                  수동 단타 카드는 이 설정과 무관하게 항상 실거래예요. 변경은 자동 단타를 정지한 뒤 단타 탭에
+                  다시 들어가면 적용돼요. 시뮬 결과(전략별 탈출 시간·물타기·최대 투입)는 Supabase에 쌓여요.
+                </Text>
+              </View>
+            </Panel>
+
             <Panel title="매매 파라미터">
               <View className="px-5 pb-5">
                 <Text className="mb-1 text-xs text-[#8b95a1]">주문 수량</Text>

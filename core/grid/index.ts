@@ -292,8 +292,11 @@ export class Grid {
   }
 }
 
-/** 그리드 목표가를 KIS 자릿수 규칙으로 반올림한다($1이상 2자리·미만 4자리). formatOverseasOrderPrice와 같은 스케일. */
-function roundGridPrice(price: number): number {
+/**
+ * 그리드 목표가를 KIS 자릿수 규칙으로 반올림한다($1이상 2자리·미만 4자리). formatOverseasOrderPrice와 같은 스케일.
+ * simLab(가상 전략)도 같은 규칙으로 다리를 세워야 기록 가격에 부동소수 잔재(100×1.1=110.0000…01)가 안 남는다.
+ */
+export function roundGridPrice(price: number): number {
   const scale = price >= 1 ? 100 : 10_000;
   return Math.round(price * scale + 1e-9) / scale;
 }
