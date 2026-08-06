@@ -28,6 +28,7 @@ import {
 import { AutoPilotManager } from '../autopilotManager';
 import { createKisBroker } from '../createKisBroker';
 import { createRealtimeFeed } from '../createRealtimeFeed';
+import { shouldForceSimBroker } from '../daySession';
 import { expoKeepAwake } from '../keepAwake';
 import { ScalperManager } from '../scalperManager';
 import { SimExchange } from '../simBroker';
@@ -210,14 +211,19 @@ async function buildManager(): Promise<ManagerBootstrap> {
   });
   void flushQueuedEpisodes().catch(() => {}); // 지난 세션에 못 보낸 에피소드 재전송(실패해도 무해).
 
+  // 주간거래(KST 10:00~16:00) 창에서는 전역 시뮬레이션 모드 설정과 무관하게 항상 가상 체결소를 강제한다
+  // (plan v4 §3-3 — "절대 네버 실거래". 진입 경로 자체가 없어야 실수로도 열리지 않는다).
+  const effectiveSimMode = () => shouldForceSimBroker(clock.now(), simMode.current);
+
   const autopilot = new AutoPilotManager({
     realtime,
     storage: AsyncStorage,
     clock,
     // 리스트는 NAS 전용(plan §1-A) — 주문 거래소도 NASD 고정.
-    // ★ 시뮬 모드면 KIS 대신 가상 체결소로 — 브로커는 진입마다 새로 만들어지므로 ref만 읽으면 된다.
+    // ★ 시뮬 모드(또는 주간거래 강제)면 KIS 대신 가상 체결소로 — 브로커는 진입마다 새로 만들어지므로
+    //   effectiveSimMode()를 매번 새로 읽는다.
     makeBroker: (ticker: string) =>
-      simMode.current
+      effectiveSimMode()
         ? simExchange.makeBroker(ticker)
         : createKisBroker({
             environment,
@@ -230,15 +236,15 @@ async function buildManager(): Promise<ManagerBootstrap> {
           }),
     fetchSnapshot,
     isManualBusy: () => finalManager.anyRunning,
-    // 시뮬은 현금 무한(사용자 확정) — null이면 오토파일럿이 현금 부족 판정을 생략한다.
-    fetchBuyableUsd: (ticker, price) => (simMode.current ? Promise.resolve(null) : fetchBuyableUsd(ticker, price)),
-    // 시뮬은 가상 잔고를 보여준다 — 실계좌 장기 보유가 시뮬 경고·입양 목록에 섞이지 않게.
-    fetchHoldings: () => (simMode.current ? Promise.resolve([...simExchange.positions().keys()]) : fetchHoldings()),
-    isSimulation: () => simMode.current,
+    // 시뮬(주간거래 포함)은 현금 무한(사용자 확정) — null이면 오토파일럿이 현금 부족 판정을 생략한다.
+    fetchBuyableUsd: (ticker, price) => (effectiveSimMode() ? Promise.resolve(null) : fetchBuyableUsd(ticker, price)),
+    // 시뮬(주간거래 포함)은 가상 잔고를 보여준다 — 실계좌 장기 보유가 시뮬 경고·입양 목록에 섞이지 않게.
+    fetchHoldings: () => (effectiveSimMode() ? Promise.resolve([...simExchange.positions().keys()]) : fetchHoldings()),
+    isSimulation: () => effectiveSimMode(),
     onEntryFilled: (info) => {
       simLab.onEntry(info.ticker, info.qty, info.avgPrice, {
         tickRate: info.tickRate ?? undefined,
-        mode: simMode.current ? 'sim' : 'live',
+        mode: effectiveSimMode() ? 'sim' : 'live',
       });
     },
     // 매도 관리 그리드 인계(D5) — 폭·매수배율은 설정 탭(매매파라미터)에서 조절한다(Phase B).

@@ -13,6 +13,7 @@
 // 시각은 전부 **한국시간(KST)** 문자열로 기록한다(사용자 확정 §5-7) — DB에서 바로 읽어도 헷갈리지 않게.
 
 import { roundGridPrice } from '../../core/grid';
+import { isDaytimeSessionOpen } from './daySession';
 import type { ClockLike } from './types';
 
 /** 가상 전략 1개의 설정 — 그리드 폭(%)·매수 배율. */
@@ -75,7 +76,7 @@ export interface SimEpisodeRecord {
   escaped: boolean;
   exit_reason: 'escaped' | 'data_lost' | 'stopped' | 'evicted';
   tick_rate_at_entry: number | null;
-  /** 미국장 세션 구분(라벨은 장 기준, 시각 기록은 KST): 'pre' | 'regular' | 'after' | 'off'. */
+  /** 세션 구분(라벨은 장 기준, 시각 기록은 KST): 'pre' | 'regular' | 'after' | 'off' | 'daytime'. */
   entry_session: string;
 }
 
@@ -265,7 +266,9 @@ export class SimLab {
       escaped: reason === 'escaped',
       exit_reason: reason,
       tick_rate_at_entry: ep.tickRate,
-      entry_session: sessionOf(ep.enteredAtMs),
+      // 주간거래 창(KST 10:00~16:00)이 정규장(ET 기준)보다 먼저 판정된다 — 두 창은 겹치지 않으므로
+      // 순서는 결과에 영향 없지만, 주간거래 라벨을 정규장 4종(pre/regular/after/off)과 구분해야 한다.
+      entry_session: isDaytimeSessionOpen(ep.enteredAtMs) ? 'daytime' : sessionOf(ep.enteredAtMs),
     });
   }
 

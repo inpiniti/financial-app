@@ -157,6 +157,24 @@ describe('SimLab — 에피소드 수명주기', () => {
   });
 });
 
+describe('SimLab — entry_session 라벨', () => {
+  it('주간거래 창(KST 10~16시)에 진입하면 정규장 4종이 아니라 daytime으로 기록된다', () => {
+    const { lab, clock, records } = makeLab();
+    clock.set(Date.UTC(2026, 7, 6, 2, 0)); // 2026-08-06 11:00 KST — 주간거래 창 안.
+    lab.onEntry('A', 10, 100, { mode: 'sim' });
+    lab.onTick('A', 110.01, clock.now()); // 탈출 — 기록 확정.
+    expect(records[0]).toMatchObject({ entry_session: 'daytime' });
+  });
+
+  it('주간거래 창 밖에서는 기존처럼 sessionOf(ET 기준) 라벨을 쓴다', () => {
+    const { lab, clock, records } = makeLab();
+    clock.set(Date.UTC(2026, 7, 6, 14, 0)); // 정규장(regular) — 기존 sessionOf 테스트와 동일 시각.
+    lab.onEntry('A', 10, 100, { mode: 'sim' });
+    lab.onTick('A', 110.01, clock.now());
+    expect(records[0]).toMatchObject({ entry_session: 'regular' });
+  });
+});
+
 describe('시각/세션 헬퍼 — KST 기록(사용자 확정)', () => {
   it('kstDateOf/kstTimeOf — UTC를 한국시간으로 변환한다', () => {
     const utc = Date.UTC(2026, 7, 6, 16, 30, 15); // 2026-08-06 16:30:15 UTC = KST 다음날 01:30:15.

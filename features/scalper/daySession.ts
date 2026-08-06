@@ -22,3 +22,14 @@ export function isDaytimeSessionOpen(epochMs: number): boolean {
   const minutes = (get('hour') % 24) * 60 + get('minute');
   return minutes >= DAYTIME_START_MINUTES && minutes < DAYTIME_END_MINUTES;
 }
+
+/**
+ * 주간거래는 실거래를 절대 하지 않는다(plan v4 §1, §3-3 — 미체결내역·잔고 조회가 daytime 체결을 반영하는지
+ * 확인할 수 없어 실거래 경로 자체를 만들지 않기로 함). 브로커 선택 지점이 이 함수 하나만 거치면,
+ * 전역 "시뮬레이션 모드" 설정이 꺼져 있어도 주간거래 창에서는 항상 가상 체결소가 강제된다 —
+ * 런타임 토글이 아니라 진입 경로 자체가 없는 구조라 실수로 열릴 수 없다(단위 테스트가 이 불변식의 유일한
+ * 보증선이므로 반드시 green으로 유지한다).
+ */
+export function shouldForceSimBroker(epochMs: number, globalSimModeOn: boolean): boolean {
+  return isDaytimeSessionOpen(epochMs) || globalSimModeOn;
+}
