@@ -2,7 +2,9 @@
 // 원천 확장(3종→4종, 상승률 추가): docs/development/2026-08-03_단타-리스트-상승률확장-plan.md.
 //
 // 순위 4종(거래량·거래증가율·거래회전율·상승률, NAS·당일)을 3분 간격으로 폴링해
-// "등락률 +, 주문가능" 상위 3종목씩 → 서로 다른 12티커를 상시 유지한다.
+// "등락률 +, 주문가능, 진입금액 이하" 상위 3종목씩 → 서로 다른 12티커를 상시 유지한다.
+//  · 현재가 > 진입금액이면 어차피 1주도 못 사서(qtyForAmount=0) 감시·WS 구독이 낭비다 —
+//    리스트 구성 단계에서 걸러내고 차순위로 충원한다(maxPriceUsd).
 //  · 랭킹 간 중복 티커는 우선권(거래량→증가율→회전율→상승률)에 따라 1개만 올리고 차순위로 충원.
 //  · 리스트에서 밀려난 종목은 즉시 제거하되, 사이클 진행 중(핀 고정)이면 제거를 유예하고
 //    unpin(사이클 종료) 시점에 즉시 제거한다 — 핀은 여러 개 걸릴 수 있어(다중 그리드)
@@ -43,6 +45,8 @@ export interface WatchCandidateRow {
   sign?: string;
   /** 매매가능 — 명확히 불가('X'/'N')일 때만 걸러낸다(문서에 값 형식 미기재 — 관대 판정). */
   e_ordyn?: string;
+  /** 현재가 원문(RankingRowBase.last) — 진입금액 상한 필터에 쓴다. 없으면 필터를 통과시킨다(관대 판정). */
+  last?: string;
 }
 
 /** 한 번의 폴링에서 얻은 순위 4종 스냅샷 — 각 배열은 순위 순서(상위부터)라고 가정한다. */
@@ -72,6 +76,11 @@ export interface WatchlistDeps {
   onChange?: (entries: readonly WatchEntry[], diff: WatchlistDiff) => void;
   /** 폴링 실패 통지 — 리스트는 직전 상태를 유지한다(다음 주기에 재시도). */
   onError?: (err: unknown) => void;
+  /**
+   * 종목 현재가 상한(USD) — 진입금액(config.startAmountUsd)을 폴링마다 읽는 getter.
+   * 현재가가 이 값보다 비싸면 1주도 못 사므로 리스트에 올리지 않는다. null/미주입이면 필터 없음.
+   */
+  maxPriceUsd?: () => number | null;
 }
 
 /** 등락률 파싱 — sign(4·5=하락)이 있으면 부호를 강제하고, 없으면 rate 원문 부호를 쓴다. */
@@ -90,11 +99,23 @@ export function isOrderable(row: WatchCandidateRow): boolean {
 }
 
 /**
+ * 진입금액 상한 판정 — 현재가 > 상한이면 floor(진입금액÷현재가)=0이라 진입 자체가 불가능하다.
+ * 상한이 없거나(null/비유한/0 이하) 현재가를 못 읽으면 통과(관대 판정 — 필터 오작동으로 리스트가
+ * 통째로 비는 것보다, 못 거른 종목이 진입 시점의 qty<1 방어선에 걸리는 편이 안전하다).
+ */
+export function isWithinMaxPrice(row: WatchCandidateRow, maxPriceUsd: number | null | undefined): boolean {
+  if (maxPriceUsd == null || !Number.isFinite(maxPriceUsd) || maxPriceUsd <= 0) return true;
+  const price = Number.parseFloat(row.last ?? '');
+  if (!Number.isFinite(price) || price <= 0) return true;
+  return price <= maxPriceUsd;
+}
+
+/**
  * 스냅샷 → 목표 리스트(서로 다른 최대 WATCHLIST_MAX_SIZE티커) 계산. 순수 함수 — 테스트 진입점.
- * 각 순위에서 "+등락·주문가능·미중복" 상위 WATCH_SLOTS_PER_SOURCE개를 우선권 순서로 채용한다.
+ * 각 순위에서 "+등락·주문가능·진입금액 이하·미중복" 상위 WATCH_SLOTS_PER_SOURCE개를 우선권 순서로 채용한다.
  * 필터를 통과한 후보가 모자라면 그 순위 슬롯은 비워둔다(억지로 채우지 않는다).
  */
-export function computeDesired(snapshot: RankingSnapshot): WatchEntry[] {
+export function computeDesired(snapshot: RankingSnapshot, maxPriceUsd?: number | null): WatchEntry[] {
   const taken = new Set<string>();
   const desired: WatchEntry[] = [];
   for (const source of WATCH_SOURCES) {
@@ -106,6 +127,7 @@ export function computeDesired(snapshot: RankingSnapshot): WatchEntry[] {
       const rate = parseSignedRate(row);
       if (!Number.isFinite(rate) || rate <= 0) continue;
       if (!isOrderable(row)) continue;
+      if (!isWithinMaxPrice(row, maxPriceUsd)) continue;
       taken.add(ticker);
       desired.push({ ticker, source, rate, pinned: false });
       slots += 1;
@@ -187,7 +209,7 @@ export class ScalperWatchlist {
     this.refreshing = true;
     try {
       const snapshot = await this.deps.fetchSnapshot();
-      this.apply(computeDesired(snapshot));
+      this.apply(computeDesired(snapshot, this.deps.maxPriceUsd?.() ?? null));
     } catch (err) {
       this.deps.onError?.(err);
     } finally {

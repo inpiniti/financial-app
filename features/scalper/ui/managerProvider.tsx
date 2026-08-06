@@ -130,15 +130,15 @@ async function buildManager(): Promise<ManagerBootstrap> {
     return token.accessToken;
   };
 
-  const toWatchRows = (rows: Array<{ symb: string; rate: string; sign?: string; e_ordyn?: string }>): WatchCandidateRow[] =>
-    rows.map((r) => ({ symb: r.symb, rate: r.rate, sign: r.sign, e_ordyn: r.e_ordyn }));
+  const toWatchRows = (rows: Array<{ symb: string; rate: string; sign?: string; e_ordyn?: string; last?: string }>): WatchCandidateRow[] =>
+    rows.map((r) => ({ symb: r.symb, rate: r.rate, sign: r.sign, e_ordyn: r.e_ordyn, last: r.last }));
 
   // 순위 4종 폴링(NAS·당일) — 유량을 아끼려 직렬 호출. 순위 7종은 전부 실전 도메인 전용(kis/ranking.ts).
   // 원천별 부분 실패 허용(확장 plan §4-3): 한 순위가 실패해도 나머지로 리스트를 구성한다.
   // 전부 실패하면 throw — ScalperWatchlist가 직전 리스트를 그대로 유지하고 다음 주기에 재시도한다.
   const callSource = async (
     label: string,
-    fn: () => Promise<{ output2: Array<{ symb: string; rate: string; sign?: string; e_ordyn?: string }> }>,
+    fn: () => Promise<{ output2: Array<{ symb: string; rate: string; sign?: string; e_ordyn?: string; last?: string }> }>,
     failures: string[],
   ): Promise<WatchCandidateRow[]> => {
     try {

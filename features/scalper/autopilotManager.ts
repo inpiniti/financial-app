@@ -147,6 +147,9 @@ export class AutoPilotManager {
       fetchSnapshot: deps.fetchSnapshot,
       scheduler,
       pollIntervalMs: deps.watchlistPollIntervalMs,
+      // 진입금액보다 비싼 종목은 1주도 못 사서 감시·WS 구독만 낭비 — 리스트 단계에서 거른다.
+      // setConfig는 IDLE에서만 통과하고 폴링은 start 직후 즉시 1회 돌므로, 시작 시점 금액이 곧바로 반영된다.
+      maxPriceUsd: () => this.pilot.getView().config?.startAmountUsd ?? null,
       onChange: (entries, diff) => {
         for (const ticker of diff.removed) this.dropSlot(ticker);
         for (const entry of diff.added) this.addSlot(entry.ticker);

@@ -4,6 +4,7 @@ import type { SchedulerLike } from './types';
 import {
   computeDesired,
   isOrderable,
+  isWithinMaxPrice,
   parseSignedRate,
   ScalperWatchlist,
   WATCH_SLOTS_PER_SOURCE,
@@ -49,6 +50,16 @@ describe('parseSignedRate / isOrderable', () => {
     expect(isOrderable(row('A', '1', { e_ordyn: 'n' }))).toBe(false);
     expect(isOrderable(row('A', '1', { e_ordyn: 'O' }))).toBe(true);
     expect(isOrderable(row('A', '1', {}))).toBe(true);
+  });
+
+  it('진입금액 상한 판정 — 현재가 > 상한만 배제, 상한·현재가가 없거나 이상하면 관대 통과', () => {
+    expect(isWithinMaxPrice(row('A', '1', { last: '0.99' }), 1)).toBe(true);
+    expect(isWithinMaxPrice(row('A', '1', { last: '1.00' }), 1)).toBe(true); // floor(1/1)=1주 — 진입 가능.
+    expect(isWithinMaxPrice(row('A', '1', { last: '1.01' }), 1)).toBe(false);
+    expect(isWithinMaxPrice(row('A', '1', { last: '50' }), null)).toBe(true); // 상한 없음(설정 미입력).
+    expect(isWithinMaxPrice(row('A', '1', {}), 1)).toBe(true); // 현재가 누락 — 관대 통과.
+    expect(isWithinMaxPrice(row('A', '1', { last: 'abc' }), 1)).toBe(true); // 현재가 파싱 불가 — 관대 통과.
+    expect(isWithinMaxPrice(row('A', '1', { last: '5' }), 0)).toBe(true); // 상한 0 이하 — 필터 없음 취급.
   });
 });
 
@@ -120,6 +131,29 @@ describe('computeDesired — 필터·중복 우선권·차순위 충원', () => 
   it('후보가 모자라면 그 순위 슬롯은 비워둔다(억지 충원 없음)', () => {
     const desired = computeDesired(snapshot({ tradeVolume: [row('A', '1')] }));
     expect(desired).toHaveLength(1);
+  });
+
+  it('진입금액 상한을 넘는 종목은 건너뛰고 차순위로 충원한다', () => {
+    const desired = computeDesired(
+      snapshot({
+        tradeVolume: [
+          row('RICH', '5', { last: '42.10' }), // $1 초과 — 제외.
+          row('EDGE', '4', { last: '1.00' }), // 정확히 $1 — 1주 진입 가능, 채용.
+          row('PENNY', '3', { last: '0.42' }),
+          row('CHEAP', '2', { last: '0.87' }),
+          row('SPARE', '1', { last: '0.55' }),
+        ],
+      }),
+      1,
+    );
+    expect(desired.map((e) => e.ticker)).toEqual(['EDGE', 'PENNY', 'CHEAP']);
+  });
+
+  it('상한 미지정이면 가격 필터 없이 기존과 동일하게 동작한다', () => {
+    const desired = computeDesired(
+      snapshot({ tradeVolume: [row('RICH', '5', { last: '42.10' }), row('A', '1', { last: '0.5' })] }),
+    );
+    expect(desired.map((e) => e.ticker)).toEqual(['RICH', 'A']);
   });
 });
 
@@ -208,6 +242,22 @@ describe('ScalperWatchlist — 폴링·diff·핀 유예', () => {
     wl.unpin('A');
     expect(wl.has('A')).toBe(true);
     expect(wl.list.find((e) => e.ticker === 'A')!.pinned).toBe(false);
+  });
+
+  it('maxPriceUsd getter를 갱신마다 읽어 진입금액 초과 종목을 거른다 — 설정 변경도 다음 갱신에 반영', async () => {
+    const { scheduler } = manualScheduler();
+    let limit: number | null = 1;
+    const fetchSnapshot = vi
+      .fn<() => Promise<RankingSnapshot>>()
+      .mockResolvedValue(snapshot({ tradeVolume: [row('RICH', '5', { last: '42.10' }), row('A', '1', { last: '0.50' })] }));
+    const wl = new ScalperWatchlist({ fetchSnapshot, scheduler, maxPriceUsd: () => limit });
+
+    await wl.refresh();
+    expect(wl.list.map((e) => e.ticker)).toEqual(['A']); // $42.10짜리는 제외.
+
+    limit = null; // 진입금액 미설정 상태 — 필터 해제.
+    await wl.refresh();
+    expect(wl.list.map((e) => e.ticker).sort()).toEqual(['A', 'RICH']);
   });
 
   it('폴링 실패 시 리스트는 직전 상태를 유지하고 onError로 통지한다', async () => {
