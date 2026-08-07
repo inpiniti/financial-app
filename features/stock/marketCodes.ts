@@ -3,7 +3,6 @@
 // 여기서 미국 3거래소 코드로 좁히고, 매핑이 안 되면 null — 상세화면이 에러 상태를 표시한다(조용한 오동작 금지).
 import type { MinuteChartExchangeCode } from '../../kis/minuteChart';
 import type { DaytimeMarketCode } from '../../kis/realtimePrice';
-import type { OverseasExchangeCode } from '../../kis/trId';
 
 /** 상세화면이 다루는 시장 코드 — 분봉 차트 EXCD와 같은 값 공간(NYS/NAS/AMS). */
 export type StockMarketCode = MinuteChartExchangeCode;
@@ -23,13 +22,6 @@ export function toStockMarketCode(raw: string | undefined | null): StockMarketCo
   if (!raw) return null;
   return RAW_TO_MARKET[raw.trim().toUpperCase()] ?? null;
 }
-
-/** 상세화면 `+`(수동 카드 추가)가 쓰는 주문 거래소 코드 매핑. */
-export const MARKET_TO_EXCHANGE: Record<StockMarketCode, OverseasExchangeCode> = {
-  NAS: 'NASD',
-  NYS: 'NYSE',
-  AMS: 'AMEX',
-};
 
 /** 주간거래(KST 10~16시) 구독용 시장구분 — R 접두 빌더에 넣는다(kis/realtimePrice 참고). */
 export const MARKET_TO_DAYTIME: Record<StockMarketCode, DaytimeMarketCode> = {

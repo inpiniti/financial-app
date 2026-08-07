@@ -1,6 +1,6 @@
 // 종목 상세화면 실시간 시세 구독 훅 — 2026-08-07 종목상세화면 plan §4.
 // 화면 focus 시 체결가(HDFSCNT0)+호가(HDFSASP0)를 refcount로 획득(acquireFeed)하고 blur/unmount 시
-// 해제(releaseFeed)한다. 같은 종목을 수동 카드·자동 단타가 이미 구독 중이어도 안전하다(매니저가 판단).
+// 해제(releaseFeed)한다. 같은 종목을 자동 단타가 이미 구독 중이어도 안전하다(매니저가 판단).
 // 수신 값은 ref에 쌓고 1초 주기로만 상태에 반영한다 — 매 틱 리렌더 금지(시트들과 동일 원칙).
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';

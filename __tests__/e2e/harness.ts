@@ -1,22 +1,24 @@
-// 7단계 종단(E2E) 테스트 하네스.
+// 7단계 종단(E2E) 테스트 하네스 — 자동 단타(AutoPilot) 경로(수동 카드 제거 후 2026-08-08 개조).
 // 가짜는 kis 경계 바로 바깥(fetch·WebSocket)에만 심는다 — 그 안쪽은 전부 실물:
 //   합성 WS 프레임 → kis/realtimePrice.OverseasRealtimePriceClient(실물, createRealtimeFeed 경유)
-//   → ScalperManager/ScalperInstance(실물) → core/resample·detector·cycle(실물)
-//   → OrderPortAdapter(실물) → createKisBroker(실물) → kis/order·orderCancel·nccs·token(실물)
-//   → 가짜 fetch(URL·TR_ID 라우팅) → JSON 응답.
+//   → ScalperManager(피드 허브, 실물) → setAuxRoutes → AutoPilotManager/AutoPilot(실물)
+//   → core/resample·detector·cycle(실물) → OrderPortAdapter(실물) → createKisBroker(실물)
+//   → kis/order·orderCancel·nccs·token(실물) → 가짜 fetch(URL·TR_ID 라우팅) → JSON 응답.
+// (순위 폴링만 fetchSnapshot 데이터 주입 — kis/ranking REST는 자체 단위 테스트가 검증한다.)
 // 체결확인은 미체결내역(inquire-nccs, TTTS3018R) 기준 — 주문체결내역(inquire-ccnl)은 이 계좌에서
 // APTR0058로 거절되어 더 이상 쓰지 않는다(createKisBroker.ts 상단 주석 참조). 가짜 fetch도 이에 맞춰
 // "완전 체결·취소된 주문은 미체결 목록에서 사라진다"만 흉내내고, 체결 여부 역산은 실물 createKisBroker가 한다.
 import { vi } from 'vitest';
 import { kisFlowConfig } from '../../kis/flow';
-import { ScalperManager, type ScalperManagerDeps } from '../../features/scalper/scalperManager';
+import { ScalperManager } from '../../features/scalper/scalperManager';
+import { AutoPilotManager } from '../../features/scalper/autopilotManager';
 import { createKisBroker } from '../../features/scalper/createKisBroker';
 import { createRealtimeFeed } from '../../features/scalper/createRealtimeFeed';
 import { fakeClock, flush, noopScheduler, FakeStore } from '../../features/scalper/fakes';
+import type { RankingSnapshot } from '../../features/scalper/watchlist';
 import { getAccessToken } from '../../kis/token';
 import type { WebSocketLike, StorageLike, KisAccount, KisCredentials } from '../../kis/types';
 import type { OverseasExchangeCode } from '../../kis/trId';
-import type { ScalperInstanceConfig } from '../../features/scalper/types';
 
 export { flush };
 
@@ -285,40 +287,48 @@ export class FakeKisApi {
 const CREDENTIALS: KisCredentials = { appKey: 'e2e-app-key', appSecret: 'e2e-app-secret' };
 const ACCOUNT: KisAccount = { cano: '12345678', acntPrdtCd: '01' };
 
+/** 순위 스냅샷(12종) — AAPL을 선두에 두고 나머지는 틱이 없는 더미 티커로 채운다. */
+export function snapshotOf(tickers: string[]): RankingSnapshot {
+  return {
+    tradeVolume: tickers.slice(0, 3).map((t) => ({ symb: t, rate: '1' })),
+    tradeGrowth: tickers.slice(3, 6).map((t) => ({ symb: t, rate: '1' })),
+    tradeTurnover: tickers.slice(6, 9).map((t) => ({ symb: t, rate: '1' })),
+    upDownRate: tickers.slice(9, 12).map((t) => ({ symb: t, rate: '1' })),
+  };
+}
+
+export const TWELVE = ['AAPL', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'];
+
 export interface MakeHarnessOptions {
   chunkSeconds?: number;
   bufferSize?: number;
-  fillTimeoutMs?: number;
   /** true면 tick()이 매 라운드 끝에 미체결 주문을 즉시 전량 체결 처리한다(미체결 시나리오에서는 false). */
   autoFillOrders?: boolean;
-  /** BUY 거래량 스파이크 게이트(배수, 0=끔) — 게이트 e2e 시나리오용. */
-  minVolumeSpikeRatio?: number;
-  /** BUY 체결강도 게이트(STRN, 0=끔) — 게이트 e2e 시나리오용. */
-  minStrength?: number;
-  /** 매수 모멘텀 문턱 — 게이트 e2e에서 "게이트만 켠 구성"을 만들 때 0을 명시한다. */
-  minBuyMomentum?: number;
+  /** 진입 시작 금액(USD) — qty = ⌊금액÷가격⌋. */
+  startAmountUsd?: number;
+  maxAmountUsd?: number;
 }
 
 export interface Harness {
+  /** 피드 허브 — WS 핸들러 유일 소유, setAuxRoutes로 오토파일럿에 분배. */
   manager: ScalperManager;
+  /** 자동관리 매니저(실물) — start()가 WS 연결·순위 폴링·슬롯 구독까지 수행한다. */
+  autopilot: AutoPilotManager;
   clock: ReturnType<typeof fakeClock>;
   api: FakeKisApi;
   store: FakeStore;
   autoFillOrders: boolean;
-  /** 매니저가 공유하는 RealtimeFeed(WS 단일 연결) — Run 없이 WS만 연결하는 시나리오(③)에서 직접 사용. */
+  /** 공유 RealtimeFeed(WS 단일 연결) — start 없이 WS만 연결하는 시나리오에서 직접 사용. */
   realtime: ReturnType<typeof createRealtimeFeed>;
-  /** 매니저가 만든 단일 WS 연결의 최신 가짜 소켓. */
+  /** 단일 WS 연결의 최신 가짜 소켓. */
   socket(): FakeWebSocket;
-  /**
-   * 인스턴스들이 등록한 타이머 콜백 모음.
-   * 등록 순서는 인스턴스마다 [폴, 리프라이스] 쌍이라 **홀수 인덱스가 리프라이스**다(advanceAndReprice가 이용).
-   */
   scheduler: ReturnType<typeof noopScheduler>;
 }
 
 /**
  * kis 경계(fetch·WebSocket) 바로 바깥에만 가짜를 심은 종단 하네스를 만든다.
- * ScalperManager → ScalperInstance → OrderPortAdapter → createKisBroker/createRealtimeFeed → kis/*(실물) 전부 통과한다.
+ * ScalperManager(허브) → AutoPilotManager/AutoPilot → OrderPortAdapter → createKisBroker/createRealtimeFeed
+ * → kis/*(실물) 전부 통과한다. 순위 폴링만 스냅샷 데이터를 직접 주입한다.
  */
 export function makeHarness(opts: MakeHarnessOptions = {}): Harness {
   FakeWebSocket.instances.length = 0;
@@ -330,7 +340,6 @@ export function makeHarness(opts: MakeHarnessOptions = {}): Harness {
   kisFlowConfig.minIntervalMs = 0;
 
   const store = new FakeStore();
-  // 인스턴스들이 공유하는 스케줄러 — 등록 순서가 [폴, 리프라이스] 쌍이라 홀수 인덱스가 리프라이스다.
   const scheduler = noopScheduler();
   const tokenCache = new Map<string, string>();
   const tokenStorage: StorageLike = {
@@ -344,37 +353,43 @@ export function makeHarness(opts: MakeHarnessOptions = {}): Harness {
 
   const realtime = createRealtimeFeed({ approvalKey: 'e2e-approval-key', clock }, { WebSocketImpl: FakeWebSocket });
 
-  const deps: ScalperManagerDeps = {
+  const manager = new ScalperManager({ realtime, clock });
+
+  const autopilot = new AutoPilotManager({
     realtime,
     storage: store,
     clock,
     scheduler,
-    chunkSeconds: opts.chunkSeconds ?? 1,
-    bufferSize: opts.bufferSize ?? 7,
-    fillTimeoutMs: opts.fillTimeoutMs ?? 5000,
-    throttleMs: 0,
-    // 이 e2e 하네스는 종단 체인(WS→판정→사이클→기록)을 검증한다 — 매도 확인 단계 이전의 "전환 즉시 매도"를
-    // 가정하는 짧은 역V 시퀀스를 쓰므로 매도 문턱 0(끔)을 명시해 의미를 보존한다.
-    minSellMomentum: 0,
-    minBuyMomentum: opts.minBuyMomentum,
-    minVolumeSpikeRatio: opts.minVolumeSpikeRatio,
-    minStrength: opts.minStrength,
-    makeBroker: (config: ScalperInstanceConfig) =>
+    makeBroker: (ticker: string, exchange?: OverseasExchangeCode) =>
       createKisBroker({
         environment: 'live',
         credentials: CREDENTIALS,
         account: ACCOUNT,
-        pdno: config.ticker,
-        ovrsExcgCd: (config.exchange ?? 'NASD') as OverseasExchangeCode,
+        pdno: ticker,
+        ovrsExcgCd: exchange ?? 'NASD',
         getToken,
         clock,
       }),
-  };
+    fetchSnapshot: async () => snapshotOf(TWELVE),
+    chunkSeconds: opts.chunkSeconds ?? 1,
+    bufferSize: opts.bufferSize ?? 7,
+    // 짧은 역V 시퀀스로 "전환 즉시 매도"를 검증하므로 매도 문턱 0(끔)을 명시해 의미를 보존한다.
+    minSellMomentum: 0,
+  });
+  // WS 단일 연결 공유 — 허브의 라우터가 오토파일럿 슬롯으로 흘려보낸다(managerProvider와 동일 배선).
+  manager.setAuxRoutes(autopilot.routeTick, autopilot.routeQuote);
+  manager.setFeedUseProbe((trKey, trId) => autopilot.usesTrKey(trKey, trId));
 
-  const manager = new ScalperManager(deps);
+  // 속도 필터가 사실상 안 걸리는 문턱(단위 테스트 CONFIG_100과 동일 취지).
+  autopilot.pilot.setConfig({
+    startAmountUsd: opts.startAmountUsd ?? 100,
+    maxAmountUsd: opts.maxAmountUsd ?? 400,
+    minTickRate: 0.01,
+  });
 
   return {
     manager,
+    autopilot,
     clock,
     api,
     store,
@@ -385,10 +400,15 @@ export function makeHarness(opts: MakeHarnessOptions = {}): Harness {
   };
 }
 
-/** manager.startAll() + WS 접속 완료 시뮬레이션(register frame들이 재전송되도록). */
-export function startAndOpen(h: Harness): void {
-  h.manager.startAll();
+/** autopilot.start() + 순위 로드 대기 + WS 접속 완료 시뮬레이션(register frame들이 재전송되도록). */
+export async function startAndOpen(h: Harness): Promise<void> {
+  h.autopilot.start();
+  await vi.waitFor(() => {
+    if (h.autopilot.watchlist.size !== TWELVE.length) throw new Error('watchlist not loaded');
+  });
+  await flush();
   h.socket().open();
+  await flush();
 }
 
 function autoFillPending(api: FakeKisApi): void {
@@ -401,17 +421,9 @@ function autoFillPending(api: FakeKisApi): void {
 }
 
 /**
- * 리프라이스 타이머를 1회 발화시킨다(clock 전진 포함).
- * noopScheduler는 등록 순서대로 콜백을 모으고 인스턴스마다 [폴, 리프라이스] 쌍이라 홀수 인덱스가 리프라이스다.
+ * 틱 1개를 합성 WS 프레임으로 흘리고(clock 전진 포함) 재선정·체결 폴 사이클을 1회 구동한다.
+ * 재선정은 실제로는 30초 타이머 몫 — 틱이 흘러야 자격(최소 속도)이 생기므로 매 틱 뒤 호출한다.
  */
-export async function advanceAndReprice(h: Harness, ms = 1000): Promise<void> {
-  h.clock.advance(ms);
-  await flush();
-  for (let i = 1; i < h.scheduler.fired.length; i += 2) h.scheduler.fired[i]();
-  await flush();
-}
-
-/** 틱 1개를 합성 WS 프레임으로 흘리고(clock 전진 포함), 전 인스턴스의 체결 폴 사이클을 1회 구동한다. */
 export async function tick(
   h: Harness,
   ticker: string,
@@ -423,52 +435,27 @@ export async function tick(
   h.socket().serverSend(priceFrame(ticker, price, fields));
   await flush();
   if (h.autoFillOrders) autoFillPending(h.api);
-  for (const inst of h.manager.getInstances()) await inst.pollCycle();
+  h.autopilot.pilot.reselect();
+  await h.autopilot.pilot.pollCycle();
   await flush();
 }
 
-/** 가격 배열을 순서대로 흘린다 + 마지막 청크를 닫기 위한 캡 틱(직전 값 반복) 1회 추가. fieldsAt(i)로 틱별 필드(EVOL 등) 오버라이드. */
+/** 가격 배열을 순서대로 흘린다 + 마지막 청크를 닫기 위한 캡 틱(직전 값 반복) 1회 추가. */
 export async function tickSeries(
   h: Harness,
   ticker: string,
   prices: number[],
   stepMs = 1000,
-  fieldsAt?: (i: number) => TickFieldMap,
 ): Promise<void> {
-  for (let i = 0; i < prices.length; i++) await tick(h, ticker, prices[i], stepMs, fieldsAt?.(i) ?? {});
-  await tick(h, ticker, prices[prices.length - 1], stepMs, fieldsAt?.(prices.length) ?? {});
+  for (const p of prices) await tick(h, ticker, p, stepMs);
+  await tick(h, ticker, prices[prices.length - 1], stepMs);
 }
 
-/**
- * 매 틱마다 최신 호가(bid1/ask1)를 체결가 직전에 흘린다 — 발주 시점에 호가가 항상 신선하도록.
- * 호가를 먼저(시계 전진 후) 보내고, 그 다음 체결가로 신호를 유발하므로 buy는 같은 시각의 ask1을 쓴다.
- */
-export async function tickSeriesWithQuote(
-  h: Harness,
-  ticker: string,
-  prices: number[],
-  bid1: number,
-  ask1: number,
-  stepMs = 1000,
-): Promise<void> {
-  const step = async (p: number) => {
-    h.clock.advance(stepMs);
-    h.socket().serverSend(quoteFrame(ticker, bid1, ask1));
-    h.socket().serverSend(priceFrame(ticker, p));
-    await flush();
-    if (h.autoFillOrders) autoFillPending(h.api);
-    for (const inst of h.manager.getInstances()) await inst.pollCycle();
-    await flush();
-  };
-  for (const p of prices) await step(p);
-  await step(prices[prices.length - 1]);
-}
-
-/** 새 시세 틱 없이 시계만 전진시키고(미체결 타임아웃 유도) 폴 사이클을 구동한다. */
+/** 새 시세 틱 없이 시계만 전진시키고 폴 사이클을 구동한다. */
 export async function advanceAndPoll(h: Harness, ms: number): Promise<void> {
   h.clock.advance(ms);
   await flush();
-  for (const inst of h.manager.getInstances()) await inst.pollCycle();
+  await h.autopilot.pilot.pollCycle();
   await flush();
 }
 

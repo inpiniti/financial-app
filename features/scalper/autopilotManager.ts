@@ -5,8 +5,8 @@
 // 다중 그리드(2026-08-05) 이후 보유 중에도 감시가 계속 돌기 때문에 둘의 합집합이다 —
 // 리스트 원천 4종 기준 최대 (체결가 12 + 핀 유예 1) + 호가 (3 + 동시 그리드 수, 최대 6) ≈ 22건.
 //
-// WS 핸들러는 ScalperManager가 유일 소유하므로, 이 매니저는 setAuxRoutes로 등록된
-// routeTick/routeQuote를 통해 같은 연결의 수신을 나눠 받는다(수동/자동 상호 배타는 start 가드).
+// WS 핸들러는 ScalperManager(피드 허브)가 유일 소유하므로, 이 매니저는 setAuxRoutes로 등록된
+// routeTick/routeQuote를 통해 같은 연결의 수신을 나눠 받는다.
 
 import { appendTradeRecord } from './tradeStore';
 import {
@@ -53,8 +53,6 @@ export interface AutoPilotManagerDeps {
   makeBroker: (ticker: string, exchange: OverseasExchangeCode) => ScalperBroker;
   /** 순위 4종 1회 폴링(거래량·증가율·회전율·상승률, 미국 3거래소 병합·당일) — provider가 kis/ranking 12콜로 구현. */
   fetchSnapshot: () => Promise<RankingSnapshot>;
-  /** 수동 카드 모드가 실행 중인가 — true면 start를 거부한다(상호 배타, plan §3-5단계). */
-  isManualBusy?: () => boolean;
   /** 매수가능금액(USD) 사전 조회 — 현금 부족 PAUSED 판정. 실패/미주입 시 판정 생략. */
   fetchBuyableUsd?: (ticker: string, price: number, exchange: OverseasExchangeCode) => Promise<number | null>;
   /** 매도 관리 그리드 설정(폭·매수배율) — 주입되면 진입 후 청산을 ±w OCO 그리드가 인계한다(D5). 미주입이면 기존 청산. */
@@ -203,11 +201,8 @@ export class AutoPilotManager {
 
   // ---- 모드 수명주기 ----
 
-  /** 자동관리 시작 — 수동 카드 실행 중이면 거부한다(상호 배타). */
+  /** 자동관리 시작. */
   start(): void {
-    if (this.deps.isManualBusy?.()) {
-      throw new Error('수동 단타 카드가 실행 중이에요. 카드를 모두 정지한 뒤 자동 단타를 시작해 주세요.');
-    }
     this.deps.realtime.connect();
     this.watchlist.start();
     this.pilot.start();

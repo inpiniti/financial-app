@@ -61,7 +61,7 @@ function snapshotOf(tickers: string[]): RankingSnapshot {
   };
 }
 
-function makeManager(opts: { manualBusy?: boolean; holdings?: string[] } = {}) {
+function makeManager(opts: { holdings?: string[] } = {}) {
   const feed = new PairFeed();
   const store = new FakeStore();
   const clock = fakeClock(1000);
@@ -74,7 +74,6 @@ function makeManager(opts: { manualBusy?: boolean; holdings?: string[] } = {}) {
     scheduler: noopScheduler(),
     makeBroker: () => new FakeBroker({ autoFill: true }),
     fetchSnapshot,
-    isManualBusy: () => opts.manualBusy ?? false,
     fetchHoldings: opts.holdings ? async () => opts.holdings! : undefined,
     keepAwake,
     chunkSeconds: 1,
@@ -148,11 +147,6 @@ describe('AutoPilotManager — 배선(구독 예산·라우팅·상호 배타)',
     expect(feed.tickPairs()).toHaveLength(12);
     expect(feed.pairs.has('HDFSCNT0|DNASZ')).toBe(true);
     expect(feed.pairs.has('HDFSCNT0|DNASA')).toBe(false);
-  });
-
-  it('수동 카드 실행 중이면 start를 거부한다(상호 배타)', () => {
-    const { manager } = makeManager({ manualBusy: true });
-    expect(() => manager.start()).toThrow(/수동 단타 카드가 실행 중/);
   });
 
   it('보유 감지 — 잔고에 종목이 있으면 경고 이벤트를 낸다(차단 안 함)', async () => {

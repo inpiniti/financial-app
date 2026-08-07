@@ -1,5 +1,4 @@
-// 조회 탭 세그먼트 3 — 순위 6종 (kis/ranking.ts). 행 탭 시 종목 상세화면으로 이동한다
-// (옛 프리필 배너 흐름은 상세화면의 + 버튼(수동 카드 추가)으로 대체 — 2026-08-07 종목상세화면 plan).
+// 조회 탭 세그먼트 3 — 순위 6종 (kis/ranking.ts). 행 탭 시 종목 상세화면으로 이동한다.
 import { useCallback, useEffect, useState } from 'react';
 import { FlatList, RefreshControl, Text, View } from 'react-native';
 import { router } from 'expo-router';

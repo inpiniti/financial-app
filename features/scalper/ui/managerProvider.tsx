@@ -1,7 +1,7 @@
 // 단타 탭 매니저 싱글턴 부트스트랩 (6단계 UI 전용, features/scalper 로직 파일은 건드리지 않는다).
-// 저장된 KIS 키(lib/kisSettings)·매매 파라미터(lib/appSettings)로 ScalperManager 1개를 만들고
-// 앱에서 단타 탭에 처음 진입할 때 restore()까지 실행한다. 이후에는 모듈 스코프 싱글턴을 재사용해
-// 탭을 오가도(화면이 언마운트/리마운트돼도) 인스턴스·WS 연결이 끊기지 않는다.
+// 저장된 KIS 키(lib/kisSettings)·매매 파라미터(lib/appSettings)로 피드 허브(ScalperManager)와
+// 자동 단타(AutoPilotManager)를 만들어 배선한다. 이후에는 모듈 스코프 싱글턴을 재사용해
+// 탭을 오가도(화면이 언마운트/리마운트돼도) 세션·WS 연결이 끊기지 않는다.
 import { useCallback, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -14,7 +14,6 @@ import {
   ladderCountOf,
   ladderIntervalToRatio,
 } from '../../../lib/appSettings';
-import { DEFAULT_BUFFER_SIZE, DEFAULT_CHUNK_SECONDS } from '../../../core/resample';
 import { loadKisSettings } from '../../../lib/kisSettings';
 import { secureTokenStorage } from '../../../lib/secureTokenStorage';
 import { inquireOverseasBalance } from '../../../kis/balance';
@@ -35,18 +34,13 @@ import { createKisBroker } from '../createKisBroker';
 import { createRealtimeFeed } from '../createRealtimeFeed';
 import { expoKeepAwake } from '../keepAwake';
 import { ScalperManager } from '../scalperManager';
-import type { ScalperInstanceConfig } from '../types';
 import { WATCH_SOURCES, type RankingSnapshot, type WatchCandidateRow } from '../watchlist';
 
 export interface ManagerBootstrap {
+  /** 피드 허브 — WS 단일 연결 소유, 자동 단타·상세화면으로 틱·호가 분배. */
   manager: ScalperManager;
-  /** 자동관리(오토파일럿) 매니저 — 수동 매니저와 WS 연결을 나눠 쓴다(setAuxRoutes). */
+  /** 자동관리(오토파일럿) 매니저 — 피드 허브와 WS 연결을 나눠 쓴다(setAuxRoutes). */
   autopilot: AutoPilotManager;
-  /** 새 카드 폼의 기본 수량(설정 탭 "주문 수량") — 카드별 수량은 여전히 사용자가 바꿀 수 있다. */
-  defaultQty: number;
-  /** 워밍업 진행률 표시용(코드 고정값 3초·31칸) — 정확한 틱 카운트가 아니라 경과시간 추정에 쓰인다. */
-  bufferSize: number;
-  chunkSeconds: number;
 }
 
 export type ManagerBootstrapState =
@@ -81,31 +75,7 @@ async function buildManager(): Promise<ManagerBootstrap> {
     onError: (err) => manager?.reportFeedError(err),
   });
 
-  manager = new ScalperManager({
-    realtime,
-    storage: AsyncStorage,
-    clock,
-    makeBroker: (config: ScalperInstanceConfig) =>
-      createKisBroker({
-        environment,
-        credentials,
-        account,
-        pdno: config.ticker,
-        ovrsExcgCd: config.exchange ?? 'NASD',
-        getToken: async () => {
-          const token = await getAccessToken(environment, credentials, { storage: secureTokenStorage });
-          return token.accessToken;
-        },
-        clock,
-      }),
-    keepAwake: expoKeepAwake,
-    // 청크·버퍼·모멘텀 문턱·BUY 게이트·수수료율은 2026-08-08 설정에서 제거 — 미주입 시
-    // 코드 기본값(3초·31칸, 문턱 0.0001/0.00005, 게이트·수수료 0=끔)이 옛 설정 기본값과 동일하다.
-    // 매수 미체결 자동 취소(0=끔). 과거 사고로 삭제됐던 기능의 매수 한정 재도입이라 기본은 꺼져 있다.
-    buyCancelAfterMs: buyCancelAfterToMs(appSettings.buyCancelAfterSec),
-  });
-
-  await manager.restore();
+  manager = new ScalperManager({ realtime, clock });
 
   // ---- 자동관리(오토파일럿) — plan docs/development/2026-07-31_단타-자동관리-plan.md ----
 
@@ -209,7 +179,6 @@ async function buildManager(): Promise<ManagerBootstrap> {
         clock,
       }),
     fetchSnapshot,
-    isManualBusy: () => finalManager.anyRunning,
     fetchBuyableUsd,
     fetchHoldings,
     // 매도 관리 그리드 인계(D5) — 폭·매수배율은 설정 탭(매매파라미터)에서 조절한다(Phase B).
@@ -228,10 +197,8 @@ async function buildManager(): Promise<ManagerBootstrap> {
     onError: (err) => finalManager.reportFeedError(err),
   });
 
-  // WS 단일 연결 공유 — 수동 매니저의 라우터가 오토파일럿 슬롯으로도 흘려보낸다.
-  manager.setAuxRoutes((symb, price, tsMs, extras) => {
-    autopilot.routeTick(symb, price, tsMs, extras);
-  }, autopilot.routeQuote);
+  // WS 단일 연결 공유 — 피드 허브의 라우터가 오토파일럿 슬롯으로 흘려보낸다.
+  manager.setAuxRoutes(autopilot.routeTick, autopilot.routeQuote);
   // 반대 방향 프로브 — 상세화면 releaseFeed가 자동 단타의 감시·보유 구독을 끊지 않게 한다.
   manager.setFeedUseProbe((trKey, trId) => autopilot.usesTrKey(trKey, trId));
   await autopilot.restore();
@@ -239,10 +206,6 @@ async function buildManager(): Promise<ManagerBootstrap> {
   return {
     manager,
     autopilot,
-    defaultQty: appSettings.orderQty,
-    // 설정에서 제거된 값 — 워밍업 진행률 표시는 코드 고정값(3초·31칸)을 그대로 쓴다.
-    bufferSize: DEFAULT_BUFFER_SIZE,
-    chunkSeconds: DEFAULT_CHUNK_SECONDS,
   };
 }
 

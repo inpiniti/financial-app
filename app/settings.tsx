@@ -106,7 +106,8 @@ export default function SettingsScreen() {
 
   // 실전(LIVE) 전용 — 모의 전환 옵션은 2026-07-30 제거 (loadAppSettings가 'live'로 강제).
   const environment = 'live' as const;
-  const [orderQty, setOrderQty] = useState(String(DEFAULT_APP_SETTINGS.orderQty));
+  // 주문 수량 입력란은 수동 카드 제거(2026-08-08)와 함께 내렸다 — 저장 스키마 호환을 위해 값만 유지한다.
+  const savedOrderQtyRef = useRef(DEFAULT_APP_SETTINGS.orderQty);
   // 청크·버퍼·모멘텀 문턱·BUY 게이트·수수료율 설정은 2026-08-08 제거 — 코드 기본값 고정 동작.
   const [buyCancelAfterSec, setBuyCancelAfterSec] = useState(DEFAULT_APP_SETTINGS.buyCancelAfterSec);
   // 매도 관리 그리드 폭·매수 배율 — 주문 수량과 같은 텍스트 입력 + 저장 시 검증 패턴.
@@ -133,7 +134,7 @@ export default function SettingsScreen() {
         setHasSavedAppSecret(true);
         setAccountNoInput(formatAccountNo(kisSettings));
       }
-      setOrderQty(String(appSettings.orderQty));
+      savedOrderQtyRef.current = appSettings.orderQty;
       setBuyCancelAfterSec(appSettings.buyCancelAfterSec);
       setGridWidthPct(String(appSettings.gridWidthPct));
       setGridBuyMultiplier(String(appSettings.gridBuyMultiplier));
@@ -149,12 +150,6 @@ export default function SettingsScreen() {
     const account = parseAccountNo(accountNoInput);
     if (!appKey.trim() || !effectiveAppSecret || !account) {
       Alert.alert('알림', 'AppKey·AppSecret·계좌번호(8-2 형식)를 모두 채워 주세요.');
-      return;
-    }
-
-    const parsedOrderQty = Number(orderQty);
-    if (!Number.isFinite(parsedOrderQty) || parsedOrderQty <= 0) {
-      Alert.alert('알림', '주문 수량은 0보다 큰 숫자로 입력해 주세요.');
       return;
     }
 
@@ -202,7 +197,7 @@ export default function SettingsScreen() {
       // 미체결 취소는 슬라이더가 범위·스텝 격자를 보장하므로 별도 검증이 없다.
       await saveAppSettings({
         environment,
-        orderQty: parsedOrderQty,
+        orderQty: savedOrderQtyRef.current,
         buyCancelAfterSec,
         gridWidthPct: parsedGridWidthPct,
         gridBuyMultiplier: parsedGridBuyMultiplier,
@@ -449,14 +444,6 @@ export default function SettingsScreen() {
 
             <Panel title="주문">
               <View className="px-5 pb-5">
-                <Text className="mb-1 text-xs text-[#8b95a1]">주문 수량</Text>
-                <TextInput
-                  value={orderQty}
-                  onChangeText={setOrderQty}
-                  keyboardType="number-pad"
-                  className="mb-4 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
-                />
-
                 <SettingSlider
                   label="매수 미체결 취소 (초)"
                   value={buyCancelAfterSec}
