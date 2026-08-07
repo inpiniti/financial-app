@@ -51,7 +51,7 @@ function HoldingRow({ item }: { item: OverseasBalancePosition }) {
       subtitle={item.prdt_name}
       trailing={
         <>
-          <Text className="mb-0.5 text-xs text-[#8b95a1]">{formatQty(item.cblc_qty13)}주</Text>
+          <Text className="mb-0.5 text-xs text-[#8b95a1]">{formatQty(item.ccld_qty_smtl1)}주</Text>
           <ProfitText amount={item.evlu_pfls_amt2} rate={item.evlu_pfls_rt1} />
         </>
       }

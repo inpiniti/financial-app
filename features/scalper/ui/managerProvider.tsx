@@ -164,10 +164,15 @@ async function buildManager(): Promise<ManagerBootstrap> {
   };
 
   // 재시작 보유 감지(plan §2-6) — 잔고에 수량이 남은 종목 티커 목록.
+  // ⚠ cblc_qty13(결제보유수량)이 아니라 ccld_qty_smtl1(체결기준 보유수량)을 본다 — 미국주식은 T+1 결제라
+  //   결제 기준으로는 당일 매수분(FAULT 복구 대상)이 0으로 빠지고, 이미 청산된 종목이 하루 더 남는다.
+  //   현재가 0인 행은 CVR 같은 거래 불능 잔여 권리 — 그리드에 태울 수 없으니 제외한다.
   const fetchHoldings = async (): Promise<string[]> => {
     const accessToken = await getTokenStr();
     const res = await inquireOverseasBalance(environment, credentials, accessToken, { account });
-    return res.output1.filter((p) => Number(p.cblc_qty13) > 0).map((p) => p.pdno);
+    return res.output1
+      .filter((p) => Number(p.ccld_qty_smtl1) > 0 && Number(p.ovrs_now_pric1) > 0)
+      .map((p) => p.pdno);
   };
 
   // 현금 부족 PAUSED 사전 판정 — 조회 실패 시 null(판정 생략, FAULT 인터록이 최후 방어선).

@@ -163,11 +163,13 @@ export function createKisBroker(config: KisBrokerConfig): ScalperBroker {
     async fetchPosition(): Promise<{ qty: number; avgPrice: number } | null> {
       const token = await getToken();
       const { output1 } = await inquireOverseasBalance(environment, credentials, token, { account });
-      // 이 브로커의 종목(pdno)과 일치하는 잔고 원소를 찾아 평단(avg_unpr3)·수량(cblc_qty13)을 읽는다(D1).
+      // 이 브로커의 종목(pdno)과 일치하는 잔고 원소를 찾아 평단(avg_unpr3)·수량(ccld_qty_smtl1)을 읽는다(D1).
+      // 수량은 체결기준(ccld_qty_smtl1) — 결제보유수량(cblc_qty13)은 T+1 결제 전인 당일 매수분이 0이라
+      // FAULT 당일 재등록이 항상 실패한다.
       const want = String(pdno ?? '').trim();
       const row = output1.find((p) => String(p.pdno ?? '').trim() === want);
       if (!row) return null;
-      const qty = toNum(row.cblc_qty13);
+      const qty = toNum(row.ccld_qty_smtl1);
       const avgPrice = toNum(row.avg_unpr3);
       if (qty <= 0 || avgPrice <= 0) return null;
       return { qty, avgPrice };

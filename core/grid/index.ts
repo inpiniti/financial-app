@@ -17,7 +17,7 @@ export interface ClockLike {
 
 /** KIS 잔고에서 읽은 포지션(해당 티커). */
 export interface GridPosition {
-  /** 보유수량 N (cblc_qty13). */
+  /** 보유수량 N (ccld_qty_smtl1 — 체결기준). */
   qty: number;
   /** 평단가 P (avg_unpr3). */
   avgPrice: number;
