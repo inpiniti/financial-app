@@ -10,13 +10,11 @@ import { getApprovalKey } from '../../../kis/wsApproval';
 import type { KisAccount, KisCredentials, KisEnvironment } from '../../../kis/types';
 import {
   buyCancelAfterToMs,
-  commissionRateToRatio,
-  gateThreshold,
   loadAppSettings,
   ladderCountOf,
   ladderIntervalToRatio,
-  momentumThresholdToRatio,
 } from '../../../lib/appSettings';
+import { DEFAULT_BUFFER_SIZE, DEFAULT_CHUNK_SECONDS } from '../../../core/resample';
 import { loadKisSettings } from '../../../lib/kisSettings';
 import { secureTokenStorage } from '../../../lib/secureTokenStorage';
 import { inquireOverseasBalance } from '../../../kis/balance';
@@ -46,7 +44,7 @@ export interface ManagerBootstrap {
   autopilot: AutoPilotManager;
   /** 새 카드 폼의 기본 수량(설정 탭 "주문 수량") — 카드별 수량은 여전히 사용자가 바꿀 수 있다. */
   defaultQty: number;
-  /** 워밍업 진행률 표시용(설정 탭 값 그대로) — 정확한 틱 카운트가 아니라 경과시간 추정에 쓰인다. */
+  /** 워밍업 진행률 표시용(코드 고정값 3초·31칸) — 정확한 틱 카운트가 아니라 경과시간 추정에 쓰인다. */
   bufferSize: number;
   chunkSeconds: number;
 }
@@ -101,17 +99,8 @@ async function buildManager(): Promise<ManagerBootstrap> {
         clock,
       }),
     keepAwake: expoKeepAwake,
-    chunkSeconds: appSettings.chunkSeconds,
-    bufferSize: appSettings.bufferSize,
-    // 매수 모멘텀 문턱(% → 상대 기울기 소수). 0이면 detector가 끔(전환 즉시 매수)으로 동작한다.
-    minBuyMomentum: momentumThresholdToRatio(appSettings.momentumThresholdPct),
-    // 매도 모멘텀 문턱(% → 하락 상대 기울기 크기 소수). 0이면 detector가 끔(전환 즉시 매도)으로 동작한다.
-    minSellMomentum: momentumThresholdToRatio(appSettings.sellMomentumThresholdPct),
-    // BUY 게이트(거래량 스파이크 배수·체결강도) — 0이면 끔. %가 아니라 변환 없이 정리만 한다.
-    minVolumeSpikeRatio: gateThreshold(appSettings.buyVolumeSpikeRatio),
-    minStrength: gateThreshold(appSettings.buyStrengthThreshold),
-    // 거래 수수료율(% → 소수). 0이면 손익에서 수수료를 빼지 않는다(기존 동작).
-    feeRate: commissionRateToRatio(appSettings.commissionRatePct),
+    // 청크·버퍼·모멘텀 문턱·BUY 게이트·수수료율은 2026-08-08 설정에서 제거 — 미주입 시
+    // 코드 기본값(3초·31칸, 문턱 0.0001/0.00005, 게이트·수수료 0=끔)이 옛 설정 기본값과 동일하다.
     // 매수 미체결 자동 취소(0=끔). 과거 사고로 삭제됐던 기능의 매수 한정 재도입이라 기본은 꺼져 있다.
     buyCancelAfterMs: buyCancelAfterToMs(appSettings.buyCancelAfterSec),
   });
@@ -221,18 +210,13 @@ async function buildManager(): Promise<ManagerBootstrap> {
     // 매도 관리 그리드 인계(D5) — 폭·매수배율은 설정 탭(매매파라미터)에서 조절한다(Phase B).
     gridConfig: { width: appSettings.gridWidthPct / 100, buyMultiplier: appSettings.gridBuyMultiplier },
     keepAwake: expoKeepAwake,
-    chunkSeconds: appSettings.chunkSeconds,
-    bufferSize: appSettings.bufferSize,
-    minBuyMomentum: momentumThresholdToRatio(appSettings.momentumThresholdPct),
-    minSellMomentum: momentumThresholdToRatio(appSettings.sellMomentumThresholdPct),
-    minVolumeSpikeRatio: gateThreshold(appSettings.buyVolumeSpikeRatio),
-    minStrength: gateThreshold(appSettings.buyStrengthThreshold),
+    // 청크·버퍼·모멘텀 문턱·BUY 게이트·수수료율은 2026-08-08 설정에서 제거 — 미주입 시 코드 기본값이
+    // 옛 설정 기본값과 동일해 자동단타 동작은 그대로다(사다리 감지는 청크 3초 마감가·31칸 워밍업 유지).
     // 사다리 진입 감지(2026-08-07 plan) — 간격 %→소수, 홀 횟수 정수. feedSlot.LADDER_ENTRY가 최종 스위치다.
     entryLadder: {
       interval: ladderIntervalToRatio(appSettings.entryLadderIntervalPct),
       triggerCount: ladderCountOf(appSettings.entryLadderCount),
     },
-    feeRate: commissionRateToRatio(appSettings.commissionRatePct),
     buyCancelAfterMs: buyCancelAfterToMs(appSettings.buyCancelAfterSec),
     // 종목 상세화면(acquireFeed)이 잡고 있는 구독은 리스트 이탈 시에도 해제하지 않는다(교차 해제 방지).
     isFeedHeldExternally: (trKey, trId) => finalManager.holdsFeed(trKey, trId),
@@ -251,8 +235,9 @@ async function buildManager(): Promise<ManagerBootstrap> {
     manager,
     autopilot,
     defaultQty: appSettings.orderQty,
-    bufferSize: appSettings.bufferSize,
-    chunkSeconds: appSettings.chunkSeconds,
+    // 설정에서 제거된 값 — 워밍업 진행률 표시는 코드 고정값(3초·31칸)을 그대로 쓴다.
+    bufferSize: DEFAULT_BUFFER_SIZE,
+    chunkSeconds: DEFAULT_CHUNK_SECONDS,
   };
 }
 

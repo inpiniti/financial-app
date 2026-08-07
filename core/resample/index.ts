@@ -19,8 +19,10 @@ export interface ResamplerOptions {
   bufferSize?: number;
 }
 
-const DEFAULT_CHUNK_SECONDS = 3;
-const DEFAULT_BUFFER_SIZE = 31;
+// 2026-08-08 설정 정리 이후 청크·버퍼는 조절 옵션이 아니라 이 기본값으로 고정 동작한다.
+// (UI 워밍업 진행률 표시가 참조하므로 export — 값 자체는 옛 설정 기본값과 동일.)
+export const DEFAULT_CHUNK_SECONDS = 3;
+export const DEFAULT_BUFFER_SIZE = 31;
 const MIN_BUFFER_SIZE = 5; // Savitzky-Golay 최소 창
 
 /** 짝수면 다음 홀수로 올림. */
