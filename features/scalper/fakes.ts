@@ -151,6 +151,8 @@ export class FakeFeed implements RealtimeFeed {
   readonly subscribed = new Set<string>();
   /** 구독된 trKey → trId(검증용). */
   readonly subscribedTrIds = new Map<string, string>();
+  /** `${trId}|${trKey}` 복합 키 — 체결가·호가가 같은 trKey를 쓰므로 refcount 검증은 이 셋으로 한다. */
+  readonly subs = new Set<string>();
   private handler: ((symb: string, price: number, tsMs: number, extras?: TickExtras) => void) | null = null;
   private quoteHandler:
     | ((symb: string, bid1: number, ask1: number, tsMs: number, bidVol1?: number, askVol1?: number) => void)
@@ -167,10 +169,12 @@ export class FakeFeed implements RealtimeFeed {
   subscribe(trKey: string, trId = 'HDFSCNT0'): void {
     this.subscribed.add(trKey);
     this.subscribedTrIds.set(trKey, trId);
+    this.subs.add(`${trId}|${trKey}`);
   }
-  unsubscribe(trKey: string): void {
+  unsubscribe(trKey: string, trId = 'HDFSCNT0'): void {
     this.subscribed.delete(trKey);
     this.subscribedTrIds.delete(trKey);
+    this.subs.delete(`${trId}|${trKey}`);
   }
   setTickHandler(handler: (symb: string, price: number, tsMs: number, extras?: TickExtras) => void): void {
     this.handler = handler;

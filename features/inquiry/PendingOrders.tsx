@@ -2,21 +2,32 @@
 // 주문체결내역(TTTS3035R)이 일부 계좌에서 APTR0058로 거절되어 미체결 전용 TR(TTTS3018R)로 전환 (README.md 참조).
 import { useCallback, useEffect, useState } from 'react';
 import { Alert, FlatList, Pressable, RefreshControl, Text, View } from 'react-native';
+import { router } from 'expo-router';
 import { ListRow } from '../../components/ListRow';
 import { Panel } from '../../components/Panel';
 import { TickerAvatar } from '../../components/TickerAvatar';
 import { inquireOverseasUnfilled, type OverseasUnfilledItem } from '../../kis/nccs';
 import { cancelOverseasOrder } from '../../kis/orderCancel';
 import type { OverseasExchangeCode } from '../../kis/trId';
+import { toStockMarketCode } from '../stock/marketCodes';
 import { formatUsd } from '../../lib/format';
 import { EmptyState, ErrorNotice, SetupNotice, SkeletonList } from './components';
 import { useKisSession } from './useKisSession';
 
 function PendingRow({ item, onCancel, cancelling }: { item: OverseasUnfilledItem; onCancel: () => void; cancelling: boolean }) {
   const isBuy = item.sll_buy_dvsn_cd === '02';
+  // 행 탭 → 종목 상세화면. market은 미체결 응답 거래소 코드(NASD 등)를 정규화 — 실패 시 raw 전달(상세가 에러 표시).
+  const handlePress = () => {
+    const market = toStockMarketCode(item.ovrs_excg_cd);
+    router.push({
+      pathname: '/stock/[ticker]',
+      params: { ticker: item.pdno, market: market ?? item.ovrs_excg_cd, name: item.prdt_name },
+    });
+  };
   return (
     <View className="border-b border-[#f2f4f6]">
       <ListRow
+        onPress={handlePress}
         leading={<TickerAvatar ticker={item.pdno} />}
         title={
           <View className="flex-row items-center">

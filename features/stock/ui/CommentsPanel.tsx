@@ -1,9 +1,8 @@
-// 단타 카드 → "토스 커뮤니티 댓글 보기" 바텀시트(조회 전용, 공용 BottomSheet 껍데기 사용).
-// 시트가 열릴 때만 조회한다 — 폴링·자동 갱신 금지(lib/tossCommunity.ts 주석과 동일 원칙).
+// 종목 상세화면 "댓글" 탭 — 옛 CommentsSheet.tsx(바텀시트)에서 추출한 토스 커뮤니티 댓글 뷰.
+// 진입 시에만 조회한다 — 폴링·자동 갱신 금지(lib/tossCommunity.ts 주석과 동일 원칙).
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Image, Pressable, RefreshControl, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { BottomSheet } from '../../../components/BottomSheet';
 import {
   fetchTossComments,
   resolveTossProductCode,
@@ -11,10 +10,8 @@ import {
   type TossCommentSort,
 } from '../../../lib/tossCommunity';
 
-export interface CommentsSheetProps {
-  visible: boolean;
+export interface CommentsPanelProps {
   ticker: string;
-  onClose: () => void;
 }
 
 type LoadState =
@@ -81,7 +78,7 @@ function CommentRow({ comment }: { comment: TossComment }) {
   const badgeColor = badge ? (BADGE_COLOR[badge.color] ?? DEFAULT_BADGE_COLOR) : null;
 
   return (
-    <View className="mx-4 mb-3 rounded-2xl bg-white p-4 shadow-sm">
+    <View className="border-b border-[#f2f4f6] px-5 py-4">
       <View className="flex-row items-center">
         {comment.author.profilePictureUrl ? (
           <Image source={{ uri: comment.author.profilePictureUrl }} style={{ width: 32, height: 32, borderRadius: 16 }} />
@@ -129,7 +126,7 @@ function CommentRow({ comment }: { comment: TossComment }) {
 
 function SkeletonRow() {
   return (
-    <View className="mx-4 mb-3 rounded-2xl bg-white p-4 shadow-sm">
+    <View className="border-b border-[#f2f4f6] px-5 py-4">
       <View className="flex-row items-center">
         <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: '#e5e8eb' }} />
         <View className="ml-2 flex-1">
@@ -143,7 +140,7 @@ function SkeletonRow() {
   );
 }
 
-export function CommentsSheet({ visible, ticker, onClose }: CommentsSheetProps) {
+export function CommentsPanel({ ticker }: CommentsPanelProps) {
   const [sort, setSort] = useState<TossCommentSort>('RECENT');
   const [productCode, setProductCode] = useState<string | null>(null);
   const [comments, setComments] = useState<TossComment[]>([]);
@@ -167,9 +164,8 @@ export function CommentsSheet({ visible, ticker, onClose }: CommentsSheetProps) 
     }
   }, []);
 
-  // 시트가 열릴 때만 productCode 해석 + 첫 페이지 조회. 닫혀 있는 동안은 아무것도 하지 않는다.
+  // 진입 시 productCode 해석 + 첫 페이지 조회.
   useEffect(() => {
-    if (!visible) return;
     let cancelled = false;
 
     setSort('RECENT');
@@ -194,7 +190,7 @@ export function CommentsSheet({ visible, ticker, onClose }: CommentsSheetProps) 
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, ticker]);
+  }, [ticker]);
 
   const handleSortChange = useCallback(
     (next: TossCommentSort) => {
@@ -237,23 +233,16 @@ export function CommentsSheet({ visible, ticker, onClose }: CommentsSheetProps) 
   }, [productCode, hasNext, nextKey, loadingMore, sort, state.kind]);
 
   return (
-    <BottomSheet visible={visible} onClose={onClose} heightRatio={0.8}>
-      <View className="flex-row items-center justify-between px-6 pt-5">
-        <Text className="text-lg font-bold text-[#191f28]">{ticker} 토스 커뮤니티</Text>
-        <Pressable onPress={onClose} hitSlop={8} className="p-1">
-          <Text className="text-lg text-[#8b95a1]">×</Text>
-        </Pressable>
-      </View>
-
+    <View className="flex-1 bg-white">
       {state.kind !== 'notFound' && (
-        <View className="px-6 pb-3 pt-3">
+        <View className="px-4 pb-3 pt-4">
           <SegmentToggle value={sort} onChange={handleSortChange} />
         </View>
       )}
 
       <View className="flex-1">
         {state.kind === 'resolving' || state.kind === 'loading' ? (
-          <View className="pt-2">
+          <View>
             {[1, 2, 3].map((i) => (
               <SkeletonRow key={i} />
             ))}
@@ -277,7 +266,7 @@ export function CommentsSheet({ visible, ticker, onClose }: CommentsSheetProps) 
             data={comments}
             keyExtractor={(item) => item.commentId}
             renderItem={({ item }) => <CommentRow comment={item} />}
-            contentContainerStyle={{ paddingVertical: 12, flexGrow: 1 }}
+            contentContainerStyle={{ paddingBottom: 24, flexGrow: 1 }}
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#3182f6" />}
             onEndReachedThreshold={0.4}
             onEndReached={handleEndReached}
@@ -291,6 +280,6 @@ export function CommentsSheet({ visible, ticker, onClose }: CommentsSheetProps) 
           />
         )}
       </View>
-    </BottomSheet>
+    </View>
   );
 }

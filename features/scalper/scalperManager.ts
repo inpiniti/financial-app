@@ -6,6 +6,7 @@
 import {
   buildFreeQuoteTrKey,
   buildQuoteTrKey,
+  REALTIME_PRICE_TR_ID,
   REALTIME_QUOTE_TR_ID,
   type RealtimeMarketCode,
 } from '../../kis/realtimePrice';
@@ -75,6 +76,12 @@ export interface FeedEvent {
   text: string;
 }
 type FeedDiagnosticListener = (event: FeedEvent) => void;
+
+/** 상세화면 등 보조 소비자가 티커 1개의 틱·호가를 받아보는 리스너 — subscribeFeedData로 등록한다. */
+export interface FeedDataListener {
+  onTick?: (price: number, tsMs: number) => void;
+  onQuote?: (bid1: number, ask1: number, tsMs: number, bidVol1?: number, askVol1?: number) => void;
+}
 
 /**
  * trKey(체결가 D…/호가 R…) 1개의 마지막 구독 ACK 상태 — lastFeedEvent는 전체 매니저 기준으로 매번
@@ -236,11 +243,15 @@ export class ScalperManager {
     unsub?.();
     this.unsubs.delete(id);
     // 같은 trKey를 쓰는 다른 인스턴스가 없으면 WS 구독 해제(체결가·호가 둘 다).
+    // 단, 상세화면(acquireFeed)이 잡고 있는 쪽은 남긴다 — 그쪽 releaseFeed가 마지막에 정리한다.
     const trKey = this.trKeyOf(config);
+    const quoteTrKey = this.quoteTrKeyOf(config);
     const stillUsed = [...this.configs.values()].some((c) => this.trKeyOf(c) === trKey);
     if (!stillUsed) {
-      this.realtime.unsubscribe(trKey);
-      this.realtime.unsubscribe(this.quoteTrKeyOf(config), REALTIME_QUOTE_TR_ID);
+      if (!this.holdsFeed(trKey, REALTIME_PRICE_TR_ID)) this.realtime.unsubscribe(trKey);
+      if (!this.holdsFeed(quoteTrKey, REALTIME_QUOTE_TR_ID)) {
+        this.realtime.unsubscribe(quoteTrKey, REALTIME_QUOTE_TR_ID);
+      }
     }
     void this.persist();
     this.refreshKeepAwake();
@@ -447,6 +458,80 @@ export class ScalperManager {
   private auxTick: ((symb: string, price: number, tsMs: number, extras?: TickExtras) => void) | null = null;
   private auxQuote: ((symb: string, bid1: number, ask1: number, tsMs: number) => void) | null = null;
 
+  // ---- 보조 소비자(종목 상세화면) 구독 refcount — 2026-08-07 종목상세화면 plan §4 ----
+
+  /** `${trId}|${trKey}` → 참조 수. 카드 구독과 별개로, 상세화면 진입/이탈이 이 카운트로 획득/해제한다. */
+  private readonly auxFeedCounts = new Map<string, number>();
+  /**
+   * 다른 소유자(자동 단타)가 이 키를 구독 중인지 조회하는 프로브 — managerProvider가 배선한다.
+   * 상세화면 해제가 자동 단타의 감시 호가를 끊지 않게 하는 최후 가드(카드는 cardUsesTrKey로 직접 본다).
+   */
+  private feedUseProbe: ((trKey: string, trId: string) => boolean) | null = null;
+  /** 상세화면 데이터 리스너 — 티커별 셋. routeTick/routeQuote가 카드·aux와 함께 여기에도 흘린다. */
+  private readonly feedDataListeners = new Map<string, Set<FeedDataListener>>();
+
+  /** 외부 구독 소유자 프로브 등록 — null로 해제. */
+  setFeedUseProbe(probe: ((trKey: string, trId: string) => boolean) | null): void {
+    this.feedUseProbe = probe;
+  }
+
+  /** 보조 소비자(상세화면)가 이 (trId|trKey)를 잡고 있는가 — 자동 단타가 해제 전에 조회한다. */
+  holdsFeed(trKey: string, trId: string): boolean {
+    return (this.auxFeedCounts.get(`${trId}|${trKey}`) ?? 0) > 0;
+  }
+
+  /**
+   * 참조 카운트 기반 구독 획득 — 상세화면 진입 시 체결가/호가 각각 호출한다.
+   * 카드·자동 단타가 이미 같은 키를 구독 중이면 등록 프레임을 다시 보내지 않는다
+   * (KIS가 중복 SUBSCRIBE에 오류 ACK를 줘 진단 줄이 "구독 실패"로 오염되는 것 방지).
+   */
+  acquireFeed(trKey: string, trId: string = REALTIME_PRICE_TR_ID): void {
+    this.realtime.connect();
+    const key = `${trId}|${trKey}`;
+    const next = (this.auxFeedCounts.get(key) ?? 0) + 1;
+    this.auxFeedCounts.set(key, next);
+    if (next === 1 && !this.cardUsesTrKey(trKey) && !this.feedUseProbe?.(trKey, trId)) {
+      this.realtime.subscribe(trKey, trId);
+    }
+  }
+
+  /** 구독 해제 — 카운트가 0이 되고, 카드·자동 단타 어느 쪽도 안 쓸 때만 실제 unsubscribe. */
+  releaseFeed(trKey: string, trId: string = REALTIME_PRICE_TR_ID): void {
+    const key = `${trId}|${trKey}`;
+    const current = this.auxFeedCounts.get(key) ?? 0;
+    if (current <= 0) return;
+    if (current > 1) {
+      this.auxFeedCounts.set(key, current - 1);
+      return;
+    }
+    this.auxFeedCounts.delete(key);
+    if (!this.cardUsesTrKey(trKey) && !this.feedUseProbe?.(trKey, trId)) {
+      this.realtime.unsubscribe(trKey, trId);
+    }
+  }
+
+  /** 상세화면이 티커 1개의 틱·호가 수신을 구독한다 — 반환 함수로 해제. 구독 획득(acquireFeed)과는 별개. */
+  subscribeFeedData(symb: string, listener: FeedDataListener): () => void {
+    let set = this.feedDataListeners.get(symb);
+    if (!set) {
+      set = new Set();
+      this.feedDataListeners.set(symb, set);
+    }
+    set.add(listener);
+    return () => {
+      const listeners = this.feedDataListeners.get(symb);
+      listeners?.delete(listener);
+      if (listeners && listeners.size === 0) this.feedDataListeners.delete(symb);
+    };
+  }
+
+  /** 어떤 카드가 이 trKey(체결가·호가 공용 문자열)를 쓰는가. */
+  private cardUsesTrKey(trKey: string): boolean {
+    return [...this.configs.values()].some(
+      (c) => this.trKeyOf(c) === trKey || this.quoteTrKeyOf(c) === trKey,
+    );
+  }
+
   /** 외부(자동관리) 수신기 등록 — null로 해제. */
   setAuxRoutes(
     onTick: ((symb: string, price: number, tsMs: number, extras?: TickExtras) => void) | null,
@@ -461,6 +546,10 @@ export class ScalperManager {
       if (instance.ticker === symb) instance.pushTick(price, tsMs, extras);
     }
     this.auxTick?.(symb, price, tsMs, extras);
+    const detailListeners = this.feedDataListeners.get(symb);
+    if (detailListeners) {
+      for (const l of detailListeners) l.onTick?.(price, tsMs);
+    }
   }
 
   /** 실시간호가(1호가)를 같은 티커의 인스턴스로 라우팅 — 어댑터가 공격적 지정가에 쓴다. */
@@ -476,6 +565,10 @@ export class ScalperManager {
       if (instance.ticker === symb) instance.pushQuote(bid1, ask1, tsMs, bidVol1, askVol1);
     }
     this.auxQuote?.(symb, bid1, ask1, tsMs);
+    const detailListeners = this.feedDataListeners.get(symb);
+    if (detailListeners) {
+      for (const l of detailListeners) l.onQuote?.(bid1, ask1, tsMs, bidVol1, askVol1);
+    }
   }
 
   /** 실행 중(감시~청산) 인스턴스가 하나라도 있는가 — 자동관리 모드와의 상호 배타 가드용. */

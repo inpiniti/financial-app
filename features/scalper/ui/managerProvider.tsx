@@ -265,6 +265,8 @@ async function buildManager(): Promise<ManagerBootstrap> {
     },
     feeRate: commissionRateToRatio(appSettings.commissionRatePct),
     buyCancelAfterMs: buyCancelAfterToMs(appSettings.buyCancelAfterSec),
+    // 종목 상세화면(acquireFeed)이 잡고 있는 구독은 리스트 이탈 시에도 해제하지 않는다(교차 해제 방지).
+    isFeedHeldExternally: (trKey, trId) => finalManager.holdsFeed(trKey, trId),
     onError: (err) => finalManager.reportFeedError(err),
   });
   autopilotRef = autopilot;
@@ -276,6 +278,8 @@ async function buildManager(): Promise<ManagerBootstrap> {
     simLab.onTick(symb, price, tsMs);
     autopilot.routeTick(symb, price, tsMs, extras);
   }, autopilot.routeQuote);
+  // 반대 방향 프로브 — 상세화면 releaseFeed가 자동 단타의 감시·보유 구독을 끊지 않게 한다.
+  manager.setFeedUseProbe((trKey, trId) => autopilot.usesTrKey(trKey, trId));
   await autopilot.restore();
 
   return {

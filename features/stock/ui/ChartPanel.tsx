@@ -1,28 +1,23 @@
-// 단타 카드 → "차트" 바텀시트(조회 전용, 공용 BottomSheet 껍데기 사용).
-// 분봉/일봉/주봉/월봉 통합 — 시트가 열릴 때·기간(모드/분봉 간격) 변경·새로고침 버튼 때만 조회한다
-// (CommentsSheet.tsx와 동일 원칙 — 폴링 금지).
-// 캔들 렌더는 react-native-svg(기설치, 15.12.1)로 직접 그린다 — 차트 라이브러리 추가 설치 없음.
+// 종목 상세화면 "차트" 탭 — 옛 ChartSheet.tsx(바텀시트)에서 추출한 유일한 차트 구현.
+// 분봉/일봉/주봉/월봉 통합 — 진입·기간(모드/분봉 간격) 변경·새로고침 버튼 때만 조회한다(폴링 금지).
+// 캔들 렌더는 react-native-svg(기설치)로 직접 그린다 — 차트 라이브러리 추가 설치 없음.
 import { useEffect, useState } from 'react';
 import { Pressable, Text, View, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Line, Rect, Text as SvgText } from 'react-native-svg';
-import { BottomSheet } from '../../../components/BottomSheet';
 import { getAccessToken } from '../../../kis/token';
 import { inquireOverseasMinuteChart, type MinuteChartExchangeCode } from '../../../kis/minuteChart';
 import { inquireOverseasPeriodChart, type PeriodChartPeriod } from '../../../kis/periodChart';
-import type { KisAccount, KisCredentials, KisEnvironment } from '../../../kis/types';
+import type { KisCredentials, KisEnvironment } from '../../../kis/types';
 import { loadAppSettings } from '../../../lib/appSettings';
 import { loadKisSettings } from '../../../lib/kisSettings';
 import { secureTokenStorage } from '../../../lib/secureTokenStorage';
 import { formatUsd } from '../../../lib/format';
 
-export interface ChartSheetProps {
-  visible: boolean;
+export interface ChartPanelProps {
   ticker: string;
-  /** EXCD — 인스턴스 market/exchange에서 도출한 미국 3거래소 코드. periodChart는 더 넓은 EXCD를 받지만
-   * 이 화면은 분봉과 동일하게 미국 3거래소 범위로만 쓴다. */
+  /** EXCD — 상세화면 라우트 파라미터(market)에서 정규화된 미국 3거래소 코드. */
   excd: MinuteChartExchangeCode;
-  onClose: () => void;
 }
 
 type ChartMode = 'minute' | 'daily' | 'weekly' | 'monthly';
@@ -54,9 +49,6 @@ const UP_COLOR = '#f04452'; // 종가 > 시가 (한국 관례 — 상승 빨강)
 const DOWN_COLOR = '#3182f6'; // 종가 < 시가
 const DOJI_COLOR = '#8b95a1'; // 종가 == 시가
 
-const CHART_TOTAL_HEIGHT = 260;
-const VOLUME_HEIGHT = Math.round(CHART_TOTAL_HEIGHT * 0.15);
-const PRICE_HEIGHT = CHART_TOTAL_HEIGHT - VOLUME_HEIGHT - 8; // 8 = 가격/거래량 영역 사이 여백
 const RIGHT_AXIS_WIDTH = 52; // 우측 가격축 라벨 예약 폭
 
 /** 렌더러가 필요로 하는 최소 형태 — 분봉(MinuteCandle)·기간봉(PeriodCandle)을 조회 직후 이 모양으로 맞춘다. */
@@ -83,7 +75,6 @@ type LoadState =
 interface Session {
   credentials: KisCredentials;
   environment: KisEnvironment;
-  account: KisAccount;
   accessToken: string;
 }
 
@@ -102,11 +93,11 @@ function formatDateLabel(ymd: string, mode: Exclude<ChartMode, 'minute'>): strin
   return mode === 'daily' ? `${mm}/${dd}` : `${yy}/${mm}`;
 }
 
-function SkeletonChart() {
+function SkeletonChart({ height }: { height: number }) {
   return (
     <View className="px-4 pt-4">
       <View className="mb-3 h-3 w-1/3 rounded-full bg-[#f7f9fc]" />
-      <View style={{ height: CHART_TOTAL_HEIGHT }} className="items-end justify-around rounded-2xl bg-[#f7f9fc] px-3 py-3">
+      <View style={{ height }} className="items-end justify-around rounded-2xl bg-[#f7f9fc] px-3 py-3">
         {[1, 2, 3, 4].map((i) => (
           <View key={i} style={{ height: 10, width: `${60 + i * 8}%` }} className="rounded-full bg-white" />
         ))}
@@ -145,7 +136,11 @@ function SegmentedToggle<T extends string | number>({
 }
 
 /** 캔들 SVG 본체 — 심지+몸통, 거래량 미니 바, 마지막 종가 점선+태그, 가격/시간 축 라벨. */
-function CandleChart({ candles, width }: { candles: ChartCandle[]; width: number }) {
+function CandleChart({ candles, width, height }: { candles: ChartCandle[]; width: number; height: number }) {
+  // 시트(고정 260)와 달리 상세화면은 세로 공간이 넉넉하다 — height를 받아 영역을 나눈다.
+  const volumeHeight = Math.round(height * 0.15);
+  const priceHeight = height - volumeHeight - 8; // 8 = 가격/거래량 영역 사이 여백
+
   const shown = candles.slice(-MAX_CANDLES);
   const chartWidth = Math.max(0, width - RIGHT_AXIS_WIDTH);
   const slotWidth = shown.length > 0 ? chartWidth / shown.length : chartWidth;
@@ -160,8 +155,8 @@ function CandleChart({ candles, width }: { candles: ChartCandle[]; width: number
   const volumes = shown.map((c) => c.volume);
   const volumeMax = Math.max(...volumes, 1);
 
-  const priceToY = (price: number) => PRICE_HEIGHT - ((price - priceMin) / priceRange) * PRICE_HEIGHT;
-  const volumeToH = (vol: number) => (vol / volumeMax) * VOLUME_HEIGHT;
+  const priceToY = (price: number) => priceHeight - ((price - priceMin) / priceRange) * priceHeight;
+  const volumeToH = (vol: number) => (vol / volumeMax) * volumeHeight;
 
   const last = shown[shown.length - 1];
   const lastY = priceToY(last.close);
@@ -174,7 +169,7 @@ function CandleChart({ candles, width }: { candles: ChartCandle[]; width: number
 
   return (
     <View>
-      <Svg width={width} height={CHART_TOTAL_HEIGHT + 20}>
+      <Svg width={width} height={height + 20}>
         {/* 캔들 — 심지 + 몸통 */}
         {shown.map((candle, i) => {
           const cx = i * slotWidth + slotWidth / 2;
@@ -214,7 +209,7 @@ function CandleChart({ candles, width }: { candles: ChartCandle[]; width: number
           <SvgText
             key={i}
             x={chartWidth + 4}
-            y={Math.min(Math.max(priceToY(price), 8), PRICE_HEIGHT - 2)}
+            y={Math.min(Math.max(priceToY(price), 8), priceHeight - 2)}
             fontSize={10}
             fill="#8b95a1"
           >
@@ -227,7 +222,7 @@ function CandleChart({ candles, width }: { candles: ChartCandle[]; width: number
           const cx = i * slotWidth + slotWidth / 2;
           const color = candle.close > candle.open ? UP_COLOR : candle.close < candle.open ? DOWN_COLOR : DOJI_COLOR;
           const h = Math.max(1, volumeToH(candle.volume));
-          const y = PRICE_HEIGHT + 8 + (VOLUME_HEIGHT - h);
+          const y = priceHeight + 8 + (volumeHeight - h);
           return (
             <Rect
               key={`vol-${candle.key}`}
@@ -247,7 +242,7 @@ function CandleChart({ candles, width }: { candles: ChartCandle[]; width: number
           const x = idx * slotWidth + slotWidth / 2;
           const anchor = i === 0 ? 'start' : i === timeLabels.length - 1 ? 'end' : 'middle';
           return (
-            <SvgText key={`time-${candle.key}`} x={x} y={CHART_TOTAL_HEIGHT + 16} fontSize={10} fill="#8b95a1" textAnchor={anchor}>
+            <SvgText key={`time-${candle.key}`} x={x} y={height + 16} fontSize={10} fill="#8b95a1" textAnchor={anchor}>
               {candle.label}
             </SvgText>
           );
@@ -257,8 +252,8 @@ function CandleChart({ candles, width }: { candles: ChartCandle[]; width: number
   );
 }
 
-export function ChartSheet({ visible, ticker, excd, onClose }: ChartSheetProps) {
-  const { width: windowWidth } = useWindowDimensions();
+export function ChartPanel({ ticker, excd }: ChartPanelProps) {
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const [mode, setMode] = useState<ChartMode>('minute');
   const [minuteInterval, setMinuteInterval] = useState<MinuteInterval>(1);
   const [session, setSession] = useState<Session | null>(null);
@@ -266,9 +261,8 @@ export function ChartSheet({ visible, ticker, excd, onClose }: ChartSheetProps) 
   const [sessionReloadKey, setSessionReloadKey] = useState(0);
   const [chartReloadKey, setChartReloadKey] = useState(0);
 
-  // 시트가 열릴 때만 세션(설정 탭 KIS 키 → accessToken) 로드. 닫혀 있는 동안은 아무것도 하지 않는다.
+  // 진입 시 한 번 세션(설정 탭 KIS 키 → accessToken) 로드.
   useEffect(() => {
-    if (!visible) return;
     let cancelled = false;
     setState({ kind: 'sessionLoading' });
 
@@ -281,10 +275,9 @@ export function ChartSheet({ visible, ticker, excd, onClose }: ChartSheetProps) 
       }
       try {
         const credentials: KisCredentials = { appKey: kisSettings.appKey, appSecret: kisSettings.appSecret };
-        const account: KisAccount = { cano: kisSettings.cano, acntPrdtCd: kisSettings.acntPrdtCd };
         const token = await getAccessToken(appSettings.environment, credentials, { storage: secureTokenStorage });
         if (cancelled) return;
-        setSession({ credentials, environment: appSettings.environment, account, accessToken: token.accessToken });
+        setSession({ credentials, environment: appSettings.environment, accessToken: token.accessToken });
       } catch (e) {
         if (!cancelled) {
           setState({ kind: 'sessionError', message: e instanceof Error ? e.message : String(e) });
@@ -295,12 +288,11 @@ export function ChartSheet({ visible, ticker, excd, onClose }: ChartSheetProps) 
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, sessionReloadKey]);
+  }, [sessionReloadKey]);
 
   // 세션이 준비되면(그리고 모드/분봉 간격/새로고침 변경 시에만) 차트를 조회한다.
   useEffect(() => {
-    if (!visible || !session) return;
+    if (!session) return;
     let cancelled = false;
     setState({ kind: 'loading' });
 
@@ -350,7 +342,7 @@ export function ChartSheet({ visible, ticker, excd, onClose }: ChartSheetProps) 
     return () => {
       cancelled = true;
     };
-  }, [visible, session, excd, ticker, mode, minuteInterval, chartReloadKey]);
+  }, [session, excd, ticker, mode, minuteInterval, chartReloadKey]);
 
   const handleRefresh = () => {
     if (state.kind === 'sessionError') {
@@ -360,34 +352,27 @@ export function ChartSheet({ visible, ticker, excd, onClose }: ChartSheetProps) 
     }
   };
 
-  const svgWidth = windowWidth - 32; // mx-4 좌우 여백 상당
+  const svgWidth = windowWidth - 32; // px-4 좌우 여백 상당
+  // 세로 공간이 넉넉한 상세화면 — 창 높이의 42%(최소 260, 최대 420)로 그린다.
+  const chartHeight = Math.min(420, Math.max(260, Math.round(windowHeight * 0.42)));
 
   return (
-    <BottomSheet visible={visible} onClose={onClose} heightRatio={0.75}>
-      <View className="flex-row items-center justify-between px-6 pt-5">
-        <Text className="text-lg font-bold text-[#191f28]">{ticker} 차트</Text>
-        <View className="flex-row items-center" style={{ gap: 4 }}>
-          <Pressable onPress={handleRefresh} hitSlop={8} className="p-1">
-            <Ionicons name="refresh-outline" size={18} color="#191f28" />
-          </Pressable>
-          <Pressable onPress={onClose} hitSlop={8} className="p-1">
-            <Text className="text-lg text-[#8b95a1]">×</Text>
-          </Pressable>
-        </View>
-      </View>
-
-      <View className="px-6 pb-3 pt-3">
+    <View className="flex-1 bg-white">
+      <View className="flex-row items-center justify-between px-4 pt-4">
         <SegmentedToggle options={MODE_OPTIONS} value={mode} onChange={setMode} />
-        {mode === 'minute' && (
-          <View className="mt-2">
-            <SegmentedToggle options={MINUTE_INTERVAL_OPTIONS} value={minuteInterval} onChange={setMinuteInterval} />
-          </View>
-        )}
+        <Pressable onPress={handleRefresh} hitSlop={8} className="p-1">
+          <Ionicons name="refresh-outline" size={18} color="#191f28" />
+        </Pressable>
       </View>
+      {mode === 'minute' && (
+        <View className="mt-2 px-4">
+          <SegmentedToggle options={MINUTE_INTERVAL_OPTIONS} value={minuteInterval} onChange={setMinuteInterval} />
+        </View>
+      )}
 
-      <View className="flex-1">
+      <View className="flex-1 pt-3">
         {state.kind === 'sessionLoading' || state.kind === 'loading' ? (
-          <SkeletonChart />
+          <SkeletonChart height={chartHeight} />
         ) : state.kind === 'sessionError' ? (
           <View className="flex-1 items-center justify-center px-8">
             <Ionicons name="key-outline" size={40} color="#8b95a1" style={{ marginBottom: 12 }} />
@@ -413,10 +398,10 @@ export function ChartSheet({ visible, ticker, excd, onClose }: ChartSheetProps) 
           </View>
         ) : (
           <View className="px-4">
-            <CandleChart candles={state.candles} width={svgWidth} />
+            <CandleChart candles={state.candles} width={svgWidth} height={chartHeight} />
           </View>
         )}
       </View>
-    </BottomSheet>
+    </View>
   );
 }

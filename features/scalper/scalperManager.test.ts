@@ -330,3 +330,89 @@ describe('ScalperManager — 멀티 인스턴스', () => {
     expect(feed.subscribed.has('DNASAAPL')).toBe(false); // 마지막 사용자 제거 → 해제
   });
 });
+
+describe('ScalperManager — 상세화면 구독 refcount(acquireFeed/releaseFeed)', () => {
+  const TICK = 'HDFSCNT0';
+  const QUOTE = 'HDFSASP0';
+  const KEY = 'DNASAAPL';
+
+  it('카드가 없는 종목은 acquire로 구독되고 마지막 release에서 해제된다', () => {
+    const { manager, feed } = makeManager();
+    manager.acquireFeed(KEY, TICK);
+    manager.acquireFeed(KEY, QUOTE);
+    expect(feed.connected).toBe(true);
+    expect(feed.subs.has(`${TICK}|${KEY}`)).toBe(true);
+    expect(feed.subs.has(`${QUOTE}|${KEY}`)).toBe(true);
+
+    manager.releaseFeed(KEY, TICK);
+    manager.releaseFeed(KEY, QUOTE);
+    expect(feed.subs.has(`${TICK}|${KEY}`)).toBe(false);
+    expect(feed.subs.has(`${QUOTE}|${KEY}`)).toBe(false);
+  });
+
+  it('중복 acquire는 같은 수의 release가 와야만 해제된다', () => {
+    const { manager, feed } = makeManager();
+    manager.acquireFeed(KEY, QUOTE);
+    manager.acquireFeed(KEY, QUOTE);
+    manager.releaseFeed(KEY, QUOTE);
+    expect(feed.subs.has(`${QUOTE}|${KEY}`)).toBe(true);
+    manager.releaseFeed(KEY, QUOTE);
+    expect(feed.subs.has(`${QUOTE}|${KEY}`)).toBe(false);
+  });
+
+  it('카드가 구독 중인 종목은 상세화면 진입/이탈이 카드 구독을 건드리지 않는다', () => {
+    const { manager, feed } = makeManager();
+    manager.add({ ticker: 'AAPL', qty: 1 }); // 카드가 체결가+호가 구독
+    manager.acquireFeed(KEY, TICK);
+    manager.acquireFeed(KEY, QUOTE);
+    manager.releaseFeed(KEY, TICK);
+    manager.releaseFeed(KEY, QUOTE);
+    expect(feed.subs.has(`${TICK}|${KEY}`)).toBe(true);
+    expect(feed.subs.has(`${QUOTE}|${KEY}`)).toBe(true);
+  });
+
+  it('상세화면이 잡고 있는 동안 카드가 삭제돼도 구독은 남고, release가 마지막에 정리한다', () => {
+    const { manager, feed } = makeManager();
+    const inst = manager.add({ ticker: 'AAPL', qty: 1 });
+    manager.acquireFeed(KEY, TICK);
+    manager.acquireFeed(KEY, QUOTE);
+    manager.remove(inst.id);
+    expect(feed.subs.has(`${TICK}|${KEY}`)).toBe(true);
+    expect(feed.subs.has(`${QUOTE}|${KEY}`)).toBe(true);
+
+    manager.releaseFeed(KEY, TICK);
+    manager.releaseFeed(KEY, QUOTE);
+    expect(feed.subs.has(`${TICK}|${KEY}`)).toBe(false);
+    expect(feed.subs.has(`${QUOTE}|${KEY}`)).toBe(false);
+  });
+
+  it('외부 프로브(자동 단타)가 쓰는 키는 release가 해제하지 않는다', () => {
+    const { manager, feed } = makeManager();
+    manager.setFeedUseProbe((trKey, trId) => trKey === KEY && trId === QUOTE);
+    // 프로브 소유 구독을 흉내 — 자동 단타가 이미 구독해 둔 상태.
+    feed.subscribe(KEY, QUOTE);
+    manager.acquireFeed(KEY, QUOTE);
+    manager.releaseFeed(KEY, QUOTE);
+    expect(feed.subs.has(`${QUOTE}|${KEY}`)).toBe(true);
+  });
+
+  it('subscribeFeedData 리스너로 틱·호가가 흘러오고 해지 후엔 오지 않는다', () => {
+    const { manager, feed } = makeManager();
+    manager.add({ ticker: 'AAPL', qty: 1 });
+    const ticks: number[] = [];
+    const quotes: Array<[number, number]> = [];
+    const unsub = manager.subscribeFeedData('AAPL', {
+      onTick: (price) => ticks.push(price),
+      onQuote: (bid1, ask1) => quotes.push([bid1, ask1]),
+    });
+
+    feed.emit('AAPL', 150, 1000);
+    feed.emitQuote('AAPL', 149.9, 150.1, 1000);
+    expect(ticks).toEqual([150]);
+    expect(quotes).toEqual([[149.9, 150.1]]);
+
+    unsub();
+    feed.emit('AAPL', 151, 2000);
+    expect(ticks).toEqual([150]);
+  });
+});

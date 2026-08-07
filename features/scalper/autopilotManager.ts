@@ -22,6 +22,7 @@ import { ScalperWatchlist, type RankingSnapshot, type WatchEntry } from './watch
 import {
   buildDaytimeQuoteTrKey,
   buildFreeQuoteTrKey,
+  REALTIME_PRICE_TR_ID,
   REALTIME_QUOTE_TR_ID,
   type DaytimeMarketCode,
   type RealtimeMarketCode,
@@ -102,6 +103,12 @@ export interface AutoPilotManagerDeps {
   buyCancelAfterMs?: number;
   reselectIntervalMs?: number;
   watchlistPollIntervalMs?: number;
+  /**
+   * 외부 보조 소비자(종목 상세화면)가 이 (trKey, trId)를 잡고 있는지 조회 — managerProvider가
+   * ScalperManager.holdsFeed로 배선한다. true면 dropSlot/reconcileQuoteSubs가 unsubscribe를 건너뛴다
+   * (상세화면이 보고 있는 시세를 리스트 이탈이 끊지 않게 — 2026-08-07 종목상세화면 plan §4).
+   */
+  isFeedHeldExternally?: (trKey: string, trId: string) => boolean;
   onError?: (err: unknown) => void;
 }
 
@@ -274,6 +281,17 @@ export class AutoPilotManager {
     this.slots.get(symb)?.pushQuote(bid1, ask1);
   };
 
+  /**
+   * 이 매니저가 현재 (trKey, trId)를 구독 중인가 — ScalperManager.acquireFeed/releaseFeed가
+   * 실제 subscribe/unsubscribe 여부를 판단할 때 프로브로 조회한다(교차 해제 방지).
+   */
+  usesTrKey(trKey: string, trId: string): boolean {
+    if (trId === REALTIME_QUOTE_TR_ID) {
+      return [...this.quoteSubs.values()].includes(trKey);
+    }
+    return [...this.tickTrKeys.values()].includes(trKey);
+  }
+
   // ---- UI 구독 ----
 
   subscribeView(listener: ViewListener): () => void {
@@ -313,9 +331,8 @@ export class AutoPilotManager {
   }
 
   /**
-   * 호가 스냅샷(조회 전용) — WatchQuoteSheet가 "수신 시각"을 표시하려고 쓴다. FeedSlotView(getRows()의 view)엔
-   * 수신 시각이 없어서(feedSlot.ts는 수정 금지 대상) 여기서 FeedSlot.quote 게터를 그대로 노출만 한다.
-   * slot이 없거나(리스트에서 빠짐) 아직 호가를 못 받았으면 null — 호가는 감시 top3(또는 보유 1)에만 붙는다.
+   * 호가 스냅샷(조회 전용) — FeedSlot.quote 게터 노출. slot이 없거나(리스트에서 빠짐) 아직 호가를
+   * 못 받았으면 null. 옛 WatchQuoteSheet가 쓰던 API지만 진단·테스트 접근용으로 남긴다.
    */
   getQuote(ticker: string): { bid1: number; ask1: number; at: number } | null {
     return this.slots.get(ticker)?.quote ?? null;
@@ -361,11 +378,16 @@ export class AutoPilotManager {
     this.slots.delete(ticker);
     const tickTrKey = this.tickTrKeys.get(ticker);
     this.tickTrKeys.delete(ticker);
-    if (tickTrKey) this.deps.realtime.unsubscribe(tickTrKey);
+    // 상세화면이 같은 키를 잡고 있으면 실제 해제는 건너뛴다 — 그쪽 releaseFeed가 마지막에 정리한다.
+    if (tickTrKey && !this.deps.isFeedHeldExternally?.(tickTrKey, REALTIME_PRICE_TR_ID)) {
+      this.deps.realtime.unsubscribe(tickTrKey);
+    }
     const quoteTrKey = this.quoteSubs.get(ticker);
     if (quoteTrKey) {
       this.quoteSubs.delete(ticker);
-      this.deps.realtime.unsubscribe(quoteTrKey, REALTIME_QUOTE_TR_ID);
+      if (!this.deps.isFeedHeldExternally?.(quoteTrKey, REALTIME_QUOTE_TR_ID)) {
+        this.deps.realtime.unsubscribe(quoteTrKey, REALTIME_QUOTE_TR_ID);
+      }
     }
   }
 
@@ -380,7 +402,10 @@ export class AutoPilotManager {
     for (const [ticker, trKey] of [...this.quoteSubs]) {
       if (!targets.has(ticker)) {
         this.quoteSubs.delete(ticker);
-        this.deps.realtime.unsubscribe(trKey, REALTIME_QUOTE_TR_ID);
+        // 상세화면이 이 호가를 보고 있으면 해제를 건너뛴다 — 그쪽 releaseFeed가 마지막에 정리한다.
+        if (!this.deps.isFeedHeldExternally?.(trKey, REALTIME_QUOTE_TR_ID)) {
+          this.deps.realtime.unsubscribe(trKey, REALTIME_QUOTE_TR_ID);
+        }
       }
     }
     for (const ticker of targets) {

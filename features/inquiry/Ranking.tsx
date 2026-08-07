@@ -1,8 +1,8 @@
-// 조회 탭 세그먼트 3 — 순위 6종 (kis/ranking.ts). 행 탭 시 티커를 AsyncStorage 'scalper.prefill' 키에 저장한다
-// (6단계 단타 탭 프리필 연동 — 저장 형식은 이 파일 PREFILL_KEY 주석 참고).
-import AsyncStorage from '@react-native-async-storage/async-storage';
+// 조회 탭 세그먼트 3 — 순위 6종 (kis/ranking.ts). 행 탭 시 종목 상세화면으로 이동한다
+// (옛 프리필 배너 흐름은 상세화면의 + 버튼(수동 카드 추가)으로 대체 — 2026-08-07 종목상세화면 plan).
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, FlatList, RefreshControl, Text, View } from 'react-native';
+import { FlatList, RefreshControl, Text, View } from 'react-native';
+import { router } from 'expo-router';
 import { ListRow } from '../../components/ListRow';
 import { Panel } from '../../components/Panel';
 import { SelectBox } from '../../components/SelectBox';
@@ -26,19 +26,6 @@ import {
 } from '../../kis/ranking';
 import { EmptyState, ErrorNotice, SetupNotice, SkeletonList } from './components';
 import { useKisSession } from './useKisSession';
-
-/**
- * 단타 탭 프리필 저장 키(AsyncStorage). 6단계(단타 탭) 에이전트가 이 키를 읽어 인스턴스에 티커를 채운다.
- * 저장 형식(JSON.stringify): { ticker: string; excd: string; name?: string; savedAt: number }
- */
-export const SCALPER_PREFILL_KEY = 'scalper.prefill';
-
-export interface ScalperPrefillPayload {
-  ticker: string;
-  excd: string;
-  name?: string;
-  savedAt: number;
-}
 
 const KIND_ORDER: RankingKind[] = [
   'tradeVolume',
@@ -171,11 +158,16 @@ export function Ranking() {
     fetchRanking();
   }, [fetchRanking]);
 
-  const handleRowPress = useCallback(async (row: RankingRowShape) => {
-    const payload: ScalperPrefillPayload = { ticker: row.symb, excd, name: rowName(row), savedAt: Date.now() };
-    await AsyncStorage.setItem(SCALPER_PREFILL_KEY, JSON.stringify(payload));
-    Alert.alert('알림', '홈 화면에 담아뒀어요.');
-  }, [excd]);
+  // 행 탭 → 종목 상세화면. 순위 화면의 excd는 이미 NAS/NYS/AMS라 그대로 market으로 넘긴다.
+  const handleRowPress = useCallback(
+    (row: RankingRowShape) => {
+      router.push({
+        pathname: '/stock/[ticker]',
+        params: { ticker: row.symb, market: excd, name: rowName(row) },
+      });
+    },
+    [excd],
+  );
 
   const timeUnit = RANKING_TIME_UNIT[kind];
 

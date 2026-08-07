@@ -1,17 +1,15 @@
 // 단타 탭 인스턴스 카드 — ScalperInstance 1개를 구독해 그 카드만 리렌더한다(매 틱 전체 리스트 리렌더 금지).
+// 카드 본문을 탭하면 종목 상세화면(차트/댓글/호가)으로 이동한다 — 2026-08-07 종목상세화면 plan.
 import { memo, useEffect, useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
+import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { TickerAvatar } from '../../../components/TickerAvatar';
 import { ToggleRow } from '../../../components/ToggleRow';
 import type { MinuteChartExchangeCode } from '../../../kis/minuteChart';
 import type { ScalperInstance } from '../scalperInstance';
-import type { ScalperManager } from '../scalperManager';
 import type { ScalperInstanceView } from '../types';
-import { ChartSheet } from './ChartSheet';
-import { CommentsSheet } from './CommentsSheet';
 import { EditQtySheet } from './EditQtySheet';
-import { QuoteSheet } from './QuoteSheet';
 import {
   STATE_BADGE_COLOR,
   STATE_LABEL,
@@ -35,8 +33,6 @@ const DIAGNOSIS_NEUTRAL_COLOR = '#8b95a1';
 
 export interface InstanceCardProps {
   instance: ScalperInstance;
-  /** 📊 호가 시트(QuoteSheet)가 구독 ACK 상태(trKey별)를 조회하는 데 필요 — 인스턴스 자체엔 없는 매니저 전용 정보. */
-  manager: ScalperManager;
   /** 워밍업 진행률 표시용(설정 탭 버퍼 크기) — 실제 진행률은 view.sampleCount(실측)로 표시한다. */
   bufferSize: number;
   chunkSeconds: number;
@@ -63,7 +59,6 @@ export interface InstanceCardProps {
 
 function InstanceCardBase({
   instance,
-  manager,
   bufferSize,
   onRequestRemove,
   onRun,
@@ -77,10 +72,6 @@ function InstanceCardBase({
   const [view, setView] = useState<ScalperInstanceView>(() => instance.getView());
   // 시세 진단 줄("마지막 x초 전"/"끊겼어요")의 기준 시각 — 1초 주기로만 갱신(매 프레임 금지).
   const [now, setNow] = useState(() => Date.now());
-  // 시트는 열렸을 때만 마운트되므로 이 플래그 자체가 리렌더 비용을 늘리지 않는다(닫힘 상태에서 Modal 트리 없음).
-  const [commentsVisible, setCommentsVisible] = useState(false);
-  const [chartVisible, setChartVisible] = useState(false);
-  const [quoteVisible, setQuoteVisible] = useState(false);
   const [editQtyVisible, setEditQtyVisible] = useState(false);
 
   useEffect(() => {
@@ -179,8 +170,16 @@ function InstanceCardBase({
             color: DIAGNOSIS_NEUTRAL_COLOR,
           };
 
+  // 카드 본문 탭 → 종목 상세화면. 내부 버튼(수량 연필·삭제·토글·Run/Stop)은 각자 터치를 먼저 가로챈다.
+  const handleOpenDetail = () => {
+    router.push({
+      pathname: '/stock/[ticker]',
+      params: { ticker: view.ticker, market: chartExcd ?? DEFAULT_CHART_EXCD },
+    });
+  };
+
   return (
-    <View className="mb-2 bg-white px-5 pb-5 pt-4">
+    <Pressable className="mb-2 bg-white px-5 pb-5 pt-4" onPress={handleOpenDetail}>
       <View className="flex-row items-start justify-between">
         <View className="flex-row items-center">
           <TickerAvatar ticker={view.ticker} />
@@ -285,36 +284,6 @@ function InstanceCardBase({
           </Text>
         )}
 
-      <View className="mt-2 flex-row items-center" style={{ gap: 16 }}>
-        <Pressable
-          onPress={() => setCommentsVisible(true)}
-          hitSlop={8}
-          className="flex-row items-center self-start py-1"
-          style={{ gap: 4 }}
-        >
-          <Ionicons name="chatbubble-outline" size={14} color="#3182f6" />
-          <Text className="text-xs font-semibold text-[#3182f6]">토스 댓글</Text>
-        </Pressable>
-        <Pressable
-          onPress={() => setChartVisible(true)}
-          hitSlop={8}
-          className="flex-row items-center self-start py-1"
-          style={{ gap: 4 }}
-        >
-          <Ionicons name="stats-chart-outline" size={14} color="#3182f6" />
-          <Text className="text-xs font-semibold text-[#3182f6]">차트</Text>
-        </Pressable>
-        <Pressable
-          onPress={() => setQuoteVisible(true)}
-          hitSlop={8}
-          className="flex-row items-center self-start py-1"
-          style={{ gap: 4 }}
-        >
-          <Ionicons name="list-outline" size={14} color="#3182f6" />
-          <Text className="text-xs font-semibold text-[#3182f6]">호가</Text>
-        </Pressable>
-      </View>
-
       {/* 오토런 — 사이클이 완료되면 자동으로 다시 시작해요(실행 중에도 켜고 끌 수 있어요). */}
       <ToggleRow
         title="오토런"
@@ -360,19 +329,6 @@ function InstanceCardBase({
         </Pressable>
       </View>
 
-      <CommentsSheet visible={commentsVisible} ticker={view.ticker} onClose={() => setCommentsVisible(false)} />
-      <ChartSheet
-        visible={chartVisible}
-        ticker={view.ticker}
-        excd={chartExcd ?? DEFAULT_CHART_EXCD}
-        onClose={() => setChartVisible(false)}
-      />
-      <QuoteSheet
-        visible={quoteVisible}
-        instance={instance}
-        manager={manager}
-        onClose={() => setQuoteVisible(false)}
-      />
       <EditQtySheet
         visible={editQtyVisible}
         ticker={view.ticker}
@@ -380,7 +336,7 @@ function InstanceCardBase({
         onClose={() => setEditQtyVisible(false)}
         onSubmit={handleEditQtySubmit}
       />
-    </View>
+    </Pressable>
   );
 }
 

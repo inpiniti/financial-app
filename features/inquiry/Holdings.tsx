@@ -2,10 +2,12 @@
 // 색 규칙(PRD 명시 — toss-design 기본 색 규칙보다 우선): 한국 관례로 이익=빨강 계열, 손실=파랑 계열.
 import { useCallback, useEffect, useState } from 'react';
 import { FlatList, RefreshControl, Text, View } from 'react-native';
+import { router } from 'expo-router';
 import { ListRow } from '../../components/ListRow';
 import { Panel } from '../../components/Panel';
 import { TickerAvatar } from '../../components/TickerAvatar';
 import { inquireOverseasBalance, type OverseasBalancePosition } from '../../kis/balance';
+import { toStockMarketCode } from '../stock/marketCodes';
 import { formatSignedPercent, formatSignedUsd, pnlColor } from '../../lib/format';
 import { EmptyState, ErrorNotice, SetupNotice, SkeletonList } from './components';
 import { useKisSession } from './useKisSession';
@@ -27,8 +29,18 @@ function ProfitText({ amount, rate }: { amount: string; rate: string }) {
 }
 
 function HoldingRow({ item }: { item: OverseasBalancePosition }) {
+  // 행 탭 → 종목 상세화면(차트/댓글/호가). market은 잔고 응답 거래소 코드(NASD 등)를 정규화해 전달 —
+  // 매핑이 안 되는 값이면 raw를 그대로 넘기고 상세화면이 에러 상태를 표시한다.
+  const handlePress = () => {
+    const market = toStockMarketCode(item.ovrs_excg_cd);
+    router.push({
+      pathname: '/stock/[ticker]',
+      params: { ticker: item.pdno, market: market ?? item.ovrs_excg_cd, name: item.prdt_name },
+    });
+  };
   return (
     <ListRow
+      onPress={handlePress}
       leading={<TickerAvatar ticker={item.pdno} />}
       title={
         <View className="flex-row items-center">

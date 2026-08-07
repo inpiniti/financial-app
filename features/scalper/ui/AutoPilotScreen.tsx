@@ -3,8 +3,8 @@
 // app-ui-style: 풀폭 Panel + 촘촘한 ListRow, 이모지 금지(Ionicons), 손익 색은 pnlColor()만.
 import { useCallback, useEffect, useState } from 'react';
 import { Alert, FlatList, Pressable, Text, View } from 'react-native';
+import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { ActionSheet } from '../../../components/ActionSheet';
 import { ListRow } from '../../../components/ListRow';
 import { Panel } from '../../../components/Panel';
 import { TickerAvatar } from '../../../components/TickerAvatar';
@@ -13,18 +13,14 @@ import { formatSignedUsd, formatUsd, pnlColor } from '../../../lib/format';
 import type { AutoPilotEvent, AutoPilotState, AutoPilotView } from '../autopilot';
 import type { AutoPilotManager, AutoPilotSlotRow } from '../autopilotManager';
 import { WATCH_SOURCE_LABEL } from '../watchlist';
-import type { MinuteChartExchangeCode } from '../../../kis/minuteChart';
 import { AdoptSheet } from './AdoptSheet';
 import { AmountSheet } from './AmountSheet';
-import { ChartSheet } from './ChartSheet';
-import { CommentsSheet } from './CommentsSheet';
 import { isDaytimeSessionOpen } from '../daySession';
 import { formatHHMM, formatPrice } from './format';
 import { GridGauge } from './GridGauge';
-import { WatchQuoteSheet } from './WatchQuoteSheet';
 
-/** 리스트 분봉 조회 EXCD — 리스트가 NAS 전용(autopilotManager.ts MARKET 상수)이므로 고정. */
-const AUTOPILOT_CHART_EXCD: MinuteChartExchangeCode = 'NAS';
+/** 상세화면 시장 코드 — 리스트가 NAS 전용(autopilotManager.ts MARKET 상수)이므로 고정. */
+const AUTOPILOT_MARKET = 'NAS';
 
 const STATE_BADGE: Record<AutoPilotState, { label: string; bg: string; fg: string }> = {
   IDLE: { label: '대기 중', bg: '#f2f4f6', fg: '#8b95a1' },
@@ -146,11 +142,6 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
   const [sheetVisible, setSheetVisible] = useState(false);
   // 계좌 잔고 보유분을 그리드에 다시 태우는 시트(FAULT 이후 복구 경로).
   const [adoptVisible, setAdoptVisible] = useState(false);
-  // 리스트 행 탭 → 액션시트(댓글/차트/호가) → 셋 중 하나의 조회 전용 시트. InstanceCard.tsx의 3버튼과 동일 대상.
-  const [actionSheetTicker, setActionSheetTicker] = useState<string | null>(null);
-  const [commentsTicker, setCommentsTicker] = useState<string | null>(null);
-  const [chartTicker, setChartTicker] = useState<string | null>(null);
-  const [quoteTicker, setQuoteTicker] = useState<string | null>(null);
 
   useEffect(() => autopilot.subscribeView(setView), [autopilot]);
   useEffect(() => autopilot.subscribeList(setRows), [autopilot]);
@@ -206,7 +197,10 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
     ]);
   }, [autopilot]);
 
-  const handleRowPress = useCallback((ticker: string) => setActionSheetTicker(ticker), []);
+  // 행 탭 → 종목 상세화면(차트/댓글/호가) — 옛 액션시트+280ms 지연 핵을 제거하고 화면 전환으로 통일.
+  const handleRowPress = useCallback((ticker: string) => {
+    router.push({ pathname: '/stock/[ticker]', params: { ticker, market: AUTOPILOT_MARKET } });
+  }, []);
 
   const renderRow = useCallback(
     ({ item }: { item: AutoPilotSlotRow }) => (
@@ -214,32 +208,6 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
     ),
     [view.activeTickers, handleRowPress],
   );
-
-  // 액션시트(Modal)가 닫히는 애니메이션 중에 대상 시트(또 다른 Modal)를 동시에 띄우면 iOS에서 프리즈가 난다
-  // (RN Modal 스택킹). 그래서 티커를 클로저에 잡아두고, 액션시트가 완전히 사라진 뒤(280ms > 닫힘 260ms)에 연다.
-  const openAfterActionSheet = useCallback((open: (t: string) => void, ticker: string) => {
-    setTimeout(() => open(ticker), 280);
-  }, []);
-
-  const actionSheetOptions = actionSheetTicker
-    ? [
-        {
-          icon: 'chatbubble-outline' as const,
-          label: '토스 댓글',
-          onPress: () => openAfterActionSheet(setCommentsTicker, actionSheetTicker),
-        },
-        {
-          icon: 'stats-chart-outline' as const,
-          label: '차트',
-          onPress: () => openAfterActionSheet(setChartTicker, actionSheetTicker),
-        },
-        {
-          icon: 'list-outline' as const,
-          label: '호가',
-          onPress: () => openAfterActionSheet(setQuoteTicker, actionSheetTicker),
-        },
-      ]
-    : [];
 
   const config = view.config;
   const session = view.session;
@@ -436,29 +404,6 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
         initial={view.config}
         onClose={() => setSheetVisible(false)}
         onSubmit={handleConfigSubmit}
-      />
-      <ActionSheet
-        visible={actionSheetTicker !== null}
-        onClose={() => setActionSheetTicker(null)}
-        title={actionSheetTicker ?? undefined}
-        options={actionSheetOptions}
-      />
-      <CommentsSheet
-        visible={commentsTicker !== null}
-        ticker={commentsTicker ?? ''}
-        onClose={() => setCommentsTicker(null)}
-      />
-      <ChartSheet
-        visible={chartTicker !== null}
-        ticker={chartTicker ?? ''}
-        excd={AUTOPILOT_CHART_EXCD}
-        onClose={() => setChartTicker(null)}
-      />
-      <WatchQuoteSheet
-        visible={quoteTicker !== null}
-        ticker={quoteTicker ?? ''}
-        getRow={() => autopilot.getRows().find((r) => r.entry.ticker === quoteTicker)}
-        onClose={() => setQuoteTicker(null)}
       />
     </View>
   );

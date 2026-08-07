@@ -14,12 +14,10 @@ import { AddInstanceSheet, type AddInstanceInitial } from '../features/scalper/u
 import { formatHHMM, isRunningState } from '../features/scalper/ui/format';
 import { InstanceCard } from '../features/scalper/ui/InstanceCard';
 import { useScalperManager } from '../features/scalper/ui/managerProvider';
-import { PrefillBanner, type PrefillAccept } from '../features/scalper/ui/PrefillBanner';
 import { RunningBanner } from '../features/scalper/ui/RunningBanner';
 import { MAX_INSTANCES, type FeedEvent, type ScalperManager } from '../features/scalper/scalperManager';
 import type { ScalperInstance } from '../features/scalper/scalperInstance';
 import type { FeedStatus } from '../features/scalper/types';
-import type { OverseasExchangeCode } from '../kis/trId';
 import type { RealtimeMarketCode } from '../kis/realtimePrice';
 
 const EMPTY_INITIAL: AddInstanceInitial = { ticker: '', qty: 1 };
@@ -175,10 +173,6 @@ function ScalperReadyScreen({ manager, autopilot, defaultQty, bufferSize, chunkS
   const [hasSubscribeAck, setHasSubscribeAck] = useState(() => manager.lastFeedEvent?.text.startsWith('구독 성공') ?? false);
   const [sheetVisible, setSheetVisible] = useState(false);
   const [sheetInitial, setSheetInitial] = useState<AddInstanceInitial>(EMPTY_INITIAL);
-  const [pendingLocation, setPendingLocation] = useState<{
-    market?: RealtimeMarketCode;
-    exchange?: OverseasExchangeCode;
-  }>({});
 
   // 인스턴스 추가/삭제(목록 변경)만 이 화면을 리렌더한다 — 개별 카드의 틱 갱신은 InstanceCard 자체 구독이 처리.
   useEffect(() => {
@@ -202,31 +196,21 @@ function ScalperReadyScreen({ manager, autopilot, defaultQty, bufferSize, chunkS
   }, [manager]);
 
   const handleAddPress = useCallback(() => {
-    setPendingLocation({});
     setSheetInitial({ ticker: '', qty: defaultQty });
     setSheetVisible(true);
   }, [defaultQty]);
 
-  const handlePrefillAccept = useCallback(
-    (payload: PrefillAccept) => {
-      setPendingLocation({ market: payload.market, exchange: payload.exchange });
-      setSheetInitial({ ticker: payload.ticker, qty: defaultQty });
-      setSheetVisible(true);
-    },
-    [defaultQty],
-  );
-
   const handleSheetSubmit = useCallback(
     (input: { ticker: string; qty: number }) => {
       try {
-        manager.add({ ticker: input.ticker, qty: input.qty, ...pendingLocation });
+        manager.add({ ticker: input.ticker, qty: input.qty });
         setSheetVisible(false);
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         Alert.alert('알림', message);
       }
     },
-    [manager, pendingLocation],
+    [manager],
   );
 
   const handleRemove = useCallback((id: string) => manager.remove(id), [manager]);
@@ -250,7 +234,6 @@ function ScalperReadyScreen({ manager, autopilot, defaultQty, bufferSize, chunkS
     ({ item }: { item: ScalperInstance }) => (
       <InstanceCard
         instance={item}
-        manager={manager}
         bufferSize={bufferSize}
         chunkSeconds={chunkSeconds}
         onRequestRemove={handleRemove}
@@ -301,7 +284,6 @@ function ScalperReadyScreen({ manager, autopilot, defaultQty, bufferSize, chunkS
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
         contentContainerStyle={{ paddingTop: 8, paddingBottom: 32, flexGrow: 1 }}
-        ListHeaderComponent={<PrefillBanner onAccept={handlePrefillAccept} />}
         ListFooterComponent={<AddCard disabled={atLimit} onPress={handleAddPress} />}
         ListEmptyComponent={
           <EmptyState icon="add-circle-outline" title="아직 단타 카드가 없어요" description="+ 추가로 첫 카드를 만들어 보세요" />
