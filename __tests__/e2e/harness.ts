@@ -304,9 +304,8 @@ export interface MakeHarnessOptions {
   bufferSize?: number;
   /** true면 tick()이 매 라운드 끝에 미체결 주문을 즉시 전량 체결 처리한다(미체결 시나리오에서는 false). */
   autoFillOrders?: boolean;
-  /** 진입 시작 금액(USD) — qty = ⌊금액÷가격⌋. */
+  /** 종목당 진입금액(USD) — qty = ⌊금액÷가격⌋. */
   startAmountUsd?: number;
-  maxAmountUsd?: number;
 }
 
 export interface Harness {
@@ -383,7 +382,6 @@ export function makeHarness(opts: MakeHarnessOptions = {}): Harness {
   // 속도 필터가 사실상 안 걸리는 문턱(단위 테스트 CONFIG_100과 동일 취지).
   autopilot.pilot.setConfig({
     startAmountUsd: opts.startAmountUsd ?? 100,
-    maxAmountUsd: opts.maxAmountUsd ?? 400,
     minTickRate: 0.01,
   });
 
