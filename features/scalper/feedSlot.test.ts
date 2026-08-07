@@ -177,6 +177,25 @@ describe('FeedSlot — 상시 수신(틱/초·리샘플) + detector 탈부착', 
     expect(slot.getView().lastSignal).toBe('BUY');
   });
 
+  it('사다리 모드 — 워밍업(버퍼 가득)을 기다리지 않는다: 첫 청크가 앵커, 즉시 판정 시작 (2026-08-09)', () => {
+    const clock = fakeClock(1000);
+    const slot = new FeedSlot({
+      ticker: 'AAPL',
+      clock,
+      chunkSeconds: 1,
+      bufferSize: 7, // 버퍼가 차려면 7청크 — 그 전에 BUY가 나와야 한다.
+      ladder: { interval: 0.01, triggerCount: 3 },
+    });
+    const onSignal = vi.fn();
+    slot.attachDetector(onSignal); // 구독 직후 바로 감시 — 과거 틱 이력 없음.
+
+    // 앵커(100) 포함 5청크 만에 −1%×3 관통 — 버퍼(7)가 차기 전이다.
+    replay(slot, clock, [100, 99, 98.01, 97.02, 97.02]);
+    expect(slot.warmedUp).toBe(false); // 아직 워밍업 전임을 못박는다.
+    expect(onSignal).toHaveBeenCalledTimes(1);
+    expect(onSignal.mock.calls[0][0]).toBe('BUY');
+  });
+
   it('사다리 모드 — 뷰에 홀 카운트·다음 매수선이 노출되고 detach로 지워진다', () => {
     const clock = fakeClock(1000);
     const slot = new FeedSlot({

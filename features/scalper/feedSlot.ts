@@ -139,9 +139,11 @@ export class FeedSlot {
       volume: extras?.volume,
       strength: extras?.strength,
     });
-    if (closed === null || !this.resampler.warmedUp) return null;
+    if (closed === null) return null;
 
     // 사다리 모드 — 마감된 청크 값(틱 평균)으로 홀 카운트를 판정한다(SG 미분 없음, plan §3).
+    // 워밍업(버퍼 가득)을 기다리지 않는다 — 버퍼 요건은 SG 창의 것이고, 사다리는 첫 청크가
+    // 앵커를 세우는 순간부터 판정 가능하다(2026-08-09 워밍업 제거).
     if (this.ladder !== null) {
       const lres = this.ladder.detect(closed, {
         volumeSpike: this.resampler.volumeSpike(),
@@ -165,7 +167,8 @@ export class FeedSlot {
       return null;
     }
 
-    if (this.detector === null) return null;
+    // SG 모드 — 미분에 창 전체가 필요하므로 워밍업(버퍼 가득)을 기다린다.
+    if (this.detector === null || !this.resampler.warmedUp) return null;
 
     const res = this.detector.detect(this.resampler.buffer, {
       volumeSpike: this.resampler.volumeSpike(),

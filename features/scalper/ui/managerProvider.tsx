@@ -184,8 +184,10 @@ async function buildManager(): Promise<ManagerBootstrap> {
     // 매도 관리 그리드 인계(D5) — 폭·매수배율은 설정 탭(매매파라미터)에서 조절한다(Phase B).
     gridConfig: { width: appSettings.gridWidthPct / 100, buyMultiplier: appSettings.gridBuyMultiplier },
     keepAwake: expoKeepAwake,
-    // 청크·버퍼·모멘텀 문턱·BUY 게이트·수수료율은 2026-08-08 설정에서 제거 — 미주입 시 코드 기본값이
-    // 옛 설정 기본값과 동일해 자동단타 동작은 그대로다(사다리 감지는 청크 3초 마감가·31칸 워밍업 유지).
+    // 사다리 판정 주기 = 청크 1초 고정 (2026-08-09 사용자 확정 — 설정 제거 전 실사용 값 복원.
+    // 설정 제거 때 기본 3초로 잘못 굳었었다). 버퍼는 미주입(기본 31) — 사다리 모드는 워밍업을
+    // 기다리지 않아(feedSlot) 버퍼 크기는 판정 시작 시점과 무관하다.
+    chunkSeconds: 1,
     // 사다리 진입 감지(2026-08-07 plan) — 간격 %→소수, 홀 횟수 정수. feedSlot.LADDER_ENTRY가 최종 스위치다.
     entryLadder: {
       interval: ladderIntervalToRatio(appSettings.entryLadderIntervalPct),
