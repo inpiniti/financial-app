@@ -10,9 +10,23 @@
 // 오케스트레이션(감시 3종 선정·주문)은 autopilot 몫 — 여기는 수신·계산만 한다.
 
 import { TrendDetector, type DetectorResult, type Signal } from '../../core/detector';
+import { LadderDetector } from '../../core/ladder';
 import { Resampler } from '../../core/resample';
 import { TickRateMeter } from './tickRate';
 import type { ClockLike, TickExtras } from './types';
+
+/**
+ * 진입 감지기 선택 스위치 — true면 **사다리 옵션이 주입된** 슬롯이 SG 기울기(TrendDetector) 대신
+ * 가상 그리드 사다리(LadderDetector)로 변곡점을 판정한다(2026-08-07 plan L4).
+ * false로 두면 기존 SG 감지로 **한 줄 롤백**된다. 사다리 옵션 미주입(기존 하네스)이면 값과 무관하게 SG다.
+ */
+export const LADDER_ENTRY = true;
+
+/** 사다리 감지 옵션 — 간격 g(소수)·홀 횟수 N. managerProvider가 설정 탭 값에서 만든다. */
+export interface LadderEntryOptions {
+  interval: number;
+  triggerCount: number;
+}
 
 export interface FeedSlotOptions {
   ticker: string;
@@ -30,6 +44,11 @@ export interface FeedSlotOptions {
   minVolumeSpikeRatio?: number;
   /** BUY 체결강도 게이트(STRN, 0=끔) — 부착 시 새 detector에 그대로 주입. */
   minStrength?: number;
+  /**
+   * 사다리 감지 옵션 — 주입되고 LADDER_ENTRY=true면 attach 시 SG 대신 사다리 감지기를 만든다.
+   * 미주입(기존 하네스·테스트)이면 항상 SG — 회귀 안전.
+   */
+  ladder?: LadderEntryOptions;
 }
 
 /** 변곡점 신호 콜백 — attach 시 등록. */
@@ -57,6 +76,8 @@ export interface FeedSlotView {
   readonly lastTickAt: number | null;
   readonly bid1: number | null;
   readonly ask1: number | null;
+  /** 사다리 감시 스냅샷(사다리 모드로 감시 중일 때만) — 홀 n/N·다음 매수선. SG 모드·미감시면 null. */
+  readonly ladder: { count: number; triggerCount: number; nextBuyLevel: number } | null;
 }
 
 export class FeedSlot {
@@ -71,7 +92,13 @@ export class FeedSlot {
     minStrength?: number;
   };
 
+  private readonly ladderOptions: LadderEntryOptions | undefined;
+
   private detector: TrendDetector | null = null;
+  /** 사다리 감지기 — LADDER_ENTRY && ladderOptions일 때 detector 대신 이쪽이 부착된다(상호 배타). */
+  private ladder: LadderDetector | null = null;
+  /** 마지막 사다리 판정 스냅샷(뷰 노출용). */
+  private ladderState: { count: number; triggerCount: number; nextBuyLevel: number } | null = null;
   private onSignal: SlotSignalListener | null = null;
 
   private price: number | null = null;
@@ -97,6 +124,7 @@ export class FeedSlot {
       minVolumeSpikeRatio: options.minVolumeSpikeRatio,
       minStrength: options.minStrength,
     };
+    this.ladderOptions = options.ladder;
   }
 
   /** WS 체결 틱 1개 수신 — 틱/초·리샘플은 항상, 판정은 부착 시에만. */
@@ -111,7 +139,33 @@ export class FeedSlot {
       volume: extras?.volume,
       strength: extras?.strength,
     });
-    if (closed === null || !this.resampler.warmedUp || this.detector === null) return null;
+    if (closed === null || !this.resampler.warmedUp) return null;
+
+    // 사다리 모드 — 마감된 청크 값(틱 평균)으로 홀 카운트를 판정한다(SG 미분 없음, plan §3).
+    if (this.ladder !== null) {
+      const lres = this.ladder.detect(closed, {
+        volumeSpike: this.resampler.volumeSpike(),
+        strength: this.resampler.lastStrength,
+      });
+      this.ladderState = {
+        count: lres.count,
+        triggerCount: this.ladderOptions?.triggerCount ?? 3,
+        nextBuyLevel: lres.nextBuyLevel,
+      };
+      if (lres.signal) {
+        this.lastSignal = lres.signal;
+        this.onSignal?.(lres.signal, {
+          ticker: this.ticker,
+          price,
+          slope: 0, // 사다리 모드엔 미분이 없다 — 스냅샷 필드 계약 유지용 0.
+          accel: 0,
+          at: this.lastTickAt,
+        });
+      }
+      return null;
+    }
+
+    if (this.detector === null) return null;
 
     const res = this.detector.detect(this.resampler.buffer, {
       volumeSpike: this.resampler.volumeSpike(),
@@ -152,7 +206,20 @@ export class FeedSlot {
    * 버퍼는 이미 차 있으므로 다음 청크 마감부터 바로 판정한다(워밍업 공백 없음 — plan §2-1).
    */
   attachDetector(onSignal: SlotSignalListener): void {
-    this.detector = new TrendDetector(this.detectorOptions);
+    if (LADDER_ENTRY && this.ladderOptions) {
+      // 사다리 모드 — 새 감지기 = 새 앵커(이전 감시 이력과 단절, SG의 새 detector와 같은 원칙).
+      this.ladder = new LadderDetector({
+        interval: this.ladderOptions.interval,
+        triggerCount: this.ladderOptions.triggerCount,
+        minVolumeSpikeRatio: this.detectorOptions.minVolumeSpikeRatio,
+        minStrength: this.detectorOptions.minStrength,
+      });
+      this.detector = null;
+    } else {
+      this.detector = new TrendDetector(this.detectorOptions);
+      this.ladder = null;
+    }
+    this.ladderState = null;
     this.onSignal = onSignal;
     this.lastSignal = null;
   }
@@ -160,13 +227,15 @@ export class FeedSlot {
   /** 감시 중단 — 리샘플·틱/초는 계속 돈다(재부착 대비). */
   detachDetector(): void {
     this.detector = null;
+    this.ladder = null;
+    this.ladderState = null;
     this.onSignal = null;
     this.slope = null;
     this.accel = null;
   }
 
   get watched(): boolean {
-    return this.detector !== null;
+    return this.detector !== null || this.ladder !== null;
   }
 
   /** 현재 시점 틱/초 — 감시 3종 선정 기준(plan §2-4). */
@@ -191,6 +260,7 @@ export class FeedSlot {
       lastTickAt: this.lastTickAt,
       bid1: this.bid1,
       ask1: this.ask1,
+      ladder: this.ladderState === null ? null : { ...this.ladderState },
     };
   }
 }

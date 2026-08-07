@@ -13,6 +13,8 @@ import {
   commissionRateToRatio,
   gateThreshold,
   loadAppSettings,
+  ladderCountOf,
+  ladderIntervalToRatio,
   momentumThresholdToRatio,
 } from '../../../lib/appSettings';
 import { loadKisSettings } from '../../../lib/kisSettings';
@@ -256,6 +258,11 @@ async function buildManager(): Promise<ManagerBootstrap> {
     minSellMomentum: momentumThresholdToRatio(appSettings.sellMomentumThresholdPct),
     minVolumeSpikeRatio: gateThreshold(appSettings.buyVolumeSpikeRatio),
     minStrength: gateThreshold(appSettings.buyStrengthThreshold),
+    // 사다리 진입 감지(2026-08-07 plan) — 간격 %→소수, 홀 횟수 정수. feedSlot.LADDER_ENTRY가 최종 스위치다.
+    entryLadder: {
+      interval: ladderIntervalToRatio(appSettings.entryLadderIntervalPct),
+      triggerCount: ladderCountOf(appSettings.entryLadderCount),
+    },
     feeRate: commissionRateToRatio(appSettings.commissionRatePct),
     buyCancelAfterMs: buyCancelAfterToMs(appSettings.buyCancelAfterSec),
     onError: (err) => finalManager.reportFeedError(err),

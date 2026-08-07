@@ -35,6 +35,10 @@ const MENU_ITEMS: BottomMenuItem<SettingsSection>[] = [
 const GRID_WIDTH_MAX_PCT = 50;
 /** 매수 배율 상한 — 1이면 보유수량만큼 더 사서 총 2배가 된다. 5면 한 번에 6배라 그 위는 막는다. */
 const GRID_BUY_MULTIPLIER_MAX = 5;
+/** 사다리 진입 간격 상한(%) — 오타 방어. 간격 10% × 횟수면 이미 대폭락에서만 진입한다. */
+const LADDER_INTERVAL_MAX_PCT = 10;
+/** 사다리 홀 횟수 상한 — 간격과 곱해 누적 낙폭이 되므로 10이면 충분히 보수적 끝단이다. */
+const LADDER_COUNT_MAX = 10;
 
 function formatHHmm(epochMs: number): string {
   const d = new Date(epochMs);
@@ -120,6 +124,11 @@ export default function SettingsScreen() {
   // 매도 관리 그리드 폭·매수 배율 — 주문 수량과 같은 텍스트 입력 + 저장 시 검증 패턴.
   const [gridWidthPct, setGridWidthPct] = useState(String(DEFAULT_APP_SETTINGS.gridWidthPct));
   const [gridBuyMultiplier, setGridBuyMultiplier] = useState(String(DEFAULT_APP_SETTINGS.gridBuyMultiplier));
+  // 사다리 진입 감지(2026-08-07 plan) — 간격 %·홀 횟수. 그리드 폭과 같은 텍스트 입력 + 저장 시 검증 패턴.
+  const [entryLadderIntervalPct, setEntryLadderIntervalPct] = useState(
+    String(DEFAULT_APP_SETTINGS.entryLadderIntervalPct),
+  );
+  const [entryLadderCount, setEntryLadderCount] = useState(String(DEFAULT_APP_SETTINGS.entryLadderCount));
   const [simulationMode, setSimulationMode] = useState(DEFAULT_APP_SETTINGS.simulationMode);
 
   const [tokenStatus, setTokenStatus] = useState<TokenStatus>({ kind: 'idle' });
@@ -150,6 +159,8 @@ export default function SettingsScreen() {
       setBuyCancelAfterSec(appSettings.buyCancelAfterSec);
       setGridWidthPct(String(appSettings.gridWidthPct));
       setGridBuyMultiplier(String(appSettings.gridBuyMultiplier));
+      setEntryLadderIntervalPct(String(appSettings.entryLadderIntervalPct));
+      setEntryLadderCount(String(appSettings.entryLadderCount));
       setSimulationMode(appSettings.simulationMode);
     })();
   }, []);
@@ -187,6 +198,27 @@ export default function SettingsScreen() {
       return;
     }
 
+    const parsedLadderIntervalPct = Number(entryLadderIntervalPct);
+    if (
+      !Number.isFinite(parsedLadderIntervalPct) ||
+      parsedLadderIntervalPct <= 0 ||
+      parsedLadderIntervalPct > LADDER_INTERVAL_MAX_PCT
+    ) {
+      Alert.alert('알림', `진입 간격은 0보다 크고 ${LADDER_INTERVAL_MAX_PCT} 이하인 숫자로 입력해 주세요.`);
+      return;
+    }
+
+    const parsedLadderCount = Number(entryLadderCount);
+    if (
+      !Number.isFinite(parsedLadderCount) ||
+      !Number.isInteger(parsedLadderCount) ||
+      parsedLadderCount < 1 ||
+      parsedLadderCount > LADDER_COUNT_MAX
+    ) {
+      Alert.alert('알림', `진입 횟수는 1~${LADDER_COUNT_MAX} 사이 정수로 입력해 주세요.`);
+      return;
+    }
+
     setSaving(true);
     try {
       await saveKisSettings({ appKey: appKey.trim(), appSecret: effectiveAppSecret, ...account });
@@ -204,6 +236,8 @@ export default function SettingsScreen() {
         buyCancelAfterSec,
         gridWidthPct: parsedGridWidthPct,
         gridBuyMultiplier: parsedGridBuyMultiplier,
+        entryLadderIntervalPct: parsedLadderIntervalPct,
+        entryLadderCount: parsedLadderCount,
         simulationMode,
       });
       // 저장 성공 — 이후 재입력 없이도 배지가 최신 저장값을 가리키게 갱신한다.
@@ -245,6 +279,18 @@ export default function SettingsScreen() {
    * ("매수 배율 1"이 왜 수량 2배가 되는지가 숫자로 보이지 않아 오해가 잦았다.)
    * 입력이 유효 범위를 벗어나면 null — 저장 시 Alert로 막히므로 여기서는 미리보기만 숨긴다.
    */
+  /**
+   * 사다리 진입의 즉시 미리보기 — 간격×횟수가 실제로 "몇 % 떨어져야 진입"인지 그 자리에서 보여준다.
+   * 누적 낙폭은 복리(1−(1−g)^N)라 단순곱(g×N)보다 조금 작다.
+   */
+  const ladderPreview = (() => {
+    const g = Number(entryLadderIntervalPct);
+    const n = Number(entryLadderCount);
+    if (!Number.isFinite(g) || g <= 0 || g > LADDER_INTERVAL_MAX_PCT) return null;
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1 || n > LADDER_COUNT_MAX) return null;
+    return { dropPct: ((1 - Math.pow(1 - g / 100, n)) * 100).toFixed(2) };
+  })();
+
   const gridPreview = (() => {
     const w = Number(gridWidthPct);
     const m = Number(gridBuyMultiplier);
@@ -369,6 +415,42 @@ export default function SettingsScreen() {
                   keyboardType="number-pad"
                   className="mb-4 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
                 />
+
+                <Text className="mb-1 text-xs text-[#8b95a1]">
+                  진입 간격 (%) — 최대 {LADDER_INTERVAL_MAX_PCT}
+                </Text>
+                <TextInput
+                  value={entryLadderIntervalPct}
+                  onChangeText={setEntryLadderIntervalPct}
+                  keyboardType="decimal-pad"
+                  placeholder="예: 1"
+                  placeholderTextColor="#8b95a1"
+                  className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
+                />
+                <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
+                  최근 고점에서 이 %씩 내려올 때마다 한 칸으로 세요.
+                </Text>
+
+                <Text className="mb-1 text-xs text-[#8b95a1]">진입 횟수 — 최대 {LADDER_COUNT_MAX}</Text>
+                <TextInput
+                  value={entryLadderCount}
+                  onChangeText={setEntryLadderCount}
+                  keyboardType="number-pad"
+                  placeholder="예: 3"
+                  placeholderTextColor="#8b95a1"
+                  className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
+                />
+                <Text className="mb-1 text-xs leading-5 text-[#8b95a1]">
+                  이 횟수만큼 칸이 쌓이면 바닥으로 보고 매수해요. 중간에 한 칸 이상 반등하면 처음부터 다시 세요.
+                  {ladderPreview && (
+                    <Text className="text-[#4e5968]">
+                      {' '}지금 설정이면 고점에서 약 {ladderPreview.dropPct}% 떨어져야 진입해요.
+                    </Text>
+                  )}
+                </Text>
+                <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
+                  잔파동(간격 미만의 오르내림)에서는 진입하지 않아요. 매수 뒤 관리는 아래 그리드가 맡아요.
+                </Text>
 
                 <Text className="mb-1 text-xs text-[#8b95a1]">그리드 폭 (%) — 최대 {GRID_WIDTH_MAX_PCT}</Text>
                 <TextInput

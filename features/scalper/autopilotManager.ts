@@ -17,7 +17,7 @@ import {
   type GridExitConfig,
 } from './autopilot';
 import { isDaytimeSessionOpen } from './daySession';
-import { FeedSlot, type FeedSlotView } from './feedSlot';
+import { FeedSlot, type FeedSlotView, type LadderEntryOptions } from './feedSlot';
 import { ScalperWatchlist, type RankingSnapshot, type WatchEntry } from './watchlist';
 import {
   buildDaytimeQuoteTrKey,
@@ -87,6 +87,12 @@ export interface AutoPilotManagerDeps {
   minVolumeSpikeRatio?: number;
   /** BUY 체결강도 게이트(STRN, 0=끔) — FeedSlot detector로 그대로 흘려보낸다. */
   minStrength?: number;
+  /**
+   * 사다리 진입 감지 옵션(간격 g 소수·홀 횟수 N) — 주입되고 feedSlot.LADDER_ENTRY=true면
+   * 감시가 SG 기울기 대신 가상 그리드 사다리로 변곡점을 판정한다(2026-08-07 plan).
+   * 미주입(기존 하네스·테스트)이면 기존 SG 감지 그대로다.
+   */
+  entryLadder?: LadderEntryOptions;
   /** 거래 수수료율(소수·편도, 0=끔) — AutoPilot으로 그대로 흘려보낸다. */
   feeRate?: number;
   pollIntervalMs?: number;
@@ -337,6 +343,7 @@ export class AutoPilotManager {
         minSellMomentum: this.deps.minSellMomentum,
         minVolumeSpikeRatio: this.deps.minVolumeSpikeRatio,
         minStrength: this.deps.minStrength,
+        ladder: this.deps.entryLadder,
       }),
     );
     const trKey = this.marketTrKeyOf(ticker); // 체결가 — 전 종목(정규장 D 또는 주간거래 R).

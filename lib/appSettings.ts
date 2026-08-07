@@ -61,6 +61,18 @@ export interface AppSettings {
    */
   gridBuyMultiplier: number;
   /**
+   * 사다리 진입 감지 간격 — **% 단위**. 기본 1(=1%). 감시 시작가(트레일링 고점)에서 이 %씩 떨어질
+   * 때마다 홀(가상 매수) 1회를 세고, entryLadderCount번째 홀에서 매수한다(2026-08-07 변곡점 그리드감지 plan).
+   * ⚠ 매도그리드 폭(gridWidthPct)과 **별개** — 감지는 분 단위 잔파동, 그리드는 포지션 관리용이다.
+   * managerProvider가 /100 해서 소수로 넘긴다.
+   */
+  entryLadderIntervalPct: number;
+  /**
+   * 사다리 진입 홀 횟수 — 기본 3. 이 횟수째 가상 매수(누적 낙폭 ≈ 간격×횟수 %)가 찍히면 실매수를 발화한다.
+   * 클수록 보수적(깊은 하락에서만 진입).
+   */
+  entryLadderCount: number;
+  /**
    * 시뮬레이션 모드 — 기본 false(실거래). 켜면 **오토파일럿만** 주문을 KIS에 내지 않고
    * SimExchange(가상 체결)로 돌린다. 시세·감시·그리드 로직은 실거래와 완전히 동일하다.
    * 수동 단타 카드는 이 플래그와 무관하게 항상 실거래다(사용자 확정 2026-08-06).
@@ -82,8 +94,22 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   buyCancelAfterSec: 0,
   gridWidthPct: 10,
   gridBuyMultiplier: 1,
+  entryLadderIntervalPct: 1,
+  entryLadderCount: 3,
   simulationMode: false,
 };
+
+/** 사다리 간격 %를 소수로(1% → 0.01). 비정상·0 이하는 기본 1%로 방어(감지가 꺼지는 개념이 아니다). */
+export function ladderIntervalToRatio(pct: number): number {
+  if (!Number.isFinite(pct) || pct <= 0) return DEFAULT_APP_SETTINGS.entryLadderIntervalPct / 100;
+  return pct / 100;
+}
+
+/** 사다리 홀 횟수 정리 — 1 미만·비정상은 기본 3으로 방어, 정수 절사. */
+export function ladderCountOf(count: number): number {
+  if (!Number.isFinite(count) || count < 1) return DEFAULT_APP_SETTINGS.entryLadderCount;
+  return Math.floor(count);
+}
 
 /** 설정의 % 값을 detector가 쓰는 상대 기울기 소수로 변환한다(0.01% → 0.0001). 음수·비정상은 0(끔)으로 처리. */
 export function momentumThresholdToRatio(pct: number): number {

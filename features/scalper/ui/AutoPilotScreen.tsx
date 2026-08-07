@@ -84,10 +84,15 @@ function SlotBadge({ row, activeTickers }: { row: AutoPilotSlotRow; activeTicker
     );
   }
   if (row.view.watched) {
+    // 사다리 감시(2026-08-07 plan) — 홀 카운트가 쌓이는 중이면 몇 칸째인지 보여준다(0칸이면 "감시 중"만).
+    const ladder = row.view.ladder;
+    const counting = ladder !== null && ladder.count > 0;
     return (
       <View className="mt-0.5 flex-row items-center" style={{ gap: 3 }}>
-        <Ionicons name="pulse-outline" size={12} color="#3182f6" />
-        <Text className="text-xs font-semibold text-[#3182f6]">감시 중</Text>
+        <Ionicons name={counting ? 'trending-down-outline' : 'pulse-outline'} size={12} color="#3182f6" />
+        <Text className="text-xs font-semibold text-[#3182f6]">
+          {counting ? `하락 ${ladder.count}/${ladder.triggerCount}칸` : '감시 중'}
+        </Text>
       </View>
     );
   }

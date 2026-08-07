@@ -150,6 +150,68 @@ describe('FeedSlot — 상시 수신(틱/초·리샘플) + detector 탈부착', 
     expect(onSignal.mock.calls[0][0]).toBe('BUY');
   });
 
+  it('사다리 모드 — 간격×횟수만큼 계단 하락해야 BUY, 잔파동은 무신호 (2026-08-07 plan V-1)', () => {
+    const clock = fakeClock(1000);
+    const slot = new FeedSlot({
+      ticker: 'AAPL',
+      clock,
+      chunkSeconds: 1,
+      bufferSize: 7,
+      ladder: { interval: 0.01, triggerCount: 3 },
+    });
+    const onSignal = vi.fn();
+
+    // 잔파동(±0.5%) — 옛 SG는 여기서 바닥을 선언했지만 사다리는 침묵해야 한다.
+    const wiggle = [100, 99.6, 100.1, 99.5, 100.2, 99.7, 100.3, 99.6];
+    replay(slot, clock, wiggle);
+    slot.attachDetector(onSignal);
+    replay(slot, clock, [100.1, 99.6, 100.2, 99.5, 100.1], wiggle.length);
+    expect(onSignal).not.toHaveBeenCalled();
+    expect(slot.getView().watched).toBe(true);
+
+    // 계단 하락 −1%×3 — 3번째 홀에서 BUY.
+    const start = wiggle.length + 5;
+    replay(slot, clock, [99, 98.01, 97.02, 97.02], start);
+    expect(onSignal).toHaveBeenCalledTimes(1);
+    expect(onSignal.mock.calls[0][0]).toBe('BUY');
+    expect(slot.getView().lastSignal).toBe('BUY');
+  });
+
+  it('사다리 모드 — 뷰에 홀 카운트·다음 매수선이 노출되고 detach로 지워진다', () => {
+    const clock = fakeClock(1000);
+    const slot = new FeedSlot({
+      ticker: 'AAPL',
+      clock,
+      chunkSeconds: 1,
+      bufferSize: 7,
+      ladder: { interval: 0.01, triggerCount: 3 },
+    });
+    const onSignal = vi.fn();
+    replay(slot, clock, [100, 100, 100, 100, 100, 100, 100]);
+    slot.attachDetector(onSignal);
+    replay(slot, clock, [100, 99, 98.9], 7); // 앵커 100 → 홀 1(99) → 유지.
+    const view = slot.getView();
+    expect(view.ladder).not.toBeNull();
+    expect(view.ladder!.count).toBe(1);
+    expect(view.ladder!.triggerCount).toBe(3);
+    expect(view.ladder!.nextBuyLevel).toBeCloseTo(98.01, 2);
+
+    slot.detachDetector();
+    expect(slot.getView().ladder).toBeNull();
+    expect(slot.getView().watched).toBe(false);
+  });
+
+  it('사다리 옵션이 없으면 기존 SG 감지 그대로다 — 회귀 안전', () => {
+    const { slot, clock } = makeSlot(); // ladder 미주입.
+    const onSignal = vi.fn();
+    replay(slot, clock, V.slice(0, 8));
+    slot.attachDetector(onSignal);
+    replay(slot, clock, V.slice(8), 8);
+    slot.pushTick(20, V.length * 1000);
+    expect(onSignal).toHaveBeenCalledTimes(1);
+    expect(onSignal.mock.calls[0][0]).toBe('BUY');
+  });
+
   it('재부착하면 이전 감시의 lastSignal이 초기화된다', () => {
     const { slot, clock } = makeSlot();
     const onSignal = vi.fn();
