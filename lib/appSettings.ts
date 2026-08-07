@@ -72,13 +72,6 @@ export interface AppSettings {
    * 클수록 보수적(깊은 하락에서만 진입).
    */
   entryLadderCount: number;
-  /**
-   * 시뮬레이션 모드 — 기본 false(실거래). 켜면 **오토파일럿만** 주문을 KIS에 내지 않고
-   * SimExchange(가상 체결)로 돌린다. 시세·감시·그리드 로직은 실거래와 완전히 동일하다.
-   * 수동 단타 카드는 이 플래그와 무관하게 항상 실거래다(사용자 확정 2026-08-06).
-   * ⚠ 실행 중 전환은 반영되지 않는다 — 오토파일럿 IDLE + 단타 탭 재진입 시 적용(managerProvider 가드).
-   */
-  simulationMode: boolean;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -96,7 +89,6 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   gridBuyMultiplier: 1,
   entryLadderIntervalPct: 1,
   entryLadderCount: 3,
-  simulationMode: false,
 };
 
 /** 사다리 간격 %를 소수로(1% → 0.01). 비정상·0 이하는 기본 1%로 방어(감지가 꺼지는 개념이 아니다). */

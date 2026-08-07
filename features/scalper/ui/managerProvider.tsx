@@ -35,12 +35,8 @@ import type { OverseasExchangeCode } from '../../../kis/trId';
 import { AutoPilotManager } from '../autopilotManager';
 import { createKisBroker } from '../createKisBroker';
 import { createRealtimeFeed } from '../createRealtimeFeed';
-import { shouldForceSimBroker } from '../daySession';
 import { expoKeepAwake } from '../keepAwake';
 import { ScalperManager } from '../scalperManager';
-import { SimExchange } from '../simBroker';
-import { buildSimMatrix, SimLab } from '../simLab';
-import { flushQueuedEpisodes, recordSimEpisode } from '../../../lib/simEpisodeStore';
 import type { ScalperInstanceConfig } from '../types';
 import { WATCH_SOURCES, type RankingSnapshot, type WatchCandidateRow } from '../watchlist';
 
@@ -48,14 +44,6 @@ export interface ManagerBootstrap {
   manager: ScalperManager;
   /** 자동관리(오토파일럿) 매니저 — 수동 매니저와 WS 연결을 나눠 쓴다(setAuxRoutes). */
   autopilot: AutoPilotManager;
-  /**
-   * 시뮬레이션 모드 스위치(mutable ref) — makeBroker·fetchBuyableUsd 등이 매 호출마다 읽는다.
-   * 재빌드(WS 재연결) 없이 전환하기 위한 구조. 전환은 refreshLiveSettings가 **오토파일럿 IDLE일 때만** 한다.
-   */
-  simMode: { current: boolean };
-  /** 가상 체결소·전략 매트릭스 — 모드와 무관하게 상주(라이브에서도 관찰 에피소드를 쌓는다). */
-  simExchange: SimExchange;
-  simLab: SimLab;
   /** 새 카드 폼의 기본 수량(설정 탭 "주문 수량") — 카드별 수량은 여전히 사용자가 바꿀 수 있다. */
   defaultQty: number;
   /** 워밍업 진행률 표시용(설정 탭 값 그대로) — 정확한 틱 카운트가 아니라 경과시간 추정에 쓰인다. */
@@ -211,60 +199,25 @@ async function buildManager(): Promise<ManagerBootstrap> {
 
   const finalManager = manager;
 
-  // ---- 시뮬레이션(2026-08-06 plan) — 가상 체결소·전략 매트릭스. 모드는 mutable ref로 IDLE 전환 ----
-  const simMode = { current: appSettings.simulationMode };
-  const simExchange = new SimExchange();
-  // SimLab은 모드와 무관하게 상주한다 — 실거래 중에도 20조합 가상 전략이 같은 진입을 관찰(mode='live' 기록).
-  // hold/release는 autopilot 생성 뒤에 배선되므로 지연 참조로 잡는다.
-  let autopilotRef: AutoPilotManager | undefined;
-  const simLab = new SimLab({
-    clock,
-    matrix: buildSimMatrix({ widthPct: appSettings.gridWidthPct, buyMultiplier: appSettings.gridBuyMultiplier }),
-    onRecord: (record) => {
-      void recordSimEpisode(record).catch((err) => finalManager.reportFeedError(err));
-    },
-    hold: (t) => autopilotRef?.holdTick(t),
-    release: (t) => autopilotRef?.releaseTick(t),
-  });
-  void flushQueuedEpisodes().catch(() => {}); // 지난 세션에 못 보낸 에피소드 재전송(실패해도 무해).
-
-  // 주간거래(KST 10:00~16:00) 창에서는 전역 시뮬레이션 모드 설정과 무관하게 항상 가상 체결소를 강제한다
-  // (plan v4 §3-3 — "절대 네버 실거래". 진입 경로 자체가 없어야 실수로도 열리지 않는다).
-  const effectiveSimMode = () => shouldForceSimBroker(clock.now(), simMode.current);
-
   const autopilot = new AutoPilotManager({
     realtime,
     storage: AsyncStorage,
     clock,
     // 리스트는 미국 3거래소 병합(2026-08-08) — 주문 거래소는 채용 거래소를 그대로 받는다(NASD/NYSE/AMEX).
-    // ★ 시뮬 모드(또는 주간거래 강제)면 KIS 대신 가상 체결소로 — 브로커는 진입마다 새로 만들어지므로
-    //   effectiveSimMode()를 매번 새로 읽는다.
     makeBroker: (ticker: string, exchange: OverseasExchangeCode) =>
-      effectiveSimMode()
-        ? simExchange.makeBroker(ticker)
-        : createKisBroker({
-            environment,
-            credentials,
-            account,
-            pdno: ticker,
-            ovrsExcgCd: exchange,
-            getToken: getTokenStr,
-            clock,
-          }),
+      createKisBroker({
+        environment,
+        credentials,
+        account,
+        pdno: ticker,
+        ovrsExcgCd: exchange,
+        getToken: getTokenStr,
+        clock,
+      }),
     fetchSnapshot,
     isManualBusy: () => finalManager.anyRunning,
-    // 시뮬(주간거래 포함)은 현금 무한(사용자 확정) — null이면 오토파일럿이 현금 부족 판정을 생략한다.
-    fetchBuyableUsd: (ticker, price, exchange) =>
-      effectiveSimMode() ? Promise.resolve(null) : fetchBuyableUsd(ticker, price, exchange),
-    // 시뮬(주간거래 포함)은 가상 잔고를 보여준다 — 실계좌 장기 보유가 시뮬 경고·입양 목록에 섞이지 않게.
-    fetchHoldings: () => (effectiveSimMode() ? Promise.resolve([...simExchange.positions().keys()]) : fetchHoldings()),
-    isSimulation: () => effectiveSimMode(),
-    onEntryFilled: (info) => {
-      simLab.onEntry(info.ticker, info.qty, info.avgPrice, {
-        tickRate: info.tickRate ?? undefined,
-        mode: effectiveSimMode() ? 'sim' : 'live',
-      });
-    },
+    fetchBuyableUsd,
+    fetchHoldings,
     // 매도 관리 그리드 인계(D5) — 폭·매수배율은 설정 탭(매매파라미터)에서 조절한다(Phase B).
     gridConfig: { width: appSettings.gridWidthPct / 100, buyMultiplier: appSettings.gridBuyMultiplier },
     keepAwake: expoKeepAwake,
@@ -285,13 +238,9 @@ async function buildManager(): Promise<ManagerBootstrap> {
     isFeedHeldExternally: (trKey, trId) => finalManager.holdsFeed(trKey, trId),
     onError: (err) => finalManager.reportFeedError(err),
   });
-  autopilotRef = autopilot;
 
   // WS 단일 연결 공유 — 수동 매니저의 라우터가 오토파일럿 슬롯으로도 흘려보낸다.
-  // 시뮬 탭: 가상 체결소(주문 판정)와 전략 매트릭스(에피소드 판정)가 같은 틱을 먼저 받는다.
   manager.setAuxRoutes((symb, price, tsMs, extras) => {
-    simExchange.onTick(symb, price);
-    simLab.onTick(symb, price, tsMs);
     autopilot.routeTick(symb, price, tsMs, extras);
   }, autopilot.routeQuote);
   // 반대 방향 프로브 — 상세화면 releaseFeed가 자동 단타의 감시·보유 구독을 끊지 않게 한다.
@@ -301,9 +250,6 @@ async function buildManager(): Promise<ManagerBootstrap> {
   return {
     manager,
     autopilot,
-    simMode,
-    simExchange,
-    simLab,
     defaultQty: appSettings.orderQty,
     bufferSize: appSettings.bufferSize,
     chunkSeconds: appSettings.chunkSeconds,
@@ -341,22 +287,6 @@ async function refreshLiveSettings(boot: ManagerBootstrap): Promise<void> {
     width: appSettings.gridWidthPct / 100,
     buyMultiplier: appSettings.gridBuyMultiplier,
   });
-  // 시뮬 모드 전환 — **오토파일럿 IDLE일 때만**. 실행 중 갈아끼우면 실거래/가상 브로커가 한 세션에 섞인다
-  // (진행 중 사이클은 옛 브로커를 쥐고 있고, 새 진입만 새 브로커를 받는 상태가 됨).
-  if (appSettings.simulationMode !== boot.simMode.current) {
-    if (boot.autopilot.pilot.getView().state === 'IDLE') {
-      boot.simMode.current = appSettings.simulationMode;
-      boot.simExchange.reset(); // 이전 실험의 가상 포지션·주문 잔재 제거.
-      boot.simLab.closeAll('stopped'); // 열린 에피소드가 있으면 그 시점 상태로 마감 기록.
-      boot.autopilot.notify(
-        appSettings.simulationMode
-          ? '시뮬레이션 모드를 켰어요 — 주문은 KIS로 나가지 않아요'
-          : '시뮬레이션 모드를 껐어요 — 이제 실거래로 주문이 나가요',
-      );
-    } else {
-      boot.autopilot.notify('시뮬레이션 모드 변경은 자동 단타를 정지한 뒤 단타 탭에 다시 들어오면 적용돼요');
-    }
-  }
 }
 
 /**

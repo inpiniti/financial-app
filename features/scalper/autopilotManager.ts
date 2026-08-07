@@ -16,16 +16,9 @@ import {
   type AutoPilotView,
   type GridExitConfig,
 } from './autopilot';
-import { isDaytimeSessionOpen } from './daySession';
 import { FeedSlot, type FeedSlotView, type LadderEntryOptions } from './feedSlot';
 import { ScalperWatchlist, type RankingSnapshot, type WatchEntry, type WatchMarket } from './watchlist';
-import {
-  buildDaytimeQuoteTrKey,
-  buildFreeQuoteTrKey,
-  REALTIME_PRICE_TR_ID,
-  REALTIME_QUOTE_TR_ID,
-  type DaytimeMarketCode,
-} from '../../kis/realtimePrice';
+import { buildFreeQuoteTrKey, REALTIME_PRICE_TR_ID, REALTIME_QUOTE_TR_ID } from '../../kis/realtimePrice';
 import type { OverseasExchangeCode } from '../../kis/trId';
 import type {
   ClockLike,
@@ -41,11 +34,8 @@ import type {
 /** 거래 기록의 instanceId — 자동관리 사이클은 전부 이 아이디로 남긴다. */
 export const AUTOPILOT_TRADE_ID = 'autopilot';
 
-/**
- * 리스트는 미국 3거래소 병합(2026-08-08, 옛 NAS 전용에서 확대) — 티커별 채용 거래소(WatchEntry.market)가
- * WS trKey 시장구분·주문 거래소를 정한다. 주간거래 창(KST 10~16시)에는 거래소별 주간 시장구분 + R 접두.
- */
-const MARKET_TO_DAYTIME: Record<WatchMarket, DaytimeMarketCode> = { NAS: 'BAQ', NYS: 'BAY', AMS: 'BAA' };
+// 리스트는 미국 3거래소 병합(2026-08-08, 옛 NAS 전용에서 확대) — 티커별 채용 거래소(WatchEntry.market)가
+// WS trKey 시장구분·주문 거래소를 정한다.
 /** 주문 거래소 매핑 — features/stock/marketCodes.ts MARKET_TO_EXCHANGE와 같은 값(순환 참조 회피용 사본). */
 const MARKET_TO_EXCHANGE: Record<WatchMarket, OverseasExchangeCode> = { NAS: 'NASD', NYS: 'NYSE', AMS: 'AMEX' };
 
@@ -71,14 +61,6 @@ export interface AutoPilotManagerDeps {
   gridConfig?: GridExitConfig;
   /** 재시작 보유 감지(잔고조회 → 보유 티커 목록) — 감지되면 경고 이벤트만 낸다(차단 안 함, plan §2-6). */
   fetchHoldings?: () => Promise<string[]>;
-  /**
-   * 시뮬레이션 모드 판정 — true면 거래 기록을 tradeStore(실거래 손익 화면)에 쓰지 않고
-   * 이벤트에 [시뮬] 접두를 붙인다. **함수**인 이유: 모드는 IDLE에서 재빌드 없이 전환되므로(mutable ref)
-   * 생성 시점 값을 캡처하면 전환이 반영되지 않는다. 미주입이면 항상 실거래.
-   */
-  isSimulation?: () => boolean;
-  /** 진입 체결 확정 훅 — AutoPilot으로 그대로 흘려보낸다(SimLab 에피소드 개시). */
-  onEntryFilled?: AutoPilotDeps['onEntryFilled'];
   keepAwake?: KeepAwakeControl;
   chunkSeconds?: number;
   bufferSize?: number;
@@ -130,17 +112,15 @@ export class AutoPilotManager {
   private readonly deps: AutoPilotManagerDeps;
   private readonly slots = new Map<string, FeedSlot>();
   /**
-   * 체결가 구독 중인 티커 → 실제 구독에 쓴 trKey 문자열. 구독 시점의 세션(정규장 D / 주간거래 R)으로
-   * 고정해 기억해둔다 — unsubscribe 시점에 세션이 바뀌어 있어도(예: 구독은 주간거래 중, 해제는 정규장
-   * 중) 엉뚱한 키로 취소 요청을 보내 구독이 고아로 남는 사고를 막는다.
+   * 체결가 구독 중인 티커 → 실제 구독에 쓴 trKey 문자열. 구독 시점의 키로 고정해 기억해둔다 —
+   * 해제 시점에 채용 거래소 기록이 달라져 있어도 실제 구독했던 키 그대로 취소해 고아 구독을 막는다.
    */
   private readonly tickTrKeys = new Map<string, string>();
   /** 호가(R) 구독 중인 티커 → 실제 구독 trKey — 감시 top3(또는 보유 1)만 유지한다. tickTrKeys와 동일한 이유로 Map. */
   private readonly quoteSubs = new Map<string, string>();
   /**
    * 체결가(D) 구독 유지 홀드(티커별 참조 카운트) — **트레이딩 중인 종목은 리스트 탈락과 무관하게
-   * WS 구독을 유지한다**(시뮬레이션 plan §5-4, 사용자 확정: 실전 포함 필수 수정).
-   * 잡는 쪽: ① 보유·진입 중 사이클(pilot view의 activeTickers를 여기서 diff) ② SimLab 에피소드.
+   * WS 구독을 유지한다**. 잡는 쪽: 보유·진입 중 사이클(pilot view의 activeTickers를 여기서 diff).
    * 홀드가 남아 있는 동안 dropSlot을 건너뛰고, 마지막 해제 때 리스트에 없으면 그때 정리한다.
    */
   private readonly tickHolds = new Map<string, number>();
@@ -204,15 +184,12 @@ export class AutoPilotManager {
       buyCancelAfterMs: deps.buyCancelAfterMs,
       reselectIntervalMs: deps.reselectIntervalMs,
       onTrade: (record) => {
-        // 시뮬 거래는 실거래 손익 화면(trades.* 키)을 오염시키지 않는다 — 기록은 SimLab→Supabase 몫.
-        if (this.deps.isSimulation?.()) return;
         void appendTradeRecord(deps.storage, AUTOPILOT_TRADE_ID, record).catch((err) =>
           this.deps.onError?.(err),
         );
       },
       onEvent: (e) => this.pushEvent(e),
       onFault: (fault: InstanceFault) => this.pushEvent({ at: fault.at, text: fault.text }),
-      onEntryFilled: deps.onEntryFilled,
     });
 
     this.pilot.subscribe((view) => {
@@ -356,12 +333,9 @@ export class AutoPilotManager {
     return this.tickerMarkets.get(ticker) ?? 'NAS';
   }
 
-  /** 지금(clock.now())이 주간거래 창이면 R+주간시장, 아니면 D+채용거래소 — 체결가·호가 구독 공용(같은 trKey 문자열). */
+  /** D+채용거래소 trKey — 체결가·호가 구독 공용(같은 trKey 문자열). */
   private marketTrKeyOf(ticker: string): string {
-    const market = this.marketOf(ticker);
-    return isDaytimeSessionOpen(this.deps.clock.now())
-      ? buildDaytimeQuoteTrKey(MARKET_TO_DAYTIME[market], ticker)
-      : buildFreeQuoteTrKey(market, ticker);
+    return buildFreeQuoteTrKey(this.marketOf(ticker), ticker);
   }
 
   private addSlot(ticker: string): void {
@@ -386,7 +360,7 @@ export class AutoPilotManager {
   }
 
   private dropSlot(ticker: string): void {
-    // 홀드가 남아 있으면(트레이딩 중·에피소드 진행 중) 리스트에서 빠져도 슬롯·구독을 유지한다(§5-4).
+    // 홀드가 남아 있으면(트레이딩 중) 리스트에서 빠져도 슬롯·구독을 유지한다.
     // 마지막 releaseTick이 리스트 부재를 확인하고 다시 이리로 온다.
     if ((this.tickHolds.get(ticker) ?? 0) > 0) return;
     const slot = this.slots.get(ticker);
@@ -462,21 +436,11 @@ export class AutoPilotManager {
     }
   }
 
-  /** 현재 시뮬레이션 모드인가 — UI 배지가 읽는다(설정값이 아니라 실제 적용 모드). */
-  get simulation(): boolean {
-    return this.deps.isSimulation?.() === true;
-  }
-
-  /** 외부(managerProvider 등)가 타임라인에 안내 한 줄을 남길 때 쓴다 — 모드 전환 안내 등. */
-  notify(text: string): void {
-    this.pushEvent({ at: this.deps.clock.now(), text });
-  }
-
   // ---- 체결가(D) 구독 유지 홀드 ----
 
   /**
    * 티커의 체결가(D) 구독을 리스트와 무관하게 유지한다(참조 카운트).
-   * 슬롯이 없으면 만들어 구독까지 건다 — 입양(리스트 밖) 종목·SimLab 에피소드 종목이 여기에 해당.
+   * 슬롯이 없으면 만들어 구독까지 건다 — 입양(리스트 밖) 종목이 여기에 해당.
    */
   holdTick(ticker: string): void {
     this.tickHolds.set(ticker, (this.tickHolds.get(ticker) ?? 0) + 1);
@@ -507,10 +471,6 @@ export class AutoPilotManager {
   }
 
   private pushEvent(event: AutoPilotEvent): void {
-    // 시뮬 모드 이벤트는 접두로 구분한다 — 타임라인만 봐도 실거래가 아님이 즉시 보이게.
-    if (this.deps.isSimulation?.() && !event.text.startsWith('[시뮬]')) {
-      event = { ...event, text: `[시뮬] ${event.text}` };
-    }
     this.events.unshift(event);
     if (this.events.length > EVENT_LIMIT) this.events.length = EVENT_LIMIT;
     for (const l of this.eventListeners) l(event);

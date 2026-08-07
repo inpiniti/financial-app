@@ -1,19 +1,16 @@
-// AutoPilot — 단타 관리자 (plan: 2026-07-31_단타-자동관리 + 2026-08-01_단타-세션-확장
-//              + 2026-08-05_다중그리드).
+// AutoPilot — 단타 관리자 (plan: 2026-07-31_단타-자동관리 + 2026-08-05_다중그리드
+//              — 세션(마틴게일 회계) 개념은 2026-08-08_세션-제거 plan으로 삭제됨).
 //
-// 단타 도메인의 중앙 관리자: 상태·금액(세션)·종목을 한 곳에서 관리한다.
+// 단타 도메인의 중앙 관리자: 상태·금액·종목을 한 곳에서 관리한다.
 //  · 리스트(FeedSlot들)는 전부 시세를 받지만, 변곡점 감시(detector)는
 //    **최소 속도(minTickRate) 이상인 종목 중** 틱/초 상위 최대 3개에만 부착(자격자가 없으면 0개 — 진입 없음).
 //  · RUN(매매 사이클)은 **동시에 여러 종목**이 가능하다(maxConcurrentGrids, 기본 3).
 //    종목마다 RunCycle + OrderPortAdapter + Grid를 따로 만들고, 이미 보유·진입 중인 종목은
 //    감시 후보에서 제외한다 — 즉 진입 뒤에도 변곡점 감시는 멈추지 않고 계속 돈다.
-//  · 진입금액은 **설정한 고정 금액(config.startAmountUsd)**이다. 세션의 마틴게일 금액
-//    (session.amountUsd)은 진입 수량 계산에 쓰지 않는다 — 세션과 그리드는 따로 움직인다.
-//    (그리드가 스스로 물타기로 수량을 늘리므로, 진입금액까지 배증하면 노출이 두 겹으로 폭주한다.)
-//  · 세션: 시작금액으로 개시, 사이클마다 수익 절반(하한 $1)·손실 2배(상한 없음)로 조정 —
-//    이제는 **성과 집계·세션 완주 판정 전용** 회계다(진입 수량과 무관).
+//  · 진입금액은 **설정한 고정 금액(config.startAmountUsd)**이다.
+//    (그리드가 스스로 물타기로 수량을 늘리므로, 진입금액을 가변으로 두면 노출이 두 겹으로 폭주한다.)
 //  · 현금 부족(매수가능금액 < 필요금액):
-//      보유 그리드가 하나도 없으면 → PAUSED(사람이 재개/초기화 선택, 사용자 확정 §4-3)
+//      보유 그리드가 하나도 없으면 → PAUSED(입금 후 사람이 재개를 선택)
 //      보유 그리드가 있으면      → 그 진입만 포기하고 신규 진입만 잠시 쉰다(기존 그리드는 계속 관리).
 //
 // 안전장치는 ScalperInstance와 같은 원칙: 매수 전 프리플라이트, FAULT 인터록(사용자 Stop으로만 해제),
@@ -53,11 +50,6 @@ export const ABANDON_COOLDOWN_MS = 60_000;
 export const CASH_COOLDOWN_MS = 60_000;
 /** 최소 속도 기본값(틱/초) — 0 설정 불가(> 0 강제, 사용자 확정 §4-6). */
 export const DEFAULT_MIN_TICK_RATE = 1;
-/**
- * 수익 반감의 하한(USD) — 시작금액과 무관하게 $1 밑으로는 안 내려간다(사용자 확정 §4-1).
- * 마틴게일을 켰을 때만 적용된다(끄면 금액 조정 자체가 없다).
- */
-export const AMOUNT_FLOOR_USD = 1;
 
 /**
  * 매도 관리 그리드로 진입 후 청산을 대체할지(D5). true면 진입 체결 후 관리를 ±w OCO 지정가 그리드가
@@ -77,33 +69,16 @@ export interface GridExitConfig {
 
 export type AutoPilotState = 'IDLE' | 'SCANNING' | 'ENTERING' | 'HOLDING' | 'EXITING' | 'PAUSED' | 'FAULT';
 
-/** 사용자 설정 — 진입금액·최대금액·최소 속도(+마틴게일 on/off·동시 그리드 수). */
+/** 사용자 설정 — 진입금액·최소 속도·동시 그리드 수. */
 export interface AutoPilotConfig {
   /**
    * **종목당 진입금액(USD)** — 진입 수량은 항상 floor(이 금액 ÷ 현재가)다.
-   * 세션 금액(마틴게일로 조정되는 session.amountUsd)은 진입에 관여하지 않는다.
-   * (이름은 세션 개시금액과 겸용이라 startAmountUsd 그대로 둔다 — 저장 포맷 하위호환.)
+   * (이름은 옛 세션 개시금액과 겸용이던 흔적 — 저장 포맷 하위호환을 위해 startAmountUsd 그대로 둔다.)
    */
   startAmountUsd: number;
-  maxAmountUsd: number;
   minTickRate: number;
-  /**
-   * 마틴게일(손실 2배·수익 절반·세션 완주 판정) 사용 여부. **미지정이면 켬** — 기존 저장값 하위호환.
-   * 끄면 세션 금액이 절대 변하지 않고 세션 완주 판정도 하지 않는다.
-   * ⚠ 다중 그리드 도입 이후 이 값은 **세션 회계에만** 영향을 준다 — 진입 수량은 항상 startAmountUsd 기준이다.
-   */
-  martingale?: boolean;
   /** 동시에 열 수 있는 그리드(포지션) 최대 개수. 미지정이면 DEFAULT_MAX_GRIDS. */
   maxConcurrentGrids?: number;
-}
-
-/**
- * 마틴게일 사용 여부 단일 판정. **명시적 false일 때만 끔**이다.
- * `?? true`가 아니라 `!== false`인 이유: 저장값이 손상돼 null·0·"false" 같은 값이 들어와도
- * 기존 동작(켬)으로 안전하게 폴백하기 위해서다.
- */
-export function isMartingaleOn(config: Pick<AutoPilotConfig, 'martingale'>): boolean {
-  return config.martingale !== false;
 }
 
 /** 동시 그리드 개수 단일 판정 — 미지정·손상값은 기본값으로, 상한은 MAX_GRIDS_LIMIT. */
@@ -111,16 +86,6 @@ export function maxGridsOf(config: Pick<AutoPilotConfig, 'maxConcurrentGrids'> |
   const raw = config?.maxConcurrentGrids;
   if (!Number.isFinite(raw) || (raw as number) < 1) return DEFAULT_MAX_GRIDS;
   return Math.min(Math.floor(raw as number), MAX_GRIDS_LIMIT);
-}
-
-/** 진행 중 세션 — Stop·FAULT·재시작에도 유지되고, 종료 조건 달성 때만 리셋된다. */
-export interface SessionState {
-  amountUsd: number;
-  /** 세션 누적 실현손익(USD). */
-  pnl: number;
-  cycles: number;
-  /** 현금 부족으로 일시정지된 세션 — 재개/초기화는 사람이 선택. */
-  paused: boolean;
 }
 
 export interface AutoPilotEvent {
@@ -131,9 +96,8 @@ export interface AutoPilotEvent {
 export interface AutoPilotView {
   readonly state: AutoPilotState;
   readonly config: AutoPilotConfig | null;
-  readonly session: SessionState | null;
-  /** 오늘(미국 장 기준일) 열린 세션 수. */
-  readonly sessionCount: number;
+  /** 현금 부족으로 일시정지 중인가 — 재개는 사람이 선택(Stop·재시작에도 유지). */
+  readonly paused: boolean;
   /** 변곡점 감시 중인 티커(자격자 중 상위 — 0~3개). 보유·진입 중 종목은 여기 없다. */
   readonly watched: readonly string[];
   /** 사이클(진입~그리드 관리)이 열려 있는 모든 티커. */
@@ -142,7 +106,7 @@ export interface AutoPilotView {
   readonly activeTicker: string | null;
   /** 동시 그리드 최대 개수(설정값). */
   readonly maxGrids: number;
-  /** 오늘(미국 장 기준일) 전체 완료 사이클 수·누적 실현손익(세션과 무관). */
+  /** 오늘(미국 장 기준일) 전체 완료 사이클 수·누적 실현손익. */
   readonly cycles: number;
   readonly cumPnl: number;
   readonly lastEvent: AutoPilotEvent | null;
@@ -195,11 +159,6 @@ export interface AutoPilotDeps {
   storage: KeyValueStore;
   /** 사이클 종료 기록 — 매니저가 tradeStore에 연결. */
   onTrade?: (record: TradeRecord) => void;
-  /**
-   * 진입 체결 확정(HOLDING 첫 확인) 훅 — SimLab(가상 전략 매트릭스)이 같은 진입으로 에피소드를 연다.
-   * 사이클당 1회만 불린다. 입양(adopt) 포지션은 진입이 아니므로 부르지 않는다.
-   */
-  onEntryFilled?: (info: { ticker: string; qty: number; avgPrice: number; tickRate: number | null; at: number }) => void;
   onEvent?: (event: AutoPilotEvent) => void;
   onFault?: (fault: InstanceFault) => void;
   /** 거래 수수료율(소수·편도, 0=끔) — 사이클 RunCycle로 넘겨 손익에서 차감한다. */
@@ -213,13 +172,6 @@ export interface AutoPilotDeps {
   reselectIntervalMs?: number;
   hysteresisRatio?: number;
   watchCount?: number;
-}
-
-/** 금액 조정 규칙(순수) — 수익 절반(하한 $1)·손실 2배(상한 없음)·본전 유지. */
-export function nextAmountUsd(current: number, pnl: number): number {
-  if (pnl > 0) return Math.max(current / 2, AMOUNT_FLOOR_USD);
-  if (pnl < 0) return current * 2;
-  return current;
 }
 
 /** 진입 수량(순수) — 금액÷가격 내림. 1 미만이면 0(진입 포기 신호). */
@@ -313,8 +265,6 @@ interface ActiveCycle {
   pendingSettle: TradeRecord | null;
   /** 그리드 arm이 진행 중 — 같은 종목에 두 번 걸지 않기 위한 가드. */
   arming: boolean;
-  /** onEntryFilled를 이미 알렸는가 — HOLDING은 폴마다 재확인되므로 1회 발화 가드가 필요하다. */
-  entryNotified: boolean;
 }
 
 interface PendingBuy {
@@ -957,7 +907,6 @@ export class AutoPilot {
       abandonRequested: false,
       pendingSettle: null,
       arming: false,
-      entryNotified: false,
     };
     active.cycle = new RunCycle({
       ticker: ctx.ticker,
@@ -1061,18 +1010,6 @@ export class AutoPilot {
       active.buyingSince = null;
       active.abandonRequested = false;
       this.clearAbandon(active.ticker);
-      // 진입 체결 확정 1회 통지 — SimLab이 이 진입으로 가상 전략 에피소드를 연다.
-      if (!active.entryNotified) {
-        active.entryNotified = true;
-        const pos = active.cycle.position;
-        this.deps.onEntryFilled?.({
-          ticker: active.ticker,
-          qty: pos?.qty ?? 0,
-          avgPrice: pos?.entryPrice ?? 0,
-          tickRate: active.slot ? active.slot.tickRate(this.deps.clock.now()) : null,
-          at: this.deps.clock.now(),
-        });
-      }
       // 진입 체결 → 매도 관리 그리드 인계(D5). 그리드가 켜져 있고 아직 안 걸었으면 지금 두 주문을 건다.
       if (this.gridEnabled() && !active.grid && !active.arming) {
         await this.armGrid(active, { interlockOnFailure: true });
@@ -1182,7 +1119,6 @@ export class AutoPilot {
       abandonRequested: false,
       pendingSettle: null,
       arming: false,
-      entryNotified: true, // 입양은 진입이 아니다 — onEntryFilled를 부르지 않는다.
     };
     // 슬롯을 먼저 잡는다 — arm이 await라, 그 사이 들어온 변곡점 신호가 같은 자리를 가져가면 안 된다.
     this.actives.set(ticker, active);
