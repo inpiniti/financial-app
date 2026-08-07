@@ -1,7 +1,7 @@
 // 단타 리스트 관리자 — plan §2-3 (docs/development/2026-07-31_단타-자동관리-plan.md).
 // 원천 확장(3종→4종, 상승률 추가): docs/development/2026-08-03_단타-리스트-상승률확장-plan.md.
 //
-// 순위 4종(거래량·거래증가율·거래회전율·상승률, NAS·당일)을 3분 간격으로 폴링해
+// 순위 4종(거래량·거래증가율·거래회전율·상승률, 미국 3거래소(NAS·NYS·AMS) 병합·당일)을 3분 간격으로 폴링해
 // "등락률 +, 주문가능, 진입금액 이하" 상위 5종목씩 → 서로 다른 20티커를 상시 유지한다.
 //  · 현재가 > 진입금액이면 어차피 1주도 못 사서(qtyForAmount=0) 감시·WS 구독이 낭비다 —
 //    리스트 구성 단계에서 걸러내고 차순위로 충원한다(maxPriceUsd).
@@ -47,6 +47,17 @@ export interface WatchCandidateRow {
   e_ordyn?: string;
   /** 현재가 원문(RankingRowBase.last) — 진입금액 상한 필터에 쓴다. 없으면 필터를 통과시킨다(관대 판정). */
   last?: string;
+  /** 거래소코드(NAS·NYS·AMS) — 3거래소 병합 조회(2026-08-08) 이후 채용 거래소 판별용. 없으면 NAS 취급. */
+  excd?: string;
+}
+
+/** 리스트가 다루는 미국 3거래소 — WS 구독 시장구분·주문 거래소를 티커별로 고르는 근거. */
+export type WatchMarket = 'NAS' | 'NYS' | 'AMS';
+
+/** 랭킹 행의 excd를 미국 3거래소 코드로 정규화 — 모르는 값은 NAS(기존 동작 보존). */
+export function toWatchMarket(excd: string | undefined): WatchMarket {
+  const v = (excd ?? '').trim().toUpperCase();
+  return v === 'NYS' || v === 'AMS' ? v : 'NAS';
 }
 
 /** 한 번의 폴링에서 얻은 순위 4종 스냅샷 — 각 배열은 순위 순서(상위부터)라고 가정한다. */
@@ -58,6 +69,8 @@ export interface WatchEntry {
   readonly source: WatchSource;
   /** 채용 시점 등락률(%) — 음전 판정에 쓴 값 그대로(진단·UI 표시용). */
   readonly rate: number;
+  /** 채용 거래소(NAS·NYS·AMS) — WS trKey 시장구분·주문 거래소가 이 값을 따른다. */
+  readonly market: WatchMarket;
   /** 사이클 진행 중이라 제거가 유예된 상태(리스트 탈락 후에도 잔류). */
   readonly pinned: boolean;
 }
@@ -129,7 +142,7 @@ export function computeDesired(snapshot: RankingSnapshot, maxPriceUsd?: number |
       if (!isOrderable(row)) continue;
       if (!isWithinMaxPrice(row, maxPriceUsd)) continue;
       taken.add(ticker);
-      desired.push({ ticker, source, rate, pinned: false });
+      desired.push({ ticker, source, rate, market: toWatchMarket(row.excd), pinned: false });
       slots += 1;
     }
   }

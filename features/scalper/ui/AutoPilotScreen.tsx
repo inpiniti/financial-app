@@ -19,9 +19,6 @@ import { isDaytimeSessionOpen } from '../daySession';
 import { formatHHMM, formatPrice } from './format';
 import { GridGauge } from './GridGauge';
 
-/** 상세화면 시장 코드 — 리스트가 NAS 전용(autopilotManager.ts MARKET 상수)이므로 고정. */
-const AUTOPILOT_MARKET = 'NAS';
-
 const STATE_BADGE: Record<AutoPilotState, { label: string; bg: string; fg: string }> = {
   IDLE: { label: '대기 중', bg: '#f2f4f6', fg: '#8b95a1' },
   SCANNING: { label: '변곡점 감시 중', bg: '#eaf2ff', fg: '#3182f6' },
@@ -112,10 +109,10 @@ function SlotRow({
 }: {
   item: AutoPilotSlotRow;
   activeTickers: readonly string[];
-  onPress: (ticker: string) => void;
+  onPress: (ticker: string, market: string) => void;
 }) {
   return (
-    <Pressable className="bg-white" onPress={() => onPress(item.entry.ticker)} android_ripple={{ color: '#f2f4f6' }}>
+    <Pressable className="bg-white" onPress={() => onPress(item.entry.ticker, item.entry.market)} android_ripple={{ color: '#f2f4f6' }}>
       <ListRow
         leading={<TickerAvatar ticker={item.entry.ticker} />}
         title={item.entry.ticker}
@@ -197,9 +194,9 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
     ]);
   }, [autopilot]);
 
-  // 행 탭 → 종목 상세화면(차트/댓글/호가) — 옛 액션시트+280ms 지연 핵을 제거하고 화면 전환으로 통일.
-  const handleRowPress = useCallback((ticker: string) => {
-    router.push({ pathname: '/stock/[ticker]', params: { ticker, market: AUTOPILOT_MARKET } });
+  // 행 탭 → 종목 상세화면(차트/댓글/호가) — 3거래소 병합 리스트라 행마다 채용 거래소를 넘긴다.
+  const handleRowPress = useCallback((ticker: string, market: string) => {
+    router.push({ pathname: '/stock/[ticker]', params: { ticker, market } });
   }, []);
 
   const renderRow = useCallback(

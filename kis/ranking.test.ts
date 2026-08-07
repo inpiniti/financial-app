@@ -7,7 +7,9 @@ import {
   inquireUpDownRateRanking,
   inquireVolumePowerRanking,
   inquireVolumeSurgeRanking,
+  mergeRankingRows,
   RANKING_TR_ID,
+  US_RANKING_EXCHANGES,
 } from './ranking';
 
 const credentials = { appKey: 'appkey-value', appSecret: 'appsecret-value' };
@@ -174,5 +176,43 @@ describe('rt_cd 비정상 응답', () => {
     await expect(
       inquireTradeVolumeRanking(credentials, 'token', { excd: 'NAS', nday: '0' }, { fetchImpl }),
     ).rejects.toMatchObject({ rtCd: '1', msgCd: 'EGW00123', msg1: '조회 실패' });
+  });
+});
+
+describe('mergeRankingRows — 미국 3거래소 병합 (2026-08-08)', () => {
+  it('병합 대상은 NAS·NYS·AMS 3거래소다', () => {
+    expect(US_RANKING_EXCHANGES).toEqual(['NAS', 'NYS', 'AMS']);
+  });
+
+  it('거래소별 리스트를 종류별 지표(거래량=tvol, 콤마 허용)로 재정렬해 하나로 합친다', () => {
+    const nas = [
+      { symb: 'AAA', tvol: '9,000' },
+      { symb: 'BBB', tvol: '100' },
+    ];
+    const nys = [
+      { symb: 'CCC', tvol: '5000' },
+      { symb: 'DDD', tvol: '200' },
+    ];
+    const merged = mergeRankingRows('tradeVolume', [nas, nys]);
+    expect(merged.map((r) => r.symb)).toEqual(['AAA', 'CCC', 'DDD', 'BBB']);
+  });
+
+  it('음수 지표(급락·하락율)는 절대값으로 비교한다 — 더 극단이 위', () => {
+    const merged = mergeRankingRows('upDownRate', [
+      [{ symb: 'A', n_rate: '-9.5' }],
+      [
+        { symb: 'B', n_rate: '-3.1' },
+        { symb: 'C', n_rate: '-12.0' },
+      ],
+    ]);
+    expect(merged.map((r) => r.symb)).toEqual(['C', 'A', 'B']);
+  });
+
+  it('지표를 못 읽는 행은 맨 뒤로 보내되 원래 순번(거래소 내 순위)을 보존한다', () => {
+    const merged = mergeRankingRows('tradeVolume', [
+      [{ symb: 'X' }, { symb: 'A', tvol: '10' }],
+      [{ symb: 'Y' }],
+    ]);
+    expect(merged.map((r) => r.symb)).toEqual(['A', 'X', 'Y']);
   });
 });

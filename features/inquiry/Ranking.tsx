@@ -16,14 +16,17 @@ import {
   inquireUpDownRateRanking,
   inquireVolumePowerRanking,
   inquireVolumeSurgeRanking,
+  mergeRankingRows,
   RANKING_KIND_LABEL,
   RANKING_TIME_UNIT,
+  US_RANKING_EXCHANGES,
   type DayWindow,
   type MinuteWindow,
   type PriceFluctDirection,
   type RankingExchangeCode,
   type RankingKind,
 } from '../../kis/ranking';
+import { toStockMarketCode } from '../stock/marketCodes';
 import { EmptyState, ErrorNotice, SetupNotice, SkeletonList } from './components';
 import { useKisSession } from './useKisSession';
 
@@ -38,10 +41,6 @@ const KIND_ORDER: RankingKind[] = [
 ];
 
 const KIND_OPTIONS = KIND_ORDER.map((k) => ({ value: k, label: RANKING_KIND_LABEL[k] }));
-
-const EXCHANGES: RankingExchangeCode[] = ['NAS', 'NYS', 'AMS'];
-const EXCHANGE_LABEL: Record<string, string> = { NAS: '나스닥', NYS: '뉴욕', AMS: '아멕스' };
-const EXCHANGE_OPTIONS = EXCHANGES.map((e) => ({ value: e, label: EXCHANGE_LABEL[e] }));
 
 // 방향(GUBN) — 가격급등락과 상승율/하락율이 값은 같고(0·1) 라벨만 다르다.
 const DIRECTION_OPTIONS: Array<{ value: PriceFluctDirection; label: string }> = [
@@ -80,6 +79,8 @@ interface RankingRowShape {
   last: string;
   rate: string;
   sign: string;
+  /** 요청 거래소(NAS·NYS·AMS) — 3거래소 병합 조회에서 행마다 붙인다(상세화면 이동 시 market 파라미터). */
+  excd?: string;
   [key: string]: unknown;
 }
 
@@ -99,7 +100,6 @@ export function Ranking() {
   const session = useKisSession(reloadKey);
 
   const [kind, setKind] = useState<RankingKind>('tradeVolume');
-  const [excd, setExcd] = useState<RankingExchangeCode>('NAS');
   const [dayWindow, setDayWindow] = useState<DayWindow>('0');
   const [minuteWindow, setMinuteWindow] = useState<MinuteWindow>('0');
   const [priceDirection, setPriceDirection] = useState<PriceFluctDirection>('1');
@@ -115,38 +115,45 @@ export function Ranking() {
     setDataError(null);
     try {
       const { credentials, accessToken } = session.session;
-      let result: { output2: RankingRowShape[] };
-      switch (kind) {
-        case 'tradeVolume':
-          result = await inquireTradeVolumeRanking(credentials, accessToken, { excd, nday: dayWindow });
-          break;
-        case 'volumeSurge':
-          result = await inquireVolumeSurgeRanking(credentials, accessToken, { excd, minx: minuteWindow });
-          break;
-        case 'priceFluct':
-          result = await inquirePriceFluctRanking(credentials, accessToken, { excd, gubn: priceDirection, minx: minuteWindow });
-          break;
-        case 'tradeGrowth':
-          result = await inquireTradeGrowthRanking(credentials, accessToken, { excd, nday: dayWindow });
-          break;
-        case 'tradeTurnover':
-          result = await inquireTradeTurnoverRanking(credentials, accessToken, { excd, nday: dayWindow });
-          break;
-        case 'volumePower':
-          result = await inquireVolumePowerRanking(credentials, accessToken, { excd, nday: minuteWindow });
-          break;
-        case 'upDownRate':
-          result = await inquireUpDownRateRanking(credentials, accessToken, { excd, gubn: priceDirection, nday: dayWindow });
-          break;
+      const fetchKind = async (excd: RankingExchangeCode): Promise<{ output2: RankingRowShape[] }> => {
+        switch (kind) {
+          case 'tradeVolume':
+            return inquireTradeVolumeRanking(credentials, accessToken, { excd, nday: dayWindow });
+          case 'volumeSurge':
+            return inquireVolumeSurgeRanking(credentials, accessToken, { excd, minx: minuteWindow });
+          case 'priceFluct':
+            return inquirePriceFluctRanking(credentials, accessToken, { excd, gubn: priceDirection, minx: minuteWindow });
+          case 'tradeGrowth':
+            return inquireTradeGrowthRanking(credentials, accessToken, { excd, nday: dayWindow });
+          case 'tradeTurnover':
+            return inquireTradeTurnoverRanking(credentials, accessToken, { excd, nday: dayWindow });
+          case 'volumePower':
+            return inquireVolumePowerRanking(credentials, accessToken, { excd, nday: minuteWindow });
+          case 'upDownRate':
+            return inquireUpDownRateRanking(credentials, accessToken, { excd, gubn: priceDirection, nday: dayWindow });
+        }
+      };
+      // 미국 3거래소를 직렬 조회(유량 보호) 후 순위 지표로 재정렬해 하나로 병합(2026-08-08).
+      // 일부 거래소 실패는 무시하고 나머지로 보여준다 — 전부 실패했을 때만 에러.
+      const lists: RankingRowShape[][] = [];
+      const errors: unknown[] = [];
+      for (const excd of US_RANKING_EXCHANGES) {
+        try {
+          // 상세화면 이동(market 파라미터)의 근거라 응답 표기 대신 요청 거래소를 행에 박아둔다.
+          lists.push((await fetchKind(excd)).output2.map((r) => ({ ...r, excd })));
+        } catch (e) {
+          errors.push(e);
+        }
       }
-      setRows(result.output2);
+      if (lists.length === 0) throw errors[0] ?? new Error('순위 조회 실패');
+      setRows(mergeRankingRows(kind, lists));
     } catch (e) {
       setDataError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoadingData(false);
       setRefreshing(false);
     }
-  }, [session, kind, excd, dayWindow, minuteWindow, priceDirection]);
+  }, [session, kind, dayWindow, minuteWindow, priceDirection]);
 
   useEffect(() => {
     if (session.kind === 'ready') fetchRanking();
@@ -158,16 +165,13 @@ export function Ranking() {
     fetchRanking();
   }, [fetchRanking]);
 
-  // 행 탭 → 종목 상세화면. 순위 화면의 excd는 이미 NAS/NYS/AMS라 그대로 market으로 넘긴다.
-  const handleRowPress = useCallback(
-    (row: RankingRowShape) => {
-      router.push({
-        pathname: '/stock/[ticker]',
-        params: { ticker: row.symb, market: excd, name: rowName(row) },
-      });
-    },
-    [excd],
-  );
+  // 행 탭 → 종목 상세화면. 병합 조회라 행마다 거래소가 다르다 — 행에 박아둔 excd를 넘긴다.
+  const handleRowPress = useCallback((row: RankingRowShape) => {
+    router.push({
+      pathname: '/stock/[ticker]',
+      params: { ticker: row.symb, market: toStockMarketCode(row.excd) ?? 'NAS', name: rowName(row) },
+    });
+  }, []);
 
   const timeUnit = RANKING_TIME_UNIT[kind];
 
@@ -183,7 +187,6 @@ export function Ranking() {
       <View className="mb-2 bg-white px-4 pb-3 pt-3">
         <View className="flex-row" style={{ gap: 8 }}>
           <SelectBox label="순위 종류" value={kind} options={KIND_OPTIONS} onChange={(v) => setKind(v as RankingKind)} />
-          <SelectBox label="거래소" value={excd} options={EXCHANGE_OPTIONS} onChange={(v) => setExcd(v as RankingExchangeCode)} />
           <SelectBox
             label={timeUnit === 'minute' ? '기간(분)' : '기간(일)'}
             value={periodValue}
@@ -233,7 +236,7 @@ export function Ranking() {
             )}
             contentContainerStyle={{ flexGrow: 1 }}
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#3182f6" />}
-            ListEmptyComponent={<EmptyState icon="bar-chart-outline" title="조건에 맞는 종목이 없어요" description="다른 종류나 거래소로 바꿔보세요" />}
+            ListEmptyComponent={<EmptyState icon="bar-chart-outline" title="조건에 맞는 종목이 없어요" description="다른 종류나 기간으로 바꿔보세요" />}
           />
         </Panel>
       )}

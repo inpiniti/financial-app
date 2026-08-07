@@ -26,7 +26,12 @@ import {
   inquireTradeTurnoverRanking,
   inquireTradeVolumeRanking,
   inquireUpDownRateRanking,
+  mergeRankingRows,
+  US_RANKING_EXCHANGES,
+  type RankingExchangeCode,
+  type RankingKind,
 } from '../../../kis/ranking';
+import type { OverseasExchangeCode } from '../../../kis/trId';
 import { AutoPilotManager } from '../autopilotManager';
 import { createKisBroker } from '../createKisBroker';
 import { createRealtimeFeed } from '../createRealtimeFeed';
@@ -132,40 +137,50 @@ async function buildManager(): Promise<ManagerBootstrap> {
     return token.accessToken;
   };
 
-  const toWatchRows = (rows: Array<{ symb: string; rate: string; sign?: string; e_ordyn?: string; last?: string }>): WatchCandidateRow[] =>
-    rows.map((r) => ({ symb: r.symb, rate: r.rate, sign: r.sign, e_ordyn: r.e_ordyn, last: r.last }));
+  // 랭킹 응답 행의 공통 부분집합 — 병합 정렬 지표(tvol 등)는 인덱스 시그니처로 함께 들고 간다.
+  type RawRankingRow = {
+    symb: string; rate: string; sign?: string; e_ordyn?: string; last?: string;
+  } & Record<string, unknown>;
 
-  // 순위 4종 폴링(NAS·당일) — 유량을 아끼려 직렬 호출. 순위 7종은 전부 실전 도메인 전용(kis/ranking.ts).
-  // 원천별 부분 실패 허용(확장 plan §4-3): 한 순위가 실패해도 나머지로 리스트를 구성한다.
+  const toWatchRows = (rows: RawRankingRow[]): WatchCandidateRow[] =>
+    rows.map((r) => ({ symb: r.symb, rate: r.rate, sign: r.sign, e_ordyn: r.e_ordyn, last: r.last, excd: r.excd as string | undefined }));
+
+  // 순위 4종 × 미국 3거래소(NAS·NYS·AMS) 폴링 — 유량을 아끼려 12콜 직렬(2026-08-08 3거래소 확대).
+  // 순위 7종은 전부 실전 도메인 전용(kis/ranking.ts). 거래소별 결과는 순위 지표로 재정렬해 하나로 합친다.
+  // (순위, 거래소) 콜 단위 부분 실패 허용(확장 plan §4-3의 확장): 실패 콜만 빼고 리스트를 구성한다.
   // 전부 실패하면 throw — ScalperWatchlist가 직전 리스트를 그대로 유지하고 다음 주기에 재시도한다.
-  const callSource = async (
-    label: string,
-    fn: () => Promise<{ output2: Array<{ symb: string; rate: string; sign?: string; e_ordyn?: string; last?: string }> }>,
-    failures: string[],
-  ): Promise<WatchCandidateRow[]> => {
-    try {
-      return toWatchRows((await fn()).output2);
-    } catch (err) {
-      failures.push(label);
-      manager.reportFeedError(err);
-      return [];
-    }
-  };
-
   const fetchSnapshot = async (): Promise<RankingSnapshot> => {
     const accessToken = await getTokenStr();
     const failures: string[] = [];
-    const tradeVolume = await callSource('거래량순위', () =>
-      inquireTradeVolumeRanking(credentials, accessToken, { excd: 'NAS', nday: '0' }), failures);
-    const tradeGrowth = await callSource('거래증가율순위', () =>
-      inquireTradeGrowthRanking(credentials, accessToken, { excd: 'NAS', nday: '0' }), failures);
-    const tradeTurnover = await callSource('거래회전율순위', () =>
-      inquireTradeTurnoverRanking(credentials, accessToken, { excd: 'NAS', nday: '0' }), failures);
-    // 상승률만 VOL_RANG='3'(1만주 이상) — 등락률만 보는 순위라 저유동성 잡주가 상단을 점거한다(확장 plan §1-1 C).
-    const upDownRate = await callSource('상승율순위', () =>
-      inquireUpDownRateRanking(credentials, accessToken, { excd: 'NAS', gubn: '1', nday: '0', volRang: '3' }), failures);
+    const fetchAcross = async (
+      kind: RankingKind,
+      label: string,
+      call: (excd: RankingExchangeCode) => Promise<{ output2: RawRankingRow[] }>,
+    ): Promise<WatchCandidateRow[]> => {
+      const lists: RawRankingRow[][] = [];
+      for (const excd of US_RANKING_EXCHANGES) {
+        try {
+          // 응답의 excd 표기를 믿지 않고 요청 거래소로 덮어쓴다 — 구독·주문 거래소 판별의 근거라 확실해야 한다.
+          lists.push((await call(excd)).output2.map((r) => ({ ...r, excd })));
+        } catch (err) {
+          failures.push(`${label}(${excd})`);
+          manager.reportFeedError(err);
+        }
+      }
+      return toWatchRows(mergeRankingRows(kind, lists));
+    };
 
-    if (failures.length === WATCH_SOURCES.length) {
+    const tradeVolume = await fetchAcross('tradeVolume', '거래량순위', (excd) =>
+      inquireTradeVolumeRanking(credentials, accessToken, { excd, nday: '0' }));
+    const tradeGrowth = await fetchAcross('tradeGrowth', '거래증가율순위', (excd) =>
+      inquireTradeGrowthRanking(credentials, accessToken, { excd, nday: '0' }));
+    const tradeTurnover = await fetchAcross('tradeTurnover', '거래회전율순위', (excd) =>
+      inquireTradeTurnoverRanking(credentials, accessToken, { excd, nday: '0' }));
+    // 상승률만 VOL_RANG='3'(1만주 이상) — 등락률만 보는 순위라 저유동성 잡주가 상단을 점거한다(확장 plan §1-1 C).
+    const upDownRate = await fetchAcross('upDownRate', '상승율순위', (excd) =>
+      inquireUpDownRateRanking(credentials, accessToken, { excd, gubn: '1', nday: '0', volRang: '3' }));
+
+    if (failures.length === WATCH_SOURCES.length * US_RANKING_EXCHANGES.length) {
       throw new Error(`순위 조회 전건 실패 (${failures.join(', ')})`);
     }
     return { tradeVolume, tradeGrowth, tradeTurnover, upDownRate };
@@ -179,12 +194,12 @@ async function buildManager(): Promise<ManagerBootstrap> {
   };
 
   // 현금 부족 PAUSED 사전 판정(세션 확장 plan §2-4) — 조회 실패 시 null(판정 생략, FAULT 인터록이 최후 방어선).
-  const fetchBuyableUsd = async (ticker: string, price: number): Promise<number | null> => {
+  const fetchBuyableUsd = async (ticker: string, price: number, exchange: OverseasExchangeCode): Promise<number | null> => {
     try {
       const accessToken = await getTokenStr();
       const output = await inquirePsAmount(environment, credentials, accessToken, {
         account,
-        ovrsExcgCd: 'NASD',
+        ovrsExcgCd: exchange,
         ordUnpr: price,
         itemCd: ticker,
       });
@@ -221,10 +236,10 @@ async function buildManager(): Promise<ManagerBootstrap> {
     realtime,
     storage: AsyncStorage,
     clock,
-    // 리스트는 NAS 전용(plan §1-A) — 주문 거래소도 NASD 고정.
+    // 리스트는 미국 3거래소 병합(2026-08-08) — 주문 거래소는 채용 거래소를 그대로 받는다(NASD/NYSE/AMEX).
     // ★ 시뮬 모드(또는 주간거래 강제)면 KIS 대신 가상 체결소로 — 브로커는 진입마다 새로 만들어지므로
     //   effectiveSimMode()를 매번 새로 읽는다.
-    makeBroker: (ticker: string) =>
+    makeBroker: (ticker: string, exchange: OverseasExchangeCode) =>
       effectiveSimMode()
         ? simExchange.makeBroker(ticker)
         : createKisBroker({
@@ -232,14 +247,15 @@ async function buildManager(): Promise<ManagerBootstrap> {
             credentials,
             account,
             pdno: ticker,
-            ovrsExcgCd: 'NASD',
+            ovrsExcgCd: exchange,
             getToken: getTokenStr,
             clock,
           }),
     fetchSnapshot,
     isManualBusy: () => finalManager.anyRunning,
     // 시뮬(주간거래 포함)은 현금 무한(사용자 확정) — null이면 오토파일럿이 현금 부족 판정을 생략한다.
-    fetchBuyableUsd: (ticker, price) => (effectiveSimMode() ? Promise.resolve(null) : fetchBuyableUsd(ticker, price)),
+    fetchBuyableUsd: (ticker, price, exchange) =>
+      effectiveSimMode() ? Promise.resolve(null) : fetchBuyableUsd(ticker, price, exchange),
     // 시뮬(주간거래 포함)은 가상 잔고를 보여준다 — 실계좌 장기 보유가 시뮬 경고·입양 목록에 섞이지 않게.
     fetchHoldings: () => (effectiveSimMode() ? Promise.resolve([...simExchange.positions().keys()]) : fetchHoldings()),
     isSimulation: () => effectiveSimMode(),

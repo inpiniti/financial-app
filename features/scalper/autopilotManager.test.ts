@@ -104,6 +104,22 @@ describe('AutoPilotManager — 배선(구독 예산·라우팅·상호 배타)',
     expect(feed.quotePairs()).toHaveLength(3); // 호가(R) — 감시 top3만.
   });
 
+  it('3거래소 병합 리스트 — 채용 거래소(NYS/AMS)로 체결가 trKey를 조립한다(excd 없으면 NAS)', async () => {
+    const { manager, feed, fetchSnapshot } = makeManager();
+    fetchSnapshot.mockResolvedValue({
+      tradeVolume: [{ symb: 'NY1', rate: '1', excd: 'NYS' }],
+      tradeGrowth: [{ symb: 'AM1', rate: '1', excd: 'AMS' }],
+      tradeTurnover: [{ symb: 'NQ1', rate: '1' }],
+      upDownRate: [],
+    });
+    manager.start();
+    await vi.waitFor(() => expect(manager.watchlist.size).toBe(3));
+
+    expect(feed.pairs.has('HDFSCNT0|DNYSNY1')).toBe(true);
+    expect(feed.pairs.has('HDFSCNT0|DAMSAM1')).toBe(true);
+    expect(feed.pairs.has('HDFSCNT0|DNASNQ1')).toBe(true);
+  });
+
   it('routeTick/routeQuote — 해당 티커 슬롯으로만 흘러간다', async () => {
     const { manager } = makeManager();
     manager.start();

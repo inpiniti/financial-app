@@ -412,3 +412,48 @@ export const RANKING_TIME_UNIT: Record<RankingKind, 'day' | 'minute' | 'none'> =
   volumePower: 'minute',
   upDownRate: 'day',
 };
+
+// ── 미국 3거래소 병합 조회 (2026-08-08 사용자 요청) ─────────────────────────
+// EXCD는 API당 1개만 받으므로 거래소별로 따로 조회한 뒤 여기서 하나의 순위로 합친다.
+// 조회 탭·자동단타 리스트가 공유하는 병합 규칙이다.
+
+/** 순위 병합 대상 미국 3거래소 — PRD §4-E 기본 3종과 동일. */
+export const US_RANKING_EXCHANGES = ['NAS', 'NYS', 'AMS'] as const satisfies readonly RankingExchangeCode[];
+
+/**
+ * 종류별 병합 정렬 기준 필드 — 각 API가 output2를 정렬하는 그 값(문서 output 표의 순위 기준).
+ * rank 필드는 거래소 내 순번이라 거래소 간 비교가 안 된다 — 반드시 원본 지표로 다시 정렬한다.
+ */
+const RANKING_SORT_FIELD: Record<RankingKind, string> = {
+  tradeVolume: 'tvol', // 거래량
+  volumeSurge: 'n_rate', // 증가율
+  priceFluct: 'n_rate', // 급등/급락율
+  tradeGrowth: 'n_rate', // 증가율
+  tradeTurnover: 'tover', // 회전율
+  volumePower: 'powx', // 체결강도
+  upDownRate: 'n_rate', // 상승/하락율
+};
+
+/**
+ * 거래소별 output2를 순위 기준값으로 재정렬해 하나로 병합한다.
+ * 기준값은 절대값 비교 — 급락·하락율처럼 음수 방향 순위도 "더 극단"이 위로 온다.
+ * 기준값을 못 읽는 행은 맨 뒤로 보내되, 같은 값끼리는 원래 순위(행 순번)를 보존한다.
+ */
+export function mergeRankingRows<T extends Record<string, unknown>>(
+  kind: RankingKind,
+  lists: ReadonlyArray<readonly T[]>,
+): T[] {
+  const field = RANKING_SORT_FIELD[kind];
+  const keyed = lists.flatMap((list, listIdx) =>
+    list.map((row, rowIdx) => {
+      const raw = row[field];
+      const value = typeof raw === 'string' ? Number.parseFloat(raw.replace(/,/g, '')) : Number.NaN;
+      return { row, key: Number.isFinite(value) ? Math.abs(value) : Number.NEGATIVE_INFINITY, listIdx, rowIdx };
+    }),
+  );
+  keyed.sort((a, b) => {
+    if (a.key !== b.key) return b.key - a.key;
+    return a.rowIdx - b.rowIdx || a.listIdx - b.listIdx;
+  });
+  return keyed.map((k) => k.row);
+}

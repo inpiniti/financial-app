@@ -18,15 +18,15 @@ import {
 } from './autopilot';
 import { isDaytimeSessionOpen } from './daySession';
 import { FeedSlot, type FeedSlotView, type LadderEntryOptions } from './feedSlot';
-import { ScalperWatchlist, type RankingSnapshot, type WatchEntry } from './watchlist';
+import { ScalperWatchlist, type RankingSnapshot, type WatchEntry, type WatchMarket } from './watchlist';
 import {
   buildDaytimeQuoteTrKey,
   buildFreeQuoteTrKey,
   REALTIME_PRICE_TR_ID,
   REALTIME_QUOTE_TR_ID,
   type DaytimeMarketCode,
-  type RealtimeMarketCode,
 } from '../../kis/realtimePrice';
+import type { OverseasExchangeCode } from '../../kis/trId';
 import type {
   ClockLike,
   InstanceFault,
@@ -41,13 +41,13 @@ import type {
 /** 거래 기록의 instanceId — 자동관리 사이클은 전부 이 아이디로 남긴다. */
 export const AUTOPILOT_TRADE_ID = 'autopilot';
 
-/** 리스트는 NAS 전용(plan §1-A) — trKey 시장구분도 고정. */
-const MARKET: RealtimeMarketCode = 'NAS';
 /**
- * 주간거래(2026-08-06 주간거래 plan v4, 사용자 확정: 정규장과 동일 종목군 공유) — 같은 워치리스트를
- * 그대로 쓰되, 주간거래 창(KST 10~16시)에는 나스닥-주간(BAQ) 시장구분 + R 접두로 구독한다.
+ * 리스트는 미국 3거래소 병합(2026-08-08, 옛 NAS 전용에서 확대) — 티커별 채용 거래소(WatchEntry.market)가
+ * WS trKey 시장구분·주문 거래소를 정한다. 주간거래 창(KST 10~16시)에는 거래소별 주간 시장구분 + R 접두.
  */
-const DAYTIME_MARKET: DaytimeMarketCode = 'BAQ';
+const MARKET_TO_DAYTIME: Record<WatchMarket, DaytimeMarketCode> = { NAS: 'BAQ', NYS: 'BAY', AMS: 'BAA' };
+/** 주문 거래소 매핑 — features/stock/marketCodes.ts MARKET_TO_EXCHANGE와 같은 값(순환 참조 회피용 사본). */
+const MARKET_TO_EXCHANGE: Record<WatchMarket, OverseasExchangeCode> = { NAS: 'NASD', NYS: 'NYSE', AMS: 'AMEX' };
 
 const defaultScheduler: SchedulerLike = {
   setInterval: (fn, ms) => setInterval(fn, ms),
@@ -59,14 +59,14 @@ export interface AutoPilotManagerDeps {
   storage: KeyValueStore;
   clock: ClockLike;
   scheduler?: SchedulerLike;
-  /** 티커별 주문 게이트웨이 — 리스트가 NAS 전용이므로 거래소는 NASD로 고정해 만든다(provider 몫). */
-  makeBroker: (ticker: string) => ScalperBroker;
-  /** 순위 4종 1회 폴링(거래량·증가율·회전율·상승률, NAS·당일) — provider가 kis/ranking 4콜로 구현. */
+  /** 티커별 주문 게이트웨이 — 거래소는 채용 거래소(WatchEntry.market → NASD/NYSE/AMEX)를 넘긴다. */
+  makeBroker: (ticker: string, exchange: OverseasExchangeCode) => ScalperBroker;
+  /** 순위 4종 1회 폴링(거래량·증가율·회전율·상승률, 미국 3거래소 병합·당일) — provider가 kis/ranking 12콜로 구현. */
   fetchSnapshot: () => Promise<RankingSnapshot>;
   /** 수동 카드 모드가 실행 중인가 — true면 start를 거부한다(상호 배타, plan §3-5단계). */
   isManualBusy?: () => boolean;
   /** 매수가능금액(USD) 사전 조회 — 현금 부족 PAUSED 판정(세션 확장 plan §2-4). 실패/미주입 시 판정 생략. */
-  fetchBuyableUsd?: (ticker: string, price: number) => Promise<number | null>;
+  fetchBuyableUsd?: (ticker: string, price: number, exchange: OverseasExchangeCode) => Promise<number | null>;
   /** 매도 관리 그리드 설정(폭·매수배율) — 주입되면 진입 후 청산을 ±w OCO 그리드가 인계한다(D5). 미주입이면 기존 청산. */
   gridConfig?: GridExitConfig;
   /** 재시작 보유 감지(잔고조회 → 보유 티커 목록) — 감지되면 경고 이벤트만 낸다(차단 안 함, plan §2-6). */
@@ -146,6 +146,12 @@ export class AutoPilotManager {
   private readonly tickHolds = new Map<string, number>();
   /** 직전 view의 activeTickers — 홀드 diff 계산용. */
   private prevActive = new Set<string>();
+  /**
+   * 티커 → 채용 거래소(마지막으로 리스트에서 본 값). 리스트 탈락 후에도 지우지 않는다 —
+   * 핀·홀드로 살아 있는 사이클의 구독 해제·주문이 채용 당시 거래소를 계속 써야 하기 때문.
+   * 기록이 없는 티커(입양 보유분 등)는 NAS로 간주한다(옛 NAS 전용 동작 보존).
+   */
+  private readonly tickerMarkets = new Map<string, WatchMarket>();
   private readonly events: AutoPilotEvent[] = [];
   private readonly viewListeners = new Set<ViewListener>();
   private readonly eventListeners = new Set<EventListener>();
@@ -164,6 +170,8 @@ export class AutoPilotManager {
       // setConfig는 IDLE에서만 통과하고 폴링은 start 직후 즉시 1회 돌므로, 시작 시점 금액이 곧바로 반영된다.
       maxPriceUsd: () => this.pilot.getView().config?.startAmountUsd ?? null,
       onChange: (entries, diff) => {
+        // 구독·주문 거래소 판별용 — dropSlot/addSlot보다 먼저 최신화한다(추가 종목의 trKey가 이 맵을 읽는다).
+        for (const entry of entries) this.tickerMarkets.set(entry.ticker, entry.market);
         for (const ticker of diff.removed) this.dropSlot(ticker);
         for (const entry of diff.added) this.addSlot(entry.ticker);
         // 리스트가 바뀌면 즉시 감시 재선정 — 초기 채움(added)도 빈 감시 슬롯을 채워야 하고,
@@ -181,8 +189,11 @@ export class AutoPilotManager {
       slots: () => [...this.slots.values()],
       pin: (t) => this.watchlist.pin(t),
       unpin: (t) => this.watchlist.unpin(t),
-      makeBroker: deps.makeBroker,
-      fetchBuyableUsd: deps.fetchBuyableUsd,
+      // AutoPilot은 거래소를 모른다 — 채용 거래소를 여기서 끼워 넣는다(리스트에 없던 티커는 NAS).
+      makeBroker: (t) => deps.makeBroker(t, MARKET_TO_EXCHANGE[this.marketOf(t)]),
+      fetchBuyableUsd: deps.fetchBuyableUsd
+        ? (t, price) => deps.fetchBuyableUsd!(t, price, MARKET_TO_EXCHANGE[this.marketOf(t)])
+        : undefined,
       gridConfig: deps.gridConfig,
       clock: deps.clock,
       scheduler,
@@ -340,11 +351,17 @@ export class AutoPilotManager {
 
   // ---- 내부 ----
 
-  /** 지금(clock.now())이 주간거래 창이면 R+BAQ, 아니면 D+NAS — 체결가·호가 구독 공용(같은 trKey 문자열). */
+  /** 티커의 채용 거래소 — 리스트에서 한 번도 못 본 티커(입양 보유분 등)는 NAS. */
+  private marketOf(ticker: string): WatchMarket {
+    return this.tickerMarkets.get(ticker) ?? 'NAS';
+  }
+
+  /** 지금(clock.now())이 주간거래 창이면 R+주간시장, 아니면 D+채용거래소 — 체결가·호가 구독 공용(같은 trKey 문자열). */
   private marketTrKeyOf(ticker: string): string {
+    const market = this.marketOf(ticker);
     return isDaytimeSessionOpen(this.deps.clock.now())
-      ? buildDaytimeQuoteTrKey(DAYTIME_MARKET, ticker)
-      : buildFreeQuoteTrKey(MARKET, ticker);
+      ? buildDaytimeQuoteTrKey(MARKET_TO_DAYTIME[market], ticker)
+      : buildFreeQuoteTrKey(market, ticker);
   }
 
   private addSlot(ticker: string): void {

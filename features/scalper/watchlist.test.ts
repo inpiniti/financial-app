@@ -155,6 +155,19 @@ describe('computeDesired — 필터·중복 우선권·차순위 충원', () => 
     expect(desired.map((e) => e.ticker)).toEqual(['EDGE', 'PENNY', 'CHEAP', 'SPARE']);
   });
 
+  it('행의 excd를 채용 거래소(market)로 기록한다 — 없거나 모르는 값은 NAS', () => {
+    const desired = computeDesired(
+      snapshot({
+        tradeVolume: [row('N', '1', { excd: 'NYS' }), row('A', '1', { excd: 'AMS' }), row('X', '1')],
+      }),
+    );
+    expect(desired.map((e) => [e.ticker, e.market])).toEqual([
+      ['N', 'NYS'],
+      ['A', 'AMS'],
+      ['X', 'NAS'],
+    ]);
+  });
+
   it('상한 미지정이면 가격 필터 없이 기존과 동일하게 동작한다', () => {
     const desired = computeDesired(
       snapshot({ tradeVolume: [row('RICH', '5', { last: '42.10' }), row('A', '1', { last: '0.5' })] }),
