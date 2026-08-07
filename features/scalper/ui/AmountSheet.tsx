@@ -1,10 +1,5 @@
 // 자동 단타 설정 시트 — 진입금액·동시 그리드 수·최소 속도(다중 그리드 2026-08-05).
-//
-// ⚠ 마틴게일(손실 2배·수익 절반) 토글과 최대금액 필드는 이 화면에서 내렸다.
-//   다중 그리드에서는 사이클이 동시에 여러 개 끝나므로 "어느 금액을 2배 할지"가 정의되지 않고,
-//   그리드 자체가 −w 물타기로 수량을 배로 늘리기 때문에 진입금액까지 배증하면 노출이 두 겹으로 폭주한다.
-//   그래서 진입은 **항상 여기서 정한 고정 금액**이고, 세션은 성과 집계 단위로만 남는다.
-//   (저장 포맷 하위호환을 위해 martingale:false·maxAmountUsd=진입금액으로 정규화해 저장한다.)
+// 진입은 항상 여기서 정한 고정 금액이다(마틴게일·세션 개념은 2026-08-08 제거).
 // 검증은 autopilot.validateConfig 단일 소스를 그대로 쓴다.
 import { useEffect, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
@@ -42,13 +37,9 @@ export function AmountSheet({ visible, initial, onClose, onSubmit }: AmountSheet
   }, [visible, initial]);
 
   const handleSubmit = () => {
-    const startAmountUsd = Number(amount);
     const config: AutoPilotConfig = {
-      startAmountUsd,
-      // 마틴게일을 쓰지 않으므로 최대금액은 진입금액과 같은 값으로 정규화한다(불변식 유지).
-      maxAmountUsd: startAmountUsd,
+      startAmountUsd: Number(amount),
       minTickRate: Number(minRate),
-      martingale: false,
       maxConcurrentGrids: Number(grids),
     };
     const invalid = validateConfig(config);

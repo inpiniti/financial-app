@@ -55,7 +55,7 @@ export interface AutoPilotManagerDeps {
   fetchSnapshot: () => Promise<RankingSnapshot>;
   /** 수동 카드 모드가 실행 중인가 — true면 start를 거부한다(상호 배타, plan §3-5단계). */
   isManualBusy?: () => boolean;
-  /** 매수가능금액(USD) 사전 조회 — 현금 부족 PAUSED 판정(세션 확장 plan §2-4). 실패/미주입 시 판정 생략. */
+  /** 매수가능금액(USD) 사전 조회 — 현금 부족 PAUSED 판정. 실패/미주입 시 판정 생략. */
   fetchBuyableUsd?: (ticker: string, price: number, exchange: OverseasExchangeCode) => Promise<number | null>;
   /** 매도 관리 그리드 설정(폭·매수배율) — 주입되면 진입 후 청산을 ±w OCO 그리드가 인계한다(D5). 미주입이면 기존 청산. */
   gridConfig?: GridExitConfig;
@@ -428,7 +428,7 @@ export class AutoPilotManager {
       if (holdings.length > 0) {
         this.pushEvent({
           at: this.deps.clock.now(),
-          text: `계좌에 보유 종목이 있어요(${holdings.join(', ')}) — 이전 세션의 미정리 포지션이면 수동으로 정리해 주세요`,
+          text: `계좌에 보유 종목이 있어요(${holdings.join(', ')}) — 이전 실행의 미정리 포지션이면 수동으로 정리해 주세요`,
         });
       }
     } catch (err) {

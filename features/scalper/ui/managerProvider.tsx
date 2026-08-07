@@ -181,7 +181,7 @@ async function buildManager(): Promise<ManagerBootstrap> {
     return res.output1.filter((p) => Number(p.cblc_qty13) > 0).map((p) => p.pdno);
   };
 
-  // 현금 부족 PAUSED 사전 판정(세션 확장 plan §2-4) — 조회 실패 시 null(판정 생략, FAULT 인터록이 최후 방어선).
+  // 현금 부족 PAUSED 사전 판정 — 조회 실패 시 null(판정 생략, FAULT 인터록이 최후 방어선).
   const fetchBuyableUsd = async (ticker: string, price: number, exchange: OverseasExchangeCode): Promise<number | null> => {
     try {
       const accessToken = await getTokenStr();

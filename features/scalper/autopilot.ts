@@ -181,33 +181,13 @@ export function qtyForAmount(amountUsd: number, price: number): number {
 }
 
 /**
- * 세션 종료 판정(순수) — AND 3조건, **금액 조정 전**의 이번 사이클 투입금액 기준(사용자 확정 §4-2).
- * 성과는 0 포함(≥ 0 — §4-8).
- */
-export function shouldEndSession(
-  cyclePnl: number,
-  usedAmountUsd: number,
-  sessionPnl: number,
-  maxAmountUsd: number,
-): boolean {
-  return cyclePnl > 0 && usedAmountUsd >= maxAmountUsd && sessionPnl >= 0;
-}
-
-/**
- * 설정 검증(순수) — 0 < 시작 ≤ 최대, 최소 속도 > 0, 동시 그리드 ≥ 1. 문제 없으면 null, 있으면 사용자 문구.
- * 마틴게일을 끄면 최대금액이 의미가 없으므로 그 검사만 건너뛴다(= 규칙이 더 관대해진다).
+ * 설정 검증(순수) — 진입금액 > 0, 최소 속도 > 0, 동시 그리드 ≥ 1. 문제 없으면 null, 있으면 사용자 문구.
  * ⚠ restore()가 이 함수로 저장값을 필터링하므로, 규칙을 **엄격하게** 바꾸면 기존 설정이 조용히 소실된다.
- *    그래서 maxConcurrentGrids는 미지정(undefined)을 허용한다 — 기존 v2 저장값이 살아남아야 한다.
+ *    그래서 maxConcurrentGrids는 미지정(undefined)을 허용한다 — 기존 저장값이 살아남아야 한다.
  */
 export function validateConfig(config: AutoPilotConfig): string | null {
-  const martingaleOn = isMartingaleOn(config);
   if (!Number.isFinite(config.startAmountUsd) || config.startAmountUsd <= 0) {
-    return martingaleOn
-      ? '시작금액은 0보다 큰 달러 금액으로 입력해 주세요'
-      : '금액은 0보다 큰 달러 금액으로 입력해 주세요';
-  }
-  if (martingaleOn && (!Number.isFinite(config.maxAmountUsd) || config.maxAmountUsd < config.startAmountUsd)) {
-    return '최대금액은 시작금액 이상으로 입력해 주세요';
+    return '금액은 0보다 큰 달러 금액으로 입력해 주세요';
   }
   if (!Number.isFinite(config.minTickRate) || config.minTickRate <= 0) {
     return '최소 속도는 0보다 크게 입력해 주세요 (기본 1틱/초)';
@@ -272,11 +252,22 @@ interface PendingBuy {
   tickRate: number;
 }
 
-interface PersistedV2 {
-  version: 2;
+interface PersistedV3 {
+  version: 3;
   config: AutoPilotConfig | null;
-  session: SessionState | null;
-  daily: { date: string; sessionCount: number; cycles: number; cumPnl: number } | null;
+  /** 현금 부족 일시정지 — 재시작에도 복원돼야 한다(자동 재개 금지). */
+  paused: boolean;
+  daily: { date: string; cycles: number; cumPnl: number } | null;
+}
+
+/** 옛 저장 포맷(마이그레이션 파싱 전용) — v2는 세션, v1은 baseAmountUsd 단일 값. */
+interface LegacyPersisted {
+  version?: number;
+  config?: (AutoPilotConfig & { maxAmountUsd?: number; martingale?: boolean }) | null;
+  session?: { amountUsd?: number; paused?: boolean } | null;
+  daily?: { date?: string; sessionCount?: number; cycles?: number; cumPnl?: number } | null;
+  paused?: boolean;
+  baseAmountUsd?: number;
 }
 
 type Listener = (view: AutoPilotView) => void;
@@ -290,14 +281,14 @@ export class AutoPilot {
   private readonly hysteresisRatio: number;
   private readonly watchCount: number;
 
-  /** start()~finishStop() 사이인가. 전역 state는 이 플래그·faulted·session.paused에서 파생된다. */
+  /** start()~finishStop() 사이인가. 전역 state는 이 플래그·faulted·paused에서 파생된다. */
   private running = false;
   /** 전역 인터록 — 사용자 Stop으로만 해제. */
   private faulted = false;
   private config: AutoPilotConfig | null = null;
-  private session: SessionState | null = null;
+  /** 현금 부족 일시정지 — Stop·FAULT·재시작에도 유지되고, 사람이 재개해야 풀린다. */
+  private paused = false;
   private dailyDate: string | null = null;
-  private sessionCount = 0;
   private watchedTickers: string[] = [];
   /**
    * 매도 관리 그리드 설정(폭·매수배율). deps에서 **초기값만** 받고 이후 setGridConfig로 갈아끼운다 —
@@ -354,8 +345,7 @@ export class AutoPilot {
     return {
       state: this.state,
       config: this.config ? { ...this.config } : null,
-      session: this.session ? { ...this.session } : null,
-      sessionCount: this.sessionCount,
+      paused: this.paused,
       watched: [...this.watchedTickers],
       activeTickers,
       activeTicker: activeTickers[0] ?? null,
@@ -377,7 +367,7 @@ export class AutoPilot {
   private get state(): AutoPilotState {
     if (!this.running) return 'IDLE';
     if (this.faulted) return 'FAULT';
-    if (this.session?.paused) return 'PAUSED';
+    if (this.paused) return 'PAUSED';
     let entering = this.pendingBuys.size > 0;
     let exiting = false;
     let holding = false;
@@ -468,46 +458,52 @@ export class AutoPilot {
 
   // ---- 설정/영속화 ----
 
-  /** 설정 변경 — IDLE에서만. 검증 실패 문구를 반환한다(성공 시 null). 진행 중 세션은 건드리지 않는다. */
+  /** 설정 변경 — IDLE에서만. 검증 실패 문구를 반환한다(성공 시 null). */
   setConfig(config: AutoPilotConfig): string | null {
     if (this.state !== 'IDLE') return '설정은 정지 상태에서 바꿀 수 있어요';
     const error = validateConfig(config);
     if (error) return error;
     this.config = { ...config };
-    // ★ 마틴 OFF에는 "다음 세션"이 없다(세션 완주 판정을 안 하므로). 진행 중 세션을 동기화하지 않으면
-    //   세션 표시 금액이 영원히 예전 값으로 남는다. ON→OFF 전환 시 불어난 금액도 여기서 내려온다.
-    //   setConfig는 IDLE에서만 통과하므로 진행 중 사이클·미체결 주문과 충돌하지 않는다.
-    //   (OFF→ON은 동기화하지 않는다 — 마틴 진행 중 성과를 임의로 리셋하지 않기 위해.)
-    if (!isMartingaleOn(this.config) && this.session) {
-      this.session.amountUsd = this.config.startAmountUsd;
-    }
     void this.persist();
     this.emit();
     return null;
   }
 
-  /** 재시작 복원 — v2 설정·세션·일일 카운트. v1(baseAmountUsd)은 마이그레이션(plan §4-5). */
+  /**
+   * 재시작 복원 — v3 설정·paused·일일 통계.
+   * 옛 포맷 마이그레이션: v2(세션)는 config에서 maxAmountUsd·martingale을 버리고 session.paused만 승계,
+   * v1(baseAmountUsd)은 진입금액으로 승계(최소 속도 기본 1).
+   */
   async restore(): Promise<void> {
     const raw = await this.deps.storage.getItem(AUTOPILOT_STORAGE_KEY);
     if (!raw) return;
     try {
-      const parsed = JSON.parse(raw) as Partial<PersistedV2> & { baseAmountUsd?: number };
-      if (parsed.version === 2) {
+      const parsed = JSON.parse(raw) as Partial<PersistedV3> & LegacyPersisted;
+      if (parsed.version === 3) {
         if (parsed.config && validateConfig(parsed.config) === null) this.config = parsed.config;
-        if (parsed.session && Number.isFinite(parsed.session.amountUsd) && parsed.session.amountUsd > 0) {
-          this.session = { ...parsed.session, paused: parsed.session.paused ?? false };
-        }
+        this.paused = parsed.paused === true;
         if (parsed.daily && typeof parsed.daily.date === 'string') {
           this.dailyDate = parsed.daily.date;
-          this.sessionCount = parsed.daily.sessionCount ?? 0;
           this.cycles = parsed.daily.cycles ?? 0;
           this.cumPnl = parsed.daily.cumPnl ?? 0;
         }
+      } else if (parsed.version === 2) {
+        // v2 → v3: 세션 제거 — config의 세션 전용 키를 버리고, PAUSED 상태만 승계한다.
+        if (parsed.config) {
+          const { maxAmountUsd: _max, martingale: _mart, ...rest } = parsed.config;
+          if (validateConfig(rest) === null) this.config = rest;
+        }
+        this.paused = parsed.session?.paused === true;
+        if (parsed.daily && typeof parsed.daily.date === 'string') {
+          this.dailyDate = parsed.daily.date;
+          this.cycles = parsed.daily.cycles ?? 0;
+          this.cumPnl = parsed.daily.cumPnl ?? 0;
+        }
+        void this.persist();
       } else if (typeof parsed.baseAmountUsd === 'number' && parsed.baseAmountUsd > 0) {
-        // v1 → v2: base → 시작금액, base×4 → 최대금액, 최소 속도 기본 1.
+        // v1 → v3: base → 진입금액, 최소 속도 기본 1.
         this.config = {
           startAmountUsd: parsed.baseAmountUsd,
-          maxAmountUsd: parsed.baseAmountUsd * 4,
           minTickRate: DEFAULT_MIN_TICK_RATE,
         };
         void this.persist();
@@ -520,31 +516,30 @@ export class AutoPilot {
   }
 
   private async persist(): Promise<void> {
-    const data: PersistedV2 = {
-      version: 2,
+    const data: PersistedV3 = {
+      version: 3,
       config: this.config,
-      session: this.session,
+      paused: this.paused,
       daily:
         this.dailyDate === null
           ? null
-          : { date: this.dailyDate, sessionCount: this.sessionCount, cycles: this.cycles, cumPnl: this.cumPnl },
+          : { date: this.dailyDate, cycles: this.cycles, cumPnl: this.cumPnl },
     };
     await this.deps.storage.setItem(AUTOPILOT_STORAGE_KEY, JSON.stringify(data));
   }
 
-  /** 미국 장 기준일이 바뀌었으면 일일 통계를 리셋한다(진행 중 세션이 있으면 그 세션이 오늘의 1번째). */
+  /** 미국 장 기준일이 바뀌었으면 일일 통계를 리셋한다. */
   private rolloverDailyIfNeeded(): void {
     const today = etDateOf(this.deps.clock.now());
     if (this.dailyDate === today) return;
     this.dailyDate = today;
-    this.sessionCount = this.session ? 1 : 0;
     this.cycles = 0;
     this.cumPnl = 0;
   }
 
   // ---- 시작/정지 ----
 
-  /** Run — 설정 필수. 세션이 없으면 시작금액으로 개시. 일시정지된 세션이면 PAUSED로 진입(사람이 선택). */
+  /** Run — 설정 필수. 현금 부족으로 일시정지돼 있었다면 PAUSED로 진입(재개는 사람이 선택). */
   start(): void {
     if (this.state !== 'IDLE') return;
     if (!this.config) {
@@ -556,18 +551,10 @@ export class AutoPilot {
     this.cashCooldownUntil = 0;
     this.running = true;
     this.rolloverDailyIfNeeded();
-    if (!this.session) {
-      this.session = { amountUsd: this.config.startAmountUsd, pnl: 0, cycles: 0, paused: false };
-      this.sessionCount += 1;
-      const amount = `$${this.config.startAmountUsd.toFixed(2)}`;
-      this.event(
-        `세션 #${this.sessionCount} 시작 · ${isMartingaleOn(this.config) ? `${amount}부터` : `${amount} 고정`}`,
-      );
-    }
-    if (this.session.paused) {
-      // 현금 부족으로 멈췄던 세션 — 자동 재개하지 않는다(§4-3). 사람이 재개/초기화를 고른다.
+    if (this.paused) {
+      // 현금 부족으로 멈췄던 상태 — 자동 재개하지 않는다. 입금 후 사람이 재개를 누른다.
       this.reselectTimer = this.deps.scheduler.setInterval(() => this.reselect(), this.reselectIntervalMs);
-      this.event('현금 부족으로 멈춘 세션이 있어요 — 이어서 재개하거나 세션을 초기화해 주세요');
+      this.event('현금 부족으로 멈춰 있어요 — 입금 후 재개해 주세요');
       this.emit();
       return;
     }
@@ -634,28 +621,15 @@ export class AutoPilot {
     this.emit();
   }
 
-  // ---- PAUSED (현금 부족 — plan §2-4) ----
+  // ---- PAUSED (현금 부족) ----
 
-  /** 이어서 재개 — 같은 세션·같은 금액으로 감시 복귀(입금 후 사용자가 누른다). */
+  /** 재개 — 감시 복귀(입금 후 사용자가 누른다). */
   resume(): void {
-    if (this.state !== 'PAUSED' || !this.session) return;
-    this.session.paused = false;
+    if (this.state !== 'PAUSED') return;
+    this.paused = false;
     this.cashCooldownUntil = 0;
     this.reselect();
-    this.event('세션을 이어서 재개했어요');
-    void this.persist();
-    this.emit();
-  }
-
-  /** 세션 초기화하고 재개 — 현 세션을 버리고 시작금액으로 새 세션. */
-  resetSession(): void {
-    if (this.state !== 'PAUSED' || !this.config) return;
-    this.rolloverDailyIfNeeded();
-    this.session = { amountUsd: this.config.startAmountUsd, pnl: 0, cycles: 0, paused: false };
-    this.sessionCount += 1;
-    this.cashCooldownUntil = 0;
-    this.reselect();
-    this.event(`세션 #${this.sessionCount} 시작 · $${this.config.startAmountUsd.toFixed(2)}부터 (초기화)`);
+    this.event('자동 단타를 재개했어요');
     void this.persist();
     this.emit();
   }
@@ -665,8 +639,7 @@ export class AutoPilot {
    * (그리드가 살아 있는데 여기 들어오면 폴 타이머가 꺼져 관리 중인 포지션이 방치된다.)
    */
   private enterPaused(reason: string): void {
-    if (!this.session) return;
-    this.session.paused = true;
+    this.paused = true;
     this.pendingBuys.clear();
     this.detachAll();
     this.stopPollTimer();
@@ -683,7 +656,7 @@ export class AutoPilot {
     }
   }
 
-  // ---- 감시 대상 선정 (최소 속도 자격 필터 — 세션 확장 plan §2-2) ----
+  // ---- 감시 대상 선정 (최소 속도 자격 필터) ----
 
   /**
    * 자격자(틱/초 ≥ minTickRate) 중 상위 watchCount 재평가. 자격자가 모자라면 빈 자리를 비워 둔다(0개 허용).
@@ -694,7 +667,7 @@ export class AutoPilot {
    *   대신 이미 보유·진입 중인 종목(actives·pendingBuys)을 후보에서 제외해, 감시는 늘 "새로 살 종목"만 본다.
    */
   reselect(): void {
-    if (!this.running || this.faulted || this.session?.paused) return;
+    if (!this.running || this.faulted || this.paused) return;
     const minRate = this.config?.minTickRate ?? DEFAULT_MIN_TICK_RATE;
     const now = this.deps.clock.now();
     const slots = this.deps.slots();
@@ -774,7 +747,7 @@ export class AutoPilot {
       this.handleBuySignal(ctx);
       return;
     }
-    // SELL — 보유 종목의 매도 변곡점만 의미 있다(유동성이 죽어도 사이클은 반드시 완주 — §4-4).
+    // SELL — 보유 종목의 매도 변곡점만 의미 있다(유동성이 죽어도 사이클은 반드시 완주).
     const active = this.actives.get(ctx.ticker);
     if (active) {
       // 그리드가 청산을 관리하면 변곡점 매도는 무시한다(D5) — 매도는 +w 지정가 체결로만 일어난다.
@@ -793,7 +766,7 @@ export class AutoPilot {
    * 그 사이에 들어온 다른 신호가 같은 슬롯을 중복 점유하면 maxGrids를 넘겨 진입한다.
    */
   private handleBuySignal(ctx: SlotSignalContext): void {
-    if (this.stopRequested || !this.running || this.faulted || this.session?.paused) return;
+    if (this.stopRequested || !this.running || this.faulted || this.paused) return;
     if (this.actives.has(ctx.ticker) || this.pendingBuys.has(ctx.ticker)) return; // 이미 보유·진입 중
     if (this.inAbandonCooldown(ctx.ticker)) return;
     if (this.deps.clock.now() < this.cashCooldownUntil) return;
@@ -807,7 +780,7 @@ export class AutoPilot {
 
   /**
    * 프리플라이트 → 속도 재검사 → 현금 검사 → 발주 확정 (종목 1개).
-   * 진입금액은 **설정 고정값(config.startAmountUsd)** — 세션 금액과 무관하다.
+   * 진입금액은 **설정 고정값(config.startAmountUsd)**이다.
    */
   private async commitBuy(ticker: string): Promise<void> {
     const candidate = this.pendingBuys.get(ticker);
@@ -854,7 +827,7 @@ export class AutoPilot {
       return;
     }
 
-    // 진입 직전 속도 재검사(§4-4) — 감시 선정과 신호 사이에 유동성이 죽었으면 포기.
+    // 진입 직전 속도 재검사 — 감시 선정과 신호 사이에 유동성이 죽었으면 포기.
     const rateNow = slot.tickRate(this.deps.clock.now());
     if (rateNow < config.minTickRate) {
       this.event(
@@ -863,7 +836,7 @@ export class AutoPilot {
       return giveUp();
     }
 
-    // 현금 부족 사전 판정(§2-4) — 조회 실패(null/throw)면 판정 없이 진행(FAULT 인터록이 최후 방어선).
+    // 현금 부족 사전 판정 — 조회 실패(null/throw)면 판정 없이 진행(FAULT 인터록이 최후 방어선).
     const needed = qty * ctx.price;
     let buyable: number | null = null;
     try {
@@ -875,9 +848,9 @@ export class AutoPilot {
     if (buyable !== null && buyable < needed) {
       this.pendingBuys.delete(ticker);
       if (this.actives.size === 0) {
-        // 관리 중인 포지션이 없다 — 세션을 통째로 멈추고 사람의 선택을 기다린다(기존 동작).
+        // 관리 중인 포지션이 없다 — 통째로 멈추고 사람의 재개를 기다린다.
         this.enterPaused(
-          `현금이 부족해서 쉬고 있어요 · 필요 $${needed.toFixed(2)} > 주문가능 $${buyable.toFixed(2)} — 입금 후 재개하거나 세션을 초기화해 주세요`,
+          `현금이 부족해서 쉬고 있어요 · 필요 $${needed.toFixed(2)} > 주문가능 $${buyable.toFixed(2)} — 입금 후 재개해 주세요`,
         );
         return;
       }
@@ -1098,7 +1071,7 @@ export class AutoPilot {
   async adoptPosition(ticker: string): Promise<string | null> {
     if (!this.running) return '자동 단타를 먼저 시작해 주세요';
     if (this.faulted) return '멈춤 상태예요 — 먼저 Stop으로 해제해 주세요';
-    if (this.session?.paused) return '일시정지 중이에요 — 재개한 뒤 다시 시도해 주세요';
+    if (this.paused) return '일시정지 중이에요 — 재개한 뒤 다시 시도해 주세요';
     if (!this.gridEnabled()) return '그리드 관리가 꺼져 있어 등록할 수 없어요';
     if (this.actives.has(ticker) || this.pendingBuys.has(ticker)) return `${ticker}은(는) 이미 관리 중이에요`;
     if (this.actives.size + this.pendingBuys.size >= this.maxGrids) {
@@ -1246,11 +1219,7 @@ export class AutoPilot {
     this.abandonState.delete(ticker);
   }
 
-  /**
-   * 사이클 종료 정산 — 세션 성과 반영 → 종료 조건(AND, 금액 조정 전 판정) → 조정 또는 새 세션.
-   * 수동 Stop 청산(STOP)은 금액 조정도 세션 종료 판정도 하지 않는다(성과에는 반영).
-   * ⚠ 여기서 조정되는 session.amountUsd는 **성과 회계용**이다 — 진입 수량은 config.startAmountUsd만 본다.
-   */
+  /** 사이클 종료 정산 — 일일 통계(사이클 수·누적 손익)만 반영한다. 진입금액은 항상 설정 고정값이다. */
   private settle(active: ActiveCycle): void {
     const record = active.pendingSettle;
     active.pendingSettle = null;
@@ -1261,40 +1230,9 @@ export class AutoPilot {
       this.rolloverDailyIfNeeded();
       this.cycles += 1;
       this.cumPnl += record.pnl;
-      const session = this.session;
-      if (session) {
-        const usedAmount = session.amountUsd;
-        session.pnl += record.pnl;
-        session.cycles += 1;
-        if (record.exitReason === 'SELL_SIGNAL') {
-          // ★ 마틴 OFF 검사가 반드시 shouldEndSession보다 **먼저** 와야 한다.
-          //   뒤로 가면 start=max 설정에서 OFF 세션이 완주해버린다.
-          //   (세션 손익·사이클 수와 일일 통계는 위에서 이미 누적됐다 — OFF에서도 통계는 그대로 쌓인다.)
-          if (this.config && !isMartingaleOn(this.config)) {
-            this.event(
-              `${record.ticker} 청산 · 손익 $${record.pnl.toFixed(2)} · 금액 고정 $${session.amountUsd.toFixed(2)}`,
-            );
-          } else if (this.config && shouldEndSession(record.pnl, usedAmount, session.pnl, this.config.maxAmountUsd)) {
-            // 세션 종료 — 금액 조정 없이 새 세션(시작금액·성과 0).
-            const endedPnl = session.pnl;
-            this.session = { amountUsd: this.config.startAmountUsd, pnl: 0, cycles: 0, paused: false };
-            this.sessionCount += 1;
-            this.event(
-              `세션 완주 · 성과 $${endedPnl.toFixed(2)} — 세션 #${this.sessionCount} 시작 · $${this.config.startAmountUsd.toFixed(2)}부터`,
-            );
-          } else {
-            const before = session.amountUsd;
-            session.amountUsd = nextAmountUsd(before, record.pnl);
-            const verb =
-              record.pnl > 0 ? '수익 → 금액 절반' : record.pnl < 0 ? '손실 → 금액 2배' : '본전 → 금액 유지';
-            this.event(
-              `${record.ticker} 청산 · 손익 $${record.pnl.toFixed(2)} · ${verb} ($${before.toFixed(2)}→$${session.amountUsd.toFixed(2)})`,
-            );
-          }
-        } else {
-          this.event(`${record.ticker} 수동 청산 · 손익 $${record.pnl.toFixed(2)} · 금액 유지`);
-        }
-      }
+      this.event(
+        `${record.ticker} ${record.exitReason === 'SELL_SIGNAL' ? '청산' : '수동 청산'} · 손익 $${record.pnl.toFixed(2)}`,
+      );
       void this.persist();
     }
 

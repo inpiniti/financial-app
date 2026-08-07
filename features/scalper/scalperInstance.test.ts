@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { TradeRecord } from '../../core/cycle';
 import { ScalperInstance, nextAutoRunQty, type ScalperInstanceDeps } from './scalperInstance';
-import { nextAmountUsd } from './autopilot';
 import type { AutoRunNote } from './types';
 import { FakeBroker, fakeClock, flush, noopScheduler } from './fakes';
 
@@ -728,11 +727,9 @@ describe('ScalperInstance — 오토런(자동 재시작)', () => {
     expect(h.notes[0].qty).toBe(4);
   });
 
-  it('⑥ 본전(pnl=0) 규칙이 자동관리(유지)와 수동 카드(2배)에서 다른 것은 의도된 차이다', () => {
-    // 수동 카드: pnl<=0 → 2배 (본전도 배증)
+  it('⑥ 본전(pnl=0)도 배증한다 — 수동 카드의 의도된 규칙(pnl<=0 → 2배)', () => {
+    // 자동관리(autopilot)는 금액 조정 자체를 하지 않는다(2026-08-08 세션 제거) — 수동 카드만의 규칙이다.
     expect(nextAutoRunQty(3, 0)).toBe(6);
-    // 자동관리: pnl===0 → 유지. 통일은 별도 작업으로 분리했다(옵션화와 무관한 행동 변경이라).
-    expect(nextAmountUsd(100, 0)).toBe(100);
   });
 
 });

@@ -80,7 +80,7 @@ function makeManager(opts: { manualBusy?: boolean; holdings?: string[] } = {}) {
     chunkSeconds: 1,
     bufferSize: 7,
   });
-  manager.pilot.setConfig({ startAmountUsd: 100, maxAmountUsd: 400, minTickRate: 0.01 });
+  manager.pilot.setConfig({ startAmountUsd: 100, minTickRate: 0.01 });
   return { manager, feed, store, clock, fetchSnapshot, keepAwake };
 }
 

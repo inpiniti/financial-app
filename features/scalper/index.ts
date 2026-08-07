@@ -31,18 +31,14 @@ export type { FeedSlotView, SlotSignalContext } from './feedSlot';
 export {
   AutoPilot,
   AUTOPILOT_STORAGE_KEY,
-  AMOUNT_FLOOR_USD,
   GRID_EXIT,
-  isMartingaleOn,
   maxGridsOf,
   DEFAULT_MAX_GRIDS,
   MAX_GRIDS_LIMIT,
   CASH_COOLDOWN_MS,
   DEFAULT_MIN_TICK_RATE,
   etDateOf,
-  nextAmountUsd,
   qtyForAmount,
-  shouldEndSession,
   validateConfig,
 } from './autopilot';
 export type {
@@ -53,7 +49,6 @@ export type {
   AutoPilotState,
   AutoPilotView,
   GridExitConfig,
-  SessionState,
 } from './autopilot';
 export { AutoPilotManager, AUTOPILOT_TRADE_ID } from './autopilotManager';
 export type { AutoPilotManagerDeps, AutoPilotSlotRow } from './autopilotManager';

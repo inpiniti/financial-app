@@ -1,5 +1,5 @@
-// 자동 단타(오토파일럿) 화면 — plan §3-6단계 + 세션 확장(2026-08-01) §2-5.
-// 상태 패널(설정·세션·오늘 성과·Run/Stop·PAUSED 복구) + 단타 리스트 패널 + 기록 패널.
+// 자동 단타(오토파일럿) 화면.
+// 상태 패널(설정·오늘 성과·Run/Stop·PAUSED 복구) + 단타 리스트 패널 + 기록 패널.
 // app-ui-style: 풀폭 Panel + 촘촘한 ListRow, 이모지 금지(Ionicons), 손익 색은 pnlColor()만.
 import { useCallback, useEffect, useState } from 'react';
 import { Alert, FlatList, Pressable, Text, View } from 'react-native';
@@ -160,12 +160,6 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
 
   const handleStop = useCallback(() => autopilot.stop(), [autopilot]);
   const handleResume = useCallback(() => autopilot.pilot.resume(), [autopilot]);
-  const handleResetSession = useCallback(() => {
-    Alert.alert('세션 초기화', '현재 세션을 버리고 시작금액부터 새로 시작할까요?', [
-      { text: '닫기', style: 'cancel' },
-      { text: '초기화하고 재개하기', onPress: () => autopilot.pilot.resetSession() },
-    ]);
-  }, [autopilot]);
 
   // 행 탭 → 종목 상세화면(차트/댓글/호가) — 3거래소 병합 리스트라 행마다 채용 거래소를 넘긴다.
   const handleRowPress = useCallback((ticker: string, market: string) => {
@@ -180,7 +174,6 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
   );
 
   const config = view.config;
-  const session = view.session;
   const idleWatch = view.state === 'SCANNING' && view.watched.length === 0 && rows.length > 0;
 
   return (
@@ -213,20 +206,9 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
                 }
                 onPress={handleConfigPress}
               />
-              {session && (
-                <ListRow
-                  title={`세션 #${view.sessionCount}`}
-                  subtitle={`이번 세션 ${session.cycles}사이클 · 그리드 ${view.activeTickers.length}/${view.maxGrids}개 관리 중`}
-                  trailing={
-                    <Text className="text-base font-bold" style={{ color: pnlColor(session.pnl) }}>
-                      {formatSignedUsd(session.pnl)}
-                    </Text>
-                  }
-                />
-              )}
               <ListRow
                 title="오늘 성과"
-                subtitle={`사이클 ${view.cycles}회 · 세션 ${view.sessionCount}개`}
+                subtitle={`사이클 ${view.cycles}회 · 그리드 ${view.activeTickers.length}/${view.maxGrids}개 관리 중`}
                 trailing={
                   <Text className="text-base font-bold" style={{ color: pnlColor(view.cumPnl) }}>
                     {formatSignedUsd(view.cumPnl)}
@@ -252,22 +234,13 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
               )}
               <View className="px-5 pb-4 pt-2" style={{ gap: 8 }}>
                 {view.state === 'PAUSED' && (
-                  <>
-                    <Pressable
-                      onPress={handleResume}
-                      className="items-center rounded-2xl bg-[#3182f6] py-4 active:opacity-80"
-                      style={{ minHeight: 48 }}
-                    >
-                      <Text className="text-base font-semibold text-white">입금했어요 — 이어서 재개하기</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={handleResetSession}
-                      className="items-center rounded-2xl bg-[#f7f9fc] py-4 active:opacity-80"
-                      style={{ minHeight: 48 }}
-                    >
-                      <Text className="text-base font-semibold text-[#4e5968]">세션 초기화하고 재개하기</Text>
-                    </Pressable>
-                  </>
+                  <Pressable
+                    onPress={handleResume}
+                    className="items-center rounded-2xl bg-[#3182f6] py-4 active:opacity-80"
+                    style={{ minHeight: 48 }}
+                  >
+                    <Text className="text-base font-semibold text-white">입금했어요 — 재개하기</Text>
+                  </Pressable>
                 )}
                 {running && (
                   <>
@@ -348,7 +321,7 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
             <Panel title="기록" headerRight={events.length > 0 ? `최근 ${events.length}건` : undefined}>
               {events.length === 0 ? (
                 <View className="px-5 pb-4">
-                  <Text className="text-sm text-[#8b95a1]">시작하면 진입·청산·세션 내역이 여기에 쌓여요</Text>
+                  <Text className="text-sm text-[#8b95a1]">시작하면 진입·청산 내역이 여기에 쌓여요</Text>
                 </View>
               ) : (
                 events.slice(0, 20).map((e, i) => (

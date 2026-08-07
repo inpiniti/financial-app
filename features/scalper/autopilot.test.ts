@@ -7,12 +7,9 @@ import {
   DEFAULT_MAX_GRIDS,
   DEFAULT_MIN_TICK_RATE,
   etDateOf,
-  isMartingaleOn,
   MAX_GRIDS_LIMIT,
   maxGridsOf,
-  nextAmountUsd,
   qtyForAmount,
-  shouldEndSession,
   validateConfig,
   type AutoPilotConfig,
   type AutoPilotDeps,
@@ -29,7 +26,7 @@ const PROFIT_RUN = [20, 16, 12, 8, 4, 2, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 3
 /** 기존 시나리오 보존용 — 속도 필터가 사실상 안 걸리는 문턱. */
 const TINY_RATE = 0.01;
 
-const CONFIG_100: AutoPilotConfig = { startAmountUsd: 100, maxAmountUsd: 400, minTickRate: TINY_RATE };
+const CONFIG_100: AutoPilotConfig = { startAmountUsd: 100, minTickRate: TINY_RATE };
 
 interface Harness {
   pilot: AutoPilot;
@@ -119,39 +116,22 @@ async function cap(h: Harness, ticker: string, price: number, index: number): Pr
   await flush();
 }
 
-describe('순수 규칙 — 금액·수량·세션 종료·검증·기준일', () => {
-  it('수익 절반(하한 $1)·손실 2배(상한 없음)·본전 유지', () => {
-    expect(nextAmountUsd(100, 5)).toBe(50);
-    expect(nextAmountUsd(100, -5)).toBe(200);
-    expect(nextAmountUsd(100, 0)).toBe(100);
-    expect(nextAmountUsd(1600, -1)).toBe(3200); // 배증 상한 없음
-    expect(nextAmountUsd(1.5, 5)).toBe(1); // 반감 하한 $1(§4-1)
-  });
-
+describe('순수 규칙 — 수량·검증·기준일', () => {
   it('수량 = 금액÷가격 내림, 1주 못 사면 0', () => {
     expect(qtyForAmount(100, 30)).toBe(3);
     expect(qtyForAmount(100, 101)).toBe(0);
     expect(qtyForAmount(100, 0)).toBe(0);
   });
 
-  it('세션 종료 — AND 3조건(수익·투입≥max·성과≥0, 성과 0 포함)', () => {
-    expect(shouldEndSession(5, 400, 10, 400)).toBe(true);
-    expect(shouldEndSession(5, 400, 0, 400)).toBe(true); // 성과 0 포함(§4-8)
-    expect(shouldEndSession(5, 400, -1, 400)).toBe(false); // 성과 음수
-    expect(shouldEndSession(-5, 400, 10, 400)).toBe(false); // 마지막 사이클 손실
-    expect(shouldEndSession(5, 399, 10, 400)).toBe(false); // 투입 미달
-  });
-
-  it('설정 검증 — 0<시작≤최대, 최소 속도>0(0 설정 불가)', () => {
-    expect(validateConfig({ startAmountUsd: 100, maxAmountUsd: 400, minTickRate: 1 })).toBeNull();
-    expect(validateConfig({ startAmountUsd: 0, maxAmountUsd: 400, minTickRate: 1 })).toContain('시작금액');
-    expect(validateConfig({ startAmountUsd: 100, maxAmountUsd: 99, minTickRate: 1 })).toContain('최대금액');
-    expect(validateConfig({ startAmountUsd: 100, maxAmountUsd: 400, minTickRate: 0 })).toContain('최소 속도');
+  it('설정 검증 — 진입금액>0, 최소 속도>0(0 설정 불가)', () => {
+    expect(validateConfig({ startAmountUsd: 100, minTickRate: 1 })).toBeNull();
+    expect(validateConfig({ startAmountUsd: 0, minTickRate: 1 })).toContain('금액');
+    expect(validateConfig({ startAmountUsd: 100, minTickRate: 0 })).toContain('최소 속도');
     expect(DEFAULT_MIN_TICK_RATE).toBe(1);
   });
 
   it('동시 그리드 수 — 미지정·손상값은 기본값, 상한은 클램프, 검증은 범위만 본다', () => {
-    // 미지정(기존 v2 저장값)은 조용히 기본값으로 읽힌다 — 설정 소실 없음.
+    // 미지정(기존 저장값)은 조용히 기본값으로 읽힌다 — 설정 소실 없음.
     expect(maxGridsOf(null)).toBe(DEFAULT_MAX_GRIDS);
     expect(maxGridsOf({})).toBe(DEFAULT_MAX_GRIDS);
     expect(maxGridsOf({ maxConcurrentGrids: 0 })).toBe(DEFAULT_MAX_GRIDS);
@@ -159,16 +139,9 @@ describe('순수 규칙 — 금액·수량·세션 종료·검증·기준일', (
     expect(maxGridsOf({ maxConcurrentGrids: 2 })).toBe(2);
     expect(maxGridsOf({ maxConcurrentGrids: 99 })).toBe(MAX_GRIDS_LIMIT);
     // 검증: 미지정은 통과, 범위 밖은 문구.
-    expect(validateConfig({ startAmountUsd: 100, maxAmountUsd: 400, minTickRate: 1 })).toBeNull();
-    expect(
-      validateConfig({ startAmountUsd: 100, maxAmountUsd: 400, minTickRate: 1, maxConcurrentGrids: 3 }),
-    ).toBeNull();
-    expect(
-      validateConfig({ startAmountUsd: 100, maxAmountUsd: 400, minTickRate: 1, maxConcurrentGrids: 0 }),
-    ).toContain('동시 그리드');
-    expect(
-      validateConfig({ startAmountUsd: 100, maxAmountUsd: 400, minTickRate: 1, maxConcurrentGrids: 99 }),
-    ).toContain('동시 그리드');
+    expect(validateConfig({ startAmountUsd: 100, minTickRate: 1, maxConcurrentGrids: 3 })).toBeNull();
+    expect(validateConfig({ startAmountUsd: 100, minTickRate: 1, maxConcurrentGrids: 0 })).toContain('동시 그리드');
+    expect(validateConfig({ startAmountUsd: 100, minTickRate: 1, maxConcurrentGrids: 99 })).toContain('동시 그리드');
   });
 
   it('기준일 — 미국 동부(America/New_York) 날짜, 서머타임 자동(§4-7)', () => {
@@ -192,7 +165,7 @@ describe('AutoPilot — 감시 선정(최소 속도 자격 필터·히스테리�
 
   it('최소 속도 미달은 감시하지 않는다 — 자격자 1개면 1개, 0개면 감시 없음', () => {
     const h = makeHarness(['A', 'B', 'C'], {
-      config: { startAmountUsd: 100, maxAmountUsd: 400, minTickRate: 1 },
+      config: { startAmountUsd: 100, minTickRate: 1 },
     });
     burst(h, 'A', 15); // 1.5틱/초 — 자격
     burst(h, 'B', 5); // 0.5틱/초 — 미달
@@ -210,7 +183,7 @@ describe('AutoPilot — 감시 선정(최소 속도 자격 필터·히스테리�
 
   it('감시 중 종목이 자격을 잃으면 히스테리시스와 무관하게 즉시 해제된다', () => {
     const h = makeHarness(['A', 'B'], {
-      config: { startAmountUsd: 100, maxAmountUsd: 400, minTickRate: 1 },
+      config: { startAmountUsd: 100, minTickRate: 1 },
     });
     burst(h, 'A', 20);
     h.pilot.start();
@@ -242,8 +215,8 @@ describe('AutoPilot — 감시 선정(최소 속도 자격 필터·히스테리�
   });
 });
 
-describe('AutoPilot — 사이클 e2e (진입 1종목·정산·금액 조정·세션)', () => {
-  it('BUY→진입(핀)→SELL→정산→금액 조정→SCANNING 복귀', async () => {
+describe('AutoPilot — 사이클 e2e (진입 1종목·정산)', () => {
+  it('BUY→진입(핀)→SELL→정산→SCANNING 복귀', async () => {
     const h = makeHarness(['A', 'B', 'C']);
     h.pilot.start();
     const n = await replay(h, 'A', DOWN_UP_DOWN);
@@ -260,22 +233,15 @@ describe('AutoPilot — 사이클 e2e (진입 1종목·정산·금액 조정·�
     expect(h.unpins).toEqual(['A']);
 
     const view = h.pilot.getView();
-    expect(view.session!.amountUsd).toBe(nextAmountUsd(100, rec.pnl));
-    expect(view.session!.pnl).toBe(rec.pnl);
     expect(view.cycles).toBe(1);
     expect(view.cumPnl).toBe(rec.pnl);
     expect(view.state).toBe('SCANNING');
     expect(view.activeTicker).toBeNull();
   });
 
-  it('세션 종료 — 수익 사이클 + 투입≥max + 성과≥0이면 새 세션(시작금액·성과 0·카운트 증가)', async () => {
-    // max=start=100 → 첫 수익 사이클에서 곧바로 3조건 충족.
-    const h = makeHarness(['A', 'B', 'C'], {
-      config: { startAmountUsd: 100, maxAmountUsd: 100, minTickRate: TINY_RATE },
-    });
+  it('수익 사이클 뒤에도 진입금액은 설정 고정값 그대로다(배증·반감 없음)', async () => {
+    const h = makeHarness(['A', 'B', 'C']);
     h.pilot.start();
-    expect(h.pilot.getView().sessionCount).toBe(1);
-
     const n = await replay(h, 'A', PROFIT_RUN);
     await cap(h, 'A', 24, n);
 
@@ -283,11 +249,8 @@ describe('AutoPilot — 사이클 e2e (진입 1종목·정산·금액 조정·�
     expect(h.trades[0].pnl).toBeGreaterThan(0); // 바닥 매수·고점 매도 — 수익 사이클 전제.
 
     const view = h.pilot.getView();
-    expect(view.sessionCount).toBe(2); // 세션 완주 → 새 세션.
-    expect(view.session!.amountUsd).toBe(100); // 시작금액으로 리셋(반감 아님 — 조정 전 판정 §4-2).
-    expect(view.session!.pnl).toBe(0);
-    expect(view.cumPnl).toBe(h.trades[0].pnl); // 오늘 성과는 세션과 무관하게 누적.
-    expect(h.events.some((e) => e.includes('세션 완주'))).toBe(true);
+    expect(view.config!.startAmountUsd).toBe(100); // 설정값 불변.
+    expect(view.cumPnl).toBe(h.trades[0].pnl);
   });
 
   it('진입 직전 속도 재검사 — 프리플라이트 사이 유동성이 죽으면 발주 없이 포기한다', async () => {
@@ -315,7 +278,7 @@ describe('AutoPilot — 사이클 e2e (진입 1종목·정산·금액 조정·�
       storage: h.store,
       onEvent: (e) => h.events.push(e.text),
     });
-    pilot.setConfig({ startAmountUsd: 100, maxAmountUsd: 400, minTickRate: 0.5 });
+    pilot.setConfig({ startAmountUsd: 100, minTickRate: 0.5 });
     pilot.start();
 
     // A를 BUY까지 재생(재생 중 틱/초 ≈ 1.0 — 자격 충분). 프리플라이트는 게이트에 붙잡힌다.
@@ -396,7 +359,7 @@ describe('AutoPilot — 사이클 e2e (진입 1종목·정산·금액 조정·�
 
   it('qty<1(금액 < 1주 가격)이면 진입을 포기하고 SCANNING을 유지한다', async () => {
     const h = makeHarness(['A', 'B', 'C'], {
-      config: { startAmountUsd: 1, maxAmountUsd: 4, minTickRate: TINY_RATE },
+      config: { startAmountUsd: 1, minTickRate: TINY_RATE },
     });
     h.pilot.start();
     const n = await replay(h, 'A', V);
@@ -408,7 +371,7 @@ describe('AutoPilot — 사이클 e2e (진입 1종목·정산·금액 조정·�
   });
 });
 
-describe('AutoPilot — 현금 부족 PAUSED (재개/초기화는 사람이 선택)', () => {
+describe('AutoPilot — 현금 부족 PAUSED (재개는 사람이 선택)', () => {
   it('매수가능금액 < 필요금액 → 발주 없이 PAUSED, 감시 해제', async () => {
     const h = makeHarness(['A', 'B', 'C'], { fetchBuyableUsd: async () => 3 }); // $3뿐.
     h.pilot.start();
@@ -417,13 +380,13 @@ describe('AutoPilot — 현금 부족 PAUSED (재개/초기화는 사람이 선�
 
     const view = h.pilot.getView();
     expect(view.state).toBe('PAUSED');
-    expect(view.session!.paused).toBe(true);
+    expect(view.paused).toBe(true);
     expect(h.brokers.get('A')!.placed).toHaveLength(0); // 발주 자체가 없다.
     expect([...h.slots.values()].every((s) => !s.watched)).toBe(true);
     expect(h.events.some((e) => e.includes('현금이 부족'))).toBe(true);
   });
 
-  it('resume — 같은 세션·같은 금액으로 SCANNING 복귀', async () => {
+  it('resume — SCANNING 복귀', async () => {
     const h = makeHarness(['A', 'B', 'C'], { fetchBuyableUsd: async () => 0 });
     h.pilot.start();
     const n = await replay(h, 'A', V);
@@ -433,24 +396,8 @@ describe('AutoPilot — 현금 부족 PAUSED (재개/초기화는 사람이 선�
     h.pilot.resume();
     const view = h.pilot.getView();
     expect(view.state).toBe('SCANNING');
-    expect(view.session!.paused).toBe(false);
-    expect(view.session!.amountUsd).toBe(100); // 금액 그대로.
-    expect(view.sessionCount).toBe(1); // 같은 세션.
-  });
-
-  it('resetSession — 시작금액·성과 0의 새 세션으로 재개(카운트 증가)', async () => {
-    const h = makeHarness(['A', 'B', 'C'], { fetchBuyableUsd: async () => 0 });
-    h.pilot.start();
-    const n = await replay(h, 'A', V);
-    await cap(h, 'A', 20, n);
-    expect(h.pilot.getView().state).toBe('PAUSED');
-
-    h.pilot.resetSession();
-    const view = h.pilot.getView();
-    expect(view.state).toBe('SCANNING');
-    expect(view.session!.amountUsd).toBe(100);
-    expect(view.session!.pnl).toBe(0);
-    expect(view.sessionCount).toBe(2);
+    expect(view.paused).toBe(false);
+    expect(view.config!.startAmountUsd).toBe(100); // 설정 금액 그대로.
   });
 
   it('PAUSED에서 Stop → IDLE, 재시작하면 다시 PAUSED(자동 재개 금지)', async () => {
@@ -463,7 +410,7 @@ describe('AutoPilot — 현금 부족 PAUSED (재개/초기화는 사람이 선�
     h.pilot.stop();
     expect(h.pilot.getView().state).toBe('IDLE');
 
-    h.pilot.start(); // 세션이 여전히 paused — 자동으로 SCANNING에 들어가지 않는다.
+    h.pilot.start(); // 여전히 paused — 자동으로 SCANNING에 들어가지 않는다.
     expect(h.pilot.getView().state).toBe('PAUSED');
   });
 
@@ -478,7 +425,7 @@ describe('AutoPilot — 현금 부족 PAUSED (재개/초기화는 사람이 선�
 });
 
 describe('AutoPilot — Stop·FAULT·영속화·마이그레이션', () => {
-  it('보유 중 Stop → 전량 매도(STOP) 후 IDLE, 금액·세션 유지', async () => {
+  it('보유 중 Stop → 전량 매도(STOP) 후 IDLE, 통계 반영', async () => {
     const h = makeHarness(['A', 'B', 'C']);
     h.pilot.start();
     const n = await replay(h, 'A', V);
@@ -493,9 +440,8 @@ describe('AutoPilot — Stop·FAULT·영속화·마이그레이션', () => {
     const view = h.pilot.getView();
     expect(view.state).toBe('IDLE');
     expect(h.trades[0].exitReason).toBe('STOP');
-    expect(view.session!.amountUsd).toBe(100); // 수동 청산 — 금액 유지·세션 종료 판정 없음.
-    expect(view.session!.pnl).toBe(h.trades[0].pnl); // 성과에는 반영.
-    expect(view.sessionCount).toBe(1);
+    expect(view.cycles).toBe(1);
+    expect(view.cumPnl).toBe(h.trades[0].pnl); // 오늘 성과에는 반영.
   });
 
   it('체결 확인이 죽으면 FAULT로 동결되고, Stop으로만 해제된다', async () => {
@@ -514,74 +460,6 @@ describe('AutoPilot — Stop·FAULT·영속화·마이그레이션', () => {
     expect(h.pilot.getView().lastFault).toBeNull();
   });
 
-  it('영속화 v2 — 설정·세션·일일 통계가 복원된다', async () => {
-    const h = makeHarness(['A'], {
-      config: { startAmountUsd: 50, maxAmountUsd: 800, minTickRate: 2 },
-    });
-    h.pilot.start(); // 세션 개시 → persist.
-    h.pilot.stop();
-
-    const pilot2 = new AutoPilot({
-      slots: () => [],
-      pin: () => {},
-      unpin: () => {},
-      makeBroker: () => new FakeBroker(),
-      clock: h.clock,
-      scheduler: noopScheduler(),
-      storage: h.store,
-    });
-    await pilot2.restore();
-    const view = pilot2.getView();
-    expect(view.config).toEqual({ startAmountUsd: 50, maxAmountUsd: 800, minTickRate: 2 });
-    expect(view.session!.amountUsd).toBe(50);
-    expect(view.sessionCount).toBe(1);
-  });
-
-  it('v1(baseAmountUsd) 저장값 → 시작=base·최대=base×4·속도=1로 마이그레이션(§4-5)', async () => {
-    const store = new FakeStore();
-    await store.setItem(AUTOPILOT_STORAGE_KEY, JSON.stringify({ baseAmountUsd: 100, currentAmountUsd: 200 }));
-    const pilot = new AutoPilot({
-      slots: () => [],
-      pin: () => {},
-      unpin: () => {},
-      makeBroker: () => new FakeBroker(),
-      clock: fakeClock(0),
-      scheduler: noopScheduler(),
-      storage: store,
-    });
-    await pilot.restore();
-    expect(pilot.getView().config).toEqual({ startAmountUsd: 100, maxAmountUsd: 400, minTickRate: 1 });
-    expect(pilot.getView().session).toBeNull(); // 세션은 새로 시작.
-  });
-
-  it('미국 장 기준일이 바뀌면 일일 통계(세션 수)가 리셋된다', () => {
-    const h = makeHarness(['A']);
-    h.pilot.start();
-    h.pilot.stop();
-    expect(h.pilot.getView().sessionCount).toBe(1);
-
-    h.clock.advance(48 * 3600 * 1000); // 이틀 뒤 — ET 기준일 확실히 변경.
-    h.pilot.start();
-    expect(h.pilot.getView().sessionCount).toBe(1); // 진행 중 세션 1개 = 오늘의 1번째.
-    expect(h.pilot.getView().cycles).toBe(0);
-  });
-
-  it('설정 미입력이면 start를 거부하고, 실행 중 setConfig는 막힌다', () => {
-    const h = makeHarness(['A'], { config: null });
-    h.pilot.start();
-    expect(h.pilot.getView().state).toBe('IDLE');
-
-    expect(h.pilot.setConfig(CONFIG_100)).toBeNull();
-    h.pilot.start();
-    expect(h.pilot.setConfig(CONFIG_100)).toContain('정지 상태');
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 마틴게일 옵션(2026-08-05) — 끄면 금액이 고정되고 세션 완주 판정을 하지 않는다.
-// 미지정은 항상 켬(기존 동작·하위호환).
-// ─────────────────────────────────────────────────────────────────────────────
-describe('AutoPilot — 마틴게일 옵션', () => {
   /** 저장값 복원만 검증할 때 쓰는 최소 AutoPilot(슬롯·브로커 없이). */
   function makeBarePilot(storage: FakeStore): AutoPilot {
     return new AutoPilot({
@@ -595,163 +473,89 @@ describe('AutoPilot — 마틴게일 옵션', () => {
     });
   }
 
-  /** 마틴 OFF 설정 — 금액 고정. max는 start와 같은 값으로 정규화해 저장한다. */
-  const CONFIG_OFF: AutoPilotConfig = {
-    startAmountUsd: 100,
-    maxAmountUsd: 100,
-    minTickRate: TINY_RATE,
-    martingale: false,
-  };
+  it('영속화 v3 — 설정·일일 통계가 복원된다', async () => {
+    const h = makeHarness(['A'], {
+      config: { startAmountUsd: 50, minTickRate: 2 },
+    });
+    h.pilot.start(); // persist.
+    h.pilot.stop();
 
-  it('① isMartingaleOn — 미지정·손상값은 전부 켬으로 읽고, 명시적 false만 끔이다', () => {
-    expect(isMartingaleOn({})).toBe(true);
-    expect(isMartingaleOn({ martingale: undefined })).toBe(true);
-    expect(isMartingaleOn({ martingale: true })).toBe(true);
-    // JSON 손상값이 들어와도 기존 동작(켬)으로 폴백한다.
-    expect(isMartingaleOn({ martingale: null as unknown as boolean })).toBe(true);
-    expect(isMartingaleOn({ martingale: 0 as unknown as boolean })).toBe(true);
-    expect(isMartingaleOn({ martingale: 'false' as unknown as boolean })).toBe(true);
-    expect(isMartingaleOn({ martingale: false })).toBe(false);
+    const pilot2 = makeBarePilot(h.store);
+    await pilot2.restore();
+    const view = pilot2.getView();
+    expect(view.config).toEqual({ startAmountUsd: 50, minTickRate: 2 });
+    expect(view.paused).toBe(false);
   });
 
-  it('② validateConfig — 마틴을 끄면 최대금액을 보지 않고, 켜면 기존 규칙 그대로다', () => {
-    // OFF: 최대금액이 시작금액보다 작아도 통과한다(그 필드를 안 쓰므로).
-    expect(validateConfig({ startAmountUsd: 100, maxAmountUsd: 1, minTickRate: 1, martingale: false })).toBeNull();
-    // OFF에서도 금액·속도 규칙은 유지된다.
-    expect(
-      validateConfig({ startAmountUsd: 0, maxAmountUsd: 0, minTickRate: 1, martingale: false }),
-    ).toContain('금액');
-    // ON(미지정 포함): 기존 규칙 그대로.
-    expect(validateConfig({ startAmountUsd: 100, maxAmountUsd: 1, minTickRate: 1 })).toContain('최대금액');
-  });
-
-  it('③ 마틴 OFF면 수익 사이클 뒤에도 투입금액이 그대로다', async () => {
-    const h = makeHarness(['A', 'B', 'C'], { config: CONFIG_OFF });
+  it('영속화 v3 — PAUSED 상태가 재시작 후에도 복원된다(자동 재개 금지)', async () => {
+    const h = makeHarness(['A', 'B', 'C'], { fetchBuyableUsd: async () => 0 });
     h.pilot.start();
-    const n = await replay(h, 'A', PROFIT_RUN);
-    await cap(h, 'A', 24, n);
+    const n = await replay(h, 'A', V);
+    await cap(h, 'A', 20, n);
+    expect(h.pilot.getView().state).toBe('PAUSED'); // persist됨.
 
-    expect(h.trades).toHaveLength(1);
-    expect(h.trades[0].pnl).toBeGreaterThan(0);
-    const view = h.pilot.getView();
-    expect(view.session!.amountUsd).toBe(100); // 절반으로 안 줄어든다
-    expect(view.session!.pnl).toBe(h.trades[0].pnl); // 성과는 그대로 누적
-    expect(view.cycles).toBe(1);
+    const pilot2 = makeBarePilot(h.store);
+    await pilot2.restore();
+    expect(pilot2.getView().paused).toBe(true);
+    pilot2.start();
+    expect(pilot2.getView().state).toBe('PAUSED'); // 복원 후에도 사람이 재개해야 한다.
   });
 
-  it('④ 마틴 OFF면 손실 사이클 뒤에도 투입금액이 그대로다', async () => {
-    const h = makeHarness(['A', 'B', 'C'], { config: CONFIG_OFF });
+  it('v2(세션) 저장값 → 세션 전용 키를 버리고 설정·paused·일일 통계만 승계한다', async () => {
+    const store = new FakeStore();
+    await store.setItem(
+      AUTOPILOT_STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        config: { startAmountUsd: 30, maxAmountUsd: 120, minTickRate: 2, martingale: false, maxConcurrentGrids: 2 },
+        session: { amountUsd: 480, pnl: -5, cycles: 3, paused: true },
+        daily: { date: '2026-08-07', sessionCount: 4, cycles: 9, cumPnl: 12.5 },
+      }),
+    );
+    const pilot = makeBarePilot(store);
+    await pilot.restore();
+
+    const view = pilot.getView();
+    expect(view.config).toEqual({ startAmountUsd: 30, minTickRate: 2, maxConcurrentGrids: 2 });
+    expect(view.paused).toBe(true); // session.paused 승계 — 입금 대기 중이던 상태를 잃지 않는다.
+    // v3로 다시 저장됐다(세션 키 소멸).
+    const raw = JSON.parse((await store.getItem(AUTOPILOT_STORAGE_KEY))!);
+    expect(raw.version).toBe(3);
+    expect(raw.session).toBeUndefined();
+    expect(raw.config.maxAmountUsd).toBeUndefined();
+  });
+
+  it('v1(baseAmountUsd) 저장값 → 진입금액=base·속도=1로 마이그레이션', async () => {
+    const store = new FakeStore();
+    await store.setItem(AUTOPILOT_STORAGE_KEY, JSON.stringify({ baseAmountUsd: 100, currentAmountUsd: 200 }));
+    const pilot = makeBarePilot(store);
+    await pilot.restore();
+    expect(pilot.getView().config).toEqual({ startAmountUsd: 100, minTickRate: 1 });
+    expect(pilot.getView().paused).toBe(false);
+  });
+
+  it('미국 장 기준일이 바뀌면 일일 통계(사이클·손익)가 리셋된다', async () => {
+    const h = makeHarness(['A', 'B', 'C']);
     h.pilot.start();
     const n = await replay(h, 'A', DOWN_UP_DOWN);
     await cap(h, 'A', 2, n);
-
-    expect(h.trades).toHaveLength(1);
-    const view = h.pilot.getView();
-    expect(view.session!.amountUsd).toBe(100); // 2배로 안 늘어난다
-    expect(view.cumPnl).toBe(h.trades[0].pnl);
-  });
-
-  it('⑤ 마틴 OFF면 세션 완주 조건을 만족해도 세션이 끝나지 않는다', async () => {
-    // start=max=100 + 수익 사이클 → 마틴 ON이었다면 즉시 완주할 조건.
-    const h = makeHarness(['A', 'B', 'C'], { config: CONFIG_OFF });
-    h.pilot.start();
-    const before = h.pilot.getView().sessionCount;
-    const n = await replay(h, 'A', PROFIT_RUN);
-    await cap(h, 'A', 24, n);
-
-    expect(h.trades[0].pnl).toBeGreaterThan(0);
-    const view = h.pilot.getView();
-    expect(view.sessionCount).toBe(before); // 새 세션이 열리지 않는다
-    expect(view.session!.cycles).toBe(1); // 세션이 이어진다(리셋 안 됨)
-    expect(h.events.some((e) => e.includes('세션 완주'))).toBe(false);
-    expect(h.events.some((e) => e.includes('금액 고정'))).toBe(true);
-  });
-
-  it('⑥ [사고 재현] 마틴 OFF에서 금액을 바꾸면 진행 중 세션에 즉시 반영된다', async () => {
-    // OFF는 세션이 끝나지 않으므로 "다음 세션부터 적용"이면 영원히 반영되지 않는다.
-    const h = makeHarness(['A'], { config: CONFIG_OFF });
-    h.pilot.start();
-    expect(h.pilot.getView().session!.amountUsd).toBe(100);
-
-    h.pilot.stop(); // setConfig는 IDLE에서만 통과한다
-    const rejected = h.pilot.setConfig({ ...CONFIG_OFF, startAmountUsd: 10, maxAmountUsd: 10 });
-    expect(rejected).toBeNull();
-    expect(h.pilot.getView().session!.amountUsd).toBe(10);
-  });
-
-  it('⑦ 마틴을 켜서 금액이 불어난 뒤 끄면 설정 금액으로 내려온다', async () => {
-    const h = makeHarness(['A', 'B', 'C']); // 기본 CONFIG_100(마틴 ON)
-    h.pilot.start();
-    const n = await replay(h, 'A', DOWN_UP_DOWN); // 손실 사이클 → 금액 2배
-    await cap(h, 'A', 2, n);
-    expect(h.pilot.getView().session!.amountUsd).toBe(200);
-
     h.pilot.stop();
-    h.pilot.setConfig(CONFIG_OFF);
-    expect(h.pilot.getView().session!.amountUsd).toBe(100);
-  });
+    expect(h.pilot.getView().cycles).toBe(1);
 
-  it('⑧ 마틴 OFF에서도 수동 Stop 청산은 기존과 같이 손익만 반영한다', async () => {
-    const h = makeHarness(['A', 'B', 'C'], { config: CONFIG_OFF });
+    h.clock.advance(48 * 3600 * 1000); // 이틀 뒤 — ET 기준일 확실히 변경.
     h.pilot.start();
-    // 진입까지만 흘린 뒤 Stop으로 청산한다.
-    let i = 0;
-    for (const price of V) {
-      h.slots.get('A')!.pushTick(price, i * 1000);
-      h.pilot.reselect();
-      h.clock.advance(1000);
-      await flush();
-      await h.pilot.pollCycle();
-      await flush();
-      i += 1;
-    }
-    if (h.pilot.getView().activeTicker === 'A') {
-      h.pilot.stop();
-      await flush();
-      await h.pilot.pollCycle();
-      await flush();
-    }
-    // 금액은 어떤 경우에도 고정이다.
-    const view = h.pilot.getView();
-    if (view.session) expect(view.session.amountUsd).toBe(100);
+    expect(h.pilot.getView().cycles).toBe(0);
+    expect(h.pilot.getView().cumPnl).toBe(0);
   });
 
-  it('⑨ 마틴 키가 없는 v2 저장값은 켬으로 복원된다 (하위호환 — 설정 소실 없음)', async () => {
-    const store = new FakeStore();
-    await store.setItem(
-      AUTOPILOT_STORAGE_KEY,
-      JSON.stringify({
-        version: 2,
-        config: { startAmountUsd: 50, maxAmountUsd: 800, minTickRate: 2 },
-        session: null,
-        daily: null,
-      }),
-    );
-    const pilot = makeBarePilot(store);
-    await pilot.restore();
+  it('설정 미입력이면 start를 거부하고, 실행 중 setConfig는 막힌다', () => {
+    const h = makeHarness(['A'], { config: null });
+    h.pilot.start();
+    expect(h.pilot.getView().state).toBe('IDLE');
 
-    const cfg = pilot.getView().config!;
-    expect(cfg).toEqual({ startAmountUsd: 50, maxAmountUsd: 800, minTickRate: 2 });
-    expect(isMartingaleOn(cfg)).toBe(true);
-  });
-
-  it('⑩ 마틴 OFF 저장값은 복원 후에도 OFF다', async () => {
-    const store = new FakeStore();
-    await store.setItem(
-      AUTOPILOT_STORAGE_KEY,
-      JSON.stringify({
-        version: 2,
-        config: { startAmountUsd: 30, maxAmountUsd: 30, minTickRate: 1, martingale: false },
-        session: null,
-        daily: null,
-      }),
-    );
-    const pilot = makeBarePilot(store);
-    await pilot.restore();
-
-    const cfg = pilot.getView().config!;
-    expect(isMartingaleOn(cfg)).toBe(false);
-    expect(cfg.startAmountUsd).toBe(30);
+    expect(h.pilot.setConfig(CONFIG_100)).toBeNull();
+    h.pilot.start();
+    expect(h.pilot.setConfig(CONFIG_100)).toContain('정지 상태');
   });
 });
 
@@ -851,7 +655,7 @@ describe('AutoPilot — 매도 관리 그리드 인계(D5·GRID_EXIT)', () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 다중 그리드(2026-08-05) — 진입 뒤에도 변곡점 감시가 계속 돌고, 보유 종목만 후보에서 빠진다.
-// 진입금액은 설정 고정값이고 세션 금액(마틴게일)과 분리돼 있다.
+// 진입금액은 항상 설정 고정값이다.
 // ─────────────────────────────────────────────────────────────────────────────
 describe('AutoPilot — 다중 그리드', () => {
   /** 신호가 나지 않는 배경 궤적(단조 상승 — 하락→상승 전환이 없어 BUY가 안 뜬다). 틱/초 자격만 만들어 준다. */
@@ -904,7 +708,7 @@ describe('AutoPilot — 다중 그리드', () => {
 
   it('동시 그리드 상한이 1이면 두 번째 종목은 진입하지 않는다', async () => {
     const h = makeHarness(['A', 'B'], {
-      config: { startAmountUsd: 100, maxAmountUsd: 400, minTickRate: TINY_RATE, maxConcurrentGrids: 1 },
+      config: { startAmountUsd: 100, minTickRate: TINY_RATE, maxConcurrentGrids: 1 },
     });
     h.pilot.start();
     await replayMulti(h, { A: V, B: V });
@@ -916,7 +720,7 @@ describe('AutoPilot — 다중 그리드', () => {
 
   it('상한이 3이면 두 종목이 나란히 진입한다', async () => {
     const h = makeHarness(['A', 'B'], {
-      config: { startAmountUsd: 100, maxAmountUsd: 400, minTickRate: TINY_RATE, maxConcurrentGrids: 3 },
+      config: { startAmountUsd: 100, minTickRate: TINY_RATE, maxConcurrentGrids: 3 },
     });
     h.pilot.start();
     await replayMulti(h, { A: V, B: V });
@@ -967,15 +771,15 @@ describe('AutoPilot — 다중 그리드', () => {
     });
   });
 
-  it('진입금액은 설정 고정값 — 세션 금액이 마틴게일로 2배가 돼도 진입 수량은 그대로다', async () => {
+  it('진입금액은 설정 고정값 — 손실 사이클 뒤에도 다음 진입 수량은 그대로다(배증 없음)', async () => {
     const h = makeHarness(['A', 'B']);
     h.pilot.start();
-    // A: 손실 사이클 → 세션 금액 100 → 200.
+    // A: 손실 사이클.
     const n = await replay(h, 'A', DOWN_UP_DOWN);
     await cap(h, 'A', 2, n);
-    expect(h.pilot.getView().session!.amountUsd).toBe(200);
+    expect(h.trades[0].pnl).toBeLessThan(0);
 
-    // B: 다음 진입. 세션 금액(200)이 아니라 설정 진입금액(100) 기준이어야 한다.
+    // B: 다음 진입. 항상 설정 진입금액(100) 기준이어야 한다.
     await replay(h, 'B', V);
     const buy = h.brokers.get('B')!.placed.find((p) => p.side === 'buy')!;
     expect(buy.qty).toBe(qtyForAmount(100, buy.price));
@@ -1118,7 +922,7 @@ describe('AutoPilot — 다중 그리드', () => {
     const h = makeHarness(['A', 'B'], {
       autoFill: false,
       gridConfig: { width: 0.1, buyMultiplier: 1 },
-      config: { startAmountUsd: 100, maxAmountUsd: 400, minTickRate: TINY_RATE, maxConcurrentGrids: 1 },
+      config: { startAmountUsd: 100, minTickRate: TINY_RATE, maxConcurrentGrids: 1 },
       positions: { A: { qty: 2, avgPrice: 50 }, B: { qty: 5, avgPrice: 20 } },
     });
     // 정지 상태.
@@ -1149,7 +953,7 @@ describe('AutoPilot — 다중 그리드', () => {
     const view = h.pilot.getView();
     // ★ PAUSED로 갔다면 폴 타이머가 꺼져 A의 포지션이 방치된다 — 그래서 절대 PAUSED가 아니어야 한다.
     expect(view.state).toBe('HOLDING');
-    expect(view.session!.paused).toBe(false);
+    expect(view.paused).toBe(false);
     expect(view.activeTickers).toEqual(['A']);
     expect(h.brokers.get('B')!.placed).toHaveLength(0);
     expect(h.events.some((e) => e.includes('신규 진입을'))).toBe(true);
