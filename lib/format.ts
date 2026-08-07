@@ -36,6 +36,18 @@ export function formatSignedUsd(value: number | string, digits = 2): string {
 }
 
 /**
+ * 부호 있는 원화 금액 — 천단위 콤마 + 정수(원 단위 반올림). 예: -5352372 → "-5,352,372원", 653091.4 → "+653,091원".
+ * KIS 기간손익처럼 WCRC_FRCR_DVSN_CD=02(원화)로 받은 금액에 쓴다. 파싱 실패 시 원본 문자열(또는 "—").
+ */
+export function formatSignedKrw(value: number | string): string {
+  const n = toNumber(value);
+  if (!Number.isFinite(n)) return typeof value === 'string' ? value : '—';
+  const rounded = Math.round(n);
+  const sign = rounded > 0 ? '+' : rounded < 0 ? '-' : '';
+  return `${sign}${Math.abs(rounded).toLocaleString('en-US')}원`;
+}
+
+/**
  * 부호 있는 퍼센트 — 입력값이 이미 "퍼센트 단위"(예: KIS evlu_pfls_rt1 = "-14.36000000")라고 가정하고
  * 소수 자리만 다듬는다. 0~1 비율값(예: 0.14)을 넣으려면 formatSignedPercentFromRatio를 쓴다.
  */
