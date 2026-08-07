@@ -2,21 +2,31 @@
 // 상단 MonthNavigator("< 2026년 8월 >")로 년·월을 고르면, 그 달의 기간손익을 "일별 합계" 리스트로 보여준다
 // (일별 접기/월 범위 계산은 features/inquiry/dailyProfit.ts). 금액은 WCRC_FRCR_DVSN_CD 기본값 02(원화)로
 // 받으므로 원화(formatSignedKrw)로 표시한다.
-// 현재 달을 보고 있을 때는 앱이 직접 기록한 오늘의 단타 사이클(features/scalper/tradeStore)도 함께 보여준다
-// — KIS 조회가 실패해도 이 로컬 섹션은 항상 표시한다(TodayTrades.tsx 폴백 관례 계승).
+// KIS가 당일 손익을 제공하지 않아, 현재 달에서는 앱 자체 기록(features/scalper/tradeStore)을 합산한
+// "오늘예상" 행을 일별 리스트와 같은 형식으로 맨 위에 얹는다(응답 환율로 원화 환산, 환율 없으면 USD).
+// 개별 사이클 상세는 조회 탭 "거래기록" 세그먼트(TradeHistory.tsx)로 분리했다.
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { FlatList, RefreshControl, Text, View } from 'react-native';
 import { ListRow } from '../../components/ListRow';
 import { MonthNavigator } from '../../components/MonthNavigator';
 import { Panel } from '../../components/Panel';
-import { TickerAvatar } from '../../components/TickerAvatar';
 import { inquireOverseasPeriodProfit, type PeriodProfitItem, type PeriodProfitSummary } from '../../kis/periodProfit';
-import { formatSignedKrw, formatSignedPercent, formatSignedUsd, formatUsd, pnlColor } from '../../lib/format';
+import { formatSignedKrw, formatSignedPercent, formatSignedUsd, pnlColor } from '../../lib/format';
 import { readTodayTrades, type StoredTrade } from '../scalper/tradeStore';
 import { EmptyState, ErrorNotice, SetupNotice, SkeletonList } from './components';
 import { useKisSession } from './useKisSession';
-import { aggregateDaily, currentYearMonthKst, formatDayLabel, monthRange, type DailyProfit, type YearMonth } from './dailyProfit';
+import {
+  aggregateDaily,
+  currentYearMonthKst,
+  estimateToday,
+  formatDayLabel,
+  monthRange,
+  todayKstDt,
+  type DailyProfit,
+  type TodayEstimate,
+  type YearMonth,
+} from './dailyProfit';
 
 const clock = { now: () => Date.now() };
 
@@ -38,24 +48,20 @@ function DailyRow({ day }: { day: DailyProfit }) {
   );
 }
 
-/**
- * 앱이 직접 기록한 오늘의 매수→매도 사이클 1건 — KIS 기간손익 조회 실패 시에도 표시되는 폴백 섹션의 행.
- * 색 규칙(PRD 관례: 이익=빨강, 손실=파랑)은 lib/format.pnlColor 하나로 통일한다(개별 파일에서 직접 삼항연산 금지).
- */
-function LocalCycleRow({ item }: { item: StoredTrade }) {
-  const isProfit = item.pnl > 0;
-  const label =
-    item.pnl === 0 ? formatSignedUsd(item.pnl) : `${formatSignedUsd(item.pnl)} (${isProfit ? '벌었어요' : '잃었어요'})`;
-  // 수수료를 켠 뒤 기록에만 fees가 있다(옛 기록은 undefined) — 있을 때만 덧붙인다.
-  const feeNote = item.fees && item.fees > 0 ? ` · 수수료 ${formatUsd(item.fees)}` : '';
+/** 오늘예상 행 — 일별 행(DailyRow)과 같은 시각 형식, 환율이 없을 때만 USD로 표시한다. */
+function TodayEstimateRow({ tradeDt, estimate }: { tradeDt: string; estimate: TodayEstimate }) {
   return (
     <ListRow
-      leading={<TickerAvatar ticker={item.ticker} />}
-      title={`${item.ticker} · 진입 ${formatUsd(item.entryPrice)} → 청산 ${formatUsd(item.exitPrice)}${feeNote}`}
+      title={`${formatDayLabel(tradeDt)} · 오늘예상`}
       trailing={
-        <Text style={{ color: pnlColor(item.pnl) }} className="text-sm font-bold">
-          {label}
-        </Text>
+        <>
+          <Text style={{ color: pnlColor(estimate.pnlUsd) }} className="text-sm font-bold">
+            {estimate.pnlKrw !== null ? formatSignedKrw(estimate.pnlKrw) : formatSignedUsd(estimate.pnlUsd)}
+          </Text>
+          <Text style={{ color: pnlColor(estimate.pnlRate) }} className="mt-0.5 text-xs font-semibold">
+            {estimate.pnlRate === null ? '—' : formatSignedPercent(estimate.pnlRate, 2)}
+          </Text>
+        </>
       }
     />
   );
@@ -106,7 +112,7 @@ export function ProfitLoss() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, startDt, endDt]);
 
-  // 현재 달을 보는 동안에는 KIS 조회 성패와 무관하게 앱 자체 사이클 기록을 함께(또는 대신) 보여준다.
+  // 현재 달을 보는 동안에는 KIS 조회 성패와 무관하게 앱 자체 사이클 기록으로 "오늘예상"을 만든다.
   useEffect(() => {
     if (!isCurrentMonth) {
       setLocalTrades(null);
@@ -115,9 +121,7 @@ export function ProfitLoss() {
     let cancelled = false;
     (async () => {
       const local = await readTodayTrades(AsyncStorage, clock);
-      // 시간순(진입 시각 기준) 정렬 — "오늘 매수→매도 사이클을 시간순으로" 요구사항.
-      const sorted = [...local].sort((a, b) => a.entryTs - b.entryTs);
-      if (!cancelled) setLocalTrades(sorted);
+      if (!cancelled) setLocalTrades(local);
     })();
     return () => {
       cancelled = true;
@@ -130,10 +134,25 @@ export function ProfitLoss() {
     fetchProfit();
   }, [fetchProfit]);
 
+  // 원화 환산용 환율 — 응답 summary의 exrt를 우선, 없으면 종목 행에서 찾는다(둘 다 없으면 USD 표시).
+  const exchangeRate = useMemo(() => {
+    if (summary && summary.exchangeRate > 0) return summary.exchangeRate;
+    const fromItem = (items ?? []).find((i) => i.exchangeRate > 0);
+    return fromItem ? fromItem.exchangeRate : null;
+  }, [summary, items]);
+
+  const todayDt = todayKstDt(clock.now());
+  // KIS가 당일 행을 이미 내려주면(제공 시작 등) 예상 행을 겹쳐 그리지 않는다.
+  const kisHasToday = dailyList.some((d) => d.tradeDt === todayDt);
+  const todayEstimate = useMemo(
+    () => estimateToday(localTrades ?? [], exchangeRate),
+    [localTrades, exchangeRate],
+  );
+  const showTodayRow = isCurrentMonth && !kisHasToday && todayEstimate !== null;
+
   if (session.kind === 'needsSetup') return <SetupNotice />;
   if (session.kind === 'error') return <ErrorNotice message={session.message} />;
 
-  const showLocalSection = isCurrentMonth && localTrades !== null;
   const kisFailed = dataError !== null && items === null;
 
   return (
@@ -178,22 +197,11 @@ export function ProfitLoss() {
                   </View>
                 )}
 
-                {showLocalSection && (
-                  <View className="border-b border-[#e5e8eb] pb-2">
-                    <Text className="px-5 pb-1 pt-3 text-[15px] font-bold text-[#191f28]">오늘 앱 거래 기록</Text>
-                    {(localTrades ?? []).length === 0 ? (
-                      <EmptyState icon="receipt-outline" title="오늘 완료한 사이클이 없어요" description="매수→매도가 끝나면 여기에 나타나요" />
-                    ) : (
-                      (localTrades ?? []).map((t, idx) => (
-                        <LocalCycleRow key={`${t.instanceId}-${t.exitTs}-${idx}`} item={t} />
-                      ))
-                    )}
-                  </View>
-                )}
+                {showTodayRow && todayEstimate && <TodayEstimateRow tradeDt={todayDt} estimate={todayEstimate} />}
               </>
             }
             ListEmptyComponent={
-              kisFailed ? null : (
+              kisFailed || showTodayRow ? null : (
                 <EmptyState
                   icon="trending-down-outline"
                   title="이 달엔 손익이 없어요"

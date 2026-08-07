@@ -1,0 +1,91 @@
+// 조회 탭 세그먼트 5 — 거래기록: 앱이 직접 기록한 오늘의 매수→매도 사이클(features/scalper/tradeStore).
+// KIS 세션 없이 AsyncStorage만 읽는다 — 당일 상세는 KIS가 제공하지 않으므로, 손익 세그먼트에는
+// 합계("오늘예상")만 싣고 개별 사이클은 이 화면에서 시간순으로 보여준다(옛 ProfitLoss 로컬 섹션 이관).
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useCallback, useEffect, useState } from 'react';
+import { FlatList, RefreshControl, Text } from 'react-native';
+import { ListRow } from '../../components/ListRow';
+import { Panel } from '../../components/Panel';
+import { TickerAvatar } from '../../components/TickerAvatar';
+import { formatSignedUsd, formatUsd, pnlColor } from '../../lib/format';
+import { readTodayTrades, type StoredTrade } from '../scalper/tradeStore';
+import { EmptyState, SkeletonList } from './components';
+
+const clock = { now: () => Date.now() };
+
+const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+
+/** epoch ms → 'HH:mm' (한국시간) — 청산 체결 시각 표시용. */
+function formatKstTime(tsMs: number): string {
+  const kst = new Date(tsMs + KST_OFFSET_MS);
+  const pad2 = (n: number) => String(n).padStart(2, '0');
+  return `${pad2(kst.getUTCHours())}:${pad2(kst.getUTCMinutes())}`;
+}
+
+/**
+ * 사이클 1건 행 — 색 규칙(이익=빨강, 손실=파랑)은 lib/format.pnlColor 하나로 통일한다
+ * (개별 파일에서 직접 삼항연산 금지).
+ */
+function CycleRow({ item }: { item: StoredTrade }) {
+  // 수수료를 켠 뒤 기록에만 fees가 있다(옛 기록은 undefined) — 있을 때만 덧붙인다.
+  const feeNote = item.fees && item.fees > 0 ? ` · 수수료 ${formatUsd(item.fees)}` : '';
+  return (
+    <ListRow
+      leading={<TickerAvatar ticker={item.ticker} />}
+      title={item.ticker}
+      subtitle={`진입 ${formatUsd(item.entryPrice)} → 청산 ${formatUsd(item.exitPrice)}${feeNote}`}
+      trailing={
+        <>
+          <Text style={{ color: pnlColor(item.pnl) }} className="text-sm font-bold">
+            {formatSignedUsd(item.pnl)}
+          </Text>
+          <Text className="mt-0.5 text-xs font-semibold text-[#8b95a1]">{formatKstTime(item.exitTs)}</Text>
+        </>
+      }
+    />
+  );
+}
+
+export function TradeHistory() {
+  const [trades, setTrades] = useState<StoredTrade[] | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const load = useCallback(async () => {
+    const local = await readTodayTrades(AsyncStorage, clock);
+    // 시간순(진입 시각 기준) 정렬 — "오늘 매수→매도 사이클을 시간순으로" 요구사항 계승.
+    setTrades([...local].sort((a, b) => a.entryTs - b.entryTs));
+    setRefreshing(false);
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    load();
+  }, [load]);
+
+  return (
+    <Panel title="오늘 거래 기록" style={{ flex: 1, marginBottom: 0 }}>
+      {trades === null ? (
+        <SkeletonList />
+      ) : (
+        <FlatList
+          data={trades}
+          keyExtractor={(t, idx) => `${t.instanceId}-${t.exitTs}-${idx}`}
+          renderItem={({ item }) => <CycleRow item={item} />}
+          contentContainerStyle={{ flexGrow: 1 }}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#3182f6" />}
+          ListEmptyComponent={
+            <EmptyState
+              icon="receipt-outline"
+              title="오늘 완료한 사이클이 없어요"
+              description="매수→매도가 끝나면 여기에 나타나요"
+            />
+          }
+        />
+      )}
+    </Panel>
+  );
+}

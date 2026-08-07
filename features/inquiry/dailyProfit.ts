@@ -71,6 +71,47 @@ export function aggregateDaily(items: PeriodProfitItem[]): DailyProfit[] {
   return days.sort((a, b) => (a.tradeDt < b.tradeDt ? 1 : -1));
 }
 
+/** epoch ms → 한국시간 기준 'YYYYMMDD' — KIS 일별 행(tradeDt)과 같은 형식. */
+export function todayKstDt(nowMs: number): string {
+  const kst = new Date(nowMs + KST_OFFSET_MS);
+  return `${kst.getUTCFullYear()}${pad2(kst.getUTCMonth() + 1)}${pad2(kst.getUTCDate())}`;
+}
+
+/**
+ * 앱 자체 기록으로 합산한 "오늘예상" 손익 — KIS 기간손익(TTTS3039R)이 당일 분을 제공하지 않아,
+ * features/scalper/tradeStore의 오늘 사이클 기록(USD)으로 일별 리스트의 오늘 행을 대신 만든다.
+ */
+export interface TodayEstimate {
+  /** 순손익 합계(USD) — TradeRecord.pnl(수수료 차감 후) 합. */
+  pnlUsd: number;
+  /** 매입금액 합계(USD) = Σ entryPrice × qty — 수익률 분모(aggregateDaily와 같은 방식). */
+  buyAmountUsd: number;
+  /** 합산 수익률(%) — 분모 0이면 null. 통화 무관이라 환율 없이도 유효하다. */
+  pnlRate: number | null;
+  /** 환율이 있으면 원화 환산 손익, 없으면 null(그때는 USD로 표시한다). */
+  pnlKrw: number | null;
+}
+
+/** 오늘 기록이 없으면 null — 행 자체를 그리지 않는다. */
+export function estimateToday(
+  trades: readonly { pnl: number; entryPrice: number; qty: number }[],
+  exchangeRate: number | null,
+): TodayEstimate | null {
+  if (trades.length === 0) return null;
+  let pnlUsd = 0;
+  let buyAmountUsd = 0;
+  for (const t of trades) {
+    pnlUsd += t.pnl;
+    buyAmountUsd += t.entryPrice * t.qty;
+  }
+  return {
+    pnlUsd,
+    buyAmountUsd,
+    pnlRate: buyAmountUsd > 0 ? (pnlUsd / buyAmountUsd) * 100 : null,
+    pnlKrw: exchangeRate !== null && exchangeRate > 0 ? pnlUsd * exchangeRate : null,
+  };
+}
+
 const WEEKDAY_KO = ['일', '월', '화', '수', '목', '금', '토'] as const;
 
 /** 'YYYYMMDD' → '08월 06일 (목)'. 파싱 불가 문자열은 그대로 돌려준다. */

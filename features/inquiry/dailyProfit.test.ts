@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PeriodProfitItem } from '../../kis/periodProfit';
-import { aggregateDaily, currentYearMonthKst, formatDayLabel, monthRange } from './dailyProfit';
+import { aggregateDaily, currentYearMonthKst, estimateToday, formatDayLabel, monthRange, todayKstDt } from './dailyProfit';
 
 function item(partial: Partial<PeriodProfitItem>): PeriodProfitItem {
   return {
@@ -73,6 +73,48 @@ describe('aggregateDaily', () => {
 
   it('빈 입력은 빈 배열', () => {
     expect(aggregateDaily([])).toEqual([]);
+  });
+});
+
+describe('todayKstDt', () => {
+  it('한국시간 기준 YYYYMMDD를 돌려준다', () => {
+    expect(todayKstDt(NOW)).toBe('20260808');
+    // 2026-07-31 16:00 UTC = 2026-08-01 01:00 KST
+    expect(todayKstDt(Date.UTC(2026, 6, 31, 16, 0, 0))).toBe('20260801');
+  });
+});
+
+describe('estimateToday', () => {
+  const trades = [
+    { pnl: 12, entryPrice: 100, qty: 5 }, // 매입 500
+    { pnl: -2, entryPrice: 50, qty: 10 }, // 매입 500
+  ];
+
+  it('손익 합계·매입금액 기반 수익률·원화 환산을 계산한다', () => {
+    const est = estimateToday(trades, 1350);
+    expect(est).not.toBeNull();
+    expect(est!.pnlUsd).toBe(10);
+    expect(est!.buyAmountUsd).toBe(1000);
+    expect(est!.pnlRate).toBeCloseTo(1, 5); // 10 / 1000 * 100
+    expect(est!.pnlKrw).toBeCloseTo(13500, 5);
+  });
+
+  it('환율이 없으면 pnlKrw는 null(수익률은 통화 무관이라 유지)', () => {
+    const est = estimateToday(trades, null);
+    expect(est!.pnlKrw).toBeNull();
+    expect(est!.pnlRate).toBeCloseTo(1, 5);
+  });
+
+  it('환율 0(파싱 실패값)도 null 취급한다', () => {
+    expect(estimateToday(trades, 0)!.pnlKrw).toBeNull();
+  });
+
+  it('기록이 없으면 null — 행을 그리지 않는다', () => {
+    expect(estimateToday([], 1350)).toBeNull();
+  });
+
+  it('매입금액이 0이면 수익률은 null', () => {
+    expect(estimateToday([{ pnl: 1, entryPrice: 0, qty: 0 }], 1350)!.pnlRate).toBeNull();
   });
 });
 
