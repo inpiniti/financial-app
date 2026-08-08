@@ -303,14 +303,15 @@ export class AutoPilotManager {
     return [...this.events];
   }
 
-  /** 리스트 카드용 행 — watchlist 엔트리 + 해당 슬롯의 실시간 뷰. */
+  /** 리스트 카드용 행 — watchlist 엔트리 + 해당 슬롯의 실시간 뷰. 틱/초 빠른 순으로 정렬. */
   getRows(): AutoPilotSlotRow[] {
     return this.watchlist.list
       .map((entry) => {
         const slot = this.slots.get(entry.ticker);
         return slot ? { entry, view: slot.getView() } : null;
       })
-      .filter((r): r is AutoPilotSlotRow => r !== null);
+      .filter((r): r is AutoPilotSlotRow => r !== null)
+      .sort((a, b) => b.view.tickRate - a.view.tickRate);
   }
 
   /**
