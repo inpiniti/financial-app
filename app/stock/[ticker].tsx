@@ -6,10 +6,10 @@ import { Pressable, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { SegmentedControl } from '../../features/inquiry/SegmentedControl';
 import { useScalperManager } from '../../features/scalper/ui/managerProvider';
 import { ChartPanel } from '../../features/stock/ui/ChartPanel';
 import { CommentsPanel } from '../../features/stock/ui/CommentsPanel';
+import { PriceHeader } from '../../features/stock/ui/PriceHeader';
 import { QuotePanel } from '../../features/stock/ui/QuotePanel';
 import { toStockMarketCode } from '../../features/stock/marketCodes';
 import { useQuoteFeed } from '../../features/stock/useQuoteFeed';
@@ -21,6 +21,35 @@ const TAB_ITEMS: Array<{ key: DetailTab; label: string }> = [
   { key: 'comments', label: '댓글' },
   { key: 'quote', label: '호가' },
 ];
+
+/** 차트/댓글/호가 밑줄 탭 — 선택된 탭은 진한 글자 + 하단 2px 바(토스식). */
+function DetailTabs({ value, onChange }: { value: DetailTab; onChange: (next: DetailTab) => void }) {
+  return (
+    <View className="mb-2 flex-row bg-white px-2">
+      {TAB_ITEMS.map((item) => {
+        const active = item.key === value;
+        return (
+          <Pressable
+            key={item.key}
+            onPress={() => onChange(item.key)}
+            className="flex-1 items-center justify-center"
+            style={{
+              minHeight: 44,
+              borderBottomWidth: 2,
+              borderBottomColor: active ? '#191f28' : 'transparent',
+            }}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: active }}
+          >
+            <Text className={`text-[15px] ${active ? 'font-bold text-[#191f28]' : 'font-medium text-[#8b95a1]'}`}>
+              {item.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
 
 /** 상단바 — 좌측 뒤로가기 + 타이틀(종목명·티커). */
 function DetailHeader({ title, subtitle }: { title: string; subtitle?: string }) {
@@ -91,7 +120,8 @@ export default function StockDetailScreen() {
   return (
     <View className="flex-1 bg-[#f2f4f6]">
       <DetailHeader title={title} subtitle={subtitle} />
-      <SegmentedControl items={TAB_ITEMS} value={tab} onChange={setTab} />
+      <PriceHeader ticker={ticker} excd={market} livePrice={quoteState.price} />
+      <DetailTabs value={tab} onChange={setTab} />
       <View className="flex-1">
         {tab === 'chart' ? (
           <ChartPanel ticker={ticker} excd={market} />
