@@ -1,5 +1,5 @@
-// 공용 년·월 네비게이터 — "<  2026년 8월  >" 형태의 풀폭 바.
-// 좌/우 화살표는 한 달씩 이동, 가운데 "2026년"/"8월"을 각각 누르면 공통 BottomSheet가 올라와
+// 공용 년·월 네비게이터 — "‹이전달  2026년 8월  다음달›" 형태의 풀폭 바.
+// 좌/우 "이전달"/"다음달"은 한 달씩 이동, 가운데 "2026년"/"8월"을 각각 누르면 공통 BottomSheet가 올라와
 // 년도(올해부터 과거 20개)·월(1~12)을 고른다 (.claude/skills/app-ui-style — 선택 UI는 바텀시트).
 // 미래(다음 달 이후)로는 이동/선택할 수 없다 — 우측 화살표 비활성, 시트에서도 미래 월은 흐리게 잠근다.
 import { Ionicons } from '@expo/vector-icons';
@@ -45,12 +45,13 @@ export function MonthNavigator({ year, month, maxYear, maxMonth, yearsBack = 20,
     <View className="mb-2 flex-row items-center justify-between bg-white px-2 py-1">
       <Pressable
         onPress={movePrev}
-        className="items-center justify-center active:opacity-60"
-        style={{ width: 44, height: 44 }}
+        className="flex-row items-center justify-center px-2 active:opacity-60"
+        style={{ minHeight: 44 }}
         accessibilityRole="button"
         accessibilityLabel="이전 달"
       >
-        <Ionicons name="chevron-back" size={20} color="#4e5968" />
+        <Ionicons name="chevron-back" size={16} color="#4e5968" />
+        <Text className="text-[13px] font-semibold text-[#4e5968]">이전달</Text>
       </Pressable>
 
       <View className="flex-row items-center">
@@ -77,12 +78,13 @@ export function MonthNavigator({ year, month, maxYear, maxMonth, yearsBack = 20,
       <Pressable
         onPress={moveNext}
         disabled={atMax}
-        className="items-center justify-center active:opacity-60"
-        style={{ width: 44, height: 44, opacity: atMax ? 0.25 : 1 }}
+        className="flex-row items-center justify-center px-2 active:opacity-60"
+        style={{ minHeight: 44, opacity: atMax ? 0.25 : 1 }}
         accessibilityRole="button"
         accessibilityLabel="다음 달"
       >
-        <Ionicons name="chevron-forward" size={20} color="#4e5968" />
+        <Text className="text-[13px] font-semibold text-[#4e5968]">다음달</Text>
+        <Ionicons name="chevron-forward" size={16} color="#4e5968" />
       </Pressable>
 
       <BottomSheet visible={openSheet === 'year'} onClose={() => setOpenSheet(null)} heightRatio={0.6}>

@@ -22,18 +22,20 @@ const MENU_ITEMS: BottomMenuItem<InquirySegment>[] = [
 
 export default function InquiryScreen() {
   const [segment, setSegment] = useState<InquirySegment>('holdings');
+  // 손익 일별 상세가 열려 있으면 상단 바·하단 메뉴를 숨긴다 — 뒤로가기가 둘 보이는 UX를 막는다.
+  const [detailOpen, setDetailOpen] = useState(false);
 
   return (
     <View className="flex-1 bg-[#f2f4f6]">
-      <BackHeader title="조회" />
+      {!detailOpen && <BackHeader title="조회" />}
       <View className="flex-1">
         {segment === 'holdings' && <Holdings />}
         {segment === 'pending' && <PendingOrders />}
         {segment === 'ranking' && <Ranking />}
-        {segment === 'profitLoss' && <ProfitLoss />}
+        {segment === 'profitLoss' && <ProfitLoss onDetailOpenChange={setDetailOpen} />}
         {segment === 'trades' && <TradeHistory />}
       </View>
-      <BottomMenu items={MENU_ITEMS} value={segment} onChange={setSegment} />
+      {!detailOpen && <BottomMenu items={MENU_ITEMS} value={segment} onChange={setSegment} />}
     </View>
   );
 }

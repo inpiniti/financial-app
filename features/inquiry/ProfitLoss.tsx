@@ -10,6 +10,7 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { FlatList, Pressable, RefreshControl, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ListRow } from '../../components/ListRow';
 import { MonthNavigator } from '../../components/MonthNavigator';
 import { Panel } from '../../components/Panel';
@@ -98,12 +99,17 @@ function DayTickerRow({ row }: { row: DayTickerProfit }) {
   );
 }
 
-/** 일별 상세 — 상단 "< 2026년 07월 31일 (금)" 바 + 그 날의 종목별 합계 리스트. */
+/**
+ * 일별 상세 — 상단 "< 2026년 07월 31일 (금)" 바 + 그 날의 종목별 합계 리스트.
+ * 상세로 들어가면 조회 화면의 상단 바·하단 메뉴가 숨어(뒤로가기가 둘이 되는 걸 막는다 — inquiry.tsx)
+ * 이 바가 화면 최상단이 되므로 safe-area 상단 여백을 직접 채운다.
+ */
 function DayDetail({ day, onBack }: { day: DailyProfit; onBack: () => void }) {
   const rows = useMemo(() => aggregateDayByTicker(day.items), [day]);
+  const insets = useSafeAreaInsets();
   return (
     <View className="flex-1 bg-[#f2f4f6]">
-      <View className="mb-2 flex-row items-center bg-white px-2 py-1">
+      <View className="mb-2 flex-row items-center bg-white px-2 py-1" style={{ paddingTop: insets.top + 4 }}>
         <Pressable
           onPress={onBack}
           className="items-center justify-center active:opacity-60"
@@ -137,7 +143,12 @@ function DayDetail({ day, onBack }: { day: DailyProfit; onBack: () => void }) {
   );
 }
 
-export function ProfitLoss() {
+export interface ProfitLossProps {
+  /** 일별 상세 진입/이탈 알림 — 조회 화면이 상단 바·하단 메뉴를 숨기고 되살리는 데 쓴다. */
+  onDetailOpenChange?: (open: boolean) => void;
+}
+
+export function ProfitLoss({ onDetailOpenChange }: ProfitLossProps = {}) {
   const [reloadKey, setReloadKey] = useState(0);
   const session = useKisSession(reloadKey);
   const [ym, setYm] = useState<YearMonth>(() => currentYearMonthKst(clock.now()));
@@ -222,12 +233,25 @@ export function ProfitLoss() {
   );
   const showTodayRow = isCurrentMonth && !kisHasToday && todayEstimate !== null;
 
+  const selectedDay = selectedDt !== null ? dailyList.find((d) => d.tradeDt === selectedDt) : undefined;
+  const detailOpen = selectedDay !== undefined;
+
+  // 상세 진입/이탈을 조회 화면에 알린다 — 훅이므로 아래 조기 return(설정/에러 안내)보다 먼저 온다.
+  // 세그먼트 전환 등으로 언마운트되면 cleanup으로 원상 복구.
+  useEffect(() => {
+    onDetailOpenChange?.(detailOpen);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailOpen]);
+  useEffect(() => {
+    return () => onDetailOpenChange?.(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   if (session.kind === 'needsSetup') return <SetupNotice />;
   if (session.kind === 'error') return <ErrorNotice message={session.message} />;
 
   const kisFailed = dataError !== null && items === null;
 
-  const selectedDay = selectedDt !== null ? dailyList.find((d) => d.tradeDt === selectedDt) : undefined;
   if (selectedDay) {
     return <DayDetail day={selectedDay} onBack={() => setSelectedDt(null)} />;
   }

@@ -76,6 +76,18 @@ describe('createFlowFetch — KIS REST 유량 제어', () => {
     expect(base).toHaveBeenCalledTimes(1);
   });
 
+  it('[회귀] 응답 headers를 보존한다 — 연속조회(tr_cont 헤더 판독)가 첫 페이지에서 끊기지 않게', async () => {
+    const time = fakeTime();
+    const headers = { get: (name: string) => (name === 'tr_cont' ? 'M' : null) } as unknown as Headers;
+    const base = vi.fn(async () =>
+      ({ ok: true, status: 200, statusText: 'OK', headers, json: async () => ({ rt_cd: '0' }) }) as Response,
+    );
+    const ff = createFlowFetch({ fetchImpl: base, now: time.now, sleep: time.sleep });
+
+    const res = await ff('u');
+    expect(res.headers.get('tr_cont')).toBe('M');
+  });
+
   it('JSON이 아닌 응답은 같은 파싱 실패를 재생한다(재시도 없음)', async () => {
     const time = fakeTime();
     const parseError = new Error('invalid json');

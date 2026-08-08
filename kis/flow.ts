@@ -96,9 +96,13 @@ export function createFlowFetch(deps: FlowFetchDeps = {}): FetchLike {
   };
 }
 
-/** 본문을 이미 읽은 Response의 대역 — 호출부는 json()·ok·status만 쓴다(kis/ 전수 확인). */
+/**
+ * 본문을 이미 읽은 Response의 대역 — 호출부는 json()·ok·status·headers만 쓴다(kis/ 전수 확인).
+ * headers를 빠뜨리면 연속조회(응답 헤더 tr_cont 판독 — periodProfit)가 항상 첫 페이지에서 끝나는
+ * 실사고(2026-08-08, 월 손익 일부 누락)가 재발한다.
+ */
 function replay(res: Response, json: () => Promise<unknown>): Response {
-  return { ok: res.ok, status: res.status, statusText: res.statusText, json } as Response;
+  return { ok: res.ok, status: res.status, statusText: res.statusText, headers: res.headers, json } as Response;
 }
 
 /** 앱 전역 공유 인스턴스 — kis/ REST 모듈들의 기본 fetch. */
