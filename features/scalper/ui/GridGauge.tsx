@@ -14,6 +14,14 @@ const BUY_COLOR = '#3182f6';
 const NEUTRAL_COLOR = '#191f28';
 const TRACK_COLOR = '#e5e8eb';
 const TICK_COLOR = '#c1c9d2';
+const MUTED_COLOR = '#8b95a1';
+
+/** 매수 다리 상태 안내 문구 — full이면 없음(정상). */
+const BUY_LEG_NOTICE: Record<string, string | undefined> = {
+  reduced: '현금에 맞춰 매수 수량을 줄였어요',
+  skippedCash: '현금이 부족해서 매수 주문은 생략했어요 — 매도 주문만 걸려 있어요',
+  rejected: '매수 주문이 거절돼 매도 주문만 걸려 있어요',
+};
 
 const GAUGE_HEIGHT = 28;
 /** 눈금 5개 — 매수가·중간·평단·중간·매도가(가운데가 평단, 폭이 대칭이라 항상 정중앙에 온다). */
@@ -32,6 +40,9 @@ export interface GridGaugeProps {
 export function GridGauge({ grid, name }: GridGaugeProps) {
   const [trackWidth, setTrackWidth] = useState(0);
   const onTrackLayout = (e: LayoutChangeEvent) => setTrackWidth(e.nativeEvent.layout.width);
+
+  const buyLegAbsent = grid.buyLegStatus === 'skippedCash' || grid.buyLegStatus === 'rejected';
+  const buyLegNotice = BUY_LEG_NOTICE[grid.buyLegStatus];
 
   const position = grid.currentPrice === null ? null : normalizeGridPosition(grid.currentPrice, grid.buyPrice, grid.sellPrice);
   const rawArrowLeft = position === null ? null : position * trackWidth;
@@ -96,13 +107,18 @@ export function GridGauge({ grid, name }: GridGaugeProps) {
         )}
       </View>
 
-      {/* 하단 가격 라벨 — 매수가(좌)·평단가(중앙)·매도가(우). */}
+      {/* 하단 가격 라벨 — 매수가(좌)·평단가(중앙)·매도가(우). 매수 다리가 없으면(생략·거절) 회색으로 죽인다. */}
       <View className="mt-1 flex-row items-start justify-between">
         <View>
-          <Text className="text-[11px] font-semibold" style={{ color: BUY_COLOR }}>
+          <Text
+            className="text-[11px] font-semibold"
+            style={{ color: buyLegAbsent ? MUTED_COLOR : BUY_COLOR }}
+          >
             매수가
           </Text>
-          <Text className="text-xs font-bold text-[#191f28]">{formatPrice(grid.buyPrice)}</Text>
+          <Text className="text-xs font-bold" style={{ color: buyLegAbsent ? MUTED_COLOR : NEUTRAL_COLOR }}>
+            {formatPrice(grid.buyPrice)}
+          </Text>
         </View>
         <View className="items-center">
           <Text className="text-[11px] font-semibold text-[#191f28]">평단가</Text>
@@ -116,7 +132,18 @@ export function GridGauge({ grid, name }: GridGaugeProps) {
         </View>
       </View>
 
-      {!grid.gridActive && <Text className="mt-3 text-xs text-[#8b95a1]">그리드 주문을 거는 중이에요…</Text>}
+      {/* 상태 안내 — 격리 멈춤(빨강) > 매수 다리 안내 > 주문 준비 중 순으로 하나만 보여준다. */}
+      {grid.faultText !== null ? (
+        <Text className="mt-3 text-xs font-semibold" style={{ color: SELL_COLOR }}>
+          이 종목 관리가 멈췄어요 — {grid.faultText}
+        </Text>
+      ) : buyLegNotice !== undefined ? (
+        <Text className="mt-3 text-xs" style={{ color: MUTED_COLOR }}>
+          {buyLegNotice}
+        </Text>
+      ) : (
+        !grid.gridActive && <Text className="mt-3 text-xs text-[#8b95a1]">그리드 주문을 거는 중이에요…</Text>
+      )}
     </View>
   );
 }

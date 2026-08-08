@@ -14,12 +14,14 @@
 //      보유 그리드가 있으면      → 그 진입만 포기하고 신규 진입만 잠시 쉰다(기존 그리드는 계속 관리).
 //
 // 안전장치는 ScalperInstance와 같은 원칙: 매수 전 프리플라이트, FAULT 인터록(사용자 Stop으로만 해제),
-// 미체결 무한 대기(취소는 사용자 Stop 경로에서만). FAULT는 **전역**이다 — 한 종목이라도 주문 신뢰가
-// 깨지면 전체를 동결한다(부분 동결은 계좌 상태 추론을 사람이 못 하게 만든다).
+// 미체결 무한 대기(취소는 사용자 Stop 경로에서만).
+// FAULT 범위(2026-08-08 plan): **진입 경로**(프리플라이트·진입 직후 인계 실패)만 전역 동결이고,
+// 관리 중 그리드의 fault는 **그 그리드만 격리**한다(gridFaulted) — 사용자가 화면을 안 보고 있어도
+// 한 종목 오류로 나머지 종목 관리와 폴 타이머가 멈추지 않게 한다.
 
 import { RunCycle, type SignalSnapshot, type TradeRecord } from '../../core/cycle';
 import type { Signal } from '../../core/detector';
-import { Grid, type GridPollResult } from '../../core/grid';
+import { Grid, type BuyLegStatus, type GridPollResult } from '../../core/grid';
 import { FeedSlot, type SlotSignalContext } from './feedSlot';
 import { OrderPortAdapter } from './orderPortAdapter';
 import { createGridOrderPort } from './gridOrderPort';
@@ -134,6 +136,10 @@ export interface AutoPilotGridView {
   buyMultiplier: number;
   /** 그리드가 두 주문을 실제로 걸고 관리 중인가(ARMED). */
   gridActive: boolean;
+  /** 매수 다리 현금 판정 — reduced/skippedCash/rejected면 게이지가 사유를 표기한다. */
+  buyLegStatus: BuyLegStatus;
+  /** 이 그리드만 멈춘 사유(그리드 단위 격리) — null이면 정상. 전역 FAULT와 다르다. */
+  faultText: string | null;
 }
 
 export interface AutoPilotDeps {
@@ -237,6 +243,11 @@ interface ActiveCycle {
   grid: Grid | null;
   /** 그리드가 두 주문을 실제로 발주했는가(arm 성공). */
   gridArmed: boolean;
+  /**
+   * 이 그리드만 격리 동결됐는가(전역 FAULT 아님) — 폴에서 건너뛰고 다른 종목은 계속 관리한다.
+   * 사유는 grid.faultText에 있다. 해제는 Stop 후 "보유 종목 등록"(adoptPosition) 재등록.
+   */
+  gridFaulted: boolean;
   /** BUYING 진입 시각(자동 포기 경과 기점). */
   buyingSince: number | null;
   /** 이 주문에 자동 포기를 이미 요청했는가. */
@@ -416,6 +427,8 @@ export class AutoPilot {
         holdingQty: v.holdingQty,
         buyMultiplier: v.buyMultiplier,
         gridActive: v.gridActive,
+        buyLegStatus: v.buyLegStatus,
+        faultText: active.gridFaulted ? (active.grid.faultText ?? '그리드가 멈췄어요') : null,
       });
     }
     return out;
@@ -584,13 +597,18 @@ export class AutoPilot {
       return;
     }
     if (this.actives.size > 0) {
-      const adoptedOnly = [...this.actives.values()].filter((a) => a.adopted);
-      // 입양 포지션은 청산할 진입 사이클이 없다 — 그리드 주문이 계좌에 그대로 남는다는 걸 분명히 알린다.
-      if (adoptedOnly.length > 0) {
+      // 입양 포지션은 청산할 진입 사이클이 없고, 격리 동결된 그리드는 폴에서 빠져 있어 정산 경로가 없다
+      // — 둘 다 주문이 계좌에 그대로 남는다는 걸 분명히 알리고 즉시 관리를 놓는다.
+      const releaseNow = [...this.actives.values()].filter((a) => a.adopted || a.gridFaulted);
+      if (releaseNow.length > 0) {
         this.event(
-          `${adoptedOnly.map((a) => a.ticker).join(', ')}의 그리드 주문은 계좌에 남아 있어요 — 필요하면 증권사 앱에서 취소해 주세요`,
+          `${releaseNow.map((a) => a.ticker).join(', ')}의 그리드 주문은 계좌에 남아 있어요 — 필요하면 증권사 앱에서 취소하거나 "보유 종목 등록"으로 다시 태울 수 있어요`,
         );
-        for (const active of adoptedOnly) this.teardownActive(active);
+        for (const active of releaseNow) {
+          active.cycle?.fault(); // 주문 없이 종료 준비(격리 그리드의 파킹된 사이클용 — 입양은 cycle이 없다).
+          active.cycle?.stop();
+          this.teardownActive(active);
+        }
       }
       if (this.actives.size === 0) {
         this.finishStop();
@@ -876,6 +894,7 @@ export class AutoPilot {
       broker,
       grid: null,
       gridArmed: false,
+      gridFaulted: false,
       buyingSince: this.deps.clock.now(),
       abandonRequested: false,
       pendingSettle: null,
@@ -941,6 +960,9 @@ export class AutoPilot {
       return;
     }
 
+    // 격리 동결된 그리드 — 건너뛴다(주문은 계좌에 남아 있고, 다른 종목 관리는 계속).
+    if (active.gridFaulted) return;
+
     // 그리드가 인계됐으면 진입 어댑터 대신 그리드를 구동한다(매도 체결→SCANNING, 매수 체결→리브래킷).
     if (active.grid && active.gridArmed) {
       await this.pollGrid(active);
@@ -1000,7 +1022,8 @@ export class AutoPilot {
 
   /**
    * 진입 체결 후 그리드 인계 — 잔고에서 평단·수량을 읽어(D1, 폴백=진입 체결) 두 지정가를 건다.
-   * 현금은 fetchBuyableUsd로 미리 조회해 매수 다리 축소/생략에 쓴다(D2). 발주 실패는 FAULT.
+   * 현금은 그리드가 발주 직전마다 fetchAvailableCash 콜백으로 **최신값**을 조회해 매수 다리를
+   * 축소/생략한다(D2) — arm 시 1회 캡처하면 물타기 후 리브래킷이 낡은 현금으로 과주문한다.
    *
    * ⚠ 다중 그리드에서는 가용현금을 **동시 그리드 수로 나눠** 배정한다. 안 그러면 그리드 3개가
    *    같은 현금을 각자 "전부 내 것"으로 보고 물타기 매수를 걸어, 셋 다 걸리면 계좌가 즉시 잠긴다.
@@ -1011,7 +1034,7 @@ export class AutoPilot {
     active.arming = true;
     try {
       // 진입 사이클이 있으면 그 체결을 폴백 포지션으로 쓴다. 입양 포지션은 사이클이 없으므로
-      // 잔고를 직접 한 번 읽어 평단을 확보한다 — 현금 조회의 기준가(−w)를 정하려면 평단이 먼저 필요하다.
+      // 잔고를 직접 한 번 읽어 평단을 확보한다.
       const entry = active.cycle?.position;
       let seed = entry ? { qty: entry.qty, avgPrice: entry.entryPrice } : null;
       if (!seed) {
@@ -1021,21 +1044,16 @@ export class AutoPilot {
           seed = null;
         }
       }
-      const buyPrice = (seed?.avgPrice ?? 0) * (1 - cfg.width);
-      let availableCashUsd: number | undefined;
-      if (buyPrice > 0) {
-        try {
-          const cash = await this.deps.fetchBuyableUsd?.(active.ticker, buyPrice);
-          if (typeof cash === 'number' && Number.isFinite(cash)) availableCashUsd = cash / this.maxGrids;
-        } catch {
-          // 현금 판정 생략 — 전량 매수 다리로 진행(주문 거절은 FAULT 인터록이 받는다).
-        }
-      }
       if (this.stopRequested) return false;
       const grid = new Grid({
         port: createGridOrderPort(active.broker, active.ticker),
         clock: this.deps.clock,
-        config: { width: cfg.width, buyMultiplier: cfg.buyMultiplier, availableCashUsd },
+        config: { width: cfg.width, buyMultiplier: cfg.buyMultiplier },
+        // 조회 실패(null/throw)는 그리드가 판정 생략으로 처리한다(주문 거절은 rejected 격리가 받는다).
+        fetchAvailableCash: async (buyPrice) => {
+          const cash = await this.deps.fetchBuyableUsd?.(active.ticker, buyPrice);
+          return typeof cash === 'number' && Number.isFinite(cash) ? cash / this.maxGrids : null;
+        },
       });
       active.grid = grid;
       await grid.arm(seed ?? undefined);
@@ -1088,6 +1106,7 @@ export class AutoPilot {
       broker,
       grid: null,
       gridArmed: false,
+      gridFaulted: false,
       buyingSince: null,
       abandonRequested: false,
       pendingSettle: null,
@@ -1113,21 +1132,37 @@ export class AutoPilot {
     return null;
   }
 
-  /** 그리드 폴 1회 — 매도 체결→정산·감시 복귀, 매수 체결→리브래킷, 취소 거절→FAULT. */
+  /** 그리드 폴 1회 — 매도 체결→정산·감시 복귀, 매수 체결→리브래킷, fault→**그 그리드만 격리**. */
   private async pollGrid(active: ActiveCycle): Promise<void> {
     const result = await active.grid!.poll();
     switch (result.kind) {
       case 'sold':
         this.settleGrid(active, result);
         break;
-      case 'rebracket':
+      case 'rebracket': {
+        const v = active.grid!.view;
         this.event(
-          `${active.ticker} 그리드 리브래킷 · 평단 $${result.position.avgPrice.toFixed(2)} · ${result.position.qty}주`,
+          `${active.ticker} 그리드 리브래킷 · 평단 $${result.position.avgPrice.toFixed(2)} · ${result.position.qty}주${
+            v.buyLegStatus === 'reduced'
+              ? ' · 현금에 맞춰 매수 수량을 줄였어요'
+              : v.buyLegStatus === 'skippedCash'
+                ? ' · 현금이 부족해 매수는 생략하고 매도만 걸었어요'
+                : v.buyLegStatus === 'rejected'
+                  ? ' · 매수 주문이 거절돼 매도만 걸었어요'
+                  : ''
+          }`,
         );
         this.emit();
         break;
+      }
       case 'fault':
-        this.enterFault({ kind: 'CANCEL', reason: result.reason });
+        // ★ 전역 동결하지 않는다 — 이 그리드만 격리하고 폴 타이머·다른 종목 관리는 계속 돈다.
+        //   (사용자가 화면을 안 보고 있어도 나머지 자동매매가 멈추지 않게 — plan 2026-08-08)
+        active.gridFaulted = true;
+        this.event(
+          `${active.ticker} 그리드가 멈췄어요 — ${result.reason}. 이 종목 주문은 계좌에서 확인해 주세요 · 다른 종목은 계속 관리해요`,
+        );
+        this.emit();
         break;
       default:
         this.emit(); // armed — 현재가 화살표 갱신용.

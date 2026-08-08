@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { Grid, type GridConfig, type GridOrderFill, type GridOrderPort, type GridPosition } from './index';
+import {
+  FILL_FAIL_LIMIT,
+  Grid,
+  type GridConfig,
+  type GridOrderFill,
+  type GridOrderPort,
+  type GridPosition,
+} from './index';
 
 function fakeClock(start = 0) {
   let t = start;
@@ -12,6 +19,10 @@ class FakeGridPort implements GridOrderPort {
   canceled: Array<{ odno: string; qty: number }> = [];
   failCancel = false;
   failPlace = false;
+  /** 매수 발주만 거절(현금 부족 거절 재현) — 매도는 정상 접수된다. */
+  failBuyPlace = false;
+  /** fetchFills가 throw하는 횟수(카운트다운) — 일시 오류 재현. */
+  failFetchFillsTimes = 0;
   /** fetchPosition이 순서대로 돌려줄 값(소진되면 마지막 값 유지). */
   positionQueue: Array<GridPosition | null>;
   private seq = 0;
@@ -23,6 +34,7 @@ class FakeGridPort implements GridOrderPort {
 
   async placeOrder(side: 'buy' | 'sell', qty: number, price: number): Promise<{ odno: string }> {
     if (this.failPlace) throw new Error('발주 거절(모의)');
+    if (this.failBuyPlace && side === 'buy') throw new Error('매수 거절 — 주문가능금액 부족(모의)');
     const odno = `O${++this.seq}`;
     this.placed.push({ side, qty, price, odno });
     this.fills.set(odno, { odno, orderQty: qty, filledQty: 0, filledPrice: null });
@@ -36,6 +48,10 @@ class FakeGridPort implements GridOrderPort {
   }
 
   async fetchFills(): Promise<GridOrderFill[]> {
+    if (this.failFetchFillsTimes > 0) {
+      this.failFetchFillsTimes -= 1;
+      throw new Error('체결 확인 거절(모의)');
+    }
     return [...this.fills.values()];
   }
 
@@ -189,5 +205,135 @@ describe('core/grid — ±w OCO 지정가 그리드', () => {
     expect(grid.state).toBe('ARMED');
     expect(port.legBySide('sell')).toMatchObject({ qty: 3, price: 220 });
     expect(port.legBySide('buy')).toMatchObject({ qty: 3, price: 180 });
+  });
+});
+
+describe('core/grid — 최신 현금 콜백(fetchAvailableCash)·다리별 격리·체결 확인 재시도', () => {
+  it('리브래킷마다 콜백을 다시 불러 최신 현금으로 매수 수량을 판정한다', async () => {
+    const port = new FakeGridPort({ qty: 10, avgPrice: 100 });
+    port.positionQueue = [{ qty: 10, avgPrice: 100 }, { qty: 20, avgPrice: 95 }];
+    // arm 때는 $2,000(전량 가능) → 리브래킷 때는 $300으로 줄었다(물타기로 현금 소진).
+    const cashSeq = [2000, 300];
+    const asked: number[] = [];
+    const grid = new Grid({
+      port,
+      clock: fakeClock(),
+      config: baseConfig,
+      fetchAvailableCash: async (buyPrice) => {
+        asked.push(buyPrice);
+        return cashSeq.shift() ?? 0;
+      },
+    });
+    await grid.arm();
+    expect(port.legBySide('buy')).toMatchObject({ qty: 10, price: 90 });
+    expect(grid.view.buyLegStatus).toBe('full');
+
+    // 매수 체결 → 리브래킷(평단 95, buyPrice 85.5) — 이번엔 현금 $300 → floor(300/85.5)=3주.
+    port.fill(port.legBySide('buy')!.odno, 90);
+    const result = await grid.poll();
+    expect(result.kind).toBe('rebracket');
+    expect(asked).toEqual([90, 85.5]); // 발주 직전 buyPrice로 매번 재조회.
+    const lastBuy = port.placed.filter((p) => p.side === 'buy').at(-1);
+    expect(lastBuy).toMatchObject({ qty: 3, price: 85.5 });
+    expect(grid.view.buyLegStatus).toBe('reduced');
+  });
+
+  it('콜백이 null·throw면 config.availableCashUsd로 폴백해 판정한다', async () => {
+    // null 반환 → 캡처값 $500으로 판정(floor(500/90)=5주).
+    const p1 = new FakeGridPort({ qty: 10, avgPrice: 100 });
+    const g1 = new Grid({
+      port: p1,
+      clock: fakeClock(),
+      config: { width: 0.1, buyMultiplier: 1, availableCashUsd: 500 },
+      fetchAvailableCash: async () => null,
+    });
+    await g1.arm();
+    expect(p1.legBySide('buy')).toMatchObject({ qty: 5 });
+    expect(g1.view.buyLegStatus).toBe('reduced');
+
+    // throw → 캡처값도 없으면 판정 생략(전량 발주).
+    const p2 = new FakeGridPort({ qty: 10, avgPrice: 100 });
+    const g2 = new Grid({
+      port: p2,
+      clock: fakeClock(),
+      config: baseConfig,
+      fetchAvailableCash: async () => {
+        throw new Error('조회 실패(모의)');
+      },
+    });
+    await g2.arm();
+    expect(p2.legBySide('buy')).toMatchObject({ qty: 10 });
+    expect(g2.view.buyLegStatus).toBe('full');
+  });
+
+  it('현금 0 → skippedCash로 매도만 ARMED, 매도 체결은 정상 SOLD', async () => {
+    const port = new FakeGridPort({ qty: 10, avgPrice: 100 });
+    const grid = new Grid({
+      port,
+      clock: fakeClock(),
+      config: baseConfig,
+      fetchAvailableCash: async () => 0,
+    });
+    await grid.arm();
+
+    expect(grid.state).toBe('ARMED');
+    expect(grid.view.buyLegStatus).toBe('skippedCash');
+    expect(port.legBySide('buy')).toBeUndefined();
+
+    port.fill(port.legBySide('sell')!.odno, 110);
+    const result = await grid.poll();
+    expect(result).toMatchObject({ kind: 'sold' });
+  });
+
+  it('매수 발주만 거절 → FAULT 아님 — rejected로 표기하고 매도만 ARMED 유지', async () => {
+    const port = new FakeGridPort({ qty: 10, avgPrice: 100 });
+    port.failBuyPlace = true;
+    const grid = new Grid({ port, clock: fakeClock(), config: baseConfig });
+    await grid.arm();
+
+    expect(grid.state).toBe('ARMED');
+    expect(grid.view.buyLegStatus).toBe('rejected');
+    expect(port.legBySide('sell')).toMatchObject({ qty: 10, price: 110 });
+    expect(port.legBySide('buy')).toBeUndefined();
+
+    // 매도 체결 → 정상 SOLD(매수 다리가 없어도 사이클이 완주한다).
+    port.fill(port.legBySide('sell')!.odno, 110);
+    const result = await grid.poll();
+    expect(result).toMatchObject({ kind: 'sold', qty: 10 });
+  });
+
+  it('매도 발주 거절은 여전히 FAULT다(익절 다리 없는 방치가 진짜 위험) — 회귀', async () => {
+    const port = new FakeGridPort({ qty: 10, avgPrice: 100 });
+    port.failPlace = true;
+    const grid = new Grid({ port, clock: fakeClock(), config: baseConfig });
+    await grid.arm();
+
+    expect(grid.state).toBe('FAULT');
+    expect(grid.faultText).toContain('매도 발주 실패');
+  });
+
+  it(`fetchFills 일시 오류 ${FILL_FAIL_LIMIT - 1}회는 armed 유지·성공 시 리셋, ${FILL_FAIL_LIMIT}연속이면 FAULT`, async () => {
+    const port = new FakeGridPort({ qty: 10, avgPrice: 100 });
+    const grid = new Grid({ port, clock: fakeClock(), config: baseConfig });
+    await grid.arm();
+
+    // (상한−1)연속 실패 — 아직 armed(주문은 살아 있다).
+    port.failFetchFillsTimes = FILL_FAIL_LIMIT - 1;
+    for (let i = 0; i < FILL_FAIL_LIMIT - 1; i += 1) {
+      expect(await grid.poll()).toEqual({ kind: 'armed' });
+      expect(grid.state).toBe('ARMED');
+    }
+    // 성공 1회 — 카운터 리셋(직전 실패가 이월되지 않는다).
+    expect(await grid.poll()).toEqual({ kind: 'armed' });
+
+    // 리셋 후 상한까지 연속 실패 → 마지막 1회에서 FAULT.
+    port.failFetchFillsTimes = FILL_FAIL_LIMIT;
+    for (let i = 0; i < FILL_FAIL_LIMIT - 1; i += 1) {
+      expect(await grid.poll()).toEqual({ kind: 'armed' });
+    }
+    const result = await grid.poll();
+    expect(result.kind).toBe('fault');
+    expect(grid.state).toBe('FAULT');
+    expect(grid.faultText).toContain('체결 확인');
   });
 });

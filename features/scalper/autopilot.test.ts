@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { TradeRecord } from '../../core/cycle';
+import { FILL_FAIL_LIMIT } from '../../core/grid';
 import {
   AutoPilot,
   AUTOPILOT_STORAGE_KEY,
@@ -846,10 +847,12 @@ describe('AutoPilot — 다중 그리드', () => {
     await flush();
     expect(h.pilot.getView().grids).toHaveLength(1);
 
-    // 체결 확인이 죽어 FAULT → Stop으로 인터록 해제. 앱은 A를 잊지만 계좌에는 7주가 남아 있다.
+    // 체결 확인이 계속 죽으면(연속 상한) 그 그리드만 격리된다 — 전역 FAULT가 아니다.
     ba.failFetchFills = true;
-    await h.pilot.pollCycle();
-    expect(h.pilot.getView().state).toBe('FAULT');
+    for (let i = 0; i < FILL_FAIL_LIMIT; i += 1) await h.pilot.pollCycle();
+    expect(h.pilot.getView().state).not.toBe('FAULT');
+    expect(h.pilot.getView().grids[0].faultText).toContain('체결 확인');
+    // Stop으로 관리를 놓는다. 앱은 A를 잊지만 계좌에는 7주가 남아 있다.
     h.pilot.stop();
     expect(h.pilot.getView().state).toBe('IDLE');
     expect(h.pilot.getView().grids).toHaveLength(0);
@@ -957,5 +960,130 @@ describe('AutoPilot — 다중 그리드', () => {
     expect(view.activeTickers).toEqual(['A']);
     expect(h.brokers.get('B')!.placed).toHaveLength(0);
     expect(h.events.some((e) => e.includes('신규 진입을'))).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 그리드 단위 격리 + 매수 다리 현금 판정(2026-08-08) — 한 종목 오류가 전체 자동매매를
+// 멈추지 않아야 하고(사용자가 화면을 안 보고 있다), 현금이 소진되면 매도만 걸고 UI에 알린다.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('AutoPilot — 그리드 격리·현금 소진 매도 전용', () => {
+  /** A·B 두 종목을 진입→체결→그리드 인계까지 만든다. */
+  async function armTwoGrids(h: Harness) {
+    h.pilot.start();
+    await replay(h, 'A', DOWN_UP_DOWN);
+    const ba = h.brokers.get('A')!;
+    ba.position = { qty: 5, avgPrice: 100 };
+    ba.fill(ba.placed.find((p) => p.side === 'buy')!.odno, 100);
+    await flush();
+    await h.pilot.pollCycle();
+    await flush();
+
+    await replay(h, 'B', DOWN_UP_DOWN);
+    const bb = h.brokers.get('B')!;
+    bb.position = { qty: 4, avgPrice: 50 };
+    bb.fill(bb.placed.find((p) => p.side === 'buy')!.odno, 50);
+    await flush();
+    await h.pilot.pollCycle();
+    await flush();
+
+    expect(h.pilot.getView().grids.map((g) => g.ticker).sort()).toEqual(['A', 'B']);
+    return { ba, bb };
+  }
+
+  it('그리드 하나가 멈춰도 전역 FAULT로 번지지 않는다 — 다른 종목은 계속 정산까지 간다', async () => {
+    const h = makeHarness(['A', 'B'], { autoFill: false, gridConfig: { width: 0.1, buyMultiplier: 1 } });
+    const { ba, bb } = await armTwoGrids(h);
+
+    // A: 매도 체결 후 OCO 취소가 거절 → A 그리드만 격리.
+    ba.failCancel = true;
+    ba.fill(ba.placed.find((p) => p.side === 'sell')!.odno, 110);
+    await h.pilot.pollCycle();
+    await flush();
+
+    const mid = h.pilot.getView();
+    expect(mid.state).not.toBe('FAULT'); // ★ 예전에는 여기서 전역 동결 + 폴 타이머 정지였다.
+    expect(mid.lastFault).toBeNull();
+    expect(mid.activeTickers).toContain('A'); // 격리 유지 — UI가 사유를 보여준다.
+    expect(mid.grids.find((g) => g.ticker === 'A')!.faultText).toContain('취소 실패');
+    expect(mid.grids.find((g) => g.ticker === 'B')!.faultText).toBeNull();
+    expect(h.events.some((e) => e.includes('A 그리드가 멈췄어요'))).toBe(true);
+
+    // B: 매도 체결 → 여전히 정상 정산된다(폴이 계속 돈다).
+    bb.fill(bb.placed.find((p) => p.side === 'sell')!.odno, 55);
+    await h.pilot.pollCycle();
+    await flush();
+    expect(h.trades.some((t) => t.ticker === 'B')).toBe(true);
+
+    // Stop — 격리된 A는 주문을 계좌에 남긴 채 관리를 놓고 IDLE로 마감한다(좀비 없음).
+    h.pilot.stop();
+    await flush();
+    expect(h.pilot.getView().state).toBe('IDLE');
+    expect(h.unpins).toContain('A');
+    expect(h.events.some((e) => e.includes('계좌에 남아 있어요'))).toBe(true);
+  });
+
+  it('리브래킷 때 최신 현금을 다시 조회한다 — 소진됐으면 매수 생략(skippedCash) + 매도만', async () => {
+    // 조회 순서: ① 진입 사전판정(commitBuy) ② 그리드 arm ③ 리브래킷 — 물타기 후엔 $0.
+    const cashSeq = [100_000, 100_000, 0];
+    const h = makeHarness(['A'], {
+      autoFill: false,
+      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      fetchBuyableUsd: async () => cashSeq.shift() ?? 0,
+    });
+    h.pilot.start();
+    await replay(h, 'A', DOWN_UP_DOWN);
+    const ba = h.brokers.get('A')!;
+    ba.position = { qty: 5, avgPrice: 100 };
+    ba.fill(ba.placed.find((p) => p.side === 'buy')!.odno, 100);
+    await flush();
+    await h.pilot.pollCycle();
+    await flush();
+    expect(h.pilot.getView().grids[0]).toMatchObject({ buyLegStatus: 'full', gridActive: true });
+
+    // 그리드 매수(−10%) 체결 → 리브래킷. 이번 현금 조회는 $0 → 매수 생략.
+    ba.position = { qty: 10, avgPrice: 95 };
+    ba.fill(ba.placed.filter((p) => p.side === 'buy').at(-1)!.odno, 90);
+    await flush();
+    await h.pilot.pollCycle();
+    await flush();
+
+    const view = h.pilot.getView();
+    expect(view.state).not.toBe('FAULT');
+    expect(view.grids[0]).toMatchObject({ buyLegStatus: 'skippedCash', gridActive: true, holdingQty: 10 });
+    // 리브래킷 발주는 매도만 — 매수 발주 건수가 늘지 않았다(진입 1 + 그리드 1 = 2건 유지).
+    expect(ba.placed.filter((p) => p.side === 'buy')).toHaveLength(2);
+    expect(ba.placed.filter((p) => p.side === 'sell')).toHaveLength(2);
+    expect(h.events.some((e) => e.includes('매수는 생략'))).toBe(true);
+
+    // 매도(+10%) 체결 → 정상 정산(매도 전용 상태에서도 사이클 완주).
+    ba.fill(ba.placed.filter((p) => p.side === 'sell').at(-1)!.odno, 104.5);
+    await h.pilot.pollCycle();
+    await flush();
+    expect(h.trades).toHaveLength(1);
+    expect(h.pilot.getView().activeTickers).toEqual([]);
+  });
+
+  it('그리드 매수 발주가 거절돼도 전역 FAULT 없이 매도만 관리한다(rejected)', async () => {
+    const h = makeHarness(['A'], { autoFill: false, gridConfig: { width: 0.1, buyMultiplier: 1 } });
+    h.pilot.start();
+    await replay(h, 'A', DOWN_UP_DOWN);
+    const ba = h.brokers.get('A')!;
+    ba.position = { qty: 10, avgPrice: 95 };
+    ba.fill(ba.placed.find((p) => p.side === 'buy')!.odno, 95);
+    // 그리드 인계 발주에서 매수만 거절되게 — 매도(sell)는 정상.
+    const origPlace = ba.placeOrder.bind(ba);
+    ba.placeOrder = async (input) => {
+      if (input.side === 'buy') throw new Error('주문가능금액 부족(모의)');
+      return origPlace(input);
+    };
+    await flush();
+    await h.pilot.pollCycle();
+    await flush();
+
+    const view = h.pilot.getView();
+    expect(view.state).not.toBe('FAULT');
+    expect(view.grids[0]).toMatchObject({ buyLegStatus: 'rejected', gridActive: true });
+    expect(ba.placed.filter((p) => p.side === 'sell')).toHaveLength(1); // 매도 다리는 걸려 있다.
   });
 });

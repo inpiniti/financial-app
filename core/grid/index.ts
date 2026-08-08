@@ -75,7 +75,23 @@ export interface GridDeps {
   config: GridConfig;
   /** 잔고 반영 지연 대비 fetchPosition 재시도 횟수(기본 3). */
   positionRetries?: number;
+  /**
+   * 발주 직전 최신 매수가능금액(USD) 조회 — 리브래킷마다 다시 부른다.
+   * config.availableCashUsd는 생성 시 1회 캡처라 물타기 후엔 낡은 값이 되는데,
+   * 이 콜백이 있으면 매수 다리 수량 판정마다 최신 현금으로 갱신한다.
+   * null 반환/throw면 config.availableCashUsd로 폴백한다(그것도 없으면 판정 생략).
+   */
+  fetchAvailableCash?: (buyPrice: number) => Promise<number | null>;
 }
+
+/**
+ * 매수 다리의 현금 판정 결과 — UI가 "매수 생략/축소"를 표기하는 근거.
+ *  full        — 전량 발주(현금 제약 없음).
+ *  reduced     — 현금에 맞춰 수량 축소 발주.
+ *  skippedCash — 현금이 1주 값도 안 돼 매수 다리 생략(매도만).
+ *  rejected    — 발주가 거절됐지만 매도 다리는 살아 있어 ARMED 유지.
+ */
+export type BuyLegStatus = 'full' | 'reduced' | 'skippedCash' | 'rejected';
 
 /** 게이지 UI(다음 단계)가 읽을 그리드 스냅샷. */
 export interface GridView {
@@ -86,7 +102,12 @@ export interface GridView {
   sellPrice: number;
   holdingQty: number;
   buyMultiplier: number;
+  /** 매수 다리 현금 판정 결과 — reduced/skippedCash/rejected면 UI가 사유를 표기한다. */
+  buyLegStatus: BuyLegStatus;
 }
+
+/** fetchFills 연속 실패가 이 횟수에 닿으면 FAULT(그 미만은 일시 오류로 보고 ARMED 유지). */
+export const FILL_FAIL_LIMIT = 3;
 
 /** poll 1회의 결과 — 오토파일럿이 이 값으로 SCANNING 복귀/기록/리브래킷을 판단한다. */
 export type GridPollResult =
@@ -109,6 +130,7 @@ export class Grid {
   private readonly buyMultiplier: number;
   private readonly availableCashUsd: number | undefined;
   private readonly positionRetries: number;
+  private readonly fetchAvailableCash: ((buyPrice: number) => Promise<number | null>) | undefined;
 
   private _state: GridState = 'IDLE';
   private avgPrice = 0;
@@ -118,6 +140,9 @@ export class Grid {
   private buyLeg: Leg | null = null;
   private sellLeg: Leg | null = null;
   private faultReason: string | null = null;
+  private _buyLegStatus: BuyLegStatus = 'full';
+  /** fetchFills 연속 실패 카운터 — 성공하면 리셋, FILL_FAIL_LIMIT에 닿으면 FAULT. */
+  private fillFailStreak = 0;
 
   constructor(deps: GridDeps) {
     this.port = deps.port;
@@ -126,6 +151,7 @@ export class Grid {
     this.buyMultiplier = deps.config.buyMultiplier;
     this.availableCashUsd = deps.config.availableCashUsd;
     this.positionRetries = deps.positionRetries ?? 3;
+    this.fetchAvailableCash = deps.fetchAvailableCash;
   }
 
   get state(): GridState {
@@ -145,6 +171,7 @@ export class Grid {
       sellPrice: this.sellPrice,
       holdingQty: this.holdingQty,
       buyMultiplier: this.buyMultiplier,
+      buyLegStatus: this._buyLegStatus,
     };
   }
 
@@ -175,8 +202,12 @@ export class Grid {
     let fills: GridOrderFill[];
     try {
       fills = await this.port.fetchFills();
+      this.fillFailStreak = 0;
     } catch (err) {
-      this.enterFault(`체결 확인 실패 — ${summarize(err)}`);
+      // 일시적 네트워크/유량 오류로 즉시 동결하지 않는다 — 주문은 살아 있으니 다음 폴에서 다시 본다.
+      this.fillFailStreak += 1;
+      if (this.fillFailStreak < FILL_FAIL_LIMIT) return { kind: 'armed' };
+      this.enterFault(`체결 확인 ${this.fillFailStreak}회 연속 실패 — ${summarize(err)}`);
       return { kind: 'fault', reason: this.faultReason! };
     }
     const byOdno = new Map(fills.map((f) => [f.odno, f]));
@@ -240,7 +271,11 @@ export class Grid {
     return fallback ?? null;
   }
 
-  /** 두 다리 발주 — 현금 부족 시 매수 축소/생략(D2). 발주 오류는 FAULT. 성공하면 true. */
+  /**
+   * 두 다리 발주 — 현금 부족 시 매수 축소/생략(D2).
+   * 매도 다리(익절) 실패만 FAULT다 — 익절 다리 없는 포지션 방치가 진짜 위험이라서.
+   * 매수 다리 실패는 rejected로 표기하고 매도만 ARMED로 계속 간다(현금 부족 거절이 대부분).
+   */
   private async placeBrackets(position: GridPosition): Promise<boolean> {
     this.avgPrice = position.avgPrice;
     this.holdingQty = position.qty;
@@ -251,25 +286,43 @@ export class Grid {
 
     const sellQty = position.qty;
     let buyQty = Math.floor(position.qty * this.buyMultiplier);
-    if (this.availableCashUsd !== undefined && this.buyPrice > 0) {
-      const affordable = Math.floor(this.availableCashUsd / this.buyPrice);
-      if (affordable < buyQty) buyQty = Math.max(0, affordable);
+    this._buyLegStatus = 'full';
+    // 최신 현금 조회(리브래킷마다) — 실패하면 생성 시 캡처값으로 폴백.
+    let cash = this.availableCashUsd;
+    if (this.fetchAvailableCash && this.buyPrice > 0) {
+      try {
+        const latest = await this.fetchAvailableCash(this.buyPrice);
+        if (typeof latest === 'number' && Number.isFinite(latest)) cash = latest;
+      } catch {
+        // 폴백 유지.
+      }
+    }
+    if (cash !== undefined && this.buyPrice > 0) {
+      const affordable = Math.floor(cash / this.buyPrice);
+      if (affordable < buyQty) {
+        buyQty = Math.max(0, affordable);
+        this._buyLegStatus = buyQty >= 1 ? 'reduced' : 'skippedCash';
+      }
     }
 
     try {
       // 매도 다리(익절)는 항상 발주한다.
       const sell = await this.port.placeOrder('sell', sellQty, this.sellPrice);
       this.sellLeg = { odno: sell.odno, qty: sellQty, price: this.sellPrice };
-      // 매수 다리는 수량이 1주 이상일 때만.
-      if (buyQty >= 1) {
+    } catch (err) {
+      this.enterFault(`매도 발주 실패 — ${summarize(err)}`);
+      return false;
+    }
+    // 매수 다리는 수량이 1주 이상일 때만.
+    this.buyLeg = null;
+    if (buyQty >= 1) {
+      try {
         const buy = await this.port.placeOrder('buy', buyQty, this.buyPrice);
         this.buyLeg = { odno: buy.odno, qty: buyQty, price: this.buyPrice };
-      } else {
-        this.buyLeg = null;
+      } catch {
+        // 매도는 이미 접수됐다 — 매수 거절만으로 동결하지 않고 매도만 관리한다.
+        this._buyLegStatus = 'rejected';
       }
-    } catch (err) {
-      this.enterFault(`발주 실패 — ${summarize(err)}`);
-      return false;
     }
     this._state = 'ARMED';
     return true;
