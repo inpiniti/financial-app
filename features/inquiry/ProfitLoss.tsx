@@ -9,7 +9,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, Pressable, RefreshControl, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ListRow } from '../../components/ListRow';
@@ -165,7 +165,6 @@ export function ProfitLoss({ onDetailOpenChange }: ProfitLossProps = {}) {
 
   const [items, setItems] = useState<PeriodProfitItem[] | null>(null);
   const [summary, setSummary] = useState<PeriodProfitSummary | null>(null);
-  const [loadingData, setLoadingData] = useState(false);
   const [dataError, setDataError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -178,9 +177,13 @@ export function ProfitLoss({ onDetailOpenChange }: ProfitLossProps = {}) {
   const { startDt, endDt } = useMemo(() => monthRange(ym, clock.now()), [ym]);
   const dailyList = useMemo(() => aggregateDaily(items ?? []), [items]);
 
+  // 월을 연타하면 이전 달 요청들이 아직 날아가는 중 — 마지막 요청만 화면에 반영한다(latest-wins).
+  // 응답이 돌아온 시점에 순번이 밀렸으면(=그 사이 새 요청이 나감) 결과·에러 모두 버린다.
+  const requestSeqRef = useRef(0);
+
   const fetchProfit = useCallback(async () => {
     if (session.kind !== 'ready') return;
-    setLoadingData(true);
+    const seq = ++requestSeqRef.current;
     setDataError(null);
     try {
       const result = await inquireOverseasPeriodProfitAll(session.session.credentials, session.session.accessToken, {
@@ -188,15 +191,16 @@ export function ProfitLoss({ onDetailOpenChange }: ProfitLossProps = {}) {
         startDt,
         endDt,
       });
+      if (seq !== requestSeqRef.current) return;
       setItems(result.items);
       setSummary(result.summary);
     } catch (e) {
+      if (seq !== requestSeqRef.current) return;
       setDataError(e instanceof Error ? e.message : String(e));
       setItems(null);
       setSummary(null);
     } finally {
-      setLoadingData(false);
-      setRefreshing(false);
+      if (seq === requestSeqRef.current) setRefreshing(false);
     }
   }, [session, startDt, endDt]);
 
@@ -275,11 +279,17 @@ export function ProfitLoss({ onDetailOpenChange }: ProfitLossProps = {}) {
         maxMonth={nowYm.month}
         onChange={(year, month) => {
           setSelectedDt(null);
+          // 이전 달 데이터를 즉시 비워 스켈레톤을 띄운다 — 어느 달 데이터인지 헷갈리는 잔상을 막는다.
+          // (당겨서 새로고침은 여기를 거치지 않으므로 기존 데이터 위에 스피너만 돈다.)
+          setItems(null);
+          setSummary(null);
+          setDataError(null);
           setYm({ year, month });
         }}
       />
 
-      {session.kind === 'loading' || (loadingData && items === null && summary === null && !kisFailed) ? (
+      {/* 데이터가 아직 없고 에러도 아니면 스켈레톤 — 로딩 플래그가 아니라 데이터 유무로 판단해, 월 전환 직후 fetch 시작 전 한 프레임에 빈 상태가 번쩍이지 않게 한다. */}
+      {session.kind === 'loading' || (items === null && summary === null && !kisFailed) ? (
         <Panel title="손익" style={{ flex: 1, marginBottom: 0 }}>
           <SkeletonList />
         </Panel>
