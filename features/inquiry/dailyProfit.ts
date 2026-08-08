@@ -71,6 +71,61 @@ export function aggregateDaily(items: PeriodProfitItem[]): DailyProfit[] {
   return days.sort((a, b) => (a.tradeDt < b.tradeDt ? 1 : -1));
 }
 
+/** 하루 안에서 종목별로 합친 손익 1건 — 일별 상세 화면의 행. */
+export interface DayTickerProfit {
+  /** 해외상품번호(티커) */
+  pdno: string;
+  /** 해외종목명 */
+  name: string;
+  /** 매도청산수량 합계 */
+  sellQty: number;
+  /** 매입금액 합계 — 수익률 분모 */
+  buyAmount: number;
+  /** 매도금액 합계 */
+  sellAmount: number;
+  /** 실현손익 합계 */
+  totalPnl: number;
+  /** 평균매수가 = buyAmount / sellQty (수량 0이면 null) */
+  avgBuyPrice: number | null;
+  /** 평균매도가 = sellAmount / sellQty (수량 0이면 null) */
+  avgSellPrice: number | null;
+  /** 합산 수익률(%) = totalPnl / buyAmount * 100 (분모 0이면 null) */
+  pnlRate: number | null;
+}
+
+/** 하루치 종목별 행 → 티커로 합산(같은 종목 여러 행 대비). 매입금액 큰 순으로 정렬한다. */
+export function aggregateDayByTicker(items: PeriodProfitItem[]): DayTickerProfit[] {
+  const byTicker = new Map<string, DayTickerProfit>();
+  for (const item of items) {
+    let row = byTicker.get(item.pdno);
+    if (!row) {
+      row = {
+        pdno: item.pdno,
+        name: item.name,
+        sellQty: 0,
+        buyAmount: 0,
+        sellAmount: 0,
+        totalPnl: 0,
+        avgBuyPrice: null,
+        avgSellPrice: null,
+        pnlRate: null,
+      };
+      byTicker.set(item.pdno, row);
+    }
+    row.sellQty += item.sellQty;
+    row.buyAmount += item.buyAmount;
+    row.sellAmount += item.sellAmount;
+    row.totalPnl += item.realizedPnl;
+  }
+  const rows = [...byTicker.values()];
+  for (const row of rows) {
+    row.avgBuyPrice = row.sellQty > 0 ? row.buyAmount / row.sellQty : null;
+    row.avgSellPrice = row.sellQty > 0 ? row.sellAmount / row.sellQty : null;
+    row.pnlRate = row.buyAmount > 0 ? (row.totalPnl / row.buyAmount) * 100 : null;
+  }
+  return rows.sort((a, b) => b.buyAmount - a.buyAmount);
+}
+
 /** epoch ms → 한국시간 기준 'YYYYMMDD' — KIS 일별 행(tradeDt)과 같은 형식. */
 export function todayKstDt(nowMs: number): string {
   const kst = new Date(nowMs + KST_OFFSET_MS);

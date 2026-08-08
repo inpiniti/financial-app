@@ -33,6 +33,8 @@ export interface InquirePeriodProfitParams {
   ctxAreaFk200?: string;
   /** CTX_AREA_NK200 — 연속조회키200. 문서상 Required(Y)이지만 첫 페이지 조회 시 공란으로 보낸다. */
   ctxAreaNk200?: string;
+  /** 요청 헤더 tr_cont — 공백: 최초 조회 / 'N': 다음 페이지(응답 헤더 tr_cont가 F·M일 때). */
+  trCont?: string;
 }
 
 /** output1 원본 행 — 기간손익.md Body 표 그대로(필드명 보존). */
@@ -122,6 +124,12 @@ export interface PeriodProfitSummary {
 export interface InquirePeriodProfitResult {
   items: PeriodProfitItem[];
   summary: PeriodProfitSummary;
+  /** 응답 헤더 tr_cont — 'F'·'M': 다음 데이터 있음 / 'D'·'E': 마지막(문서 응답 Header 표). 헤더가 없으면 ''. */
+  trCont: string;
+  /** 응답 바디 ctx_area_fk200 — 다음 페이지 요청에 그대로 실어 보낸다. */
+  ctxAreaFk200: string;
+  /** 응답 바디 ctx_area_nk200 — 다음 페이지 요청에 그대로 실어 보낸다. */
+  ctxAreaNk200: string;
 }
 
 export interface InquirePeriodProfitDeps {
@@ -167,8 +175,8 @@ function mapSummary(row: OverseasPeriodProfitRawSummary | undefined): PeriodProf
 }
 
 /**
- * 해외주식 기간손익 조회. 연속조회 파라미터(CTX_AREA_FK200/NK200)는 있으면 그대로 실어 보내지만,
- * 다음 페이지를 자동으로 순회하지는 않는다(첫 페이지만 사용 — 호출부가 필요하면 반환된 값으로 재호출).
+ * 해외주식 기간손익 조회 — 한 페이지. 연속조회 파라미터(CTX_AREA_FK200/NK200)는 있으면 그대로 실어 보내고,
+ * 응답의 tr_cont(헤더)·ctx_area_*(바디)를 결과에 담아 돌려준다. 전체 순회는 inquireOverseasPeriodProfitAll 사용.
  */
 export async function inquireOverseasPeriodProfit(
   credentials: KisCredentials,
@@ -194,16 +202,61 @@ export async function inquireOverseasPeriodProfit(
 
   const res = await fetchImpl(url, {
     method: 'GET',
-    headers: buildAuthHeaders(accessToken, credentials, PERIOD_PROFIT_TR_ID),
+    headers: buildAuthHeaders(
+      accessToken,
+      credentials,
+      PERIOD_PROFIT_TR_ID,
+      params.trCont ? { tr_cont: params.trCont } : undefined,
+    ),
   });
   const body = (await res.json()) as KisRtCdResponse & {
     output1: OverseasPeriodProfitRawItem[];
     output2: OverseasPeriodProfitRawSummary;
+    ctx_area_fk200?: string;
+    ctx_area_nk200?: string;
   };
   assertRtCdOk(body);
 
   return {
     items: (body.output1 ?? []).map(mapItem),
     summary: mapSummary(body.output2),
+    // 테스트/폴리필 fetch가 headers 없이 응답할 수 있어 방어적으로 읽는다.
+    trCont: (res.headers?.get?.('tr_cont') ?? '').trim(),
+    ctxAreaFk200: (body.ctx_area_fk200 ?? '').trim(),
+    ctxAreaNk200: (body.ctx_area_nk200 ?? '').trim(),
   };
+}
+
+/** 연속조회 안전 상한 — 페이지당 수십 건이므로 한 달 조회에 20페이지면 충분하고, 무한 루프를 막는다. */
+const MAX_PAGES = 20;
+
+/**
+ * 해외주식 기간손익 조회 — 연속조회(tr_cont) 순회로 전 페이지를 모아 돌려준다.
+ * 응답 헤더 tr_cont가 F·M인 동안 요청 헤더 tr_cont='N' + 직전 응답의 ctx_area_*로 재호출한다(문서 절차).
+ * summary(output2)는 기간 전체 합계라 페이지마다 동일 — 첫 페이지 값을 쓴다.
+ */
+export async function inquireOverseasPeriodProfitAll(
+  credentials: KisCredentials,
+  accessToken: string,
+  params: Omit<InquirePeriodProfitParams, 'ctxAreaFk200' | 'ctxAreaNk200' | 'trCont'>,
+  deps: InquirePeriodProfitDeps = {},
+): Promise<InquirePeriodProfitResult> {
+  const first = await inquireOverseasPeriodProfit(credentials, accessToken, params, deps);
+  const items = [...first.items];
+  let page = first;
+  for (let i = 1; i < MAX_PAGES; i++) {
+    const hasNext = page.trCont === 'F' || page.trCont === 'M';
+    if (!hasNext) break;
+    // 연속 키가 비어 있으면 더 나아갈 수 없다 — 지금까지 모은 것으로 마감.
+    if (!page.ctxAreaFk200 && !page.ctxAreaNk200) break;
+    page = await inquireOverseasPeriodProfit(
+      credentials,
+      accessToken,
+      { ...params, trCont: 'N', ctxAreaFk200: page.ctxAreaFk200, ctxAreaNk200: page.ctxAreaNk200 },
+      deps,
+    );
+    items.push(...page.items);
+  }
+  // summary는 첫 페이지 값, 연속 상태(trCont·ctx)는 마지막 페이지 값.
+  return { ...page, summary: first.summary, items };
 }

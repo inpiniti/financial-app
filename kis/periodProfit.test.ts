@@ -1,11 +1,42 @@
 import { describe, expect, it, vi } from 'vitest';
-import { inquireOverseasPeriodProfit } from './periodProfit';
+import { inquireOverseasPeriodProfit, inquireOverseasPeriodProfitAll } from './periodProfit';
 
 const credentials = { appKey: 'appkey-value', appSecret: 'appsecret-value' };
 const account = { cano: '12345678', acntPrdtCd: '01' };
 
 function mockFetch(body: unknown) {
   return vi.fn().mockResolvedValue({ json: async () => body });
+}
+
+/** tr_cont 응답 헤더까지 흉내 내는 mock — 호출 순서대로 페이지를 돌려준다. */
+function mockPagedFetch(pages: { body: unknown; trCont: string }[]) {
+  const fn = vi.fn();
+  for (const page of pages) {
+    fn.mockResolvedValueOnce({
+      json: async () => page.body,
+      headers: { get: (name: string) => (name === 'tr_cont' ? page.trCont : null) },
+    });
+  }
+  return fn;
+}
+
+function rawItem(pdno: string, tradeDt = '20260710'): Record<string, string> {
+  return {
+    trad_day: tradeDt,
+    ovrs_pdno: pdno,
+    ovrs_item_name: pdno,
+    slcl_qty: '1',
+    pchs_avg_pric: '100',
+    frcr_pchs_amt1: '100',
+    avg_sll_unpr: '110',
+    frcr_sll_amt_smtl1: '110',
+    stck_sll_tlex: '0',
+    ovrs_rlzt_pfls_amt: '10',
+    pftrt: '10',
+    exrt: '1350',
+    ovrs_excg_cd: 'NASD',
+    frst_bltn_exrt: '1350',
+  };
 }
 
 describe('해외주식 기간손익 (TTTS3039R)', () => {
@@ -100,6 +131,89 @@ describe('해외주식 기간손익 (TTTS3039R)', () => {
       totalPnlRate: 6.4,
       baseDt: '20260730',
     });
+  });
+
+  it('연속조회 — 응답 헤더 tr_cont가 M인 동안 tr_cont=N + ctx 값으로 재호출해 전 페이지를 합친다', async () => {
+    const fetchImpl = mockPagedFetch([
+      {
+        trCont: 'M',
+        body: {
+          rt_cd: '0', msg_cd: 'MSG', msg1: 'ok',
+          output1: [rawItem('AAPL'), rawItem('TSLA')],
+          output2: { ovrs_rlzt_pfls_tot_amt: '30', tot_pftrt: '10', bass_dt: '20260730', exrt: '1350' },
+          ctx_area_fk200: 'FK-1',
+          ctx_area_nk200: 'NK-1',
+        },
+      },
+      {
+        trCont: 'D',
+        body: {
+          rt_cd: '0', msg_cd: 'MSG', msg1: 'ok',
+          output1: [rawItem('NVDA', '20260709')],
+          output2: { ovrs_rlzt_pfls_tot_amt: '30', tot_pftrt: '10', bass_dt: '20260730', exrt: '1350' },
+          ctx_area_fk200: '',
+          ctx_area_nk200: '',
+        },
+      },
+    ]);
+
+    const result = await inquireOverseasPeriodProfitAll(
+      credentials,
+      'token',
+      { account, startDt: '20260701', endDt: '20260730' },
+      { fetchImpl },
+    );
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const [url2, init2] = fetchImpl.mock.calls[1];
+    expect(url2).toContain('CTX_AREA_FK200=FK-1');
+    expect(url2).toContain('CTX_AREA_NK200=NK-1');
+    expect((init2.headers as Record<string, string>).tr_cont).toBe('N');
+    // 첫 요청에는 tr_cont 헤더가 없다(초기 조회).
+    expect((fetchImpl.mock.calls[0][1].headers as Record<string, string>).tr_cont).toBeUndefined();
+
+    expect(result.items.map((i) => i.pdno)).toEqual(['AAPL', 'TSLA', 'NVDA']);
+    expect(result.summary.totalRealizedPnl).toBe(30);
+  });
+
+  it('연속조회 — 마지막 페이지(tr_cont=D)면 한 번만 호출한다', async () => {
+    const fetchImpl = mockPagedFetch([
+      {
+        trCont: 'D',
+        body: {
+          rt_cd: '0', msg_cd: 'MSG', msg1: 'ok',
+          output1: [rawItem('AAPL')],
+          output2: {},
+          ctx_area_fk200: 'FK-1',
+          ctx_area_nk200: 'NK-1',
+        },
+      },
+    ]);
+
+    const result = await inquireOverseasPeriodProfitAll(
+      credentials,
+      'token',
+      { account, startDt: '20260701', endDt: '20260730' },
+      { fetchImpl },
+    );
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(result.items).toHaveLength(1);
+  });
+
+  it('연속조회 — 응답에 headers가 없어도(테스트/폴리필 fetch) 첫 페이지만으로 안전하게 끝난다', async () => {
+    const fetchImpl = mockFetch({ rt_cd: '0', msg_cd: 'MSG', msg1: 'ok', output1: [rawItem('AAPL')], output2: {} });
+
+    const result = await inquireOverseasPeriodProfitAll(
+      credentials,
+      'token',
+      { account, startDt: '20260701', endDt: '20260730' },
+      { fetchImpl },
+    );
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(result.items).toHaveLength(1);
+    expect(result.trCont).toBe('');
   });
 
   it('rt_cd가 0이 아니면 KisApiError를 던진다', async () => {

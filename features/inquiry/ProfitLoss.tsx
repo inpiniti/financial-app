@@ -5,35 +5,41 @@
 // KIS가 당일 손익을 제공하지 않아, 현재 달에서는 앱 자체 기록(features/scalper/tradeStore)을 합산한
 // "오늘예상" 행을 일별 리스트와 같은 형식으로 맨 위에 얹는다(응답 환율로 원화 환산, 환율 없으면 USD).
 // 개별 사이클 상세는 조회 탭 "거래기록" 세그먼트(TradeHistory.tsx)로 분리했다.
+// 일별 행을 누르면 그 날의 종목별 합계(실현손익·평균매수가→평균매도가·수량) 상세로 들어간다.
+import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { FlatList, RefreshControl, Text, View } from 'react-native';
+import { FlatList, Pressable, RefreshControl, Text, View } from 'react-native';
 import { ListRow } from '../../components/ListRow';
 import { MonthNavigator } from '../../components/MonthNavigator';
 import { Panel } from '../../components/Panel';
-import { inquireOverseasPeriodProfit, type PeriodProfitItem, type PeriodProfitSummary } from '../../kis/periodProfit';
-import { formatSignedKrw, formatSignedPercent, formatSignedUsd, pnlColor } from '../../lib/format';
+import { TickerAvatar } from '../../components/TickerAvatar';
+import { inquireOverseasPeriodProfitAll, type PeriodProfitItem, type PeriodProfitSummary } from '../../kis/periodProfit';
+import { formatKrw, formatSignedKrw, formatSignedPercent, formatSignedUsd, pnlColor } from '../../lib/format';
 import { readTodayTrades, type StoredTrade } from '../scalper/tradeStore';
 import { EmptyState, ErrorNotice, SetupNotice, SkeletonList } from './components';
 import { useKisSession } from './useKisSession';
 import {
   aggregateDaily,
+  aggregateDayByTicker,
   currentYearMonthKst,
   estimateToday,
   formatDayLabel,
   monthRange,
   todayKstDt,
   type DailyProfit,
+  type DayTickerProfit,
   type TodayEstimate,
   type YearMonth,
 } from './dailyProfit';
 
 const clock = { now: () => Date.now() };
 
-function DailyRow({ day }: { day: DailyProfit }) {
+function DailyRow({ day, onPress }: { day: DailyProfit; onPress: () => void }) {
   return (
     <ListRow
       title={formatDayLabel(day.tradeDt)}
+      onPress={onPress}
       trailing={
         <>
           <Text style={{ color: pnlColor(day.totalPnl) }} className="text-sm font-bold">
@@ -67,6 +73,70 @@ function TodayEstimateRow({ tradeDt, estimate }: { tradeDt: string; estimate: To
   );
 }
 
+/** 일별 상세의 종목 행 — "테슬라 · TSLA · 672원 → 692원 · 729주" + 우측 실현손익/수익률. */
+function DayTickerRow({ row }: { row: DayTickerProfit }) {
+  const priceNote =
+    row.avgBuyPrice !== null && row.avgSellPrice !== null
+      ? ` · ${formatKrw(row.avgBuyPrice)} → ${formatKrw(row.avgSellPrice)}`
+      : '';
+  return (
+    <ListRow
+      leading={<TickerAvatar ticker={row.pdno} />}
+      title={row.name || row.pdno}
+      subtitle={`${row.pdno}${priceNote} · ${row.sellQty.toLocaleString('en-US')}주`}
+      trailing={
+        <>
+          <Text style={{ color: pnlColor(row.totalPnl) }} className="text-sm font-bold">
+            {formatSignedKrw(row.totalPnl)}
+          </Text>
+          <Text style={{ color: pnlColor(row.pnlRate) }} className="mt-0.5 text-xs font-semibold">
+            {row.pnlRate === null ? '—' : formatSignedPercent(row.pnlRate, 2)}
+          </Text>
+        </>
+      }
+    />
+  );
+}
+
+/** 일별 상세 — 상단 "< 2026년 07월 31일 (금)" 바 + 그 날의 종목별 합계 리스트. */
+function DayDetail({ day, onBack }: { day: DailyProfit; onBack: () => void }) {
+  const rows = useMemo(() => aggregateDayByTicker(day.items), [day]);
+  return (
+    <View className="flex-1 bg-[#f2f4f6]">
+      <View className="mb-2 flex-row items-center bg-white px-2 py-1">
+        <Pressable
+          onPress={onBack}
+          className="items-center justify-center active:opacity-60"
+          style={{ width: 44, height: 44 }}
+          accessibilityRole="button"
+          accessibilityLabel="일별 목록으로"
+        >
+          <Ionicons name="chevron-back" size={20} color="#4e5968" />
+        </Pressable>
+        <Text className="text-lg font-bold text-[#191f28]">{`${day.tradeDt.slice(0, 4)}년 ${formatDayLabel(day.tradeDt)}`}</Text>
+      </View>
+      <Panel title="종목별 손익" style={{ flex: 1, marginBottom: 0 }}>
+        <FlatList
+          data={rows}
+          keyExtractor={(row) => row.pdno}
+          renderItem={({ item: row }) => <DayTickerRow row={row} />}
+          ListHeaderComponent={
+            <View className="border-b border-[#e5e8eb] px-5 pb-4 pt-2">
+              <Text className="text-xs text-[#8b95a1]">이 날 실현손익</Text>
+              <Text className="mt-1 text-[22px] font-bold" style={{ color: pnlColor(day.totalPnl) }}>
+                {formatSignedKrw(day.totalPnl)}
+              </Text>
+              <Text className="mt-1 text-sm font-semibold" style={{ color: pnlColor(day.pnlRate) }}>
+                {day.pnlRate === null ? '—' : formatSignedPercent(day.pnlRate, 2)}
+              </Text>
+            </View>
+          }
+        />
+      </Panel>
+    </View>
+  );
+}
+
 export function ProfitLoss() {
   const [reloadKey, setReloadKey] = useState(0);
   const session = useKisSession(reloadKey);
@@ -79,6 +149,8 @@ export function ProfitLoss() {
   const [refreshing, setRefreshing] = useState(false);
 
   const [localTrades, setLocalTrades] = useState<StoredTrade[] | null>(null);
+  /** 일별 상세로 들어간 날(YYYYMMDD) — null이면 일별 목록. */
+  const [selectedDt, setSelectedDt] = useState<string | null>(null);
 
   const nowYm = currentYearMonthKst(clock.now());
   const isCurrentMonth = ym.year === nowYm.year && ym.month === nowYm.month;
@@ -90,7 +162,7 @@ export function ProfitLoss() {
     setLoadingData(true);
     setDataError(null);
     try {
-      const result = await inquireOverseasPeriodProfit(session.session.credentials, session.session.accessToken, {
+      const result = await inquireOverseasPeriodProfitAll(session.session.credentials, session.session.accessToken, {
         account: session.session.account,
         startDt,
         endDt,
@@ -155,6 +227,11 @@ export function ProfitLoss() {
 
   const kisFailed = dataError !== null && items === null;
 
+  const selectedDay = selectedDt !== null ? dailyList.find((d) => d.tradeDt === selectedDt) : undefined;
+  if (selectedDay) {
+    return <DayDetail day={selectedDay} onBack={() => setSelectedDt(null)} />;
+  }
+
   return (
     <View className="flex-1 bg-[#f2f4f6]">
       <MonthNavigator
@@ -162,7 +239,10 @@ export function ProfitLoss() {
         month={ym.month}
         maxYear={nowYm.year}
         maxMonth={nowYm.month}
-        onChange={(year, month) => setYm({ year, month })}
+        onChange={(year, month) => {
+          setSelectedDt(null);
+          setYm({ year, month });
+        }}
       />
 
       {session.kind === 'loading' || (loadingData && items === null && summary === null && !kisFailed) ? (
@@ -174,7 +254,7 @@ export function ProfitLoss() {
           <FlatList
             data={kisFailed ? [] : dailyList}
             keyExtractor={(day) => day.tradeDt}
-            renderItem={({ item: day }) => <DailyRow day={day} />}
+            renderItem={({ item: day }) => <DailyRow day={day} onPress={() => setSelectedDt(day.tradeDt)} />}
             contentContainerStyle={{ flexGrow: 1 }}
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#3182f6" />}
             ListHeaderComponent={

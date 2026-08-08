@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { PeriodProfitItem } from '../../kis/periodProfit';
-import { aggregateDaily, currentYearMonthKst, estimateToday, formatDayLabel, monthRange, todayKstDt } from './dailyProfit';
+import {
+  aggregateDaily,
+  aggregateDayByTicker,
+  currentYearMonthKst,
+  estimateToday,
+  formatDayLabel,
+  monthRange,
+  todayKstDt,
+} from './dailyProfit';
 
 function item(partial: Partial<PeriodProfitItem>): PeriodProfitItem {
   return {
@@ -73,6 +81,36 @@ describe('aggregateDaily', () => {
 
   it('빈 입력은 빈 배열', () => {
     expect(aggregateDaily([])).toEqual([]);
+  });
+});
+
+describe('aggregateDayByTicker', () => {
+  it('같은 종목 여러 행을 합산하고 평균가·수익률을 금액으로 다시 계산한다', () => {
+    const rows = aggregateDayByTicker([
+      item({ pdno: 'TSLA', name: '테슬라', sellQty: 400, buyAmount: 268800, sellAmount: 276800, realizedPnl: 8000 }),
+      item({ pdno: 'TSLA', name: '테슬라', sellQty: 329, buyAmount: 221088, sellAmount: 223951, realizedPnl: 2863 }),
+      item({ pdno: 'AAPL', name: '애플', sellQty: 1, buyAmount: 1000, sellAmount: 990, realizedPnl: -10 }),
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(rows[0].pdno).toBe('TSLA'); // 매입금액 큰 순
+    expect(rows[0].sellQty).toBe(729);
+    expect(rows[0].totalPnl).toBe(10863);
+    expect(rows[0].avgBuyPrice).toBeCloseTo(489888 / 729, 5);
+    expect(rows[0].avgSellPrice).toBeCloseTo(500751 / 729, 5);
+    expect(rows[0].pnlRate).toBeCloseTo((10863 / 489888) * 100, 5);
+    expect(rows[1].pdno).toBe('AAPL');
+    expect(rows[1].totalPnl).toBe(-10);
+  });
+
+  it('수량 0이면 평균가는 null, 매입금액 0이면 수익률은 null', () => {
+    const rows = aggregateDayByTicker([item({ pdno: 'X', sellQty: 0, buyAmount: 0, sellAmount: 0, realizedPnl: 5 })]);
+    expect(rows[0].avgBuyPrice).toBeNull();
+    expect(rows[0].avgSellPrice).toBeNull();
+    expect(rows[0].pnlRate).toBeNull();
+  });
+
+  it('빈 입력은 빈 배열', () => {
+    expect(aggregateDayByTicker([])).toEqual([]);
   });
 });
 

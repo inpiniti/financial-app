@@ -48,6 +48,16 @@ export function formatSignedKrw(value: number | string): string {
 }
 
 /**
+ * 부호 없는 원화 금액(단가 등) — 천단위 콤마 + 정수(원 단위 반올림). 예: 672.4 → "672원", 10863 → "10,863원".
+ * 손익처럼 부호가 의미 있는 값에는 formatSignedKrw를 쓴다.
+ */
+export function formatKrw(value: number | string): string {
+  const n = toNumber(value);
+  if (!Number.isFinite(n)) return typeof value === 'string' ? value : '—';
+  return `${Math.round(n).toLocaleString('en-US')}원`;
+}
+
+/**
  * 부호 있는 퍼센트 — 입력값이 이미 "퍼센트 단위"(예: KIS evlu_pfls_rt1 = "-14.36000000")라고 가정하고
  * 소수 자리만 다듬는다. 0~1 비율값(예: 0.14)을 넣으려면 formatSignedPercentFromRatio를 쓴다.
  */
