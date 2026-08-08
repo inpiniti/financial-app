@@ -1,5 +1,15 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, Text, TextInput, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { isSupabaseConfigured } from '../lib/supabase';
 import { checkApprovedAccount } from '../lib/accessControl';
@@ -17,6 +27,7 @@ import { clearApprovedAccountNo, loadApprovedAccountNo, saveApprovedAccountNo } 
 type GateState = 'loading' | 'needsEnv' | 'autoPass' | 'form';
 
 export default function GateScreen() {
+  const insets = useSafeAreaInsets();
   const [state, setState] = useState<GateState>('loading');
   const [savedAccountNo, setSavedAccountNo] = useState<string | null>(null);
   const [accountNo, setAccountNo] = useState('');
@@ -77,7 +88,7 @@ export default function GateScreen() {
 
   if (state === 'loading') {
     return (
-      <View className="flex-1 items-center justify-center bg-[#f7f9fc]">
+      <View className="flex-1 items-center justify-center bg-white">
         <ActivityIndicator color="#3182f6" />
       </View>
     );
@@ -85,7 +96,7 @@ export default function GateScreen() {
 
   if (state === 'needsEnv') {
     return (
-      <View className="flex-1 items-center justify-center bg-[#f7f9fc] px-6">
+      <View className="flex-1 items-center justify-center bg-white px-6">
         <Text className="mb-2 text-xl font-bold text-[#191f28]">Supabase 설정이 필요해요</Text>
         <Text className="text-center text-sm leading-5 text-[#4e5968]">
           .env 파일에 EXPO_PUBLIC_SUPABASE_URL과{'\n'}EXPO_PUBLIC_SUPABASE_ANON_KEY를 채운 뒤{'\n'}
@@ -100,22 +111,24 @@ export default function GateScreen() {
 
   if (state === 'autoPass') {
     return (
-      <View className="flex-1 justify-center bg-[#f7f9fc] px-6">
-        <View className="rounded-3xl bg-white p-6 shadow-sm">
-          <Text className="mb-2 text-xl font-bold text-[#191f28]">다시 오셨네요</Text>
-          <Text className="mb-6 text-sm text-[#4e5968]">
-            {savedAccountNo} 계좌로 계속할게요.
-          </Text>
-          <Pressable
-            onPress={handleContinueWithSaved}
-            className="items-center rounded-2xl bg-[#3182f6] py-4 active:opacity-80"
-          >
-            <Text className="text-base font-semibold text-white">계속하기</Text>
-          </Pressable>
-          <Pressable onPress={handleSwitchAccount} className="mt-4 items-center py-2">
-            <Text className="text-sm text-[#8b95a1]">다른 계좌로 로그인</Text>
-          </Pressable>
-        </View>
+      <View
+        className="flex-1 bg-white px-5"
+        style={{ paddingTop: insets.top + 72, paddingBottom: insets.bottom + 16 }}
+      >
+        <Text className="text-2xl font-bold text-[#191f28]">다시 오셨네요</Text>
+        <Text className="mt-2 text-[15px] text-[#4e5968]">
+          {savedAccountNo} 계좌로 계속할게요.
+        </Text>
+        <View className="flex-1" />
+        <Pressable
+          onPress={handleContinueWithSaved}
+          className="items-center rounded-2xl bg-[#3182f6] py-4 active:opacity-80"
+        >
+          <Text className="text-base font-semibold text-white">계속하기</Text>
+        </Pressable>
+        <Pressable onPress={handleSwitchAccount} className="mt-3 items-center py-3">
+          <Text className="text-sm text-[#8b95a1]">다른 계좌로 로그인</Text>
+        </Pressable>
       </View>
     );
   }
@@ -123,10 +136,16 @@ export default function GateScreen() {
   const canSubmit = accountNo.trim().length > 0 && !checking;
 
   return (
-    <View className="flex-1 justify-center bg-[#f7f9fc] px-6">
-      <View className="rounded-3xl bg-white p-6 shadow-sm">
-        <Text className="mb-2 text-xl font-bold text-[#191f28]">계좌번호로 시작해요</Text>
-        <Text className="mb-6 text-sm text-[#4e5968]">
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      className="flex-1 bg-white"
+    >
+      <View
+        className="flex-1 px-5"
+        style={{ paddingTop: insets.top + 72, paddingBottom: insets.bottom + 16 }}
+      >
+        <Text className="text-2xl font-bold text-[#191f28]">계좌번호로 시작해요</Text>
+        <Text className="mt-2 text-[15px] text-[#4e5968]">
           승인된 계좌만 이용할 수 있어요. KIS 계좌번호를 입력해 주세요.
         </Text>
         <TextInput
@@ -137,8 +156,9 @@ export default function GateScreen() {
           keyboardType="numbers-and-punctuation"
           autoCapitalize="none"
           autoCorrect={false}
-          className="mb-6 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
+          className="mt-8 rounded-2xl bg-[#f2f4f6] px-4 py-4 text-base text-[#191f28]"
         />
+        <View className="flex-1" />
         <Pressable
           onPress={handleSubmit}
           disabled={!canSubmit}
@@ -155,6 +175,6 @@ export default function GateScreen() {
           )}
         </Pressable>
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
