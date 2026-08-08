@@ -8,6 +8,7 @@
 // 일별 행을 누르면 그 날의 종목별 합계(실현손익·평균매수가→평균매도가·수량) 상세로 들어간다.
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { FlatList, Pressable, RefreshControl, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -18,6 +19,7 @@ import { TickerAvatar } from '../../components/TickerAvatar';
 import { inquireOverseasPeriodProfitAll, type PeriodProfitItem, type PeriodProfitSummary } from '../../kis/periodProfit';
 import { formatKrw, formatSignedKrw, formatSignedPercent, formatSignedUsd, pnlColor } from '../../lib/format';
 import { readTodayTrades, type StoredTrade } from '../scalper/tradeStore';
+import { toStockMarketCode } from '../stock/marketCodes';
 import { EmptyState, ErrorNotice, SetupNotice, SkeletonList } from './components';
 import { useKisSession } from './useKisSession';
 import {
@@ -74,14 +76,22 @@ function TodayEstimateRow({ tradeDt, estimate }: { tradeDt: string; estimate: To
   );
 }
 
-/** 일별 상세의 종목 행 — "테슬라 · TSLA · 672원 → 692원 · 729주" + 우측 실현손익/수익률. */
+/** 일별 상세의 종목 행 — "테슬라 · TSLA · 672원 → 692원 · 729주" + 우측 실현손익/수익률. 탭하면 종목상세. */
 function DayTickerRow({ row }: { row: DayTickerProfit }) {
   const priceNote =
     row.avgBuyPrice !== null && row.avgSellPrice !== null
       ? ` · ${formatKrw(row.avgBuyPrice)} → ${formatKrw(row.avgSellPrice)}`
       : '';
+  const handlePress = () => {
+    const market = toStockMarketCode(row.exchangeCode);
+    router.push({
+      pathname: '/stock/[ticker]',
+      params: { ticker: row.pdno, market: market ?? row.exchangeCode, name: row.name },
+    });
+  };
   return (
     <ListRow
+      onPress={handlePress}
       leading={<TickerAvatar ticker={row.pdno} />}
       title={row.name || row.pdno}
       subtitle={`${row.pdno}${priceNote} · ${row.sellQty.toLocaleString('en-US')}주`}

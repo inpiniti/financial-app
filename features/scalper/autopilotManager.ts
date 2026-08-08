@@ -182,7 +182,8 @@ export class AutoPilotManager {
       buyCancelAfterMs: deps.buyCancelAfterMs,
       reselectIntervalMs: deps.reselectIntervalMs,
       onTrade: (record) => {
-        void appendTradeRecord(deps.storage, AUTOPILOT_TRADE_ID, record).catch((err) =>
+        // 채용 거래소를 함께 남긴다 — 거래기록 화면에서 행 탭 → 종목상세 진입 시 시장 판별용.
+        void appendTradeRecord(deps.storage, AUTOPILOT_TRADE_ID, record, this.marketOf(record.ticker)).catch((err) =>
           this.deps.onError?.(err),
         );
       },

@@ -3,12 +3,15 @@
 // 조회 탭 "오늘 거래"와 6단계 UI가 readTodayTrades로 읽는다.
 import type { TradeRecord } from '../../core/cycle';
 import type { ClockLike, KeyValueStore } from './types';
+import type { WatchMarket } from './watchlist';
 
 export const TRADE_KEY_PREFIX = 'trades.';
 
-/** 저장 레코드 = core TradeRecord + 어느 인스턴스가 낸 거래인지. */
+/** 저장 레코드 = core TradeRecord + 어느 인스턴스가 낸 거래인지 + 채용 거래소. */
 export interface StoredTrade extends TradeRecord {
   instanceId: string;
+  /** 채용 거래소(WatchEntry.market) — 종목상세 진입 시 시장 판별용. 옛 기록에는 없어 optional. */
+  market?: WatchMarket;
 }
 
 /** epoch ms → 'YYYY-MM-DD' (UTC). */
@@ -39,10 +42,11 @@ export async function appendTradeRecord(
   storage: KeyValueStore,
   instanceId: string,
   record: TradeRecord,
+  market?: WatchMarket,
 ): Promise<void> {
   const key = tradeKeyFor(record.exitTs);
   const list = await readKey(storage, key);
-  list.push({ ...record, instanceId });
+  list.push({ ...record, instanceId, ...(market ? { market } : {}) });
   await storage.setItem(key, JSON.stringify(list));
 }
 

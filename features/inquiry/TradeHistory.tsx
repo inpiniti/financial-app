@@ -2,6 +2,7 @@
 // KIS 세션 없이 AsyncStorage만 읽는다 — 당일 상세는 KIS가 제공하지 않으므로, 손익 세그먼트에는
 // 합계("오늘예상")만 싣고 개별 사이클은 이 화면에서 시간순으로 보여준다(옛 ProfitLoss 로컬 섹션 이관).
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { router } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { FlatList, RefreshControl, Text } from 'react-native';
 import { ListRow } from '../../components/ListRow';
@@ -24,13 +25,18 @@ function formatKstTime(tsMs: number): string {
 
 /**
  * 사이클 1건 행 — 색 규칙(이익=빨강, 손실=파랑)은 lib/format.pnlColor 하나로 통일한다
- * (개별 파일에서 직접 삼항연산 금지).
+ * (개별 파일에서 직접 삼항연산 금지). 탭하면 종목상세로 들어간다.
  */
 function CycleRow({ item }: { item: StoredTrade }) {
   // 수수료를 켠 뒤 기록에만 fees가 있다(옛 기록은 undefined) — 있을 때만 덧붙인다.
   const feeNote = item.fees && item.fees > 0 ? ` · 수수료 ${formatUsd(item.fees)}` : '';
+  const handlePress = () => {
+    // market이 없는 옛 기록은 NAS 폴백 — 자동단타 미채용 티커 기본값(autopilotManager.marketOf)과 동일 관례.
+    router.push({ pathname: '/stock/[ticker]', params: { ticker: item.ticker, market: item.market ?? 'NAS' } });
+  };
   return (
     <ListRow
+      onPress={handlePress}
       leading={<TickerAvatar ticker={item.ticker} />}
       title={item.ticker}
       subtitle={`진입 ${formatUsd(item.entryPrice)} → 청산 ${formatUsd(item.exitPrice)}${feeNote}`}

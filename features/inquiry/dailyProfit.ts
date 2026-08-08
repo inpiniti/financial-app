@@ -77,6 +77,8 @@ export interface DayTickerProfit {
   pdno: string;
   /** 해외종목명 */
   name: string;
+  /** 해외거래소코드 (ovrs_excg_cd, 예: NASD) — 종목상세 진입 시 시장 판별용 */
+  exchangeCode: string;
   /** 매도청산수량 합계 */
   sellQty: number;
   /** 매입금액 합계 — 수익률 분모 */
@@ -102,6 +104,7 @@ export function aggregateDayByTicker(items: PeriodProfitItem[]): DayTickerProfit
       row = {
         pdno: item.pdno,
         name: item.name,
+        exchangeCode: item.exchangeCode,
         sellQty: 0,
         buyAmount: 0,
         sellAmount: 0,
