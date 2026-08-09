@@ -31,7 +31,8 @@
     },
     "plugins": [
       "expo-router",
-      "expo-secure-store"
+      "expo-secure-store",
+      "expo-font"
     ],
     "extra": {
       "router": {},
@@ -44,8 +45,7 @@
     },
     "updates": {
       "url": "https://u.expo.dev/641242dd-ee1e-4cca-9093-dcf5853b638f",
-      "fallbackToCacheOnError": true,
-      "checkOnLaunch": "always"
+      "checkAutomatically": "ON_LOAD"
     },
     "owner": "inpiniti"
   }
