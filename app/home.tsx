@@ -8,7 +8,7 @@ import { ErrorNotice, SetupNotice } from '../features/inquiry/components';
 import { AutoPilotScreen } from '../features/scalper/ui/AutoPilotScreen';
 import { useScalperManager } from '../features/scalper/ui/managerProvider';
 
-/** 홈 상단바 — 중앙 타이틀 "단타" + 좌측 조회·우측 설정(아이콘 전용, 라벨 없음). */
+/** 홈 상단바 — 중앙 타이틀 "DDALBA TRACE" + 좌측 조회·우측 설정(아이콘 전용, 라벨 없음). */
 function HomeTopBar() {
   const insets = useSafeAreaInsets();
 
@@ -28,7 +28,7 @@ function HomeTopBar() {
         <Ionicons name="search-outline" size={22} color="#191f28" />
       </Pressable>
 
-      <Text className="text-[17px] font-bold text-[#191f28]">단타</Text>
+      <Text className="text-[17px] font-bold text-[#191f28]">DDALBA TRACE</Text>
 
       <Pressable
         onPress={() => router.push('/settings')}
