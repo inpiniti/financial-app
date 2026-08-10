@@ -23,7 +23,7 @@ const MENU_ITEMS: BottomMenuItem<HomeSegment>[] = [
   { key: 'profitLoss', label: '손익', icon: 'cash-outline', activeIcon: 'cash' },
 ];
 
-/** 홈 상단바 — 중앙 타이틀 "DDALBA TRACE" + 좌측 검색·우측 설정(아이콘 전용, 라벨 없음). */
+/** 홈 상단바 — 중앙 타이틀 "SEEDTICK" + 좌측 검색·우측 설정(아이콘 전용, 라벨 없음). */
 function HomeTopBar() {
   const insets = useSafeAreaInsets();
 
@@ -43,7 +43,7 @@ function HomeTopBar() {
         <Ionicons name="search-outline" size={22} color="#191f28" />
       </Pressable>
 
-      <Text className="text-[17px] font-bold text-[#191f28]">DDALBA TRACE</Text>
+      <Text className="text-[17px] font-bold text-[#191f28]">SEEDTICK</Text>
 
       <Pressable
         onPress={() => router.push('/settings')}
