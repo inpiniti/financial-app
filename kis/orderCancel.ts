@@ -5,7 +5,13 @@ import { kisFlowFetch } from './flow';
 import { REST_DOMAIN } from './domain';
 import { assertRtCdOk, buildAuthHeaders, type KisRtCdResponse } from './http';
 import { formatOverseasOrderPrice, roundingForSide } from './order';
-import { isAmendSupported, resolveCancelTrId, type OrderSide, type OverseasExchangeCode } from './trId';
+import {
+  isAmendSupported,
+  resolveCancelTrId,
+  resolveDaytimeCancelTrId,
+  type OrderSide,
+  type OverseasExchangeCode,
+} from './trId';
 import type { FetchLike, KisAccount, KisCredentials, KisEnvironment } from './types';
 
 export type RvseCnclAction = 'amend' | 'cancel';
@@ -38,6 +44,11 @@ export interface CancelOrAmendOrderParams {
    * 미지정 시 'nearest'(하위호환) — 정정에서는 반드시 넘겨야 공격적 지정가가 보장된다.
    */
   side?: OrderSide;
+  /**
+   * 미국 주간거래 주문의 정정취소(주간정정취소.txt, TTTS6038U · /trading/daytime-order-rvsecncl) —
+   * 미국 실전 전용. **원주문이 주간주문(TTTS6036U/6037U)으로 나갔으면 반드시 이 경로로 취소해야 한다.**
+   */
+  daytime?: boolean;
 }
 
 export interface CancelOrAmendOrderResult {
@@ -57,11 +68,14 @@ export async function cancelOrAmendOverseasOrder(
   params: CancelOrAmendOrderParams,
   deps: CancelOrderDeps = {},
 ): Promise<CancelOrAmendOrderResult> {
-  const trId = resolveCancelTrId(params.ovrsExcgCd, environment);
+  const trId = params.daytime
+    ? resolveDaytimeCancelTrId(params.ovrsExcgCd, environment)
+    : resolveCancelTrId(params.ovrsExcgCd, environment);
   if (!trId) {
     throw new Error(
-      `[kis/orderCancel] TR ID를 해석하지 못했습니다 (거래소=${params.ovrsExcgCd}, environment=${environment}). ` +
-        '정정취소 호출을 차단합니다 — docs/koreainvestment/정정취소주문.md TR ID 표를 확인하세요.',
+      `[kis/orderCancel] TR ID를 해석하지 못했습니다 (거래소=${params.ovrsExcgCd}, environment=${environment}` +
+        `${params.daytime ? ', 주간거래' : ''}). ` +
+        '정정취소 호출을 차단합니다 — docs/koreainvestment/정정취소주문.md·주간정정취소.txt TR ID 표를 확인하세요(주간거래는 미국·실전 전용).',
     );
   }
   if (params.action === 'amend' && !isAmendSupported(params.ovrsExcgCd)) {
@@ -89,8 +103,18 @@ export async function cancelOrAmendOverseasOrder(
             params.side ? roundingForSide(params.side) : 'nearest',
           ),
   };
+  // 주간정정취소.txt Body — 정규장 정정취소와 달리 CTAC_TLNO/MGCO_APTM_ODNO/ORD_SVR_DVSN_CD가
+  // Required(Y)다. 문서 규정대로 공백("")·"0"을 채워 보낸다.
+  if (params.daytime) {
+    body.CTAC_TLNO = '';
+    body.MGCO_APTM_ODNO = '';
+    body.ORD_SVR_DVSN_CD = '0';
+  }
 
-  const res = await fetchImpl(`${REST_DOMAIN[environment]}/uapi/overseas-stock/v1/trading/order-rvsecncl`, {
+  const path = params.daytime
+    ? '/uapi/overseas-stock/v1/trading/daytime-order-rvsecncl'
+    : '/uapi/overseas-stock/v1/trading/order-rvsecncl';
+  const res = await fetchImpl(`${REST_DOMAIN[environment]}${path}`, {
     method: 'POST',
     headers: buildAuthHeaders(accessToken, credentials, trId),
     body: JSON.stringify(body),

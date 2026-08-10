@@ -1,7 +1,11 @@
-// createKisBroker — ScalperBroker를 kis/ REST 모듈로 구현(실서비스 글루). 테스트는 이 파일을 import하지 않는다.
+// createKisBroker — ScalperBroker를 kis/ REST 모듈로 구현(실서비스 글루).
 //  · placeOrder   → kis/order.placeOverseasOrder (지정가)
 //  · cancelOrder  → kis/orderCancel.cancelOverseasOrder (RVSE_CNCL_DVSN_CD=02)
 //  · fetchFills   → kis/nccs.inquireOverseasUnfilled (미체결내역, TTTS3018R) → odno별 체결 상태 역산
+//
+// 주간거래(2026-08-10 실거래 재개): 발주 시각이 미국 주간거래 창(KST 10~16시, 실전 전용)이면 주문·정정·취소를
+// 주간거래 API 계열(TTTS6036U/6037U/6038U, daytime-order*)로 보낸다. 체결 확인(미체결내역)·잔고는 정규장과
+// 같은 TR을 그대로 쓴다 — 주간정정취소.txt가 원주문번호를 "inquire-nccs에서 참조"하라고 명시(공식 근거).
 //
 // 주문체결내역(TTTS3035R)이 이 계좌에서 APTR0058("처리계좌의 ID와 사용자정보가 상이")로 거절되는 것이
 // 실측·재현으로 확정되어(kis/nccs.ts 상단 주석 참조), 체결 확인은 정상 동작이 확인된 미체결내역(TTTS3018R)
@@ -16,6 +20,7 @@ import { inquireOverseasBalance } from '../../kis/balance';
 import { inquireOverseasUnfilled } from '../../kis/nccs';
 import type { OverseasExchangeCode } from '../../kis/trId';
 import type { ClockLike, KisAccount, KisCredentials, KisEnvironment } from '../../kis/types';
+import { isDaytimeSessionOpen } from './daySession';
 import type { BrokerFill, ScalperBroker } from './types';
 
 export interface KisBrokerConfig {
@@ -37,6 +42,12 @@ interface TrackedOrder {
   polled: boolean;
   /** 미체결 목록에 한 번이라도 나타난 적이 있는가. */
   everListed: boolean;
+  /**
+   * 주간주문(TTTS6036U/6037U)으로 나간 주문인가 — 발주 시각 기준으로 고정해 기억한다.
+   * 정정·취소는 **원주문과 같은 API 계열**(주간이면 TTTS6038U·daytime-order-rvsecncl)을 써야 하므로,
+   * 취소 시각에 세션이 바뀌어 있어도 이 플래그를 따른다(주간주문 API는 KST 18시까지 열려 있다).
+   */
+  daytime: boolean;
 }
 
 function toNum(v: string | undefined): number {
@@ -46,6 +57,13 @@ function toNum(v: string | undefined): number {
 
 export function createKisBroker(config: KisBrokerConfig): ScalperBroker {
   const { environment, credentials, account, ovrsExcgCd, pdno, getToken } = config;
+  const now = () => (config.clock ?? { now: () => Date.now() }).now();
+  /**
+   * 지금이 미국 주간거래 창(KST 10~16시)이면 주간주문 API 계열을 쓴다.
+   * 주간거래는 실전 전용(모의 미지원)이라 paper 환경에서는 판정 자체를 끈다 —
+   * 켜두면 모의투자로 주간거래 창에 진입할 때 TR 해석 실패로 전 주문이 막힌다.
+   */
+  const daytimeNow = () => environment === 'live' && isDaytimeSessionOpen(now());
 
   /** placeOrder가 등록하고 fetchFills가 매 폴 미체결 목록과 대조해 갱신하는 로컬 추적 상태. */
   const tracked = new Map<string, TrackedOrder>();
@@ -59,6 +77,8 @@ export function createKisBroker(config: KisBrokerConfig): ScalperBroker {
   return {
     async placeOrder(input) {
       const token = await getToken();
+      // 발주 시각의 세션으로 API 계열을 고정한다 — 이후 정정·취소도 이 플래그를 따른다.
+      const daytime = daytimeNow();
       const res = await placeOverseasOrder(environment, credentials, token, {
         account,
         ovrsExcgCd,
@@ -66,10 +86,11 @@ export function createKisBroker(config: KisBrokerConfig): ScalperBroker {
         pdno: input.pdno,
         orderQty: input.qty,
         orderUnitPrice: input.price,
+        daytime,
       });
       // 주문 응답 odno를 10자리 0패딩으로 정규화해 추적·대조·취소 전 구간에서 키를 일관되게 유지한다.
       const odno = normalizeOdno(res.odno);
-      tracked.set(odno, { qty: input.qty, polled: false, everListed: false });
+      tracked.set(odno, { qty: input.qty, polled: false, everListed: false, daytime });
       return { odno };
     },
 
@@ -81,6 +102,8 @@ export function createKisBroker(config: KisBrokerConfig): ScalperBroker {
         pdno: input.pdno,
         orgnOdno: input.odno,
         orderQty: input.qty,
+        // 원주문이 주간주문이었으면 주간정정취소(TTTS6038U)로 — 추적에 없는 odno(비정상)는 현재 세션 판정.
+        daytime: tracked.get(normalizeOdno(input.odno))?.daytime ?? daytimeNow(),
       });
       // 취소가 성공한 주문만 추적을 끊는다(cancelOrder가 throw 없이 반환한 경우) — 목록에서 사라진 것을
       // "전량체결"로 오판하지 않도록. 어댑터도 이 성공을 cancelState='confirmed'로 받아 관찰을 멈춘다.
@@ -92,6 +115,8 @@ export function createKisBroker(config: KisBrokerConfig): ScalperBroker {
     async amendOrder(input) {
       const token = await getToken();
       const oldOdno = normalizeOdno(input.odno);
+      // 원주문의 API 계열을 그대로 잇는다 — 주간주문의 정정은 주간정정취소(TTTS6038U)로만 가능하다.
+      const daytime = tracked.get(oldOdno)?.daytime ?? daytimeNow();
       // 왕복 동안 "목록 부재→전량체결" 추론을 막는다. finally에서 반드시 해제한다.
       amending.add(oldOdno);
       try {
@@ -104,13 +129,14 @@ export function createKisBroker(config: KisBrokerConfig): ScalperBroker {
           orderQty: input.qty,
           orderUnitPrice: input.price,
           side: input.side,
+          daytime,
         });
         const newOdno = normalizeOdno(res.odno);
         // ★ 원자 교체 — await 없는 동기 구간이라 중간 상태를 아무도 관찰하지 못한다.
         //   옛 odno를 지우지 않으면 다음 폴에서 "목록 부재→전량체결" 오판이 난다(1순위 사고 지점).
-        //   새 odno는 유예 플래그를 초기화해 등록한다(발주 직후와 같은 취급).
+        //   새 odno는 유예 플래그를 초기화해 등록한다(발주 직후와 같은 취급). API 계열은 원주문을 승계.
         tracked.delete(oldOdno);
-        tracked.set(newOdno, { qty: input.qty, polled: false, everListed: false });
+        tracked.set(newOdno, { qty: input.qty, polled: false, everListed: false, daytime });
         return { odno: newOdno };
       } finally {
         amending.delete(oldOdno);

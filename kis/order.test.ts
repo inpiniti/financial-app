@@ -6,7 +6,7 @@ import {
   roundingForSide,
 } from './order';
 import { cancelOverseasOrder } from './orderCancel';
-import { resolveOrderTrId } from './trId';
+import { resolveDaytimeCancelTrId, resolveDaytimeOrderTrId, resolveOrderTrId } from './trId';
 
 const account = { cano: '12345678', acntPrdtCd: '01' };
 const credentials = { appKey: 'appkey-value', appSecret: 'appsecret-value' };
@@ -211,6 +211,98 @@ describe('cancelOverseasOrder (정정취소주문.md)', () => {
       ),
     ).rejects.toThrow(/정정/);
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 미국 주간거래(2026-08-10 실거래 재개) — 주간주문.txt/주간정정취소.txt.
+// 주문·정정취소만 전용 API(TTTS6036U/6037U/6038U, daytime-order*)고, 미체결내역·잔고는 정규장 TR 그대로다
+// (주간정정취소.txt가 원주문번호를 "inquire-nccs에서 참조"하라고 명시). 미국·실전 전용, 지정가만.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('주간거래 주문/정정취소 (주간주문.txt·주간정정취소.txt)', () => {
+  it('주간 TR ID — 미국·실전만 해석되고 모의투자·미국 외 거래소는 undefined다(모의 미지원)', () => {
+    expect(resolveDaytimeOrderTrId('NASD', 'buy', 'live')).toBe('TTTS6036U');
+    expect(resolveDaytimeOrderTrId('NYSE', 'sell', 'live')).toBe('TTTS6037U');
+    expect(resolveDaytimeCancelTrId('AMEX', 'live')).toBe('TTTS6038U');
+    expect(resolveDaytimeOrderTrId('NASD', 'buy', 'paper')).toBeUndefined();
+    expect(resolveDaytimeCancelTrId('NASD', 'paper')).toBeUndefined();
+    expect(resolveDaytimeOrderTrId('SEHK', 'buy', 'live')).toBeUndefined();
+  });
+
+  it('daytime 매도 주문 — daytime-order URL·TTTS6037U로 나가고 SLL_TYPE을 넣지 않는다(문서 Body에 없음)', async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+    const fetchImpl = vi.fn().mockImplementation(async (_url: string, init: RequestInit) => {
+      capturedBody = JSON.parse(init.body as string);
+      return {
+        json: async () => ({
+          rt_cd: '0', msg_cd: 'MSG', msg1: 'ok',
+          output: { KRX_FWDG_ORD_ORGNO: '00001', ODNO: '0000000001', ORD_TMD: '110000' },
+        }),
+      };
+    });
+
+    await placeOverseasOrder(
+      'live',
+      credentials,
+      'access-token',
+      { account, ovrsExcgCd: 'NASD', side: 'sell', pdno: 'AAPL', orderQty: 2, orderUnitPrice: 200, daytime: true },
+      { fetchImpl },
+    );
+
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://openapi.koreainvestment.com:9443/uapi/overseas-stock/v1/trading/daytime-order');
+    expect((init.headers as Record<string, string>).tr_id).toBe('TTTS6037U');
+    expect(capturedBody).toMatchObject({ OVRS_EXCG_CD: 'NASD', ORD_DVSN: '00' });
+    expect(capturedBody).not.toHaveProperty('SLL_TYPE');
+  });
+
+  it('daytime 주문은 모의투자에서 fetch 전에 throw한다(모의 미지원)', async () => {
+    const fetchImpl = vi.fn();
+    await expect(
+      placeOverseasOrder(
+        'paper',
+        credentials,
+        'access-token',
+        { account, ovrsExcgCd: 'NASD', side: 'buy', pdno: 'AAPL', orderQty: 1, orderUnitPrice: 200, daytime: true },
+        { fetchImpl },
+      ),
+    ).rejects.toThrow(/TR ID/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('daytime 취소 — daytime-order-rvsecncl URL·TTTS6038U로 나가고 문서 필수 필드(CTAC_TLNO 등)를 채운다', async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+    const fetchImpl = vi.fn().mockImplementation(async (_url: string, init: RequestInit) => {
+      capturedBody = JSON.parse(init.body as string);
+      return {
+        json: async () => ({
+          rt_cd: '0', msg_cd: 'MSG', msg1: 'ok',
+          output: { KRX_FWDG_ORD_ORGNO: '00001', ODNO: '0000000001', ORD_TMD: '110000' },
+        }),
+      };
+    });
+
+    await cancelOverseasOrder(
+      'live',
+      credentials,
+      'access-token',
+      { account, ovrsExcgCd: 'NASD', pdno: 'AAPL', orgnOdno: '0000000001', orderQty: 3, daytime: true },
+      { fetchImpl },
+    );
+
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe(
+      'https://openapi.koreainvestment.com:9443/uapi/overseas-stock/v1/trading/daytime-order-rvsecncl',
+    );
+    expect((init.headers as Record<string, string>).tr_id).toBe('TTTS6038U');
+    // 주간정정취소.txt Body — 정규장과 달리 Required(Y)인 필드들을 규정값으로 채운다.
+    expect(capturedBody).toMatchObject({
+      RVSE_CNCL_DVSN_CD: '02',
+      OVRS_ORD_UNPR: '0',
+      CTAC_TLNO: '',
+      MGCO_APTM_ODNO: '',
+      ORD_SVR_DVSN_CD: '0',
+    });
   });
 });
 

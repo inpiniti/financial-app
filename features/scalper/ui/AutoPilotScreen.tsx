@@ -13,6 +13,7 @@ import { TradeHistoryPanel, useTodayTrades } from '../../inquiry/TradeHistory';
 import { formatSignedUsd, formatUsd, pnlColor } from '../../../lib/format';
 import type { AutoPilotEvent, AutoPilotState, AutoPilotView } from '../autopilot';
 import type { AutoPilotManager, AutoPilotSlotRow } from '../autopilotManager';
+import { isDaytimeSessionOpen } from '../daySession';
 import { WATCH_SOURCE_LABEL } from '../watchlist';
 import { AdoptSheet } from './AdoptSheet';
 import { AmountSheet } from './AmountSheet';
@@ -35,6 +36,20 @@ function StateBadge({ state }: { state: AutoPilotState }) {
     <View className="rounded-full px-3 py-1" style={{ backgroundColor: badge.bg }}>
       <Text className="text-xs font-semibold" style={{ color: badge.fg }}>
         {badge.label}
+      </Text>
+    </View>
+  );
+}
+
+/**
+ * 주간거래 세션 배지(2026-08-10 실거래 재개) — KST 10~16시엔 주간거래 API(주문·시세)로 실거래가 나간다.
+ * 일부 종목은 주간거래 미지원으로 주문이 거절될 수 있어 사용자가 세션을 인지하게 표시한다.
+ */
+function DaytimeBadge() {
+  return (
+    <View className="rounded-full px-3 py-1" style={{ backgroundColor: '#eaf2ff' }}>
+      <Text className="text-xs font-semibold" style={{ color: '#3182f6' }}>
+        주간거래
       </Text>
     </View>
   );
@@ -190,7 +205,12 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
           <>
             <Panel
               title="자동 단타"
-              headerRight={<StateBadge state={view.state} />}
+              headerRight={
+                <View className="flex-row items-center" style={{ gap: 6 }}>
+                  {isDaytimeSessionOpen(Date.now()) && <DaytimeBadge />}
+                  <StateBadge state={view.state} />
+                </View>
+              }
             >
               <ListRow
                 title="설정"

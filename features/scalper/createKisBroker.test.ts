@@ -36,6 +36,22 @@ function makeFakeFetch() {
   const fetchImpl = vi.fn(async (input: unknown, init?: { method?: string; body?: string }) => {
     const url = String(input);
 
+    // 주간거래 API 계열 — 정규장 경로보다 먼저 매칭한다(경로 문자열이 더 길다).
+    if (url.includes('/uapi/overseas-stock/v1/trading/daytime-order-rvsecncl')) {
+      const body = JSON.parse(init?.body ?? '{}') as Record<string, string>;
+      return jsonResponse({
+        rt_cd: '0', msg_cd: '0000', msg1: '주간 정정취소 완료',
+        output: { KRX_FWDG_ORD_ORGNO: '0', ODNO: body.ORGN_ODNO, ORD_TMD: '110500' },
+      });
+    }
+    if (url.includes('/uapi/overseas-stock/v1/trading/daytime-order')) {
+      const odno = `O${++seq}`;
+      return jsonResponse({
+        rt_cd: '0', msg_cd: '0000', msg1: '주간 주문 접수 완료',
+        output: { KRX_FWDG_ORD_ORGNO: '0', ODNO: odno, ORD_TMD: '110000' },
+      });
+    }
+
     if (url.includes('/uapi/overseas-stock/v1/trading/order-rvsecncl')) {
       const body = JSON.parse(init?.body ?? '{}') as Record<string, string>;
       return jsonResponse({
@@ -64,15 +80,26 @@ function makeFakeFetch() {
   return { fetchImpl, nccsQueue, nccsCalls };
 }
 
-function makeBroker(fetchImpl: unknown) {
+/** KST 기준 시각 → epochMs (KST = UTC+9 고정). */
+function kstMs(iso: string): number {
+  return new Date(`${iso}+09:00`).getTime();
+}
+
+function makeBroker(
+  fetchImpl: unknown,
+  opts: { environment?: 'live' | 'paper'; clock?: { now(): number } } = {},
+) {
   vi.stubGlobal('fetch', fetchImpl);
   return createKisBroker({
-    environment: 'live',
+    environment: opts.environment ?? 'live',
     credentials,
     account,
     pdno: 'AAPL',
     ovrsExcgCd: 'NASD',
     getToken: async () => 'access-token',
+    // 기본 시계는 정규장 시각으로 고정 — 테스트 실행 시각이 주간거래 창(KST 10~16시)이어도
+    // 세션 판정이 흔들리지 않게 한다. 주간거래 케이스는 명시적으로 clock을 넘긴다.
+    clock: opts.clock ?? { now: () => kstMs('2026-08-10T23:00:00') },
   });
 }
 
@@ -168,6 +195,48 @@ describe('createKisBroker.fetchFills — 미체결내역(nccs) 기반 체결 판
     const fills = await broker.fetchFills();
     // 패딩이 어긋난 목록과도 매칭되어 부분체결(2/5)로 정확히 판정한다("전량체결" 오판 아님).
     expect(fills).toEqual([{ odno: '0031370465', orderQty: 5, filledQty: 2, filledPrice: 100 }]);
+  });
+
+  it('주간거래 창(KST 10~16시)의 발주는 daytime-order API로 나가고, 세션이 바뀌어도 취소는 원주문 계열(daytime)을 따른다', async () => {
+    const { fetchImpl } = makeFakeFetch();
+    let nowMs = kstMs('2026-08-10T11:00:00'); // 주간거래 창.
+    const broker = makeBroker(fetchImpl, { clock: { now: () => nowMs } });
+
+    const { odno } = await broker.placeOrder({ side: 'buy', pdno: 'AAPL', qty: 3, price: 100 });
+    const placeUrl = String(fetchImpl.mock.calls.at(-1)![0]);
+    expect(placeUrl).toContain('/trading/daytime-order');
+    expect(placeUrl).not.toContain('rvsecncl');
+
+    // 취소 시각이 주간거래 창을 벗어나도(16:30) 원주문이 주간주문이므로 주간정정취소로 나가야 한다.
+    nowMs = kstMs('2026-08-10T16:30:00');
+    await broker.cancelOrder({ pdno: 'AAPL', odno, qty: 3 });
+    expect(String(fetchImpl.mock.calls.at(-1)![0])).toContain('/trading/daytime-order-rvsecncl');
+  });
+
+  it('정규장 발주는 세션이 주간거래로 바뀌어도 정규장 정정취소 API를 유지한다(원주문 계열 승계)', async () => {
+    const { fetchImpl } = makeFakeFetch();
+    let nowMs = kstMs('2026-08-10T23:00:00'); // 정규장 시각.
+    const broker = makeBroker(fetchImpl, { clock: { now: () => nowMs } });
+
+    const { odno } = await broker.placeOrder({ side: 'buy', pdno: 'AAPL', qty: 3, price: 100 });
+    expect(String(fetchImpl.mock.calls.at(-1)![0])).not.toContain('daytime');
+
+    nowMs = kstMs('2026-08-11T10:30:00'); // 다음날 주간거래 창.
+    await broker.cancelOrder({ pdno: 'AAPL', odno, qty: 3 });
+    const cancelUrl = String(fetchImpl.mock.calls.at(-1)![0]);
+    expect(cancelUrl).toContain('/trading/order-rvsecncl');
+    expect(cancelUrl).not.toContain('daytime');
+  });
+
+  it('모의투자(paper)는 주간거래 창이라도 정규장 API로 나간다 — 주간거래는 모의 미지원', async () => {
+    const { fetchImpl } = makeFakeFetch();
+    const broker = makeBroker(fetchImpl, {
+      environment: 'paper',
+      clock: { now: () => kstMs('2026-08-10T11:00:00') },
+    });
+
+    await broker.placeOrder({ side: 'buy', pdno: 'AAPL', qty: 1, price: 100 });
+    expect(String(fetchImpl.mock.calls.at(-1)![0])).not.toContain('daytime');
   });
 
   it('취소된 주문은 목록 부재를 전량체결로 오판하지 않도록 추적을 끊는다', async () => {

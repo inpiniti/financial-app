@@ -80,6 +80,30 @@ export function isAmendSupported(exchange: OverseasExchangeCode): boolean {
   return !AMEND_UNSUPPORTED_COUNTRIES.has(EXCHANGE_TO_COUNTRY[exchange]);
 }
 
+// 주간주문.txt / 주간정정취소.txt — 미국 주간거래(KST 10~16시 시세 창, 주문은 10~18시) 전용 TR.
+// 미국 3거래소(NASD/NYSE/AMEX)만 지원, **모의투자 미지원**(실전 전용), 지정가("00")만 가능.
+const DAYTIME_ORDER_TR: Record<OrderSide, string> = { buy: 'TTTS6036U', sell: 'TTTS6037U' };
+const DAYTIME_CANCEL_TR = 'TTTS6038U';
+
+/** 미국주간주문 TR ID — 미국 외 거래소·모의투자는 undefined(호출부가 fetch 전에 throw). */
+export function resolveDaytimeOrderTrId(
+  exchange: OverseasExchangeCode,
+  side: OrderSide,
+  environment: KisEnvironment,
+): string | undefined {
+  if (EXCHANGE_TO_COUNTRY[exchange] !== 'US' || environment !== 'live') return undefined;
+  return DAYTIME_ORDER_TR[side];
+}
+
+/** 미국주간정정취소 TR ID — 미국 외 거래소·모의투자는 undefined(호출부가 fetch 전에 throw). */
+export function resolveDaytimeCancelTrId(
+  exchange: OverseasExchangeCode,
+  environment: KisEnvironment,
+): string | undefined {
+  if (EXCHANGE_TO_COUNTRY[exchange] !== 'US' || environment !== 'live') return undefined;
+  return DAYTIME_CANCEL_TR;
+}
+
 // balance.md / 주문체결내역.md — 조회 계열 TR ID는 국가 분기가 없다.
 export const BALANCE_TR: TrPair = { live: 'CTRP6504R', paper: 'VTRP6504R' };
 export const ORDER_HISTORY_TR: TrPair = { live: 'TTTS3035R', paper: 'VTTS3035R' };

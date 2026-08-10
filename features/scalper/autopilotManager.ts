@@ -16,9 +16,16 @@ import {
   type AutoPilotView,
   type GridExitConfig,
 } from './autopilot';
+import { isDaytimeSessionOpen } from './daySession';
 import { FeedSlot, type FeedSlotView, type LadderEntryOptions } from './feedSlot';
 import { ScalperWatchlist, type RankingSnapshot, type WatchEntry, type WatchMarket } from './watchlist';
-import { buildFreeQuoteTrKey, REALTIME_PRICE_TR_ID, REALTIME_QUOTE_TR_ID } from '../../kis/realtimePrice';
+import {
+  buildDaytimeQuoteTrKey,
+  buildFreeQuoteTrKey,
+  REALTIME_PRICE_TR_ID,
+  REALTIME_QUOTE_TR_ID,
+  type DaytimeMarketCode,
+} from '../../kis/realtimePrice';
 import type { OverseasExchangeCode } from '../../kis/trId';
 import type {
   ClockLike,
@@ -38,6 +45,10 @@ export const AUTOPILOT_TRADE_ID = 'autopilot';
 // WS trKey 시장구분·주문 거래소를 정한다. AMS 매핑은 기존 채용 종목·방어적 정규화용으로 유지.
 /** 주문 거래소 매핑 — features/stock/marketCodes.ts MARKET_TO_EXCHANGE와 같은 값(순환 참조 회피용 사본). */
 const MARKET_TO_EXCHANGE: Record<WatchMarket, OverseasExchangeCode> = { NAS: 'NASD', NYS: 'NYSE', AMS: 'AMEX' };
+/** 주간거래 창(KST 10~16시)의 WS 시장구분 — R 접두 + 거래소별 주간 코드(실시간지연체결가.txt). */
+const MARKET_TO_DAYTIME: Record<WatchMarket, DaytimeMarketCode> = { NAS: 'BAQ', NYS: 'BAY', AMS: 'BAA' };
+/** 세션 전환(정규장↔주간거래) 감지 주기 — 전환 시 구독 trKey를 새 세션 키로 회전한다. */
+const SESSION_KEY_CHECK_MS = 30_000;
 
 const defaultScheduler: SchedulerLike = {
   setInterval: (fn, ms) => setInterval(fn, ms),
@@ -135,10 +146,17 @@ export class AutoPilotManager {
   private readonly eventListeners = new Set<EventListener>();
   private readonly listListeners = new Set<ListListener>();
   private awake = false;
+  private readonly scheduler: SchedulerLike;
+  /** 세션 전환 감지 타이머 — start()에서 걸고 dispose()에서만 푼다(stop 후에도 구독이 살아 있어서). */
+  private sessionTimer: unknown = null;
+  /** 직전 세션 판정(주간거래 여부) — 바뀐 순간에만 구독 키를 회전한다. */
+  private lastDaytime: boolean;
 
   constructor(deps: AutoPilotManagerDeps) {
     this.deps = deps;
     const scheduler = deps.scheduler ?? defaultScheduler;
+    this.scheduler = scheduler;
+    this.lastDaytime = isDaytimeSessionOpen(deps.clock.now());
 
     this.watchlist = new ScalperWatchlist({
       fetchSnapshot: deps.fetchSnapshot,
@@ -208,6 +226,10 @@ export class AutoPilotManager {
     this.watchlist.start();
     this.pilot.start();
     void this.checkHoldings();
+    // 세션 전환(정규장↔주간거래) 감시 — 전환 시 살아 있는 구독의 trKey를 새 세션 키로 회전한다.
+    if (this.sessionTimer === null) {
+      this.sessionTimer = this.scheduler.setInterval(() => this.rotateSessionKeys(), SESSION_KEY_CHECK_MS);
+    }
   }
 
   stop(): void {
@@ -248,6 +270,10 @@ export class AutoPilotManager {
   }
 
   dispose(): void {
+    if (this.sessionTimer !== null) {
+      this.scheduler.clearInterval(this.sessionTimer);
+      this.sessionTimer = null;
+    }
     this.pilot.dispose();
     this.watchlist.stop();
     this.tickHolds.clear(); // 홀드 가드보다 먼저 비워야 아래 dropSlot이 실제로 구독을 정리한다.
@@ -330,9 +356,45 @@ export class AutoPilotManager {
     return this.tickerMarkets.get(ticker) ?? 'NAS';
   }
 
-  /** D+채용거래소 trKey — 체결가·호가 구독 공용(같은 trKey 문자열). */
+  /**
+   * 지금(clock.now())이 주간거래 창이면 R+주간시장(BAQ/BAY/BAA), 아니면 D+채용거래소 —
+   * 체결가·호가 구독 공용(같은 trKey 문자열, tr_id로만 구분). 워치리스트는 정규장과 공유한다
+   * (2026-08-06 주간거래 plan §6-1 사용자 확정, 2026-08-10 실거래 재개로 부활).
+   */
   private marketTrKeyOf(ticker: string): string {
-    return buildFreeQuoteTrKey(this.marketOf(ticker), ticker);
+    const market = this.marketOf(ticker);
+    return isDaytimeSessionOpen(this.deps.clock.now())
+      ? buildDaytimeQuoteTrKey(MARKET_TO_DAYTIME[market], ticker)
+      : buildFreeQuoteTrKey(market, ticker);
+  }
+
+  /**
+   * 세션 전환(정규장↔주간거래) 시 살아 있는 구독을 새 세션 키로 회전한다 — 이게 없으면 10:00/16:00
+   * 경계에서 기존 종목의 구독 키가 옛 세션 것으로 남아 틱이 끊긴다(리스트가 안 바뀐 종목은 재구독 계기가
+   * 없다). 새 키 구독 → 옛 키 해제 순서. 상세화면이 잡고 있는 옛 키는 해제하지 않는다(교차 해제 방지).
+   */
+  private rotateSessionKeys(): void {
+    const daytime = isDaytimeSessionOpen(this.deps.clock.now());
+    if (daytime === this.lastDaytime) return;
+    this.lastDaytime = daytime;
+    for (const [ticker, oldKey] of [...this.tickTrKeys]) {
+      const newKey = this.marketTrKeyOf(ticker);
+      if (newKey === oldKey) continue;
+      this.tickTrKeys.set(ticker, newKey);
+      this.deps.realtime.subscribe(newKey);
+      if (!this.deps.isFeedHeldExternally?.(oldKey, REALTIME_PRICE_TR_ID)) {
+        this.deps.realtime.unsubscribe(oldKey);
+      }
+    }
+    for (const [ticker, oldKey] of [...this.quoteSubs]) {
+      const newKey = this.marketTrKeyOf(ticker);
+      if (newKey === oldKey) continue;
+      this.quoteSubs.set(ticker, newKey);
+      this.deps.realtime.subscribe(newKey, REALTIME_QUOTE_TR_ID);
+      if (!this.deps.isFeedHeldExternally?.(oldKey, REALTIME_QUOTE_TR_ID)) {
+        this.deps.realtime.unsubscribe(oldKey, REALTIME_QUOTE_TR_ID);
+      }
+    }
   }
 
   private addSlot(ticker: string): void {

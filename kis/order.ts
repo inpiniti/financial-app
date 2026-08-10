@@ -3,7 +3,12 @@
 import { kisFlowFetch } from './flow';
 import { REST_DOMAIN } from './domain';
 import { assertRtCdOk, buildAuthHeaders, type KisRtCdResponse } from './http';
-import { resolveOrderTrId, type OrderSide, type OverseasExchangeCode } from './trId';
+import {
+  resolveDaytimeOrderTrId,
+  resolveOrderTrId,
+  type OrderSide,
+  type OverseasExchangeCode,
+} from './trId';
 import type { FetchLike, KisAccount, KisCredentials, KisEnvironment } from './types';
 
 export interface PlaceOverseasOrderParams {
@@ -18,6 +23,11 @@ export interface PlaceOverseasOrderParams {
   orderUnitPrice: number;
   /** ORD_DVSN — 미지정 시 "00"(지정가). 문서상 모의투자는 매수/매도 모두 지정가만 허용. */
   ordDvsn?: string;
+  /**
+   * 미국 주간거래 주문(주간주문.txt, TTTS6036U/6037U · /trading/daytime-order) — 미국 실전 전용,
+   * 지정가만 가능. 문서 Body에 SLL_TYPE이 없어 매도라도 넣지 않는다.
+   */
+  daytime?: boolean;
 }
 
 export interface PlaceOverseasOrderResult {
@@ -97,11 +107,14 @@ export async function placeOverseasOrder(
   params: PlaceOverseasOrderParams,
   deps: PlaceOrderDeps = {},
 ): Promise<PlaceOverseasOrderResult> {
-  const trId = resolveOrderTrId(params.ovrsExcgCd, params.side, environment);
+  const trId = params.daytime
+    ? resolveDaytimeOrderTrId(params.ovrsExcgCd, params.side, environment)
+    : resolveOrderTrId(params.ovrsExcgCd, params.side, environment);
   if (!trId) {
     throw new Error(
-      `[kis/order] TR ID를 해석하지 못했습니다 (거래소=${params.ovrsExcgCd}, side=${params.side}, environment=${environment}). ` +
-        '주문 호출을 차단합니다 — docs/koreainvestment/주문.md TR ID 표를 확인하세요.',
+      `[kis/order] TR ID를 해석하지 못했습니다 (거래소=${params.ovrsExcgCd}, side=${params.side}, environment=${environment}` +
+        `${params.daytime ? ', 주간거래' : ''}). ` +
+        '주문 호출을 차단합니다 — docs/koreainvestment/주문.md·주간주문.txt TR ID 표를 확인하세요(주간거래는 미국·실전 전용).',
     );
   }
 
@@ -118,11 +131,15 @@ export async function placeOverseasOrder(
     ORD_DVSN: params.ordDvsn ?? '00',
   };
   // SLL_TYPE — 문서: "제거 : 매수 / 00 : 매도" → 매수는 필드 자체를 생략한다.
-  if (params.side === 'sell') {
+  // 주간주문 문서 Body에는 SLL_TYPE 자체가 없다 — 주간거래는 매도라도 넣지 않는다.
+  if (params.side === 'sell' && !params.daytime) {
     body.SLL_TYPE = '00';
   }
 
-  const res = await fetchImpl(`${REST_DOMAIN[environment]}/uapi/overseas-stock/v1/trading/order`, {
+  const path = params.daytime
+    ? '/uapi/overseas-stock/v1/trading/daytime-order'
+    : '/uapi/overseas-stock/v1/trading/order';
+  const res = await fetchImpl(`${REST_DOMAIN[environment]}${path}`, {
     method: 'POST',
     headers: buildAuthHeaders(accessToken, credentials, trId),
     body: JSON.stringify(body),
