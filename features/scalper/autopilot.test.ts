@@ -1104,3 +1104,61 @@ describe('AutoPilot — 그리드 격리·현금 소진 매도 전용', () => {
     expect(ba.placed.filter((p) => p.side === 'sell')).toHaveLength(1); // 매도 다리는 걸려 있다.
   });
 });
+
+describe('AutoPilot — 세션 전환(정규장↔주간거래) 그리드 주문 재등록', () => {
+  // KST 10:00 경계 — epoch 기준 01:00 UTC(1970-01-01). fakeClock(1000)은 09:00:01 KST(정규장 쪽)다.
+  const DAYTIME_EPOCH = Date.UTC(1970, 0, 1, 1, 0, 30);
+
+  it('세션 경계를 넘으면 ARMED 그리드의 두 다리를 취소하고 같은 포지션으로 재발주한다', async () => {
+    const h = makeHarness(['A'], {
+      autoFill: false,
+      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      positions: { A: { qty: 10, avgPrice: 100 } },
+    });
+    h.pilot.start();
+    expect(await h.pilot.adoptPosition('A')).toBeNull();
+    const broker = h.brokers.get('A')!;
+    expect(broker.placed).toHaveLength(2);
+
+    // 기준점 폴(정규장) → 경계 통과 → 다음 폴에서 전환 감지.
+    await h.pilot.pollCycle();
+    expect(broker.placed).toHaveLength(2); // 기준점만 잡는다 — 재등록 없음.
+    h.clock.set(DAYTIME_EPOCH);
+    await h.pilot.pollCycle();
+    await flush();
+
+    // 옛 두 다리 취소 + 새 두 다리 발주(같은 가격·수량 — 포지션 불변).
+    expect(broker.canceled).toHaveLength(2);
+    expect(broker.placed).toHaveLength(4);
+    expect(broker.placed.filter((p) => p.side === 'sell').at(-1)).toMatchObject({ qty: 10, price: 110 });
+    expect(broker.placed.filter((p) => p.side === 'buy').at(-1)).toMatchObject({ qty: 10, price: 90 });
+    expect(h.events.some((e) => e.includes('세션 전환'))).toBe(true);
+    expect(h.pilot.getView().grids[0]).toMatchObject({ gridActive: true, holdingQty: 10 });
+
+    // 같은 경계는 한 번만 — 추가 폴에 재등록 반복 없음.
+    await h.pilot.pollCycle();
+    expect(broker.placed).toHaveLength(4);
+  });
+
+  it('경계 직전 매도 체결은 재등록으로 덮지 않고 먼저 정산한다', async () => {
+    const h = makeHarness(['A'], {
+      autoFill: false,
+      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      positions: { A: { qty: 10, avgPrice: 100 } },
+    });
+    h.pilot.start();
+    expect(await h.pilot.adoptPosition('A')).toBeNull();
+    const broker = h.brokers.get('A')!;
+    await h.pilot.pollCycle(); // 기준점(정규장).
+
+    // 경계 직전 +10% 매도 체결 — 전환 감지 폴이 재등록 전에 이 체결을 먼저 정산해야 한다.
+    broker.fill(broker.placed.find((p) => p.side === 'sell')!.odno, 110);
+    h.clock.set(DAYTIME_EPOCH);
+    await h.pilot.pollCycle();
+    await flush();
+
+    expect(h.trades).toHaveLength(1);
+    expect(h.pilot.getView().activeTickers).toEqual([]);
+    expect(broker.placed).toHaveLength(2); // 재발주 없음 — 이미 팔린 포지션이다.
+  });
+});

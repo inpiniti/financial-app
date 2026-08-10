@@ -23,7 +23,8 @@
 
 import { RunCycle, type SignalSnapshot, type TradeRecord } from '../../core/cycle';
 import type { Signal } from '../../core/detector';
-import { Grid, type BuyLegStatus, type GridPollResult } from '../../core/grid';
+import { Grid, REBRACKET_RETRY_MS, type BuyLegStatus, type GridPollResult } from '../../core/grid';
+import { isDaytimeSessionOpen } from './daySession';
 import { FeedSlot, type SlotSignalContext } from './feedSlot';
 import { OrderPortAdapter } from './orderPortAdapter';
 import { createGridOrderPort } from './gridOrderPort';
@@ -329,6 +330,14 @@ export class AutoPilot {
   private cumPnl = 0;
   private lastEvent: AutoPilotEvent | null = null;
   private lastFault: InstanceFault | null = null;
+
+  /**
+   * 직전 폴에서 본 세션(미국 주간거래 창 여부) — 그리드 주문 재등록 판정용.
+   * null이면 미관측(다음 폴이 기준점만 잡는다). 폴 타이머가 꺼질 때 리셋한다 —
+   * 그리드 없이 세션이 바뀐 뒤 새 그리드가 열리면, 방금 현 세션으로 발주한 주문을
+   * 낡은 기준점과 비교해 헛되이 재등록하는 일을 막는다.
+   */
+  private lastDaytime: boolean | null = null;
 
   private pollTimer: unknown = null;
   /** 매도 리프라이스 타이머(폴 타이머와 함께 켜고 끈다). */
@@ -953,6 +962,8 @@ export class AutoPilot {
     if (this.pollingCycle) return;
     this.pollingCycle = true;
     try {
+      await this.rotateGridSessionIfNeeded();
+      if (this.faulted) return;
       for (const active of [...this.actives.values()]) {
         if (this.faulted) return;
         if (!this.actives.has(active.ticker)) continue; // 이번 순회 중 정산돼 사라졌다.
@@ -1143,17 +1154,50 @@ export class AutoPilot {
     return null;
   }
 
+  /**
+   * 세션 전환(정규장↔주간거래, KST 10:00/16:00 경계) 감지 — ARMED 그리드의 미체결 두 다리를
+   * 새 세션 API 계열로 재등록한다. KIS는 세션이 끝나면 미체결을 일괄 취소하므로(주간→프리·
+   * 애프터→주간), 옛 주문을 그대로 두면 ① 체결될 수 없는 주문을 하염없이 기다리고
+   * ② "목록 부재→전량체결" 오판(가짜 SOLD — Grid의 일괄 취소 방어가 2차 방어선)이 난다.
+   * 재등록 전에 폴 1회로 경계 직전 체결을 먼저 정산한다(방금 난 체결을 취소·재발주로 덮지 않게).
+   */
+  private async rotateGridSessionIfNeeded(): Promise<void> {
+    const daytime = isDaytimeSessionOpen(this.deps.clock.now());
+    if (this.lastDaytime === null || daytime === this.lastDaytime) {
+      this.lastDaytime = daytime;
+      return;
+    }
+    this.lastDaytime = daytime;
+    const label = daytime ? '주간거래' : '정규장';
+    for (const active of [...this.actives.values()]) {
+      if (this.faulted) return;
+      if (!this.actives.has(active.ticker)) continue;
+      if (!active.grid || !active.gridArmed || active.gridFaulted) continue;
+      await this.pollGrid(active);
+      if (!this.actives.has(active.ticker) || active.gridFaulted || active.grid.state !== 'ARMED') continue;
+      this.event(`${active.ticker} 세션 전환(${label}) — 그리드 주문을 새 세션으로 재등록해요`);
+      this.handleGridResult(active, await active.grid.reissueBrackets());
+    }
+  }
+
   /** 그리드 폴 1회 — 매도 체결→정산·감시 복귀, 매수 체결→리브래킷, fault→**그 그리드만 격리**. */
   private async pollGrid(active: ActiveCycle): Promise<void> {
-    const result = await active.grid!.poll();
+    this.handleGridResult(active, await active.grid!.poll());
+  }
+
+  private handleGridResult(active: ActiveCycle, result: GridPollResult): void {
     switch (result.kind) {
       case 'sold':
         this.settleGrid(active, result);
         break;
       case 'rebracket': {
         const v = active.grid!.view;
+        const head =
+          result.cause === 'reissue'
+            ? `${active.ticker} 그리드 주문 재등록`
+            : `${active.ticker} 그리드 리브래킷`;
         this.event(
-          `${active.ticker} 그리드 리브래킷 · 평단 $${result.position.avgPrice.toFixed(2)} · ${result.position.qty}주${
+          `${head} · 평단 $${result.position.avgPrice.toFixed(2)} · ${result.position.qty}주${
             v.buyLegStatus === 'reduced'
               ? ' · 현금에 맞춰 매수 수량을 줄였어요'
               : v.buyLegStatus === 'skippedCash'
@@ -1166,6 +1210,13 @@ export class AutoPilot {
         this.emit();
         break;
       }
+      case 'rebracketDeferred':
+        // FAULT가 아니다 — 세션 간극(주문 API 닫힘)이 흔한 원인이라 그리드가 스스로 재시도한다.
+        this.event(
+          `${active.ticker} 그리드 재발주가 접수되지 않았어요 — ${result.reason} · ${REBRACKET_RETRY_MS / 1000}초 후 다시 시도해요`,
+        );
+        this.emit();
+        break;
       case 'fault':
         // ★ 전역 동결하지 않는다 — 이 그리드만 격리하고 폴 타이머·다른 종목 관리는 계속 돈다.
         //   (사용자가 화면을 안 보고 있어도 나머지 자동매매가 멈추지 않게 — plan 2026-08-08)
@@ -1330,6 +1381,7 @@ export class AutoPilot {
   }
 
   private stopPollTimer(): void {
+    this.lastDaytime = null; // 세션 기준점 리셋 — 다음 그리드가 열릴 때 그 시점 세션으로 다시 잡는다.
     if (this.pollTimer !== null) {
       this.deps.scheduler.clearInterval(this.pollTimer);
       this.pollTimer = null;

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   FILL_FAIL_LIMIT,
   Grid,
+  REBRACKET_RETRY_MS,
   type GridConfig,
   type GridOrderFill,
   type GridOrderPort,
@@ -25,6 +26,8 @@ class FakeGridPort implements GridOrderPort {
   failFetchFillsTimes = 0;
   /** fetchPosition이 순서대로 돌려줄 값(소진되면 마지막 값 유지). */
   positionQueue: Array<GridPosition | null>;
+  /** fetchPosition이 throw — 잔고 조회 일시 오류 재현. */
+  failPosition = false;
   private seq = 0;
   private fills = new Map<string, GridOrderFill>();
 
@@ -56,6 +59,7 @@ class FakeGridPort implements GridOrderPort {
   }
 
   async fetchPosition(): Promise<GridPosition | null> {
+    if (this.failPosition) throw new Error('잔고 조회 거절(모의)');
     return this.positionQueue.length > 1 ? this.positionQueue.shift()! : this.positionQueue[0];
   }
 
@@ -69,6 +73,17 @@ class FakeGridPort implements GridOrderPort {
   }
   legBySide(side: 'buy' | 'sell') {
     return this.placed.find((p) => p.side === side);
+  }
+  /**
+   * KIS 일괄 취소 재현 — 주문이 미체결 목록에서 사라져 브로커가 "전량체결(추론·price null)"로
+   * 합성한 상태(createKisBroker fetchFills의 목록 부재 경로와 같은 모양).
+   */
+  vanish(odno: string): void {
+    const f = this.fills.get(odno);
+    if (f) {
+      f.filledQty = f.orderQty;
+      f.filledPrice = null;
+    }
   }
 }
 
@@ -335,5 +350,106 @@ describe('core/grid — 최신 현금 콜백(fetchAvailableCash)·다리별 격�
     expect(result.kind).toBe('fault');
     expect(grid.state).toBe('FAULT');
     expect(grid.faultText).toContain('체결 확인');
+  });
+});
+
+describe('core/grid — 세션 전환·일괄 취소 방어(재발주)', () => {
+  it('두 다리가 동시에 추론 체결로 사라지면 SOLD가 아니라 일괄 취소로 보고 같은 포지션으로 재발주한다', async () => {
+    const port = new FakeGridPort({ qty: 10, avgPrice: 100 });
+    const grid = new Grid({ port, clock: fakeClock(), config: baseConfig });
+    await grid.arm();
+
+    port.vanish(port.legBySide('buy')!.odno);
+    port.vanish(port.legBySide('sell')!.odno);
+    const result = await grid.poll();
+
+    expect(result).toMatchObject({ kind: 'rebracket', cause: 'reissue', position: { qty: 10, avgPrice: 100 } });
+    expect(grid.state).toBe('ARMED');
+    // 방어적 취소 2건(살아 있었다면 실제로 끊는다 — 이미 취소된 주문의 거절은 무시) + 재발주 2건.
+    expect(port.canceled).toHaveLength(2);
+    expect(port.placed.filter((p) => p.side === 'sell')).toHaveLength(2);
+    expect(port.placed.filter((p) => p.side === 'buy')).toHaveLength(2);
+  });
+
+  it('매도 단독 다리의 추론 소멸 — 잔고가 그대로면(취소) 2폴 유예 뒤 재발주, 잔고가 비면(진짜 체결) SOLD', async () => {
+    // ① 취소 케이스 — 잔고에 전량이 그대로 남아 있다.
+    const p1 = new FakeGridPort({ qty: 10, avgPrice: 100 });
+    const g1 = new Grid({ port: p1, clock: fakeClock(), config: { width: 0.1, buyMultiplier: 1, availableCashUsd: 0 } });
+    await g1.arm();
+    expect(p1.legBySide('buy')).toBeUndefined(); // 매도만 ARMED.
+
+    p1.vanish(p1.legBySide('sell')!.odno);
+    expect((await g1.poll()).kind).toBe('armed'); // 1폴째 — 잔고 반영 지연 유예.
+    const r1 = await g1.poll(); // 2폴째 — 잔고 불변 확정 → 취소로 판정.
+    expect(r1).toMatchObject({ kind: 'rebracket', cause: 'reissue' });
+    expect(g1.state).toBe('ARMED');
+    expect(p1.placed.filter((p) => p.side === 'sell')).toHaveLength(2);
+
+    // ② 진짜 체결 케이스 — 잔고가 비었다 → 기존대로 SOLD(체결가는 지정가로 폴백).
+    const p2 = new FakeGridPort({ qty: 10, avgPrice: 100 });
+    const g2 = new Grid({ port: p2, clock: fakeClock(), config: { width: 0.1, buyMultiplier: 1, availableCashUsd: 0 } });
+    await g2.arm();
+    p2.vanish(p2.legBySide('sell')!.odno);
+    p2.positionQueue = [null]; // 매도 체결로 잔고 소멸.
+    const r2 = await g2.poll();
+    expect(r2).toMatchObject({ kind: 'sold', qty: 10, exitPrice: 110 });
+    expect(g2.state).toBe('SOLD');
+  });
+
+  it('추론 소멸 검증 중 잔고 조회가 실패하면 판정을 다음 폴로 미룬다(armed 유지)', async () => {
+    const port = new FakeGridPort({ qty: 10, avgPrice: 100 });
+    const grid = new Grid({ port, clock: fakeClock(), config: { width: 0.1, buyMultiplier: 1, availableCashUsd: 0 } });
+    await grid.arm();
+
+    port.vanish(port.legBySide('sell')!.odno);
+    port.failPosition = true;
+    expect((await grid.poll()).kind).toBe('armed');
+    expect(grid.state).toBe('ARMED');
+    expect(port.placed).toHaveLength(1); // 재발주 없음 — 오판 방지.
+  });
+
+  it(`재발주가 거절되면 FAULT 대신 ${REBRACKET_RETRY_MS / 1000}초 후 재시도한다(세션 간극 — 주문 API 닫힘)`, async () => {
+    const clock = fakeClock();
+    const port = new FakeGridPort({ qty: 10, avgPrice: 100 });
+    const grid = new Grid({ port, clock, config: baseConfig });
+    await grid.arm();
+
+    port.vanish(port.legBySide('buy')!.odno);
+    port.vanish(port.legBySide('sell')!.odno);
+    port.failPlace = true;
+    const r1 = await grid.poll();
+    expect(r1.kind).toBe('rebracketDeferred');
+    expect(grid.state).toBe('ARMED'); // FAULT가 아니다 — 새 세션이 열리면 접수된다.
+
+    // 재시도 시각 전 — 발주 시도 없이 armed.
+    const placedBefore = port.placed.length;
+    expect((await grid.poll()).kind).toBe('armed');
+    expect(port.placed.length).toBe(placedBefore);
+
+    // 재시도 시각 도래 + API 열림 — 재발주 성공.
+    clock.advance(REBRACKET_RETRY_MS);
+    port.failPlace = false;
+    const r2 = await grid.poll();
+    expect(r2).toMatchObject({ kind: 'rebracket', cause: 'reissue', position: { qty: 10, avgPrice: 100 } });
+    expect(grid.state).toBe('ARMED');
+    expect(port.legBySide('buy')).toBeDefined();
+  });
+
+  it('reissueBrackets — ARMED에서 두 다리를 취소하고 같은 포지션으로 즉시 재발주한다(세션 전환 선제 재등록)', async () => {
+    const port = new FakeGridPort({ qty: 10, avgPrice: 100 });
+    const grid = new Grid({ port, clock: fakeClock(), config: baseConfig });
+    await grid.arm();
+
+    const result = await grid.reissueBrackets();
+
+    expect(result).toMatchObject({ kind: 'rebracket', cause: 'reissue', position: { qty: 10, avgPrice: 100 } });
+    expect(grid.state).toBe('ARMED');
+    expect(port.canceled).toHaveLength(2); // 살아 있는 옛 두 다리를 실제로 취소.
+    expect(port.placed).toHaveLength(4); // 초기 2 + 재등록 2.
+    // ARMED가 아니면 아무것도 하지 않는다.
+    const idlePort = new FakeGridPort({ qty: 10, avgPrice: 100 });
+    const idleGrid = new Grid({ port: idlePort, clock: fakeClock(), config: baseConfig });
+    expect((await idleGrid.reissueBrackets()).kind).toBe('idle');
+    expect(idlePort.placed).toHaveLength(0);
   });
 });

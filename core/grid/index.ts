@@ -109,11 +109,19 @@ export interface GridView {
 /** fetchFills 연속 실패가 이 횟수에 닿으면 FAULT(그 미만은 일시 오류로 보고 ARMED 유지). */
 export const FILL_FAIL_LIMIT = 3;
 
-/** poll 1회의 결과 — 오토파일럿이 이 값으로 SCANNING 복귀/기록/리브래킷을 판단한다. */
+/** 일괄 취소 후 재발주가 거절됐을 때(세션 간극 — 주문 API 닫힘 등) 재시도 간격(ms). */
+export const REBRACKET_RETRY_MS = 60_000;
+
+/**
+ * poll 1회의 결과 — 오토파일럿이 이 값으로 SCANNING 복귀/기록/리브래킷을 판단한다.
+ *  rebracket.cause='reissue'      — 매수 체결이 아니라 일괄 취소/세션 전환 재발주다(포지션 불변).
+ *  rebracketDeferred              — 재발주가 거절돼 REBRACKET_RETRY_MS 후 재시도 대기(ARMED 유지).
+ */
 export type GridPollResult =
   | { kind: 'idle' }
   | { kind: 'armed' }
-  | { kind: 'rebracket'; position: GridPosition }
+  | { kind: 'rebracket'; position: GridPosition; cause?: 'reissue' }
+  | { kind: 'rebracketDeferred'; reason: string }
   | { kind: 'sold'; qty: number; avgPrice: number; exitPrice: number }
   | { kind: 'fault'; reason: string };
 
@@ -143,6 +151,17 @@ export class Grid {
   private _buyLegStatus: BuyLegStatus = 'full';
   /** fetchFills 연속 실패 카운터 — 성공하면 리셋, FILL_FAIL_LIMIT에 닿으면 FAULT. */
   private fillFailStreak = 0;
+  /**
+   * 일괄 취소 후 재발주 대기 중인 포지션 — 발주가 거절돼(세션 간극 등) 아직 두 다리를 못 건 상태.
+   * null이 아니면 ARMED지만 다리가 없다 — poll이 nextRebracketAt마다 재시도한다.
+   */
+  private pendingRebracket: GridPosition | null = null;
+  private nextRebracketAt = 0;
+  /**
+   * 매도 다리 "취소 추정" 유예 플래그 — 추론 체결(목록 부재)인데 잔고가 그대로면 취소가 의심되지만,
+   * 잔고 반영이 한 폴 늦을 수 있어 연속 2폴 일치할 때만 취소로 확정한다(진짜 체결의 오분류 방지).
+   */
+  private sellCancelSuspect = false;
 
   constructor(deps: GridDeps) {
     this.port = deps.port;
@@ -189,14 +208,14 @@ export class Grid {
     await this.placeBrackets(position);
   }
 
-  /** 체결 폴 1회 — OCO 판정(매도 체결→SOLD, 매수 체결→리브래킷). */
+  /** 체결 폴 1회 — OCO 판정(매도 체결→SOLD, 매수 체결→리브래킷) + 일괄 취소 방어. */
   async poll(): Promise<GridPollResult> {
-    if (this._state !== 'ARMED') {
-      return this._state === 'FAULT'
-        ? { kind: 'fault', reason: this.faultReason ?? '동결됨' }
-        : this._state === 'SOLD'
-          ? { kind: 'sold', qty: this.holdingQty, avgPrice: this.avgPrice, exitPrice: this.sellPrice }
-          : { kind: 'idle' };
+    if (this._state !== 'ARMED') return this.stateResult();
+
+    // 일괄 취소 후 재발주가 거절돼 대기 중 — 재시도 시각 전에는 armed로만 응답한다(다리가 없어 볼 체결도 없다).
+    if (this.pendingRebracket) {
+      if (this.clock.now() < this.nextRebracketAt) return { kind: 'armed' };
+      return this.tryPendingRebracket();
     }
 
     let fills: GridOrderFill[];
@@ -211,6 +230,40 @@ export class Grid {
       return { kind: 'fault', reason: this.faultReason! };
     }
     const byOdno = new Map(fills.map((f) => [f.odno, f]));
+
+    // ── 거래소/KIS 일괄 취소 방어(세션 전환·장 마감) ──
+    // "목록 부재→전량체결" 추론(filledPrice=null)은 취소로 사라진 주문과 구분이 안 된다.
+    // ① 두 다리가 같은 폴에서 동시에 추론 체결로 사라졌다 — ±w 양끝이 한 폴 안에 다 체결될 수는
+    //    없으므로 일괄 취소로 판정하고 같은 포지션으로 재발주한다.
+    const sellFill = this.sellLeg ? byOdno.get(this.sellLeg.odno) : undefined;
+    const buyFill = this.buyLeg ? byOdno.get(this.buyLeg.odno) : undefined;
+    const sellInferred =
+      this.sellLeg !== null && isFilled(sellFill, this.sellLeg.qty) && filledPriceOf(sellFill) === null;
+    const buyInferred =
+      this.buyLeg !== null && isFilled(buyFill, this.buyLeg.qty) && filledPriceOf(buyFill) === null;
+    if (sellInferred && buyInferred) return this.rebracketAfterCancel();
+    // ② 매도 다리의 추론 체결은 잔고로 검증한다 — 진짜 체결이면 체결기준 수량(ccld_qty_smtl1)이
+    //    즉시 줄지만, 취소면 전량이 그대로 남는다. 잔고 반영이 한 폴 늦을 수 있어 연속 2폴 일치
+    //    할 때만 취소로 확정한다(진짜 체결을 취소로 오분류해 없는 주식을 재매도하는 사고 방지).
+    if (sellInferred) {
+      let pos: GridPosition | null;
+      try {
+        pos = await this.port.fetchPosition();
+      } catch {
+        return { kind: 'armed' }; // 일시 오류 — 판정을 다음 폴로 미룬다(주문 상태는 변하지 않는다).
+      }
+      if (pos !== null && pos.qty >= this.sellLeg!.qty) {
+        if (!this.sellCancelSuspect) {
+          this.sellCancelSuspect = true;
+          return { kind: 'armed' };
+        }
+        return this.rebracketAfterCancel();
+      }
+      // 잔고가 줄었다 — 진짜 체결. 아래 기존 SOLD 판정으로 계속 간다.
+      this.sellCancelSuspect = false;
+    } else {
+      this.sellCancelSuspect = false;
+    }
 
     // 매도(+w) 우선 판정 — 정리(SOLD)가 리브래킷보다 우선한다.
     const sellFilled = this.sellLeg && isFilled(byOdno.get(this.sellLeg.odno), this.sellLeg.qty);
@@ -256,7 +309,61 @@ export class Grid {
     return { kind: 'armed' };
   }
 
+  /**
+   * 세션 전환(정규장↔주간거래) 등으로 두 다리를 지금 취소하고 같은 포지션으로 재발주한다(ARMED에서만).
+   * 옛 세션 API로 접수된 주문은 세션이 끝나면 KIS가 일괄 취소하므로, 경계를 감지한 오토파일럿이
+   * 선제 재발주로 새 세션 API 계열의 주문으로 갈아탄다. 재발주 대기 중이었다면 즉시 재시도한다.
+   */
+  async reissueBrackets(): Promise<GridPollResult> {
+    if (this._state !== 'ARMED') return this.stateResult();
+    if (this.pendingRebracket) return this.tryPendingRebracket();
+    return this.rebracketAfterCancel();
+  }
+
   // ---- 내부 ----
+
+  private stateResult(): GridPollResult {
+    return this._state === 'FAULT'
+      ? { kind: 'fault', reason: this.faultReason ?? '동결됨' }
+      : this._state === 'SOLD'
+        ? { kind: 'sold', qty: this.holdingQty, avgPrice: this.avgPrice, exitPrice: this.sellPrice }
+        : { kind: 'idle' };
+  }
+
+  /**
+   * 일괄 취소(세션 전환·장 마감) 후 재발주 — 살아 있을지 모르는 다리를 방어적으로 취소하고
+   * (이미 KIS가 취소한 주문의 거절은 정상이라 무시), 같은 포지션(잔고 재조회, 폴백=현재 값)으로
+   * 두 다리를 다시 건다. 발주가 거절되면(주문 API가 닫힌 세션 간극 등) FAULT 대신
+   * REBRACKET_RETRY_MS 후 재시도한다 — 새 세션이 열리면 자연히 접수된다.
+   */
+  private async rebracketAfterCancel(): Promise<GridPollResult> {
+    this.sellCancelSuspect = false;
+    for (const leg of [this.buyLeg, this.sellLeg]) {
+      if (!leg) continue;
+      try {
+        await this.port.cancelOrder(leg.odno, leg.qty);
+      } catch {
+        // 이미 취소된 주문 — 거절이 정상이다.
+      }
+    }
+    this.buyLeg = null;
+    this.sellLeg = null;
+    const fallback: GridPosition = { qty: this.holdingQty, avgPrice: this.avgPrice };
+    this.pendingRebracket = (await this.resolvePosition(fallback)) ?? fallback;
+    return this.tryPendingRebracket();
+  }
+
+  /** 대기 중인 재발주 1회 시도 — 성공하면 rebracket(cause=reissue), 거절이면 재시도 예약. */
+  private async tryPendingRebracket(): Promise<GridPollResult> {
+    const position = this.pendingRebracket!;
+    const error = await this.tryPlaceBrackets(position);
+    if (error === null) {
+      this.pendingRebracket = null;
+      return { kind: 'rebracket', position, cause: 'reissue' };
+    }
+    this.nextRebracketAt = this.clock.now() + REBRACKET_RETRY_MS;
+    return { kind: 'rebracketDeferred', reason: error };
+  }
 
   private async resolvePosition(fallback?: GridPosition): Promise<GridPosition | null> {
     for (let i = 0; i < Math.max(1, this.positionRetries); i++) {
@@ -277,6 +384,16 @@ export class Grid {
    * 매수 다리 실패는 rejected로 표기하고 매도만 ARMED로 계속 간다(현금 부족 거절이 대부분).
    */
   private async placeBrackets(position: GridPosition): Promise<boolean> {
+    const error = await this.tryPlaceBrackets(position);
+    if (error !== null) {
+      this.enterFault(`매도 발주 실패 — ${error}`);
+      return false;
+    }
+    return true;
+  }
+
+  /** placeBrackets의 비-FAULT 본체 — 매도 발주 실패를 문자열로 돌려준다(재시도 경로가 쓴다). */
+  private async tryPlaceBrackets(position: GridPosition): Promise<string | null> {
     this.avgPrice = position.avgPrice;
     this.holdingQty = position.qty;
     // KIS 주문가 자릿수 규칙($1이상 2자리·미만 4자리)에 미리 맞춰 둔다 — 뷰·발주가·실제 접수가를
@@ -310,8 +427,7 @@ export class Grid {
       const sell = await this.port.placeOrder('sell', sellQty, this.sellPrice);
       this.sellLeg = { odno: sell.odno, qty: sellQty, price: this.sellPrice };
     } catch (err) {
-      this.enterFault(`매도 발주 실패 — ${summarize(err)}`);
-      return false;
+      return summarize(err);
     }
     // 매수 다리는 수량이 1주 이상일 때만.
     this.buyLeg = null;
@@ -325,7 +441,7 @@ export class Grid {
       }
     }
     this._state = 'ARMED';
-    return true;
+    return null;
   }
 
   /** OCO 취소 1회 — 거절되면 FAULT. */
