@@ -78,7 +78,7 @@ interface RankingRowShape {
   last: string;
   rate: string;
   sign: string;
-  /** 요청 거래소(NAS·NYS·AMS) — 3거래소 병합 조회에서 행마다 붙인다(상세화면 이동 시 market 파라미터). */
+  /** 요청 거래소(NAS·NYS) — 거래소 병합 조회에서 행마다 붙인다(상세화면 이동 시 market 파라미터). */
   excd?: string;
   [key: string]: unknown;
 }
@@ -132,7 +132,7 @@ export function Ranking() {
             return inquireUpDownRateRanking(credentials, accessToken, { excd, gubn: priceDirection, nday: dayWindow });
         }
       };
-      // 미국 3거래소를 직렬 조회(유량 보호) 후 순위 지표로 재정렬해 하나로 병합(2026-08-08).
+      // 미국 거래소(NAS·NYS)를 직렬 조회(유량 보호) 후 순위 지표로 재정렬해 하나로 병합(2026-08-08, 아멕스는 2026-08-10 제외).
       // 일부 거래소 실패는 무시하고 나머지로 보여준다 — 전부 실패했을 때만 에러.
       const lists: RankingRowShape[][] = [];
       const errors: unknown[] = [];

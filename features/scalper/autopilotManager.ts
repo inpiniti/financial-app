@@ -34,8 +34,8 @@ import type {
 /** 거래 기록의 instanceId — 자동관리 사이클은 전부 이 아이디로 남긴다. */
 export const AUTOPILOT_TRADE_ID = 'autopilot';
 
-// 리스트는 미국 3거래소 병합(2026-08-08, 옛 NAS 전용에서 확대) — 티커별 채용 거래소(WatchEntry.market)가
-// WS trKey 시장구분·주문 거래소를 정한다.
+// 리스트는 미국 거래소 병합(2026-08-08 3거래소 확대 → 2026-08-10 아멕스 제외, 현재 NAS·NYS) — 티커별 채용 거래소(WatchEntry.market)가
+// WS trKey 시장구분·주문 거래소를 정한다. AMS 매핑은 기존 채용 종목·방어적 정규화용으로 유지.
 /** 주문 거래소 매핑 — features/stock/marketCodes.ts MARKET_TO_EXCHANGE와 같은 값(순환 참조 회피용 사본). */
 const MARKET_TO_EXCHANGE: Record<WatchMarket, OverseasExchangeCode> = { NAS: 'NASD', NYS: 'NYSE', AMS: 'AMEX' };
 
@@ -51,7 +51,7 @@ export interface AutoPilotManagerDeps {
   scheduler?: SchedulerLike;
   /** 티커별 주문 게이트웨이 — 거래소는 채용 거래소(WatchEntry.market → NASD/NYSE/AMEX)를 넘긴다. */
   makeBroker: (ticker: string, exchange: OverseasExchangeCode) => ScalperBroker;
-  /** 순위 4종 1회 폴링(거래량·증가율·회전율·상승률, 미국 3거래소 병합·당일) — provider가 kis/ranking 12콜로 구현. */
+  /** 순위 4종 1회 폴링(거래량·증가율·회전율·상승률, 미국 NAS·NYS 병합·당일) — provider가 kis/ranking 직렬 콜로 구현. */
   fetchSnapshot: () => Promise<RankingSnapshot>;
   /** 매수가능금액(USD) 사전 조회 — 현금 부족 PAUSED 판정. 실패/미주입 시 판정 생략. */
   fetchBuyableUsd?: (ticker: string, price: number, exchange: OverseasExchangeCode) => Promise<number | null>;

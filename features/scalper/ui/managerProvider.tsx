@@ -92,7 +92,7 @@ async function buildManager(): Promise<ManagerBootstrap> {
   const toWatchRows = (rows: RawRankingRow[]): WatchCandidateRow[] =>
     rows.map((r) => ({ symb: r.symb, rate: r.rate, sign: r.sign, e_ordyn: r.e_ordyn, last: r.last, excd: r.excd as string | undefined }));
 
-  // 순위 4종 × 미국 3거래소(NAS·NYS·AMS) 폴링 — 유량을 아끼려 12콜 직렬(2026-08-08 3거래소 확대).
+  // 순위 4종 × 미국 거래소(NAS·NYS) 폴링 — 유량을 아끼려 직렬 호출(2026-08-08 3거래소 확대, 2026-08-10 아멕스 제외).
   // 순위 7종은 전부 실전 도메인 전용(kis/ranking.ts). 거래소별 결과는 순위 지표로 재정렬해 하나로 합친다.
   // (순위, 거래소) 콜 단위 부분 실패 허용(확장 plan §4-3의 확장): 실패 콜만 빼고 리스트를 구성한다.
   // 전부 실패하면 throw — ScalperWatchlist가 직전 리스트를 그대로 유지하고 다음 주기에 재시도한다.

@@ -413,12 +413,12 @@ export const RANKING_TIME_UNIT: Record<RankingKind, 'day' | 'minute' | 'none'> =
   upDownRate: 'day',
 };
 
-// ── 미국 3거래소 병합 조회 (2026-08-08 사용자 요청) ─────────────────────────
+// ── 미국 거래소 병합 조회 (2026-08-08 사용자 요청) ─────────────────────────
 // EXCD는 API당 1개만 받으므로 거래소별로 따로 조회한 뒤 여기서 하나의 순위로 합친다.
 // 조회 탭·자동단타 리스트가 공유하는 병합 규칙이다.
 
-/** 순위 병합 대상 미국 3거래소 — PRD §4-E 기본 3종과 동일. */
-export const US_RANKING_EXCHANGES = ['NAS', 'NYS', 'AMS'] as const satisfies readonly RankingExchangeCode[];
+/** 순위 병합 대상 미국 거래소 — 아멕스(AMS)는 2026-08-10 사용자 요청으로 제외. */
+export const US_RANKING_EXCHANGES = ['NAS', 'NYS'] as const satisfies readonly RankingExchangeCode[];
 
 /**
  * 종류별 병합 정렬 기준 필드 — 각 API가 output2를 정렬하는 그 값(문서 output 표의 순위 기준).

@@ -179,9 +179,9 @@ describe('rt_cd 비정상 응답', () => {
   });
 });
 
-describe('mergeRankingRows — 미국 3거래소 병합 (2026-08-08)', () => {
-  it('병합 대상은 NAS·NYS·AMS 3거래소다', () => {
-    expect(US_RANKING_EXCHANGES).toEqual(['NAS', 'NYS', 'AMS']);
+describe('mergeRankingRows — 미국 거래소 병합 (2026-08-08)', () => {
+  it('병합 대상은 NAS·NYS 2거래소다 — 아멕스는 2026-08-10 사용자 요청으로 제외', () => {
+    expect(US_RANKING_EXCHANGES).toEqual(['NAS', 'NYS']);
   });
 
   it('거래소별 리스트를 종류별 지표(거래량=tvol, 콤마 허용)로 재정렬해 하나로 합친다', () => {
