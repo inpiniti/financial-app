@@ -1,4 +1,4 @@
-// 조회 탭 세그먼트 3 — 순위 6종 (kis/ranking.ts). 행 탭 시 종목 상세화면으로 이동한다.
+// 홈 순위 섹션 — 순위 6종 (kis/ranking.ts). 행 탭 시 종목 상세화면으로 이동한다.
 import { useCallback, useEffect, useState } from 'react';
 import { FlatList, RefreshControl, Text, View } from 'react-native';
 import { router } from 'expo-router';

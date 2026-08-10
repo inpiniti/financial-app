@@ -1,7 +1,8 @@
-// 조회 탭 세그먼트 1 — 보유종목 (kis/balance.ts 잔고 API).
+// 보유종목 (kis/balance.ts 잔고 API) — 홈 보유종목 섹션(HoldingsAndPending)의 상단 패널.
+// 섹션이 ScrollView 하나로 미체결 패널과 함께 스크롤하므로 자체 스크롤 없이 map 렌더만 한다.
 // 색 규칙(PRD 명시 — toss-design 기본 색 규칙보다 우선): 한국 관례로 이익=빨강 계열, 손실=파랑 계열.
 import { useCallback, useEffect, useState } from 'react';
-import { FlatList, RefreshControl, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
 import { router } from 'expo-router';
 import { ListRow } from '../../components/ListRow';
 import { Panel } from '../../components/Panel';
@@ -9,8 +10,8 @@ import { TickerAvatar } from '../../components/TickerAvatar';
 import { inquireOverseasBalance, type OverseasBalancePosition } from '../../kis/balance';
 import { toStockMarketCode } from '../stock/marketCodes';
 import { formatSignedPercent, formatSignedUsd, pnlColor } from '../../lib/format';
-import { EmptyState, ErrorNotice, SetupNotice, SkeletonList } from './components';
-import { useKisSession } from './useKisSession';
+import { EmptyState, SkeletonList } from './components';
+import type { KisSessionState } from './useKisSession';
 
 function formatQty(raw: string): string {
   const n = Number(raw);
@@ -59,28 +60,31 @@ function HoldingRow({ item }: { item: OverseasBalancePosition }) {
   );
 }
 
-export function Holdings() {
-  const [reloadKey, setReloadKey] = useState(0);
-  const session = useKisSession(reloadKey);
+export interface HoldingsData {
+  positions: OverseasBalancePosition[] | null;
+  loading: boolean;
+  error: string | null;
+}
+
+/** 세션이 ready가 될 때마다(당겨서 새로고침 → 세션 재로드 포함) 잔고를 다시 조회한다. */
+export function useHoldings(session: KisSessionState): HoldingsData {
   const [positions, setPositions] = useState<OverseasBalancePosition[] | null>(null);
-  const [loadingData, setLoadingData] = useState(false);
-  const [dataError, setDataError] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchPositions = useCallback(async () => {
     if (session.kind !== 'ready') return;
-    setLoadingData(true);
-    setDataError(null);
+    setLoading(true);
+    setError(null);
     try {
       const result = await inquireOverseasBalance(session.session.environment, session.session.credentials, session.session.accessToken, {
         account: session.session.account,
       });
       setPositions(result.output1);
     } catch (e) {
-      setDataError(e instanceof Error ? e.message : String(e));
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoadingData(false);
-      setRefreshing(false);
+      setLoading(false);
     }
   }, [session]);
 
@@ -88,31 +92,24 @@ export function Holdings() {
     if (session.kind === 'ready') fetchPositions();
   }, [session, fetchPositions]);
 
-  const onRefresh = useCallback(() => {
-    setRefreshing(true);
-    setReloadKey((k) => k + 1);
-  }, []);
+  return { positions, loading, error };
+}
 
-  if (session.kind === 'needsSetup') return <SetupNotice />;
-  if (session.kind === 'error') return <ErrorNotice message={session.message} />;
-  if (session.kind === 'loading' || (loadingData && positions === null))
-    return (
-      <Panel title="보유종목" style={{ flex: 1, marginBottom: 0 }}>
-        <SkeletonList />
-      </Panel>
-    );
-  if (dataError && positions === null) return <ErrorNotice message={dataError} />;
-
+/** 보유종목 패널 — 스크롤 없는 순수 패널(HoldingsAndPending의 ScrollView 안에서 렌더). */
+export function HoldingsPanel({ data }: { data: HoldingsData }) {
+  const { positions, loading, error } = data;
   return (
-    <Panel title="보유종목" style={{ flex: 1, marginBottom: 0 }}>
-      <FlatList
-        data={positions ?? []}
-        keyExtractor={(item, idx) => `${item.pdno}-${idx}`}
-        renderItem={({ item }) => <HoldingRow item={item} />}
-        contentContainerStyle={{ flexGrow: 1 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#3182f6" />}
-        ListEmptyComponent={<EmptyState icon="cube-outline" title="보유 중인 종목이 없어요" description="매수하면 여기에 나타나요" />}
-      />
+    <Panel title="보유종목">
+      {positions === null && (loading || !error) ? (
+        <SkeletonList />
+      ) : positions === null && error ? (
+        <EmptyState icon="alert-circle-outline" title="잠시 연결이 어려워요" description={`조금 뒤에 다시 시도해 주세요. (${error})`} />
+      ) : positions !== null && positions.length === 0 ? (
+        <EmptyState icon="cube-outline" title="보유 중인 종목이 없어요" description="매수하면 여기에 나타나요" />
+      ) : (
+        (positions ?? []).map((item, idx) => <HoldingRow key={`${item.pdno}-${idx}`} item={item} />)
+      )}
+      <View style={{ height: 8 }} />
     </Panel>
   );
 }

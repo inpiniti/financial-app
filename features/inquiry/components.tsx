@@ -1,4 +1,4 @@
-// 조회 탭 4개 세그먼트 공통 UI 조각 — 스켈레톤/빈 상태/설정 유도 안내 (toss-design 스킬 톤 준수).
+// 홈 섹션 공통 UI 조각 — 스켈레톤/빈 상태/설정 유도 안내 (toss-design 스킬 톤 준수).
 import { View, Text } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 

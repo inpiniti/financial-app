@@ -1,7 +1,8 @@
-// 조회 탭 세그먼트 2 — 미체결 (kis/nccs.ts inquireOverseasUnfilled + kis/orderCancel.ts 취소).
+// 미체결 (kis/nccs.ts inquireOverseasUnfilled + kis/orderCancel.ts 취소) — 홈 보유종목 섹션의 하단 패널.
 // 주문체결내역(TTTS3035R)이 일부 계좌에서 APTR0058로 거절되어 미체결 전용 TR(TTTS3018R)로 전환 (README.md 참조).
+// 섹션이 ScrollView 하나로 보유종목 패널과 함께 스크롤하므로 자체 스크롤 없이 map 렌더만 한다.
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, FlatList, Pressable, RefreshControl, Text, View } from 'react-native';
+import { Alert, Pressable, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import { ListRow } from '../../components/ListRow';
 import { Panel } from '../../components/Panel';
@@ -11,8 +12,8 @@ import { cancelOverseasOrder } from '../../kis/orderCancel';
 import type { OverseasExchangeCode } from '../../kis/trId';
 import { toStockMarketCode } from '../stock/marketCodes';
 import { formatUsd } from '../../lib/format';
-import { EmptyState, ErrorNotice, SetupNotice, SkeletonList } from './components';
-import { useKisSession } from './useKisSession';
+import { EmptyState, SkeletonList } from './components';
+import type { KisSessionState } from './useKisSession';
 
 function PendingRow({ item, onCancel, cancelling }: { item: OverseasUnfilledItem; onCancel: () => void; cancelling: boolean }) {
   const isBuy = item.sll_buy_dvsn_cd === '02';
@@ -60,19 +61,25 @@ function PendingRow({ item, onCancel, cancelling }: { item: OverseasUnfilledItem
   );
 }
 
-export function PendingOrders() {
-  const [reloadKey, setReloadKey] = useState(0);
-  const session = useKisSession(reloadKey);
+export interface PendingOrdersData {
+  orders: OverseasUnfilledItem[] | null;
+  loading: boolean;
+  error: string | null;
+  cancellingOdno: string | null;
+  cancelOrder: (item: OverseasUnfilledItem) => void;
+}
+
+/** 세션이 ready가 될 때마다 미체결을 다시 조회한다. 취소 성공 시 미체결만 재조회(잔고는 건드리지 않음). */
+export function usePendingOrders(session: KisSessionState): PendingOrdersData {
   const [orders, setOrders] = useState<OverseasUnfilledItem[] | null>(null);
-  const [loadingData, setLoadingData] = useState(false);
-  const [dataError, setDataError] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [cancellingOdno, setCancellingOdno] = useState<string | null>(null);
 
   const fetchOrders = useCallback(async () => {
     if (session.kind !== 'ready') return;
-    setLoadingData(true);
-    setDataError(null);
+    setLoading(true);
+    setError(null);
     try {
       // OVRS_EXCG_CD=NASD면 미국 전체(나스닥/뉴욕/아멕스)가 함께 조회된다 (미체결내역.md).
       const result = await inquireOverseasUnfilled(session.session.environment, session.session.credentials, session.session.accessToken, {
@@ -81,10 +88,9 @@ export function PendingOrders() {
       });
       setOrders(result.output);
     } catch (e) {
-      setDataError(e instanceof Error ? e.message : String(e));
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoadingData(false);
-      setRefreshing(false);
+      setLoading(false);
     }
   }, [session]);
 
@@ -92,12 +98,7 @@ export function PendingOrders() {
     if (session.kind === 'ready') fetchOrders();
   }, [session, fetchOrders]);
 
-  const onRefresh = useCallback(() => {
-    setRefreshing(true);
-    setReloadKey((k) => k + 1);
-  }, []);
-
-  const handleCancel = useCallback(
+  const cancelOrder = useCallback(
     async (item: OverseasUnfilledItem) => {
       if (session.kind !== 'ready') return;
       setCancellingOdno(item.odno);
@@ -123,28 +124,26 @@ export function PendingOrders() {
     [session, fetchOrders],
   );
 
-  if (session.kind === 'needsSetup') return <SetupNotice />;
-  if (session.kind === 'error') return <ErrorNotice message={session.message} />;
-  if (session.kind === 'loading' || (loadingData && orders === null))
-    return (
-      <Panel title="미체결" style={{ flex: 1, marginBottom: 0 }}>
-        <SkeletonList />
-      </Panel>
-    );
-  if (dataError && orders === null) return <ErrorNotice message={dataError} />;
+  return { orders, loading, error, cancellingOdno, cancelOrder };
+}
 
+/** 미체결 패널 — 스크롤 없는 순수 패널(HoldingsAndPending의 ScrollView 안에서 렌더). */
+export function PendingOrdersPanel({ data }: { data: PendingOrdersData }) {
+  const { orders, loading, error, cancellingOdno, cancelOrder } = data;
   return (
-    <Panel title="미체결" style={{ flex: 1, marginBottom: 0 }}>
-      <FlatList
-        data={orders ?? []}
-        keyExtractor={(item) => item.odno}
-        renderItem={({ item }) => (
-          <PendingRow item={item} onCancel={() => handleCancel(item)} cancelling={cancellingOdno === item.odno} />
-        )}
-        contentContainerStyle={{ flexGrow: 1 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#3182f6" />}
-        ListEmptyComponent={<EmptyState icon="hourglass-outline" title="미체결 주문이 없어요" description="주문을 넣으면 여기에 나타나요" />}
-      />
+    <Panel title="미체결">
+      {orders === null && (loading || !error) ? (
+        <SkeletonList count={2} />
+      ) : orders === null && error ? (
+        <EmptyState icon="alert-circle-outline" title="잠시 연결이 어려워요" description={`조금 뒤에 다시 시도해 주세요. (${error})`} />
+      ) : orders !== null && orders.length === 0 ? (
+        <EmptyState icon="hourglass-outline" title="미체결 주문이 없어요" description="주문을 넣으면 여기에 나타나요" />
+      ) : (
+        (orders ?? []).map((item) => (
+          <PendingRow key={item.odno} item={item} onCancel={() => cancelOrder(item)} cancelling={cancellingOdno === item.odno} />
+        ))
+      )}
+      <View style={{ height: 8 }} />
     </Panel>
   );
 }

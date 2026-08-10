@@ -1,10 +1,10 @@
-// 조회 탭 세그먼트 4 — 손익 (kis/periodProfit.ts inquireOverseasPeriodProfit, TTTS3039R 기간손익 조회).
+// 홈 손익 섹션 — (kis/periodProfit.ts inquireOverseasPeriodProfit, TTTS3039R 기간손익 조회).
 // 상단 MonthNavigator("< 2026년 8월 >")로 년·월을 고르면, 그 달의 기간손익을 "일별 합계" 리스트로 보여준다
 // (일별 접기/월 범위 계산은 features/inquiry/dailyProfit.ts). 금액은 WCRC_FRCR_DVSN_CD 기본값 02(원화)로
 // 받으므로 원화(formatSignedKrw)로 표시한다.
 // KIS가 당일 손익을 제공하지 않아, 현재 달에서는 앱 자체 기록(features/scalper/tradeStore)을 합산한
 // "오늘예상" 행을 일별 리스트와 같은 형식으로 맨 위에 얹는다(응답 환율로 원화 환산, 환율 없으면 USD).
-// 개별 사이클 상세는 조회 탭 "거래기록" 세그먼트(TradeHistory.tsx)로 분리했다.
+// 개별 사이클 상세는 홈 트레이딩 섹션 하단 "오늘 거래 기록" 패널(TradeHistory.tsx)로 분리했다.
 // 일별 행을 누르면 그 날의 종목별 합계(실현손익·평균매수가→평균매도가·수량) 상세로 들어간다.
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';

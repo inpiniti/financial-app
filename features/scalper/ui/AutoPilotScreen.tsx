@@ -9,6 +9,7 @@ import { ListRow } from '../../../components/ListRow';
 import { Panel } from '../../../components/Panel';
 import { TickerAvatar } from '../../../components/TickerAvatar';
 import { EmptyState } from '../../inquiry/components';
+import { TradeHistoryPanel, useTodayTrades } from '../../inquiry/TradeHistory';
 import { formatSignedUsd, formatUsd, pnlColor } from '../../../lib/format';
 import type { AutoPilotEvent, AutoPilotState, AutoPilotView } from '../autopilot';
 import type { AutoPilotManager, AutoPilotSlotRow } from '../autopilotManager';
@@ -112,6 +113,8 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
   const [sheetVisible, setSheetVisible] = useState(false);
   // 계좌 잔고 보유분을 그리드에 다시 태우는 시트(FAULT 이후 복구 경로).
   const [adoptVisible, setAdoptVisible] = useState(false);
+  // 오늘 거래 기록(푸터 패널) — 사이클이 완료될 때마다(view.cycles 증가) 다시 읽는다.
+  const trades = useTodayTrades(view.cycles);
 
   useEffect(() => autopilot.subscribeView(setView), [autopilot]);
   useEffect(() => autopilot.subscribeList(setRows), [autopilot]);
@@ -333,6 +336,7 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
               )}
               <View style={{ height: 8 }} />
             </Panel>
+            <TradeHistoryPanel trades={trades} />
           </>
         }
       />

@@ -1,4 +1,4 @@
-// 조회 탭 4개 세그먼트 공통 — KIS 키/계좌 로드 → 토큰 발급까지 한 번에 처리하는 훅.
+// 홈 섹션 공통 — KIS 키/계좌 로드 → 토큰 발급까지 한 번에 처리하는 훅.
 // 설정 화면(app/settings.tsx)이 저장한 lib/kisSettings·lib/appSettings를 읽고,
 // kis/token.ts + lib/secureTokenStorage(토큰 캐시)로 accessToken을 받아온다.
 import { useEffect, useState } from 'react';

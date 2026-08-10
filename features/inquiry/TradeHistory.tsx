@@ -1,10 +1,10 @@
-// 조회 탭 세그먼트 5 — 거래기록: 앱이 직접 기록한 오늘의 매수→매도 사이클(features/scalper/tradeStore).
-// KIS 세션 없이 AsyncStorage만 읽는다 — 당일 상세는 KIS가 제공하지 않으므로, 손익 세그먼트에는
-// 합계("오늘예상")만 싣고 개별 사이클은 이 화면에서 시간순으로 보여준다(옛 ProfitLoss 로컬 섹션 이관).
+// 오늘 거래 기록 — 앱이 직접 기록한 오늘의 매수→매도 사이클(features/scalper/tradeStore).
+// KIS 세션 없이 AsyncStorage만 읽는다. 홈 트레이딩 섹션(AutoPilotScreen)의 푸터 패널로 들어가므로
+// 자체 스크롤(FlatList) 없이 map 렌더만 한다 — 바깥 FlatList와 스크롤 중첩 금지.
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
-import { FlatList, RefreshControl, Text } from 'react-native';
+import { Text, View } from 'react-native';
 import { ListRow } from '../../components/ListRow';
 import { Panel } from '../../components/Panel';
 import { TickerAvatar } from '../../components/TickerAvatar';
@@ -52,46 +52,42 @@ function CycleRow({ item }: { item: StoredTrade }) {
   );
 }
 
-export function TradeHistory() {
+/**
+ * 오늘 거래 기록 로드 훅 — reloadKey가 바뀌면 다시 읽는다(사이클 완료 시 부모가 키를 올려 갱신).
+ * null = 아직 로드 전(스켈레톤 대상).
+ */
+export function useTodayTrades(reloadKey: number = 0): StoredTrade[] | null {
   const [trades, setTrades] = useState<StoredTrade[] | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     const local = await readTodayTrades(AsyncStorage, clock);
     // 시간순(진입 시각 기준) 정렬 — "오늘 매수→매도 사이클을 시간순으로" 요구사항 계승.
     setTrades([...local].sort((a, b) => a.entryTs - b.entryTs));
-    setRefreshing(false);
   }, []);
 
   useEffect(() => {
     load();
-  }, [load]);
+  }, [load, reloadKey]);
 
-  const onRefresh = useCallback(() => {
-    setRefreshing(true);
-    load();
-  }, [load]);
+  return trades;
+}
 
+/** 오늘 거래 기록 패널 — 스크롤 없는 순수 패널(부모 FlatList의 푸터로 들어간다). */
+export function TradeHistoryPanel({ trades }: { trades: StoredTrade[] | null }) {
   return (
-    <Panel title="오늘 거래 기록" style={{ flex: 1, marginBottom: 0 }}>
+    <Panel title="오늘 거래 기록" headerRight={trades && trades.length > 0 ? `${trades.length}건` : undefined}>
       {trades === null ? (
-        <SkeletonList />
-      ) : (
-        <FlatList
-          data={trades}
-          keyExtractor={(t, idx) => `${t.instanceId}-${t.exitTs}-${idx}`}
-          renderItem={({ item }) => <CycleRow item={item} />}
-          contentContainerStyle={{ flexGrow: 1 }}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#3182f6" />}
-          ListEmptyComponent={
-            <EmptyState
-              icon="receipt-outline"
-              title="오늘 완료한 사이클이 없어요"
-              description="매수→매도가 끝나면 여기에 나타나요"
-            />
-          }
+        <SkeletonList count={2} />
+      ) : trades.length === 0 ? (
+        <EmptyState
+          icon="receipt-outline"
+          title="오늘 완료한 사이클이 없어요"
+          description="매수→매도가 끝나면 여기에 나타나요"
         />
+      ) : (
+        trades.map((item, idx) => <CycleRow key={`${item.instanceId}-${item.exitTs}-${idx}`} item={item} />)
       )}
+      <View style={{ height: 8 }} />
     </Panel>
   );
 }
