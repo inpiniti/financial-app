@@ -2,8 +2,10 @@
 //              — 세션(마틴게일 회계) 개념은 2026-08-08_세션-제거 plan으로 삭제됨).
 //
 // 단타 도메인의 중앙 관리자: 상태·금액·종목을 한 곳에서 관리한다.
-//  · 리스트(FeedSlot들)는 전부 시세를 받지만, 변곡점 감시(detector)는
-//    **최소 속도(minTickRate) 이상인 종목 중** 틱/초 상위 최대 3개에만 부착(자격자가 없으면 0개 — 진입 없음).
+//  · 변곡점 감지기(detector)는 **리스트 전 종목에 상시 부착**한다(2026-08-10 — 감시 교체 때 떼면
+//    사다리 앵커가 리셋돼 속도가 출렁이는 주간거래에서 변곡점이 안 쌓였다). "감시(watched)" 목록은
+//    자격자(minTickRate 이상) 중 틱/초 상위 3개로, 호가 예열·UI 요약용 우선순위일 뿐이다.
+//    진입은 신호 시점·발주 직전 두 번의 속도 게이트가 거른다(자격 미달 종목은 신호가 떠도 진입 없음).
 //  · RUN(매매 사이클)은 **동시에 여러 종목**이 가능하다(maxConcurrentGrids, 기본 3).
 //    종목마다 RunCycle + OrderPortAdapter + Grid를 따로 만들고, 이미 보유·진입 중인 종목은
 //    감시 후보에서 제외한다 — 즉 진입 뒤에도 변곡점 감시는 멈추지 않고 계속 돈다.
@@ -100,10 +102,16 @@ export interface AutoPilotView {
   readonly config: AutoPilotConfig | null;
   /** 현금 부족으로 일시정지 중인가 — 재개는 사람이 선택(Stop·재시작에도 유지). */
   readonly paused: boolean;
-  /** 변곡점 감시 중인 티커(자격자 중 상위 — 0~3개). 보유·진입 중 종목은 여기 없다. */
+  /**
+   * 감시 상위 티커(자격자 중 상위 — 0~3개). 보유·진입 중 종목은 여기 없다.
+   * ⚠ 2026-08-10부터 **감지기는 리스트 전 종목에 상시 부착**된다 — 이 목록은 호가(R) 예열·UI 요약용
+   * 우선순위일 뿐, 여기서 빠져도 사다리 카운트는 리셋되지 않는다.
+   */
   readonly watched: readonly string[];
   /** 사이클(진입~그리드 관리)이 열려 있는 모든 티커. */
   readonly activeTickers: readonly string[];
+  /** 진입 확정 대기(pendingBuys) 티커 — 매니저가 호가 구독을 미리 데우는 데 쓴다. */
+  readonly entering: readonly string[];
   /** 하위호환 — activeTickers의 첫 종목(없으면 null). */
   readonly activeTicker: string | null;
   /** 동시 그리드 최대 개수(설정값). */
@@ -359,6 +367,7 @@ export class AutoPilot {
       paused: this.paused,
       watched: [...this.watchedTickers],
       activeTickers,
+      entering: [...this.pendingBuys.keys()],
       activeTicker: activeTickers[0] ?? null,
       maxGrids: this.maxGrids,
       cycles: this.cycles,
@@ -690,6 +699,16 @@ export class AutoPilot {
     const now = this.deps.clock.now();
     const slots = this.deps.slots();
     const byTicker = new Map(slots.map((s) => [s.ticker, s]));
+
+    // ★ 감지기는 리스트 전 종목 상시 부착(2026-08-10) — 예전처럼 감시(top3) 교체 때 감지기를
+    //   떼면 attachDetector가 새 앵커로 시작해 사다리 홀 카운트가 리셋됐고, 속도가 출렁이는
+    //   주간거래에서는 교체가 잦아 변곡점이 영영 안 쌓였다. 감시 목록은 이제 호가 예열·UI
+    //   요약용 우선순위일 뿐이다. 이미 부착된 슬롯은 건너뛴다(재부착 = 앵커 리셋이라 금물).
+    //   신규 슬롯(리스트 편입)도 이 루프가 받는다 — 리스트 변경 시 매니저가 reselect를 부른다.
+    for (const s of slots) {
+      if (!s.watched) s.attachDetector((signal, ctx) => this.handleSignal(signal, ctx));
+    }
+
     const rateOf = (t: string) => byTicker.get(t)?.tickRate(now) ?? 0;
     const eligible = (t: string) =>
       byTicker.has(t) &&
@@ -730,18 +749,7 @@ export class AutoPilot {
     const changed = next.length !== prev.length || next.some((t) => !prev.includes(t));
     if (!changed) return;
 
-    for (const t of prev) {
-      // ⚠ 보유·진입 중 종목의 detector는 떼지 않는다 — 그리드 미사용 경로에서 SELL 청산 신호가 거기서 온다.
-      if (!next.includes(t) && !this.actives.has(t) && !this.pendingBuys.has(t)) {
-        byTicker.get(t)?.detachDetector();
-      }
-    }
-    for (const t of next) {
-      const slot = byTicker.get(t);
-      if (slot && !slot.watched) {
-        slot.attachDetector((signal, ctx) => this.handleSignal(signal, ctx));
-      }
-    }
+    // 감시 교체는 감지기를 건드리지 않는다(위 상시 부착 루프 참조) — 목록·이벤트만 갱신한다.
     this.watchedTickers = next;
     this.event(
       next.length > 0
@@ -791,6 +799,9 @@ export class AutoPilot {
     if (this.actives.size + this.pendingBuys.size >= this.maxGrids) return; // 그리드 슬롯 만석
 
     const rate = this.slotOf(ctx.ticker)?.tickRate(this.deps.clock.now()) ?? 0;
+    // 감지기가 전 종목에 붙으면서(2026-08-10) 느린 종목의 신호가 흔해졌다 — 프리플라이트(REST 왕복)
+    // 전에 여기서 거른다. commitBuy의 재검사(발주 직전)와 이중이지만 각자 다른 시점을 지킨다.
+    if (rate < (this.config?.minTickRate ?? DEFAULT_MIN_TICK_RATE)) return;
     this.pendingBuys.set(ctx.ticker, { ctx, tickRate: rate });
     this.emit();
     void this.commitBuy(ctx.ticker);

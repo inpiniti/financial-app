@@ -1,9 +1,9 @@
 // AutoPilotManager — 자동관리 모드 배선 (plan §3-5단계).
 //
 // watchlist(순위 폴링) → FeedSlot(WS 수신) → AutoPilot(감시·사이클)을 조립하고,
-// WS 구독 예산을 지킨다(plan §4-11): 체결가(D)는 리스트 전 종목, 호가(R)는 **감시 top3 ∪ 보유 전 종목**.
-// 다중 그리드(2026-08-05) 이후 보유 중에도 감시가 계속 돌기 때문에 둘의 합집합이다 —
-// 리스트 원천 4종 기준 최대 (체결가 12 + 핀 유예 1) + 호가 (3 + 동시 그리드 수, 최대 6) ≈ 22건.
+// WS 구독 예산을 지킨다(plan §4-11): 체결가는 리스트 전 종목, 호가는 **감시 top3 ∪ 진입 중 ∪ 보유**.
+// 감지기는 리스트 전 종목에 붙지만(2026-08-10) 호가는 이 소수만 예열한다 — 전 종목 호가면
+// 리스트 20개 기준 KIS 한도(41건)를 넘는다. 체결가 + 호가 (3 + 진입·보유, 최대 6) ≈ 리스트 + 9건.
 //
 // WS 핸들러는 ScalperManager(피드 허브)가 유일 소유하므로, 이 매니저는 setAuxRoutes로 등록된
 // routeTick/routeQuote를 통해 같은 연결의 수신을 나눠 받는다.
@@ -442,13 +442,15 @@ export class AutoPilotManager {
   }
 
   /**
-   * 호가(R) 구독을 감시·보유 대상에 맞춘다(plan §4-11).
-   * 다중 그리드에서는 **감시 top3 ∪ 보유 전 종목**이 대상이다 — 보유 중에도 감시가 계속 돌기 때문에
-   * 둘 중 하나만 구독하면 그리드 게이지(현재가)나 신규 진입 판단 중 하나가 눈이 먼다.
-   * 예산: 체결가(D) 리스트 전 종목 + 호가(R) 최대 (3 + maxGrids)건.
+   * 호가(HDFSASP0) 구독을 **감시 top3 ∪ 진입 중 ∪ 보유 전 종목**에 맞춘다(plan §4-11).
+   * 감지기는 리스트 전 종목에 붙지만(2026-08-10) 호가는 이 소수만 예열한다 — 전 종목 호가까지
+   * 구독하면 리스트 20개 기준 체결가 20 + 호가 20 + 상세화면 2로 KIS 한도(41건)를 넘는다.
+   * 감시 밖 종목에서 신호가 뜨면 pendingBuys 등록 → view.entering → 여기서 즉시 호가를 구독하고,
+   * 프리플라이트(REST 왕복) 동안 첫 호가가 도착한다(발주는 어차피 그 뒤).
+   * 예산: 체결가 리스트 전 종목 + 호가 최대 (3 + 진입 중 + maxGrids)건.
    */
   private reconcileQuoteSubs(view: AutoPilotView): void {
-    const targets = new Set([...view.watched, ...view.activeTickers]);
+    const targets = new Set([...view.watched, ...view.entering, ...view.activeTickers]);
     for (const [ticker, trKey] of [...this.quoteSubs]) {
       if (!targets.has(ticker)) {
         this.quoteSubs.delete(ticker);

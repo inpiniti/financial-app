@@ -153,7 +153,7 @@ describe('순수 규칙 — 수량·검증·기준일', () => {
 });
 
 describe('AutoPilot — 감시 선정(최소 속도 자격 필터·히스테리시스)', () => {
-  it('자격자 중 상위 3개에 detector가 붙는다', () => {
+  it('감시(호가 예열) 목록은 자격자 중 상위 3개 — 감지기는 리스트 전 종목에 붙는다(2026-08-10)', () => {
     const h = makeHarness(['A', 'B', 'C', 'D', 'E']);
     burst(h, 'A', 10);
     burst(h, 'B', 8);
@@ -161,28 +161,30 @@ describe('AutoPilot — 감시 선정(최소 속도 자격 필터·히스테리�
     burst(h, 'D', 2);
     h.pilot.start();
     expect([...h.pilot.getView().watched].sort()).toEqual(['A', 'B', 'C']);
-    expect(h.slots.get('D')!.watched).toBe(false);
+    // 감시 밖(D)·무자격(E) 종목도 감지기는 붙어 있다 — 사다리 앵커가 감시 교체와 무관하게 쌓인다.
+    expect(h.slots.get('D')!.watched).toBe(true);
+    expect(h.slots.get('E')!.watched).toBe(true);
   });
 
-  it('최소 속도 미달은 감시하지 않는다 — 자격자 1개면 1개, 0개면 감시 없음', () => {
+  it('최소 속도 미달은 감시(호가 예열) 목록에 들지 않는다 — 자격자 1개면 1개, 0개면 안내 이벤트', () => {
     const h = makeHarness(['A', 'B', 'C'], {
       config: { startAmountUsd: 100, minTickRate: 1 },
     });
     burst(h, 'A', 15); // 1.5틱/초 — 자격
     burst(h, 'B', 5); // 0.5틱/초 — 미달
     h.pilot.start();
-    expect(h.pilot.getView().watched).toEqual(['A']); // 1개만 감시
-    expect(h.slots.get('B')!.watched).toBe(false);
+    expect(h.pilot.getView().watched).toEqual(['A']); // 감시 목록은 1개
+    expect(h.slots.get('B')!.watched).toBe(true); // 하지만 감지기는 붙어 있다
 
-    // 시간이 흘러 A도 미달 → 감시 0개 + 안내 이벤트.
+    // 시간이 흘러 A도 미달 → 감시 목록 0개 + 안내 이벤트(감지기는 그대로).
     h.clock.advance(20_000);
     h.pilot.reselect();
     expect(h.pilot.getView().watched).toEqual([]);
-    expect(h.slots.get('A')!.watched).toBe(false);
+    expect(h.slots.get('A')!.watched).toBe(true);
     expect(h.events.some((e) => e.includes('감시 대상 없음'))).toBe(true);
   });
 
-  it('감시 중 종목이 자격을 잃으면 히스테리시스와 무관하게 즉시 해제된다', () => {
+  it('감시 중 종목이 자격을 잃으면 감시 목록에서 즉시 빠진다 — 감지기는 유지(사다리 앵커 보존)', () => {
     const h = makeHarness(['A', 'B'], {
       config: { startAmountUsd: 100, minTickRate: 1 },
     });
@@ -195,7 +197,22 @@ describe('AutoPilot — 감시 선정(최소 속도 자격 필터·히스테리�
     h.clock.advance(2_000); // A 틱 전부 윈도우 밖 → 0틱/초.
     h.pilot.reselect();
     expect(h.pilot.getView().watched).toEqual(['B']);
-    expect(h.slots.get('A')!.watched).toBe(false);
+    expect(h.slots.get('A')!.watched).toBe(true); // 감시 이탈 ≠ 감지 중단
+  });
+
+  it('감시 교체·재선정이 반복돼도 이미 부착된 감지기를 재부착하지 않는다 — 사다리 앵커 리셋 방지', () => {
+    const h = makeHarness(['A', 'B']);
+    burst(h, 'A', 10);
+    h.pilot.start();
+    const slotB = h.slots.get('B')!;
+    expect(slotB.watched).toBe(true);
+    const spy = vi.spyOn(slotB, 'attachDetector');
+
+    burst(h, 'B', 30); // B가 자격을 얻어 감시 목록에 새로 들어온다.
+    h.pilot.reselect();
+    h.pilot.reselect(); // 반복 재선정.
+    expect(h.pilot.getView().watched).toContain('B');
+    expect(spy).not.toHaveBeenCalled(); // 이미 부착돼 있으므로 재부착(=앵커 리셋) 없음.
   });
 
   it('히스테리시스 — 자격자끼리는 최저 감시의 1.2배를 넘어야 교체된다', () => {
