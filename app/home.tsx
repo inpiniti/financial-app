@@ -72,7 +72,7 @@ function TradingSection() {
   }
   if (bootstrap.kind === 'needsSetup') return <SetupNotice />;
   if (bootstrap.kind === 'error') return <ErrorNotice message={bootstrap.message} />;
-  return <AutoPilotScreen autopilot={bootstrap.autopilot} />;
+  return <AutoPilotScreen autopilot={bootstrap.autopilot} manager={bootstrap.manager} />;
 }
 
 export default function HomeScreen() {

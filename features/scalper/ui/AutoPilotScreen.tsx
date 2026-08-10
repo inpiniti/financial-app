@@ -13,6 +13,8 @@ import { TradeHistoryPanel, useTodayTrades } from '../../inquiry/TradeHistory';
 import { formatSignedUsd, formatUsd, pnlColor } from '../../../lib/format';
 import type { AutoPilotEvent, AutoPilotState, AutoPilotView } from '../autopilot';
 import type { AutoPilotManager, AutoPilotSlotRow } from '../autopilotManager';
+import type { FeedEvent, ScalperManager } from '../scalperManager';
+import type { FeedStatus } from '../types';
 import { isDaytimeSessionOpen } from '../daySession';
 import { WATCH_SOURCE_LABEL } from '../watchlist';
 import { AdoptSheet } from './AdoptSheet';
@@ -53,6 +55,34 @@ function DaytimeBadge() {
       </Text>
     </View>
   );
+}
+
+/**
+ * 시세(WS) 연결 상태 배지 — 정상(open)·시작 전(idle)에는 아무것도 그리지 않고,
+ * 문제 상태(연결 중·재연결 중·끊김)만 보여준다. 2026-08-10 갤럭시 실사고(안드로이드 평문 ws 차단으로
+ * 실시간만 조용히 무한 재연결 — 화면에는 '감지중'만 표시) 재발 방지: 문제를 화면에서 바로 알 수 있게.
+ */
+const FEED_BADGE: Partial<Record<FeedStatus, { label: string; bg: string; fg: string }>> = {
+  connecting: { label: '시세 연결 중', bg: '#f2f4f6', fg: '#8b95a1' },
+  reconnecting: { label: '시세 재연결 중', bg: '#fff4e5', fg: '#ff9500' },
+  closed: { label: '시세 끊김', bg: '#feeaea', fg: '#f04452' },
+};
+
+function FeedBadge({ status }: { status: FeedStatus }) {
+  const badge = FEED_BADGE[status];
+  if (!badge) return null;
+  return (
+    <View className="rounded-full px-3 py-1" style={{ backgroundColor: badge.bg }}>
+      <Text className="text-xs font-semibold" style={{ color: badge.fg }}>
+        {badge.label}
+      </Text>
+    </View>
+  );
+}
+
+/** 피드 진단 이벤트 중 화면에 띄울 실패류('연결 오류 · …', '구독 실패 · …')인지 — 성공 ACK는 조용히 지나간다. */
+function isFeedFailureEvent(event: FeedEvent | null): event is FeedEvent {
+  return event !== null && (event.text.startsWith('연결 오류') || event.text.startsWith('구독 실패'));
 }
 
 /** 리스트 행의 우측 상태 표시 — 보유 > 감시 > 핀(정리 대기) 순으로 하나만. */
@@ -119,9 +149,11 @@ function SlotRow({
 
 export interface AutoPilotScreenProps {
   autopilot: AutoPilotManager;
+  /** 피드 허브 — WS 연결 상태 배지·구독 실패 진단 한 줄 표시용(ScalperManager가 이미 보존하는 값을 그리기만). */
+  manager: ScalperManager;
 }
 
-export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
+export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
   const [view, setView] = useState<AutoPilotView>(() => autopilot.pilot.getView());
   const [rows, setRows] = useState<readonly AutoPilotSlotRow[]>(() => autopilot.getRows());
   const [events, setEvents] = useState<readonly AutoPilotEvent[]>(() => autopilot.recentEvents);
@@ -130,9 +162,14 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
   const [adoptVisible, setAdoptVisible] = useState(false);
   // 오늘 거래 기록(푸터 패널) — 사이클이 완료될 때마다(view.cycles 증가) 다시 읽는다.
   const trades = useTodayTrades(view.cycles);
+  // 시세 피드 진단 — 매니저가 이미 보존 중인 연결 상태·마지막 진단 이벤트를 구독해 그린다.
+  const [feedStatus, setFeedStatus] = useState<FeedStatus>(() => manager.getFeedStatus());
+  const [feedEvent, setFeedEvent] = useState<FeedEvent | null>(() => manager.lastFeedEvent);
 
   useEffect(() => autopilot.subscribeView(setView), [autopilot]);
   useEffect(() => autopilot.subscribeList(setRows), [autopilot]);
+  useEffect(() => manager.subscribeFeedStatus(setFeedStatus), [manager]);
+  useEffect(() => manager.subscribeFeedDiagnostic(setFeedEvent), [manager]);
   useEffect(
     () => autopilot.subscribeEvents(() => setEvents([...autopilot.recentEvents])),
     [autopilot],
@@ -207,6 +244,7 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
               title="자동 단타"
               headerRight={
                 <View className="flex-row items-center" style={{ gap: 6 }}>
+                  <FeedBadge status={feedStatus} />
                   {isDaytimeSessionOpen(Date.now()) && <DaytimeBadge />}
                   <StateBadge state={view.state} />
                 </View>
@@ -245,6 +283,21 @@ export function AutoPilotScreen({ autopilot }: AutoPilotScreenProps) {
                     해제하면 계좌에 남은 물량은 앱이 더 이상 관리하지 않아요. 다시 시작한 뒤 &quot;보유 종목
                     등록&quot;으로 그리드에 태울 수 있어요.
                   </Text>
+                </View>
+              )}
+              {(isFeedFailureEvent(feedEvent) || feedStatus === 'reconnecting' || feedStatus === 'closed') && (
+                <View className="px-5 pb-2">
+                  {isFeedFailureEvent(feedEvent) && (
+                    <Text className="text-xs leading-5 text-[#f04452]">
+                      {formatHHMM(feedEvent.at)} · {feedEvent.text}
+                    </Text>
+                  )}
+                  {(feedStatus === 'reconnecting' || feedStatus === 'closed') && (
+                    <Text className="text-xs leading-5 text-[#8b95a1]">
+                      실시간 시세 연결이 원활하지 않아요 — 가격이 계속 안 들어오면 네트워크 상태를 확인해
+                      주세요
+                    </Text>
+                  )}
                 </View>
               )}
               {idleWatch && config && (
