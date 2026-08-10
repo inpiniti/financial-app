@@ -1,0 +1,47 @@
+fetch("https://wts-info-api.tossinvest.com/api/v3/search-all/wts-auto-complete", {
+  "headers": {
+    "accept": "application/json",
+    "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    "app-version": "v260806.2352",
+    "browser-tab-id": "browser-tab-44a4804618d24d0c80168a7b54c87cab",
+    "cache-control": "no-cache",
+    "content-type": "application/json",
+    "pragma": "no-cache",
+    "priority": "u=1, i",
+    "sec-ch-ua": "\"Not=A?Brand\";v=\"99\", \"Google Chrome\";v=\"151\", \"Chromium\";v=\"151\"",
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": "\"Windows\"",
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-site",
+    "x-xsrf-token": "a25f3b36-e09d-4d09-82b6-1e7bfdd2bcf6",
+    "cookie": "deviceId=WTS-0d065aaaba2f409da35a85f36f11528d; _ga=GA1.1.1558211846.1783722423; XSRF-TOKEN=a25f3b36-e09d-4d09-82b6-1e7bfdd2bcf6; _browserId=e868fad2bf7d45a49783f0df558c0477; BTK=LRKGShttKdBMLw3MX/Zc7tGv4Q6I0D8iAMNCDqtG7so=; UTK=LcrTHvSZZCkv/+g6wnwtZj4ViCgbQXfEoEEmmyT6wjqj3S3dtp/yDMgtn1O+QAux6+e+N+AMqb2ek4pmiprg8vnA65yKIyuIBRWTAJkpsA6adGZS3TM2H9ye0teAjlSBZ689gnVi4Y8AIvDUYwvkPQ+mn6WRp+qz/snxIJiisEPKM1Ib4WLSb1ZVobOHefNi; SESSION=NjVkZTk4YjEtZDdhOS00NmFkLWJiN2ItMGVhY2QwZTlhYjFk; _ga_T5907TQ00C=GS2.1.s1786321038$o15$g1$t1786321174$j45$l0$h0",
+    "Referer": "https://www.tossinvest.com/?focusedProductCode=A010170"
+  },
+  "body": "{\"query\":\"테슬라\",\"sections\":[{\"type\":\"SCREENER\"},{\"type\":\"NEWS\"},{\"type\":\"PRODUCT\",\"option\":{\"addIntegratedSearchResult\":true}},{\"type\":\"TICS\"},{\"type\":\"MARKET_INDEX\"}]}",
+  "method": "POST"
+});
+
+{
+    "query": "테슬라",
+    "sections": [
+        {
+            "type": "SCREENER"
+        },
+        {
+            "type": "NEWS"
+        },
+        {
+            "type": "PRODUCT",
+            "option": {
+                "addIntegratedSearchResult": true
+            }
+        },
+        {
+            "type": "TICS"
+        },
+        {
+            "type": "MARKET_INDEX"
+        }
+    ]
+}
