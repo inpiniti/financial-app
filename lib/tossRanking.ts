@@ -22,10 +22,15 @@ export interface TossRankingDeps {
 export const TOSS_RANKING_URL = 'https://wts-cert-api.tossinvest.com/api/v2/dashboard/wts/overview/ranking';
 export const TOSS_STOCK_INFO_URL = 'https://wts-info-api.tossinvest.com/api/v2/stock-infos';
 
-/** 순위 요청 본문 — 웹 화면(미국 거래량 실시간 순위)이 보내는 값 그대로(docs/toss/순위.txt). */
+/**
+ * 순위 요청 본문 — 미국 거래량 실시간 순위.
+ * ⚠ filters는 **빈 배열**이다(2026-08-11 사용자 확정). docs/토스/순위.txt에 적힌
+ *   MARKET_CAP_GREATER_THAN_50M·STOCKS_PRICE_GREATER_THAN_ONE_DOLLAR를 넣으면 시총 5천만달러·
+ *   주가 $1 미만이 잘려 앱에서 보이는 순위와 다른 목록이 온다. 필터를 넣지 않는 쪽이 화면과 같다.
+ */
 export const TOSS_VOLUME_RANKING_BODY = {
   id: 'biggest_market_volume',
-  filters: ['KRX_MANAGEMENT_STOCK', 'MARKET_CAP_GREATER_THAN_50M', 'STOCKS_PRICE_GREATER_THAN_ONE_DOLLAR'],
+  filters: [] as string[],
   duration: 'realtime',
   tag: 'us',
 } as const;
