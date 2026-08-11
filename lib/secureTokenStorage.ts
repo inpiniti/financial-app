@@ -15,4 +15,7 @@ export const secureTokenStorage: StorageLike = {
   async set(key: string, value: string) {
     await SecureStore.setItemAsync(sanitizeKey(key), value);
   },
+  async delete(key: string) {
+    await SecureStore.deleteItemAsync(sanitizeKey(key));
+  },
 };

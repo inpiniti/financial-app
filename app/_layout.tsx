@@ -3,7 +3,11 @@ import { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { installKisTokenRefresher } from '../lib/kisTokenRefresher';
 import { initLogoStore } from '../lib/logoStore';
+
+// KIS 토큰 만료(EGW00123) 자동 복구 등록 — 화면 렌더 전에 끝나야 첫 요청부터 보호된다.
+installKisTokenRefresher();
 
 // Stack 루트 — 게이트(index) → 홈(home) → 검색/설정. 홈 화면은 게이트 통과 후 최초 화면이자
 // 단타 매매가 진행되는 화면이라, 여기서 매니저 싱글턴을 별도 Provider로 감쌀 필요는 없다

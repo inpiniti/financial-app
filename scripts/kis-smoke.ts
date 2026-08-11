@@ -13,6 +13,10 @@
 //
 // 순서: 토큰 발급 → 현재가상세 조회 → 웹소켓 접속키 발급 → 실시간지연체결가 10초 수신.
 
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+
 import {
   buildFreeQuoteTrKey,
   getAccessToken,
@@ -22,6 +26,28 @@ import {
   type PriceDetailExchangeCode,
   type RealtimeMarketCode,
 } from '../kis';
+import type { StorageLike } from '../kis/types';
+
+// 토큰 캐시(파일) — 이게 없으면 스모크를 돌릴 때마다 새 토큰이 발급되고, KIS는 앱키당 유효 토큰을
+// 1개만 유지하므로 휴대폰 앱이 쓰던 토큰이 그 순간 죽는다("기간이 만료된 token 입니다" 실증상, 2026-08-11).
+const TOKEN_CACHE_DIR = join(tmpdir(), 'kis-smoke-token');
+
+const fileTokenStorage: StorageLike = {
+  get(key) {
+    try {
+      return readFileSync(join(TOKEN_CACHE_DIR, `${encodeURIComponent(key)}.json`), 'utf8');
+    } catch {
+      return null;
+    }
+  },
+  set(key, value) {
+    mkdirSync(TOKEN_CACHE_DIR, { recursive: true });
+    writeFileSync(join(TOKEN_CACHE_DIR, `${encodeURIComponent(key)}.json`), value, 'utf8');
+  },
+  delete(key) {
+    rmSync(join(TOKEN_CACHE_DIR, `${encodeURIComponent(key)}.json`), { force: true });
+  },
+};
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -44,8 +70,8 @@ async function main(): Promise<void> {
 
   console.log(`[kis-smoke] environment=${environment} symbol=${symbol} priceExcd=${priceExcd} wsMarket=${wsMarket}`);
 
-  console.log('\n[1/3] 토큰 발급 중...');
-  const token = await getAccessToken(environment, credentials);
+  console.log('\n[1/3] 토큰 발급 중...(캐시 유효하면 재사용)');
+  const token = await getAccessToken(environment, credentials, { storage: fileTokenStorage });
   console.log(`  access_token 앞 12자: ${token.accessToken.slice(0, 12)}... (만료 ${new Date(token.expiresAt).toISOString()})`);
 
   console.log('\n[2/3] 현재가상세 조회 중...');

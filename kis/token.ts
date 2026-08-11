@@ -20,6 +20,19 @@ export interface TokenClientDeps {
   fetchImpl?: FetchLike;
   storage?: StorageLike;
   clock?: ClockLike;
+  /**
+   * 캐시를 무시하고 서버에서 새로 발급받는다.
+   * 클라이언트가 계산한 만료시각이 아직 남았어도 서버가 토큰을 폐기한 경우(EGW00123)를 복구하는 유일한 길 —
+   * KIS는 앱키당 유효 토큰을 1개만 유지하므로, 다른 기기·스크립트가 발급하면 이쪽 토큰이 조용히 죽는다.
+   */
+  forceRefresh?: boolean;
+}
+
+/** 토큰 만료·무효를 뜻하는 msg_cd — 이 응답을 받으면 캐시된 토큰은 이미 죽은 것이다. */
+export const KIS_TOKEN_EXPIRED_MSG_CDS = ['EGW00123', 'EGW00121'] as const;
+
+export function isTokenExpiredMsgCd(msgCd: unknown): boolean {
+  return typeof msgCd === 'string' && (KIS_TOKEN_EXPIRED_MSG_CDS as readonly string[]).includes(msgCd);
 }
 
 // 만료 임박 시 재발급하도록 두는 안전 여유(60초) — 문서에 규정된 값은 아니며 클라이언트 판단.
@@ -42,7 +55,7 @@ export async function getAccessToken(
   const storage = deps.storage;
   const cacheKey = cacheKeyFor(environment, credentials.appKey);
 
-  if (storage) {
+  if (storage && !deps.forceRefresh) {
     const cached = await readCache(storage, cacheKey);
     if (cached && cached.expiresAt - EXPIRY_SAFETY_MARGIN_MS > clock.now()) {
       return cached;
@@ -80,6 +93,20 @@ export async function getAccessToken(
   }
 
   return token;
+}
+
+/** 캐시된 토큰을 버린다 — 서버가 폐기한 토큰(EGW00123)을 계속 물고 있지 않도록. */
+export async function invalidateAccessToken(
+  environment: KisEnvironment,
+  credentials: KisCredentials,
+  storage: StorageLike,
+): Promise<void> {
+  const cacheKey = cacheKeyFor(environment, credentials.appKey);
+  if (storage.delete) {
+    await storage.delete(cacheKey);
+    return;
+  }
+  await storage.set(cacheKey, '');
 }
 
 async function readCache(storage: StorageLike, key: string): Promise<AccessToken | null> {

@@ -13,6 +13,8 @@ export interface ClockLike {
 export interface StorageLike {
   get(key: string): string | null | Promise<string | null>;
   set(key: string, value: string): void | Promise<void>;
+  /** 선택 — 없으면 빈 문자열 저장으로 대체한다(readCache가 빈 값을 캐시 없음으로 본다). */
+  delete?(key: string): void | Promise<void>;
 }
 
 export type FetchLike = typeof fetch;

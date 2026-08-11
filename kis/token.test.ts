@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { getAccessToken } from './token';
+import { getAccessToken, invalidateAccessToken } from './token';
 import type { StorageLike } from './types';
 
 function makeStorage(initial?: string): StorageLike & { store: Map<string, string> } {
@@ -74,6 +74,46 @@ describe('getAccessToken', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(token.accessToken).toBe('new-token');
     expect(JSON.parse((await storage.get('kis:accessToken:live:k'))!).accessToken).toBe('new-token');
+  });
+
+  it('forceRefresh면 캐시가 유효해도 새로 발급받아 캐시를 덮어쓴다 (서버가 폐기한 토큰 복구 경로)', async () => {
+    const clock = { now: () => 1_000_000 };
+    const storage = makeStorage();
+    await storage.set(
+      'kis:accessToken:live:k',
+      JSON.stringify({ accessToken: 'cached-token', tokenType: 'Bearer', expiresAt: clock.now() + 3600_000 }),
+    );
+    const fetchImpl = vi.fn().mockResolvedValue({
+      json: async () => ({ access_token: 'fresh-token', token_type: 'Bearer', expires_in: 86400 }),
+    });
+
+    const token = await getAccessToken(
+      'live',
+      { appKey: 'k', appSecret: 's' },
+      { fetchImpl, clock, storage, forceRefresh: true },
+    );
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(token.accessToken).toBe('fresh-token');
+    expect(JSON.parse((await storage.get('kis:accessToken:live:k'))!).accessToken).toBe('fresh-token');
+  });
+
+  it('invalidateAccessToken 후에는 캐시가 없는 것으로 보고 재발급한다 (delete 미구현 저장소 포함)', async () => {
+    const clock = { now: () => 1_000_000 };
+    const storage = makeStorage(); // delete 없음 — 빈 문자열 저장으로 대체되는 경로.
+    await storage.set(
+      'kis:accessToken:live:k',
+      JSON.stringify({ accessToken: 'dead-token', tokenType: 'Bearer', expiresAt: clock.now() + 3600_000 }),
+    );
+
+    await invalidateAccessToken('live', { appKey: 'k', appSecret: 's' }, storage);
+
+    const fetchImpl = vi.fn().mockResolvedValue({
+      json: async () => ({ access_token: 'new-token', token_type: 'Bearer', expires_in: 86400 }),
+    });
+    const token = await getAccessToken('live', { appKey: 'k', appSecret: 's' }, { fetchImpl, clock, storage });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(token.accessToken).toBe('new-token');
   });
 
   it('모의(paper) 환경은 openapivts 도메인을 사용한다', async () => {

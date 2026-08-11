@@ -15,7 +15,8 @@
 // kis/ 각 REST 모듈의 기본 fetch(deps.fetchImpl ?? kisFlowFetch)로 끼워진다.
 // 테스트가 fetchImpl을 직접 주입하면 이 계층을 건너뛴다(기존 테스트 불변).
 // OAuth(token/wsApproval)는 제외 — 캐시로 호출이 드물고 응답 형태(rt_cd 없음)도 다르다.
-import type { FetchLike } from './types';
+import { isTokenExpiredMsgCd } from './token';
+import type { FetchLike, KisCredentials, KisEnvironment } from './types';
 
 /** 호출 간 최소 간격(ms) — 초당 최대 4건. KIS 공식 한도가 미문서화라 보수적으로 잡는다. */
 export const KIS_MIN_INTERVAL_MS = 250;
@@ -47,6 +48,73 @@ interface FlowFetchDeps {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   config?: KisFlowConfig;
+  refreshToken?: KisTokenRefresher;
+}
+
+// ---- 토큰 만료(EGW00123) 자동 복구 ----
+//
+// KIS는 앱키당 유효 토큰을 1개만 유지해서, 다른 기기·스모크 스크립트가 발급하면 앱이 들고 있던 토큰이
+// 서버에서 조용히 폐기된다. 앱은 만료시각을 로컬에서 계산해 캐시하므로(kis/token.ts) 그 사실을 모른 채
+// 죽은 토큰을 최대 24시간 계속 쓴다 — 화면마다 "기간이 만료된 token 입니다"만 뜨는 실증상(2026-08-11).
+// 화면들이 accessToken 문자열을 state에 들고 있어 캐시만 비워선 복구되지 않으므로, 모든 REST가 지나는
+// 이 계층에서 헤더의 토큰을 갈아끼우고 같은 요청을 1회 재전송한다.
+// 재발급 자체는 앱 계층이 주입한다 — kis/는 저장소(expo-secure-store)를 알면 안 되기 때문.
+
+export interface KisTokenRefreshRequest {
+  environment: KisEnvironment;
+  credentials: KisCredentials;
+  /** 방금 거절당한 토큰 — 다른 요청이 이미 갱신했는지 판별해 중복 발급을 막는 데 쓴다. */
+  expiredToken: string;
+}
+
+/** 새 accessToken을 돌려준다. 복구 불가면 null(원래 오류를 그대로 호출부에 보낸다). */
+export type KisTokenRefresher = (req: KisTokenRefreshRequest) => Promise<string | null>;
+
+let tokenRefresher: KisTokenRefresher | null = null;
+
+/** 앱 시작 시 1회 등록(lib/kisTokenRefresher.ts). null로 해제 — 테스트 격리용. */
+export function setKisTokenRefresher(refresher: KisTokenRefresher | null): void {
+  tokenRefresher = refresher;
+}
+
+function isTokenExpired(body: unknown): boolean {
+  return typeof body === 'object' && body !== null && isTokenExpiredMsgCd((body as { msg_cd?: unknown }).msg_cd);
+}
+
+/** init.headers를 평범한 소문자 키 객체로 편다 (kis/는 Record로 넘기지만 Headers·배열도 받아둔다). */
+function toHeaderRecord(headers: HeadersInit | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!headers) return out;
+  const entries: Iterable<[string, string]> =
+    typeof (headers as Headers).forEach === 'function' && !Array.isArray(headers)
+      ? (() => {
+          const acc: [string, string][] = [];
+          (headers as Headers).forEach((v, k) => acc.push([k, v]));
+          return acc;
+        })()
+      : Array.isArray(headers)
+        ? (headers as [string, string][])
+        : Object.entries(headers as Record<string, string>);
+  for (const [k, v] of entries) out[k.toLowerCase()] = v;
+  return out;
+}
+
+/** 재발급에 필요한 재료(현재 토큰·앱키·환경)를 요청 자체에서 되짚는다. */
+function readTokenContext(
+  input: unknown,
+  headers: Record<string, string>,
+): { token: string; credentials: KisCredentials; environment: KisEnvironment } | null {
+  const bearer = headers.authorization ?? '';
+  const token = bearer.startsWith('Bearer ') ? bearer.slice('Bearer '.length) : '';
+  const appKey = headers.appkey;
+  const appSecret = headers.appsecret;
+  if (!token || !appKey || !appSecret) return null;
+  const url = typeof input === 'string' ? input : String((input as { url?: string })?.url ?? input);
+  return {
+    token,
+    credentials: { appKey, appSecret },
+    environment: url.includes('openapivts') ? 'paper' : 'live',
+  };
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -76,16 +144,54 @@ export function createFlowFetch(deps: FlowFetchDeps = {}): FetchLike {
     if (wait > 0) await sleep(wait);
   };
 
+  /** 만료 응답을 받은 요청의 init을 새 토큰 헤더로 바꿔 돌려준다 — 복구 불가면 null. */
+  const refreshExpiredToken = async (
+    input: unknown,
+    init: RequestInit | undefined,
+  ): Promise<RequestInit | null> => {
+    const refresher = deps.refreshToken ?? tokenRefresher;
+    if (!refresher) return null;
+    const headers = toHeaderRecord(init?.headers);
+    const ctx = readTokenContext(input, headers);
+    if (!ctx) return null;
+    let fresh: string | null = null;
+    try {
+      fresh = await refresher({
+        environment: ctx.environment,
+        credentials: ctx.credentials,
+        expiredToken: ctx.token,
+      });
+    } catch {
+      // 재발급 실패(네트워크·1분 1회 제한 등) — 원래 만료 오류를 호출부에 그대로 보낸다.
+      return null;
+    }
+    if (!fresh || fresh === ctx.token) return null;
+    return { ...init, headers: { ...headers, authorization: `Bearer ${fresh}` } };
+  };
+
   return async (input, init) => {
+    // 토큰 재발급 재시도는 유량 재시도와 별개로 딱 1회 — 무한 재발급 루프를 막는다.
+    let currentInit = init;
+    let tokenRetried = false;
+
     for (let attempt = 0; ; attempt++) {
       await acquireSlot();
-      const res = await base(input, init);
+      const res = await base(input, currentInit);
       let body: unknown;
       try {
         body = await res.json();
       } catch (err) {
         // JSON이 아닌 응답 — 유량 판정 불가. 호출부가 같은 실패를 보도록 json만 재생한다.
         return replay(res, () => Promise.reject(err));
+      }
+      if (isTokenExpired(body) && !tokenRetried) {
+        tokenRetried = true;
+        const refreshed = await refreshExpiredToken(input, currentInit);
+        if (refreshed) {
+          currentInit = refreshed;
+          attempt = -1; // 유량 재시도 예산은 새 토큰 요청에 온전히 남겨 둔다.
+          continue;
+        }
       }
       if (!isRateLimited(body) || attempt >= config.retryLimit) {
         return replay(res, () => Promise.resolve(body));

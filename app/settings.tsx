@@ -10,6 +10,7 @@ import Slider from '@react-native-community/slider';
 import { BackHeader } from '../components/BackHeader';
 import { BottomMenu, type BottomMenuItem } from '../components/BottomMenu';
 import { Panel } from '../components/Panel';
+import { inquireOverseasBalance } from '../kis/balance';
 import { getAccessToken } from '../kis/token';
 import { secureTokenStorage } from '../lib/secureTokenStorage';
 import { formatAccountNo, loadKisSettings, parseAccountNo, saveKisSettings } from '../lib/kisSettings';
@@ -214,19 +215,31 @@ export default function SettingsScreen() {
     }
   };
 
+  /**
+   * 토큰 발급 + 실계좌 조회로 검증한다.
+   * 이전에는 getAccessToken을 그냥 불렀는데, 캐시가 유효하면 서버를 아예 안 부르고 캐시를 돌려주는 함수라
+   * 서버가 이미 폐기한 토큰에도 "연결됐어요"가 떴다(2026-08-11). 그래서 ① forceRefresh로 반드시 새로 받고,
+   * ② 시세가 아니라 잔고조회로 확인한다 — 시세는 토큰이 죽어도 통과하는 경우가 있어 검증이 안 된다.
+   */
   const handleIssueToken = async () => {
     if (!appKey.trim() || !effectiveAppSecret) {
       Alert.alert('알림', 'AppKey·AppSecret을 먼저 입력하고 저장해 주세요.');
       return;
     }
+    const account = parseAccountNo(accountNoInput);
+    if (!account) {
+      Alert.alert('알림', '계좌번호(8-2 형식)를 먼저 입력해 주세요.');
+      return;
+    }
 
     setTokenStatus({ kind: 'checking' });
     try {
-      const token = await getAccessToken(
-        environment,
-        { appKey: appKey.trim(), appSecret: effectiveAppSecret },
-        { storage: secureTokenStorage },
-      );
+      const credentials = { appKey: appKey.trim(), appSecret: effectiveAppSecret };
+      const token = await getAccessToken(environment, credentials, {
+        storage: secureTokenStorage,
+        forceRefresh: true,
+      });
+      await inquireOverseasBalance(environment, credentials, token.accessToken, { account });
       setTokenStatus({ kind: 'success', expiresAt: token.expiresAt });
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
@@ -326,7 +339,7 @@ export default function SettingsScreen() {
                 {tokenStatus.kind === 'success' && (
                   <View className="mt-3 items-center rounded-2xl bg-[#e6f4ea] py-2">
                     <Text className="text-sm font-medium text-[#03b26c]">
-                      연결됐어요 · 만료 {formatHHmm(tokenStatus.expiresAt)}
+                      계좌 조회까지 확인했어요 · 만료 {formatHHmm(tokenStatus.expiresAt)}
                     </Text>
                   </View>
                 )}
