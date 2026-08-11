@@ -18,6 +18,8 @@ export interface TossCommunityDeps {
 
 const SEARCH_URL = 'https://wts-info-api.tossinvest.com/api/v2/search-all/wts-auto-complete';
 const COMMENTS_URL = 'https://wts-cert-api.tossinvest.com/api/v4/comments';
+// 답글만 v2다 — v4에는 답글 경로가 없다(`/api/v4/comments/{id}/replies` → 404). 실호출로 확인.
+const REPLIES_URL = (commentId: string | number) => `https://wts-cert-api.tossinvest.com/api/v2/comments/${commentId}/replies`;
 
 function productCodeCacheKey(ticker: string): string {
   return `toss.productCode.${ticker}`;
@@ -144,4 +146,37 @@ export async function fetchTossComments(
     hasNext: body.result?.hasNext ?? false,
     key: body.result?.key ?? null,
   };
+}
+
+// ── 3. 답글 조회 ────────────────────────────────────────────────────────
+/**
+ * 특정 댓글의 답글 1페이지 조회(페이지당 11건). 응답 모양·커서 규칙은 본문 댓글과 동일하다
+ * (`lastCommentId=<이전 페이지 key>`). 정렬 옵션은 없다 — 항상 오래된 순.
+ */
+export async function fetchTossReplies(
+  commentId: string | number,
+  key?: string | number | null,
+  deps: TossCommunityDeps = {},
+): Promise<TossCommentsPage> {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const query = key !== undefined && key !== null && key !== '' ? `?lastCommentId=${encodeURIComponent(String(key))}` : '';
+
+  const res = await fetchImpl(`${REPLIES_URL(commentId)}${query}`, {
+    method: 'GET',
+    headers: { accept: 'application/json' },
+  });
+  const body = (await res.json()) as TossCommentsResponse;
+  return {
+    results: body.result?.results ?? [],
+    hasNext: body.result?.hasNext ?? false,
+    key: body.result?.key ?? null,
+  };
+}
+
+/**
+ * 답글 본문의 멘션 마크업 `#[닉네임](userProfileId)`을 `@닉네임`으로 펼친다.
+ * 토스는 답글에서 상대를 이 형식으로 참조하는데, 그대로 두면 `#[KingDog](2264171)오랫만에…`처럼 보인다.
+ */
+export function formatTossMessage(message: string): string {
+  return message.replace(/#\[([^\]]*)\]\(\d+\)/g, '@$1 ').replace(/[ \t]+\n/g, '\n');
 }

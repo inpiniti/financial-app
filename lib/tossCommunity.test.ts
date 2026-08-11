@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fetchTossComments, resolveTossProductCode, type TossKeyValueStore } from './tossCommunity';
+import {
+  fetchTossComments,
+  fetchTossReplies,
+  formatTossMessage,
+  resolveTossProductCode,
+  type TossKeyValueStore,
+} from './tossCommunity';
 
 function createMapStorage(): TossKeyValueStore {
   const map = new Map<string, string>();
@@ -108,5 +114,57 @@ describe('fetchTossComments', () => {
     expect(url).toContain('lastCommentId=308548934');
     expect(url).not.toContain('key=');
     expect(url).toContain('commentSortType=POPULAR');
+  });
+});
+
+describe('fetchTossReplies', () => {
+  it('v2 답글 경로로 조회한다(v4에는 답글 경로가 없다 — 404)', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      json: async () => ({
+        result: {
+          results: [
+            {
+              commentId: 308327264,
+              author: { nickname: 'KingDog', badge: null },
+              message: { message: '그렇네요' },
+              statistic: { likeCount: 3, replyCount: 0 },
+              createdAt: '2026-08-10T23:19:34+09:00',
+            },
+          ],
+          hasNext: true,
+          key: 308396682,
+        },
+      }),
+    });
+
+    const page = await fetchTossReplies(308324978, undefined, { fetchImpl });
+
+    const [url] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://wts-cert-api.tossinvest.com/api/v2/comments/308324978/replies');
+    expect(page.results).toHaveLength(1);
+    expect(page.hasNext).toBe(true);
+    expect(page.key).toBe(308396682);
+  });
+
+  it('커서는 본문 댓글과 같은 lastCommentId 규칙을 쓴다', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      json: async () => ({ result: { results: [], hasNext: false, key: null } }),
+    });
+
+    await fetchTossReplies(308431150, 308456978, { fetchImpl });
+
+    const [url] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://wts-cert-api.tossinvest.com/api/v2/comments/308431150/replies?lastCommentId=308456978');
+  });
+});
+
+describe('formatTossMessage', () => {
+  it('멘션 마크업 #[닉네임](id)을 @닉네임으로 펼친다', () => {
+    expect(formatTossMessage('#[KingDog](2264171)오랫만에 왔는데')).toBe('@KingDog 오랫만에 왔는데');
+  });
+
+  it('멘션이 여러 개여도 모두 펼치고, 없는 문장은 그대로 둔다', () => {
+    expect(formatTossMessage('#[A](1)#[B](22)안녕')).toBe('@A @B 안녕');
+    expect(formatTossMessage('그냥 평범한 댓글 [대괄호] 포함')).toBe('그냥 평범한 댓글 [대괄호] 포함');
   });
 });

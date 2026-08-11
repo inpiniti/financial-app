@@ -1,5 +1,5 @@
 // 종목 상세화면 — 2026-08-07 종목상세화면 plan. 어느 리스트(자동 단타·보유·미체결·순위)에서
-// 종목을 탭하든 이 화면 하나로 온다(바텀시트 난립 제거). 탭: 차트(기본)/댓글/호가.
+// 종목을 탭하든 이 화면 하나로 온다(바텀시트 난립 제거). 탭: 차트(기본)/커뮤니티/호가.
 // 실시간 구독은 화면 진입 시 획득, 이탈 시 해제 — useQuoteFeed(acquireFeed/releaseFeed refcount) 참고.
 import { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
@@ -18,11 +18,11 @@ type DetailTab = 'chart' | 'comments' | 'quote';
 
 const TAB_ITEMS: Array<{ key: DetailTab; label: string }> = [
   { key: 'chart', label: '차트' },
-  { key: 'comments', label: '댓글' },
+  { key: 'comments', label: '커뮤니티' },
   { key: 'quote', label: '호가' },
 ];
 
-/** 차트/댓글/호가 밑줄 탭 — 선택된 탭은 진한 글자 + 하단 2px 바(토스식). */
+/** 차트/커뮤니티/호가 밑줄 탭 — 선택된 탭은 진한 글자 + 하단 2px 바(토스식). */
 function DetailTabs({ value, onChange }: { value: DetailTab; onChange: (next: DetailTab) => void }) {
   return (
     <View className="mb-2 flex-row bg-white px-2">
