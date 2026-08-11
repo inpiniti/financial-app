@@ -606,7 +606,7 @@ export class AutoPilot {
     }
     this.reselect();
     this.reselectTimer = this.deps.scheduler.setInterval(() => this.reselect(), this.reselectIntervalMs);
-    this.event(`자동 단타를 시작했어요 · 종목당 $${this.config.startAmountUsd.toFixed(2)} · 그리드 최대 ${this.maxGrids}개`);
+    this.event(`자동 트레이딩을 시작했어요 · 종목당 $${this.config.startAmountUsd.toFixed(2)} · 그리드 최대 ${this.maxGrids}개`);
     void this.persist();
     this.emit();
   }
@@ -667,7 +667,7 @@ export class AutoPilot {
     this.lastFault = null;
     this.faulted = false;
     this.running = false;
-    this.event('자동 단타를 정지했어요');
+    this.event('자동 트레이딩을 정지했어요');
     void this.persist();
     this.emit();
   }
@@ -680,7 +680,7 @@ export class AutoPilot {
     this.paused = false;
     this.cashCooldownUntil = 0;
     this.reselect();
-    this.event('자동 단타를 재개했어요');
+    this.event('자동 트레이딩을 재개했어요');
     void this.persist();
     this.emit();
   }
@@ -1124,7 +1124,7 @@ export class AutoPilot {
    *   **호출자(사용자)가 종목을 하나씩 지정**하게 한다.
    */
   async adoptPosition(ticker: string): Promise<string | null> {
-    if (!this.running) return '자동 단타를 먼저 시작해 주세요';
+    if (!this.running) return '자동 트레이딩을 먼저 시작해 주세요';
     if (this.faulted) return '멈춤 상태예요 — 먼저 Stop으로 해제해 주세요';
     if (this.paused) return '일시정지 중이에요 — 재개한 뒤 다시 시도해 주세요';
     if (!this.gridEnabled()) return '그리드 관리가 꺼져 있어 등록할 수 없어요';

@@ -13,6 +13,8 @@ import {
   loadAppSettings,
   ladderCountOf,
   ladderIntervalToRatio,
+  saveAppSettings,
+  type AppSettings,
 } from '../../../lib/appSettings';
 import { loadKisSettings } from '../../../lib/kisSettings';
 import { secureTokenStorage } from '../../../lib/secureTokenStorage';
@@ -36,7 +38,7 @@ export interface ManagerBootstrap {
 
 export type ManagerBootstrapState =
   | { kind: 'loading' }
-  /** KIS 키가 설정 탭에 아직 없음 — "설정 탭에서 키를 먼저 등록해 주세요" 안내 대상. */
+  /** KIS 키가 아직 없음 — "계좌 화면에서 키를 먼저 등록해 주세요" 안내 대상. */
   | { kind: 'needsSetup' }
   | { kind: 'error'; message: string }
   | ({ kind: 'ready' } & ManagerBootstrap);
@@ -162,11 +164,51 @@ async function buildManager(): Promise<ManagerBootstrap> {
   // 반대 방향 프로브 — 상세화면 releaseFeed가 자동 단타의 감시·보유 구독을 끊지 않게 한다.
   manager.setFeedUseProbe((trKey, trId) => autopilot.usesTrKey(trKey, trId));
   await autopilot.restore();
+  await syncTradingConfig(autopilot, appSettings);
 
   return {
     manager,
     autopilot,
   };
+}
+
+/**
+ * 트레이딩 운용 설정(진입금액·최소 속도·동시 그리드)을 설정 화면 저장소 → 오토파일럿으로 흘려 넣는다.
+ *
+ * 2026-08-12에 이 값들의 편집 위치가 트레이딩 화면 시트(오토파일럿이 스스로 저장)에서 설정 화면
+ * (lib/appSettings)으로 옮겨졌다. 그래서 방향을 하나로 고정한다 — appSettings가 원본, 오토파일럿이 사본.
+ * 다만 시트 시절에 값을 넣어 둔 기기는 appSettings가 비어 있으므로(startAmountUsd 0), 그 한 번만
+ * 반대로 복사해 설정 화면이 빈 칸으로 뜨지 않게 한다.
+ *
+ * setConfig는 IDLE에서만 통과한다 — 매매 중 저장은 조용히 무시되고 정지 후 다음 포커스에 반영된다.
+ */
+async function syncTradingConfig(autopilot: AutoPilotManager, appSettings: AppSettings): Promise<void> {
+  const current = autopilot.pilot.getView().config;
+  if (appSettings.startAmountUsd > 0) {
+    // 값이 그대로면 건너뛴다 — setConfig는 매번 저장하고 뷰를 다시 쏘는데, 이 함수는 화면 포커스마다 돈다.
+    if (
+      current &&
+      current.startAmountUsd === appSettings.startAmountUsd &&
+      current.minTickRate === appSettings.minTickRate &&
+      current.maxConcurrentGrids === appSettings.maxConcurrentGrids
+    ) {
+      return;
+    }
+    autopilot.pilot.setConfig({
+      startAmountUsd: appSettings.startAmountUsd,
+      minTickRate: appSettings.minTickRate,
+      maxConcurrentGrids: appSettings.maxConcurrentGrids,
+    });
+    return;
+  }
+  if (current) {
+    await saveAppSettings({
+      ...appSettings,
+      startAmountUsd: current.startAmountUsd,
+      minTickRate: current.minTickRate,
+      maxConcurrentGrids: current.maxConcurrentGrids ?? appSettings.maxConcurrentGrids,
+    });
+  }
 }
 
 class NeedsSetupError extends Error {}
@@ -207,11 +249,12 @@ async function refreshLiveSettings(boot: ManagerBootstrap): Promise<void> {
     triggerCount: ladderCountOf(appSettings.entryLadderCount),
   });
   boot.autopilot.setBuyCancelAfterMs(buyCancelAfterToMs(appSettings.buyCancelAfterSec));
+  await syncTradingConfig(boot.autopilot, appSettings);
 }
 
 /**
- * 단타 탭 진입 시 매니저를 준비한다. KIS 키 미설정/네트워크 오류를 상태로 노출하고,
- * 설정 탭에서 키를 저장한 뒤 다시 단타 탭으로 돌아오면(포커스) 자동으로 재시도한다.
+ * 트레이딩 섹션 진입 시 매니저를 준비한다. KIS 키 미설정/네트워크 오류를 상태로 노출하고,
+ * 계좌 화면에서 키를 저장한 뒤 다시 트레이딩으로 돌아오면(포커스) 자동으로 재시도한다.
  * 이미 만들어진 매니저가 있으면 재생성 대신 **바꿀 수 있는 설정만** 갱신한다(refreshLiveSettings).
  */
 export function useScalperManager(): ManagerBootstrapState {

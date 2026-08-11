@@ -7,11 +7,13 @@ import type { WatchMarket } from './watchlist';
 
 export const TRADE_KEY_PREFIX = 'trades.';
 
-/** 저장 레코드 = core TradeRecord + 어느 인스턴스가 낸 거래인지 + 채용 거래소. */
+/** 저장 레코드 = core TradeRecord + 어느 인스턴스가 낸 거래인지 + 채용 거래소·종목명. */
 export interface StoredTrade extends TradeRecord {
   instanceId: string;
   /** 채용 거래소(WatchEntry.market) — 종목상세 진입 시 시장 판별용. 옛 기록에는 없어 optional. */
   market?: WatchMarket;
+  /** 종목명(WatchEntry.name) — 기록 화면이 티커만 보여주지 않게. 옛 기록에는 없어 optional. */
+  name?: string;
 }
 
 /** epoch ms → 'YYYY-MM-DD' (UTC). */
@@ -43,10 +45,11 @@ export async function appendTradeRecord(
   instanceId: string,
   record: TradeRecord,
   market?: WatchMarket,
+  name?: string,
 ): Promise<void> {
   const key = tradeKeyFor(record.exitTs);
   const list = await readKey(storage, key);
-  list.push({ ...record, instanceId, ...(market ? { market } : {}) });
+  list.push({ ...record, instanceId, ...(market ? { market } : {}), ...(name ? { name } : {}) });
   await storage.setItem(key, JSON.stringify(list));
 }
 

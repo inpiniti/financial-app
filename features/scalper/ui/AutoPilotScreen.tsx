@@ -1,5 +1,7 @@
-// 자동 단타(오토파일럿) 화면.
-// 상태 패널(설정·오늘 성과·Run/Stop·PAUSED 복구) + 단타 리스트 패널 + 기록 패널.
+// 자동 트레이딩(오토파일럿) 화면.
+// 상태 패널(오늘 성과·Run/Stop·PAUSED 복구) + 트레이딩 리스트 패널 + 오늘 거래 기록 + 기록 패널.
+// 운용 설정(진입금액·동시 그리드·최소 속도)은 상단바 > 설정 > "트레이딩 설정"으로 옮겼다(2026-08-12) —
+// 매매파라미터와 흩어져 있던 설정을 한 화면에 모았다. 값 반영은 managerProvider가 트레이딩 포커스마다 한다.
 // app-ui-style: 풀폭 Panel + 촘촘한 ListRow, 이모지 금지(Ionicons), 손익 색은 pnlColor()만.
 import { useCallback, useEffect, useState } from 'react';
 import { Alert, FlatList, Pressable, Text, View } from 'react-native';
@@ -19,7 +21,6 @@ import type { FeedStatus } from '../types';
 import { isDaytimeSessionOpen } from '../daySession';
 import { WATCH_SOURCE_LABEL } from '../watchlist';
 import { AdoptSheet } from './AdoptSheet';
-import { AmountSheet } from './AmountSheet';
 import { formatHHMM, formatPrice } from './format';
 import { GridGauge } from './GridGauge';
 
@@ -120,7 +121,7 @@ function SlotBadge({ row, activeTickers }: { row: AutoPilotSlotRow; activeTicker
   return null;
 }
 
-/** 리스트 행 — "단타 리스트" 패널의 연속이므로(FlatList 아이템) 직접 흰 배경을 입힌다.
+/** 리스트 행 — "트레이딩 리스트" 패널의 연속이므로(FlatList 아이템) 직접 흰 배경을 입힌다.
  * 탭하면 부모가 액션시트(댓글/차트/호가)를 띄운다 — onPress는 표시용 UI 상태만 바꾼다(매매 로직 무관). */
 function SlotRow({
   item,
@@ -165,7 +166,6 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
   const [view, setView] = useState<AutoPilotView>(() => autopilot.pilot.getView());
   const [rows, setRows] = useState<readonly AutoPilotSlotRow[]>(() => autopilot.getRows());
   const [events, setEvents] = useState<readonly AutoPilotEvent[]>(() => autopilot.recentEvents);
-  const [sheetVisible, setSheetVisible] = useState(false);
   // 계좌 잔고 보유분을 그리드에 다시 태우는 시트(FAULT 이후 복구 경로).
   const [adoptVisible, setAdoptVisible] = useState(false);
   // 오늘 거래 기록(푸터 패널) — 사이클이 완료될 때마다(view.cycles 증가) 다시 읽는다.
@@ -194,26 +194,9 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
     return () => clearInterval(timer);
   }, [autopilot, engaged]);
 
-  const handleConfigPress = useCallback(() => {
-    if (view.state !== 'IDLE') {
-      Alert.alert('알림', '설정은 정지 상태에서 바꿀 수 있어요. 먼저 Stop을 눌러 주세요.');
-      return;
-    }
-    setSheetVisible(true);
-  }, [view.state]);
-
-  const handleConfigSubmit = useCallback(
-    (config: Parameters<typeof autopilot.pilot.setConfig>[0]) => {
-      const error = autopilot.pilot.setConfig(config);
-      if (!error) setSheetVisible(false);
-      return error;
-    },
-    [autopilot],
-  );
-
   const handleRun = useCallback(() => {
     if (!view.config) {
-      setSheetVisible(true);
+      Alert.alert('알림', '진입금액을 먼저 정해 주세요. 상단바 설정 > 트레이딩 설정에서 바꿀 수 있어요.');
       return;
     }
     try {
@@ -252,7 +235,7 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
         ListHeaderComponent={
           <>
             <Panel
-              title="자동 단타"
+              title="자동 트레이딩"
               headerRight={
                 <View className="flex-row items-center" style={{ gap: 6 }}>
                   <FeedBadge status={feedStatus} />
@@ -262,24 +245,7 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
               }
             >
               <ListRow
-                title="설정"
-                subtitle={
-                  config
-                    ? `종목당 진입 · 그리드 최대 ${view.maxGrids}개 · 최소 속도 ${config.minTickRate}틱/초`
-                    : '탭해서 설정해 주세요'
-                }
-                trailing={
-                  <View className="flex-row items-center" style={{ gap: 6 }}>
-                    <Text className="text-base font-bold text-[#191f28]">
-                      {config ? formatUsd(config.startAmountUsd) : '설정 전'}
-                    </Text>
-                    <Ionicons name="chevron-forward" size={16} color="#8b95a1" />
-                  </View>
-                }
-                onPress={handleConfigPress}
-              />
-              <ListRow
-                title="오늘 성과"
+                title="오늘 성과 · 오늘예상"
                 subtitle={`사이클 ${view.cycles}회 · 그리드 ${view.activeTickers.length}/${view.maxGrids}개 관리 중`}
                 trailing={
                   // 누적 손익은 USD로 쌓이지만 체감은 원화라 둘 다 보여준다 —
@@ -300,6 +266,14 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                   )
                 }
               />
+              {/* 실계좌로 나가는 금액이라 지금 걸린 값은 화면에 늘 보여야 한다 — 편집은 설정 화면에서만 한다. */}
+              <View className="px-5 pb-2">
+                <Text className="text-xs leading-5 text-[#8b95a1]">
+                  {config
+                    ? `종목당 ${formatUsd(config.startAmountUsd)} · 그리드 최대 ${view.maxGrids}개 · 최소 속도 ${config.minTickRate}틱/초`
+                    : '진입금액이 아직 없어요 — 설정 > 트레이딩 설정에서 정해 주세요'}
+                </Text>
+              </View>
               {view.lastFault && (
                 <View className="px-5 pb-2">
                   <Text className="text-xs leading-5 text-[#f04452]">{view.lastFault.text}</Text>
@@ -376,7 +350,7 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                     style={{ minHeight: 48, backgroundColor: view.state === 'FAULT' ? '#f04452' : '#3182f6' }}
                   >
                     <Text className="text-base font-semibold text-white">
-                      {view.state === 'FAULT' ? '확인하고 해제하기' : '자동 단타 시작하기'}
+                      {view.state === 'FAULT' ? '확인하고 해제하기' : '자동 트레이딩 시작하기'}
                     </Text>
                   </Pressable>
                 )}
@@ -396,10 +370,10 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                 ))}
               </Panel>
             )}
-            {/* "단타 리스트" 패널 헤더 — 행들은 FlatList 아이템으로 이어진다. */}
+            {/* "트레이딩 리스트" 패널 헤더 — 행들은 FlatList 아이템으로 이어진다. */}
             <View className="bg-white">
               <View className="flex-row items-center justify-between px-5 pb-2 pt-4">
-                <Text className="text-[15px] font-bold text-[#191f28]">단타 리스트</Text>
+                <Text className="text-[15px] font-bold text-[#191f28]">트레이딩 리스트</Text>
                 <Text className="text-xs text-[#8b95a1]">토스 거래량 실시간 순위 상위 {rows.length}종목</Text>
               </View>
             </View>
@@ -409,8 +383,8 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
           <View className="bg-white pb-4">
             <EmptyState
               icon="list-outline"
-              title="아직 단타 리스트가 비어 있어요"
-              description="자동 단타를 시작하면 순위에서 종목을 골라 채워요"
+              title="아직 트레이딩 리스트가 비어 있어요"
+              description="자동 트레이딩을 시작하면 순위에서 종목을 골라 채워요"
             />
           </View>
         }
@@ -418,6 +392,8 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
           <>
             {/* 리스트 패널 마감 여백 + 패널 간 갭. */}
             <View className="bg-white" style={{ height: 8, marginBottom: 8 }} />
+            {/* 완료된 사이클(오늘 거래 기록)이 먼저 — 운영 이벤트 로그(기록)보다 자주 본다. */}
+            <TradeHistoryPanel trades={trades} usdKrw={usdKrw} />
             <Panel title="기록" headerRight={events.length > 0 ? `최근 ${events.length}건` : undefined}>
               {events.length === 0 ? (
                 <View className="px-5 pb-4">
@@ -433,17 +409,10 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
               )}
               <View style={{ height: 8 }} />
             </Panel>
-            <TradeHistoryPanel trades={trades} />
           </>
         }
       />
       <AdoptSheet visible={adoptVisible} autopilot={autopilot} onClose={() => setAdoptVisible(false)} />
-      <AmountSheet
-        visible={sheetVisible}
-        initial={view.config}
-        onClose={() => setSheetVisible(false)}
-        onSubmit={handleConfigSubmit}
-      />
     </View>
   );
 }

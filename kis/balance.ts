@@ -41,11 +41,16 @@ export interface OverseasBalancePosition {
   [key: string]: unknown;
 }
 
+// output3 — 원화 환산 합계(문서: "해외유가증권 …의 원화 환산 금액").
 export interface OverseasBalanceSummary {
   pchs_amt_smtl: string;
   evlu_amt_smtl: string;
   evlu_pfls_amt_smtl: string;
   tot_asst_amt: string;
+  /** 평가수익율1 — 이미 % 단위 문자열. */
+  evlu_erng_rt1: string;
+  /** 총예수금액(원화). */
+  tot_dncl_amt: string;
   [key: string]: unknown;
 }
 

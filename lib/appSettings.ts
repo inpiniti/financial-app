@@ -41,6 +41,17 @@ export interface AppSettings {
    * 클수록 보수적(깊은 하락에서만 진입).
    */
   entryLadderCount: number;
+  /**
+   * 종목당 진입금액(USD) — 0이면 **미설정**(자동 트레이딩 시작이 거부된다).
+   * 2026-08-12까지는 트레이딩 화면 시트가 오토파일럿 저장소에 직접 넣던 값인데, 설정을 한 화면으로 모으면서
+   * 여기로 옮겼다. managerProvider가 트레이딩 화면 포커스마다 pilot.setConfig로 흘려 넣는다(IDLE에서만 적용).
+   * ⚠ 기본값을 0(미설정)으로 두는 건 의도적이다 — 실계좌 발주 금액에 임의의 기본값을 심을 수 없다.
+   */
+  startAmountUsd: number;
+  /** 최소 속도(틱/초) — 이보다 조용한 종목은 감시하지 않는다. 기본 1(autopilot.DEFAULT_MIN_TICK_RATE와 같은 값). */
+  minTickRate: number;
+  /** 동시에 관리할 그리드(종목) 개수. 기본 3(autopilot.DEFAULT_MAX_GRIDS와 같은 값), 상한은 autopilot이 잘라낸다. */
+  maxConcurrentGrids: number;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -51,6 +62,9 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   gridBuyMultiplier: 1,
   entryLadderIntervalPct: 1,
   entryLadderCount: 3,
+  startAmountUsd: 0,
+  minTickRate: 1,
+  maxConcurrentGrids: 3,
 };
 
 /** 사다리 간격 %를 소수로(1% → 0.01). 비정상·0 이하는 기본 1%로 방어(감지가 꺼지는 개념이 아니다). */
@@ -102,6 +116,9 @@ export async function loadAppSettings(): Promise<AppSettings> {
       gridBuyMultiplier: parsed.gridBuyMultiplier ?? DEFAULT_APP_SETTINGS.gridBuyMultiplier,
       entryLadderIntervalPct: parsed.entryLadderIntervalPct ?? DEFAULT_APP_SETTINGS.entryLadderIntervalPct,
       entryLadderCount: parsed.entryLadderCount ?? DEFAULT_APP_SETTINGS.entryLadderCount,
+      startAmountUsd: parsed.startAmountUsd ?? DEFAULT_APP_SETTINGS.startAmountUsd,
+      minTickRate: parsed.minTickRate ?? DEFAULT_APP_SETTINGS.minTickRate,
+      maxConcurrentGrids: parsed.maxConcurrentGrids ?? DEFAULT_APP_SETTINGS.maxConcurrentGrids,
     };
   } catch {
     // 저장값 파손 — 기본값으로 자연 복구.

@@ -1,5 +1,5 @@
 // 오늘 거래 기록 — 앱이 직접 기록한 오늘의 매수→매도 사이클(features/scalper/tradeStore).
-// KIS 세션 없이 AsyncStorage만 읽는다. 홈 트레이딩 섹션(AutoPilotScreen)의 푸터 패널로 들어가므로
+// KIS 세션 없이 AsyncStorage만 읽는다. 홈 트레이딩 섹션(AutoPilotScreen)의 헤더 패널로 들어가므로
 // 자체 스크롤(FlatList) 없이 map 렌더만 한다 — 바깥 FlatList와 스크롤 중첩 금지.
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
@@ -8,7 +8,7 @@ import { Text, View } from 'react-native';
 import { ListRow } from '../../components/ListRow';
 import { Panel } from '../../components/Panel';
 import { TickerAvatar } from '../../components/TickerAvatar';
-import { formatSignedUsd, formatUsd, pnlColor } from '../../lib/format';
+import { formatKrw, formatSignedKrw, formatSignedUsd, formatUsd, pnlColor } from '../../lib/format';
 import { readTodayTrades, type StoredTrade } from '../scalper/tradeStore';
 import { EmptyState, SkeletonList } from './components';
 
@@ -16,7 +16,7 @@ const clock = { now: () => Date.now() };
 
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
 
-/** epoch ms → 'HH:mm' (한국시간) — 청산 체결 시각 표시용. */
+/** epoch ms → 'HH:mm' (한국시간) — 진입·청산 체결 시각 표시용. */
 function formatKstTime(tsMs: number): string {
   const kst = new Date(tsMs + KST_OFFSET_MS);
   const pad2 = (n: number) => String(n).padStart(2, '0');
@@ -26,27 +26,45 @@ function formatKstTime(tsMs: number): string {
 /**
  * 사이클 1건 행 — 색 규칙(이익=빨강, 손실=파랑)은 lib/format.pnlColor 하나로 통일한다
  * (개별 파일에서 직접 삼항연산 금지). 탭하면 종목상세로 들어간다.
+ *
+ * 기록은 전부 USD로 쌓이지만 체감은 원화라 환율(usdKrw)이 있으면 원화로 보여준다 —
+ * 환율을 못 구했을 때만 예전처럼 USD로 폴백한다(잔고 조회 실패 시 usdKrw가 null).
  */
-function CycleRow({ item }: { item: StoredTrade }) {
+function CycleRow({ item, usdKrw }: { item: StoredTrade; usdKrw: number | null }) {
+  const toKrw = (usd: number) => formatKrw(usd * (usdKrw as number));
+  const entryText = usdKrw !== null ? toKrw(item.entryPrice) : formatUsd(item.entryPrice);
+  const exitText = usdKrw !== null ? toKrw(item.exitPrice) : formatUsd(item.exitPrice);
   // 수수료를 켠 뒤 기록에만 fees가 있다(옛 기록은 undefined) — 있을 때만 덧붙인다.
-  const feeNote = item.fees && item.fees > 0 ? ` · 수수료 ${formatUsd(item.fees)}` : '';
+  const feeNote =
+    item.fees && item.fees > 0 ? ` · 수수료 ${usdKrw !== null ? toKrw(item.fees) : formatUsd(item.fees)}` : '';
+
   const handlePress = () => {
-    // market이 없는 옛 기록은 NAS 폴백 — 자동단타 미채용 티커 기본값(autopilotManager.marketOf)과 동일 관례.
+    // market이 없는 옛 기록은 NAS 폴백 — 자동 트레이딩 미채용 티커 기본값(autopilotManager.marketOf)과 동일 관례.
     router.push({ pathname: '/stock/[ticker]', params: { ticker: item.ticker, market: item.market ?? 'NAS' } });
   };
+
   return (
     <ListRow
       onPress={handlePress}
       leading={<TickerAvatar ticker={item.ticker} />}
-      title={item.ticker}
-      subtitle={`진입 ${formatUsd(item.entryPrice)} → 청산 ${formatUsd(item.exitPrice)}${feeNote}`}
-      trailing={
-        <>
-          <Text style={{ color: pnlColor(item.pnl) }} className="text-sm font-bold">
-            {formatSignedUsd(item.pnl)}
+      // 옛 기록에는 종목명이 없다 — 그때만 예전처럼 티커를 제목으로 쓴다.
+      title={item.name || item.ticker}
+      subtitle={
+        <View className="mt-0.5">
+          <Text className="text-sm text-[#8b95a1]" numberOfLines={1}>
+            {item.name ? `${item.ticker} · ` : ''}
+            {item.qty}주 · {formatKstTime(item.entryTs)} ~ {formatKstTime(item.exitTs)}
           </Text>
-          <Text className="mt-0.5 text-xs font-semibold text-[#8b95a1]">{formatKstTime(item.exitTs)}</Text>
-        </>
+          <Text className="mt-0.5 text-sm text-[#8b95a1]" numberOfLines={1}>
+            진입 {entryText} → 청산 {exitText}
+            {feeNote}
+          </Text>
+        </View>
+      }
+      trailing={
+        <Text style={{ color: pnlColor(item.pnl) }} className="text-sm font-bold">
+          {usdKrw !== null ? formatSignedKrw(item.pnl * usdKrw) : formatSignedUsd(item.pnl)}
+        </Text>
       }
     />
   );
@@ -72,8 +90,15 @@ export function useTodayTrades(reloadKey: number = 0): StoredTrade[] | null {
   return trades;
 }
 
-/** 오늘 거래 기록 패널 — 스크롤 없는 순수 패널(부모 FlatList의 푸터로 들어간다). */
-export function TradeHistoryPanel({ trades }: { trades: StoredTrade[] | null }) {
+/** 오늘 거래 기록 패널 — 스크롤 없는 순수 패널(부모 FlatList의 헤더로 들어간다). */
+export function TradeHistoryPanel({
+  trades,
+  usdKrw = null,
+}: {
+  trades: StoredTrade[] | null;
+  /** USD→KRW 환율. null이면 USD로 보여준다(환율 조회 실패 폴백). */
+  usdKrw?: number | null;
+}) {
   return (
     <Panel title="오늘 거래 기록" headerRight={trades && trades.length > 0 ? `${trades.length}건` : undefined}>
       {trades === null ? (
@@ -85,7 +110,9 @@ export function TradeHistoryPanel({ trades }: { trades: StoredTrade[] | null }) 
           description="매수→매도가 끝나면 여기에 나타나요"
         />
       ) : (
-        trades.map((item, idx) => <CycleRow key={`${item.instanceId}-${item.exitTs}-${idx}`} item={item} />)
+        trades.map((item, idx) => (
+          <CycleRow key={`${item.instanceId}-${item.exitTs}-${idx}`} item={item} usdKrw={usdKrw} />
+        ))
       )}
       <View style={{ height: 8 }} />
     </Panel>

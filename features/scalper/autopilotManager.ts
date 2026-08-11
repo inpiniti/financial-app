@@ -143,6 +143,11 @@ export class AutoPilotManager {
    * 기록이 없는 티커(입양 보유분 등)는 NAS로 간주한다(옛 NAS 전용 동작 보존).
    */
   private readonly tickerMarkets = new Map<string, WatchMarket>();
+  /**
+   * 티커 → 종목명(마지막으로 리스트에서 본 값). tickerMarkets와 같은 이유로 탈락 후에도 지우지 않는다 —
+   * 거래 기록은 청산 시점에 남는데, 그때 이미 리스트에서 빠져 있는 종목이 흔하다.
+   */
+  private readonly tickerNames = new Map<string, string>();
   private readonly events: AutoPilotEvent[] = [];
   private readonly viewListeners = new Set<ViewListener>();
   private readonly eventListeners = new Set<EventListener>();
@@ -170,7 +175,10 @@ export class AutoPilotManager {
       maxPriceUsd: () => this.pilot.getView().config?.startAmountUsd ?? null,
       onChange: (entries, diff) => {
         // 구독·주문 거래소 판별용 — dropSlot/addSlot보다 먼저 최신화한다(추가 종목의 trKey가 이 맵을 읽는다).
-        for (const entry of entries) this.tickerMarkets.set(entry.ticker, entry.market);
+        for (const entry of entries) {
+          this.tickerMarkets.set(entry.ticker, entry.market);
+          if (entry.name) this.tickerNames.set(entry.ticker, entry.name);
+        }
         for (const ticker of diff.removed) this.dropSlot(ticker);
         for (const entry of diff.added) this.addSlot(entry.ticker);
         // 리스트가 바뀌면 즉시 감시 재선정 — 초기 채움(added)도 빈 감시 슬롯을 채워야 하고,
@@ -204,9 +212,14 @@ export class AutoPilotManager {
       reselectIntervalMs: deps.reselectIntervalMs,
       onTrade: (record) => {
         // 채용 거래소를 함께 남긴다 — 거래기록 화면에서 행 탭 → 종목상세 진입 시 시장 판별용.
-        void appendTradeRecord(deps.storage, AUTOPILOT_TRADE_ID, record, this.marketOf(record.ticker)).catch((err) =>
-          this.deps.onError?.(err),
-        );
+        // 종목명도 같이 남긴다 — 기록은 나중에 읽히는데 그때는 리스트에 없어 이름을 되찾을 길이 없다.
+        void appendTradeRecord(
+          deps.storage,
+          AUTOPILOT_TRADE_ID,
+          record,
+          this.marketOf(record.ticker),
+          this.tickerNames.get(record.ticker),
+        ).catch((err) => this.deps.onError?.(err));
       },
       onEvent: (e) => this.pushEvent(e),
       onFault: (fault: InstanceFault) => this.pushEvent({ at: fault.at, text: fault.text }),

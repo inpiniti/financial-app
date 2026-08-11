@@ -1,33 +1,17 @@
-// 설정 화면 — 좌상단 뒤로가기로 홈 복귀, 하단 고정 메뉴(계좌연결|매매파라미터).
-// 매매파라미터는 진입 감지(사다리) / 매도 그리드 / 주문 3개 패널로 구분한다(2026-08-08 정리 —
-// 청크·버퍼·모멘텀 문턱·BUY 게이트·수수료율 설정은 제거, 코드 기본값 고정. 자동단타 운용 설정
-// (진입금액·최소 속도 등)은 IDLE 가드 때문에 자동단타 화면의 Run/Stop 옆에 그대로 둔다).
-// 상태·저장 로직은 이 화면(부모) 레벨에 있고, 섹션 전환은 렌더링만 바꾼다 —
-// "저장하기" 버튼은 매매파라미터 섹션에 있지만 handleSave가 계좌 정보까지 함께 저장한다.
+// 설정 화면 — 상단바 "설정" 버튼으로 진입. 매매 파라미터 전용이다(계좌 연결·잔고는 app/account.tsx).
+// 2026-08-12: 옛 설정 화면의 하단 메뉴(계좌연결|매매파라미터)를 없애고 두 화면으로 쪼갰다. 같은 정리에서
+// 트레이딩 화면 시트에 있던 운용 설정(진입금액·동시 그리드·최소 속도)을 "트레이딩 설정" 패널로 흡수했다 —
+// 흩어져 있던 매매 관련 값을 한 화면에서 다 보게 하려는 것이다.
+//
+// 저장은 전부 AsyncStorage(lib/appSettings)로만 간다. 실제 매매 엔진 반영은 managerProvider가
+// 트레이딩 화면 포커스마다 하며, 진입금액·속도·그리드 수는 **정지(IDLE) 상태에서만** 적용된다.
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { BackHeader } from '../components/BackHeader';
-import { BottomMenu, type BottomMenuItem } from '../components/BottomMenu';
 import { Panel } from '../components/Panel';
-import { inquireOverseasBalance } from '../kis/balance';
-import { getAccessToken } from '../kis/token';
-import { secureTokenStorage } from '../lib/secureTokenStorage';
-import { formatAccountNo, loadKisSettings, parseAccountNo, saveKisSettings } from '../lib/kisSettings';
 import { DEFAULT_APP_SETTINGS, loadAppSettings, saveAppSettings, snapToStep } from '../lib/appSettings';
-
-type TokenStatus =
-  | { kind: 'idle' }
-  | { kind: 'checking' }
-  | { kind: 'success'; expiresAt: number }
-  | { kind: 'failure'; reason: string };
-
-type SettingsSection = 'account' | 'params';
-
-const MENU_ITEMS: BottomMenuItem<SettingsSection>[] = [
-  { key: 'account', label: '계좌연결', icon: 'card-outline', activeIcon: 'card' },
-  { key: 'params', label: '매매파라미터', icon: 'options-outline', activeIcon: 'options' },
-];
+import { MAX_GRIDS_LIMIT } from '../features/scalper/autopilot';
 
 /** 그리드 폭 상한(%) — 오타 방어. 평단 ±50%를 넘는 브래킷은 사실상 관리가 아니다. */
 const GRID_WIDTH_MAX_PCT = 50;
@@ -37,14 +21,8 @@ const GRID_BUY_MULTIPLIER_MAX = 5;
 const LADDER_INTERVAL_MAX_PCT = 10;
 /** 사다리 홀 횟수 상한 — 간격과 곱해 누적 낙폭이 되므로 10이면 충분히 보수적 끝단이다. */
 const LADDER_COUNT_MAX = 10;
-
-function formatHHmm(epochMs: number): string {
-  const d = new Date(epochMs);
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  return `${hh}:${mm}`;
-}
-
+/** 종목당 진입금액 상한(USD) — 오타 하나(100 → 10000)가 그대로 발주 금액이 된다. */
+const START_AMOUNT_MAX_USD = 100_000;
 
 /**
  * 값 조절 슬라이더 한 벌 — 라벨 + 현재 값 + 슬라이더 + 양끝 범위 + 안내 문구.
@@ -92,69 +70,70 @@ function SettingSlider(props: {
   );
 }
 
-/**
- * 설정 화면 — KIS 키/계좌 저장(secure-store), 토큰 발급, LIVE/PAPER 전환, 매매 파라미터(AsyncStorage) (PRD §4-E).
- */
 export default function SettingsScreen() {
-  const [section, setSection] = useState<SettingsSection>('account');
-
-  const [appKey, setAppKey] = useState('');
-  const [appSecret, setAppSecret] = useState('');
-  // 저장된 AppSecret 실제 값은 화면에 노출하지 않는다 — 입력칸은 비워 두고 배지로만 "저장돼 있어요"를 알린다.
-  // 사용자가 빈 칸으로 둔 채 저장하면(재입력 안 함) 기존 저장값을 그대로 유지한다.
-  const [hasSavedAppSecret, setHasSavedAppSecret] = useState(false);
-  const [accountNoInput, setAccountNoInput] = useState('');
-
-  // 실전(LIVE) 전용 — 모의 전환 옵션은 2026-07-30 제거 (loadAppSettings가 'live'로 강제).
-  const environment = 'live' as const;
   // 주문 수량 입력란은 수동 카드 제거(2026-08-08)와 함께 내렸다 — 저장 스키마 호환을 위해 값만 유지한다.
   const savedOrderQtyRef = useRef(DEFAULT_APP_SETTINGS.orderQty);
   // 청크·버퍼·모멘텀 문턱·BUY 게이트·수수료율 설정은 2026-08-08 제거 — 코드 기본값 고정 동작.
   const [buyCancelAfterSec, setBuyCancelAfterSec] = useState(DEFAULT_APP_SETTINGS.buyCancelAfterSec);
-  // 매도 관리 그리드 폭·매수 배율 — 주문 수량과 같은 텍스트 입력 + 저장 시 검증 패턴.
+  // 매도 관리 그리드 폭·매수 배율 — 텍스트 입력 + 저장 시 검증 패턴.
   const [gridWidthPct, setGridWidthPct] = useState(String(DEFAULT_APP_SETTINGS.gridWidthPct));
   const [gridBuyMultiplier, setGridBuyMultiplier] = useState(String(DEFAULT_APP_SETTINGS.gridBuyMultiplier));
-  // 사다리 진입 감지(2026-08-07 plan) — 간격 %·홀 횟수. 그리드 폭과 같은 텍스트 입력 + 저장 시 검증 패턴.
+  // 사다리 진입 감지(2026-08-07 plan) — 간격 %·홀 횟수.
   const [entryLadderIntervalPct, setEntryLadderIntervalPct] = useState(
     String(DEFAULT_APP_SETTINGS.entryLadderIntervalPct),
   );
   const [entryLadderCount, setEntryLadderCount] = useState(String(DEFAULT_APP_SETTINGS.entryLadderCount));
+  // 트레이딩 운용 설정 — 옛 자동 단타 설정 시트에서 옮겨 왔다(2026-08-12). 진입금액 0 = 미설정(빈 칸).
+  const [startAmountUsd, setStartAmountUsd] = useState('');
+  const [minTickRate, setMinTickRate] = useState(String(DEFAULT_APP_SETTINGS.minTickRate));
+  const [maxConcurrentGrids, setMaxConcurrentGrids] = useState(String(DEFAULT_APP_SETTINGS.maxConcurrentGrids));
 
-  const [tokenStatus, setTokenStatus] = useState<TokenStatus>({ kind: 'idle' });
   const [saving, setSaving] = useState(false);
-  // 저장된 AppSecret 실제 값 — 화면 상태(appSecret)에는 절대 넣지 않고, "재입력 안 하고 저장" 시에만 참조한다.
-  const savedAppSecretRef = useRef('');
 
   useEffect(() => {
     (async () => {
-      const [kisSettings, appSettings] = await Promise.all([loadKisSettings(), loadAppSettings()]);
-      if (kisSettings) {
-        setAppKey(kisSettings.appKey);
-        // AppSecret은 입력칸에 값을 채우지 않는다(노출 금지) — 배지로 저장 여부만 알린다.
-        savedAppSecretRef.current = kisSettings.appSecret;
-        setHasSavedAppSecret(true);
-        setAccountNoInput(formatAccountNo(kisSettings));
-      }
+      const appSettings = await loadAppSettings();
       savedOrderQtyRef.current = appSettings.orderQty;
       setBuyCancelAfterSec(appSettings.buyCancelAfterSec);
       setGridWidthPct(String(appSettings.gridWidthPct));
       setGridBuyMultiplier(String(appSettings.gridBuyMultiplier));
       setEntryLadderIntervalPct(String(appSettings.entryLadderIntervalPct));
       setEntryLadderCount(String(appSettings.entryLadderCount));
+      setStartAmountUsd(appSettings.startAmountUsd > 0 ? String(appSettings.startAmountUsd) : '');
+      setMinTickRate(String(appSettings.minTickRate));
+      setMaxConcurrentGrids(String(appSettings.maxConcurrentGrids));
     })();
   }, []);
 
-  // 새로 입력했으면 그 값을, 비워 뒀고 이전에 저장돼 있었으면 기존 값을 그대로 쓴다(덮어쓰기는 재입력할 때만).
-  const effectiveAppSecret = appSecret.trim() || (hasSavedAppSecret ? savedAppSecretRef.current : '');
-
   const handleSave = async () => {
-    const account = parseAccountNo(accountNoInput);
-    if (!appKey.trim() || !effectiveAppSecret || !account) {
-      Alert.alert('알림', 'AppKey·AppSecret·계좌번호(8-2 형식)를 모두 채워 주세요.');
+    // 상한을 둔다 — 오타 하나(10 → 100)가 그대로 발주가에 들어가면 되돌릴 수 없다.
+    const parsedStartAmountUsd = Number(startAmountUsd);
+    if (
+      !Number.isFinite(parsedStartAmountUsd) ||
+      parsedStartAmountUsd <= 0 ||
+      parsedStartAmountUsd > START_AMOUNT_MAX_USD
+    ) {
+      Alert.alert('알림', `진입금액은 0보다 크고 ${START_AMOUNT_MAX_USD.toLocaleString('en-US')} 이하인 달러 금액으로 입력해 주세요.`);
       return;
     }
 
-    // 상한을 둔다 — 오타 하나(10 → 100)가 그대로 발주가에 들어가면 되돌릴 수 없다.
+    const parsedMinTickRate = Number(minTickRate);
+    if (!Number.isFinite(parsedMinTickRate) || parsedMinTickRate <= 0) {
+      Alert.alert('알림', '최소 속도는 0보다 크게 입력해 주세요. (기본 1틱/초)');
+      return;
+    }
+
+    const parsedMaxGrids = Number(maxConcurrentGrids);
+    if (
+      !Number.isFinite(parsedMaxGrids) ||
+      !Number.isInteger(parsedMaxGrids) ||
+      parsedMaxGrids < 1 ||
+      parsedMaxGrids > MAX_GRIDS_LIMIT
+    ) {
+      Alert.alert('알림', `동시 그리드 수는 1~${MAX_GRIDS_LIMIT} 사이 정수로 입력해 주세요.`);
+      return;
+    }
+
     const parsedGridWidthPct = Number(gridWidthPct);
     if (!Number.isFinite(parsedGridWidthPct) || parsedGridWidthPct <= 0 || parsedGridWidthPct > GRID_WIDTH_MAX_PCT) {
       Alert.alert('알림', `그리드 폭은 0보다 크고 ${GRID_WIDTH_MAX_PCT} 이하인 숫자로 입력해 주세요.`);
@@ -194,64 +173,25 @@ export default function SettingsScreen() {
 
     setSaving(true);
     try {
-      await saveKisSettings({ appKey: appKey.trim(), appSecret: effectiveAppSecret, ...account });
       // 미체결 취소는 슬라이더가 범위·스텝 격자를 보장하므로 별도 검증이 없다.
       await saveAppSettings({
-        environment,
+        environment: 'live',
         orderQty: savedOrderQtyRef.current,
         buyCancelAfterSec,
         gridWidthPct: parsedGridWidthPct,
         gridBuyMultiplier: parsedGridBuyMultiplier,
         entryLadderIntervalPct: parsedLadderIntervalPct,
         entryLadderCount: parsedLadderCount,
+        startAmountUsd: parsedStartAmountUsd,
+        minTickRate: parsedMinTickRate,
+        maxConcurrentGrids: parsedMaxGrids,
       });
-      // 저장 성공 — 이후 재입력 없이도 배지가 최신 저장값을 가리키게 갱신한다.
-      savedAppSecretRef.current = effectiveAppSecret;
-      setHasSavedAppSecret(true);
-      setAppSecret('');
       Alert.alert('알림', '설정을 저장했어요.');
     } finally {
       setSaving(false);
     }
   };
 
-  /**
-   * 토큰 발급 + 실계좌 조회로 검증한다.
-   * 이전에는 getAccessToken을 그냥 불렀는데, 캐시가 유효하면 서버를 아예 안 부르고 캐시를 돌려주는 함수라
-   * 서버가 이미 폐기한 토큰에도 "연결됐어요"가 떴다(2026-08-11). 그래서 ① forceRefresh로 반드시 새로 받고,
-   * ② 시세가 아니라 잔고조회로 확인한다 — 시세는 토큰이 죽어도 통과하는 경우가 있어 검증이 안 된다.
-   */
-  const handleIssueToken = async () => {
-    if (!appKey.trim() || !effectiveAppSecret) {
-      Alert.alert('알림', 'AppKey·AppSecret을 먼저 입력하고 저장해 주세요.');
-      return;
-    }
-    const account = parseAccountNo(accountNoInput);
-    if (!account) {
-      Alert.alert('알림', '계좌번호(8-2 형식)를 먼저 입력해 주세요.');
-      return;
-    }
-
-    setTokenStatus({ kind: 'checking' });
-    try {
-      const credentials = { appKey: appKey.trim(), appSecret: effectiveAppSecret };
-      const token = await getAccessToken(environment, credentials, {
-        storage: secureTokenStorage,
-        forceRefresh: true,
-      });
-      await inquireOverseasBalance(environment, credentials, token.accessToken, { account });
-      setTokenStatus({ kind: 'success', expiresAt: token.expiresAt });
-    } catch (e) {
-      const reason = e instanceof Error ? e.message : String(e);
-      setTokenStatus({ kind: 'failure', reason });
-    }
-  };
-
-  /**
-   * 그리드 폭·배율의 즉시 미리보기 — 입력값이 실제 발주가·수량으로 어떻게 번역되는지 그 자리에서 보여준다.
-   * ("매수 배율 1"이 왜 수량 2배가 되는지가 숫자로 보이지 않아 오해가 잦았다.)
-   * 입력이 유효 범위를 벗어나면 null — 저장 시 Alert로 막히므로 여기서는 미리보기만 숨긴다.
-   */
   /**
    * 사다리 진입의 즉시 미리보기 — 간격×횟수가 실제로 "몇 % 떨어져야 진입"인지 그 자리에서 보여준다.
    * 누적 낙폭은 복리(1−(1−g)^N)라 단순곱(g×N)보다 조금 작다.
@@ -264,6 +204,11 @@ export default function SettingsScreen() {
     return { dropPct: ((1 - Math.pow(1 - g / 100, n)) * 100).toFixed(2) };
   })();
 
+  /**
+   * 그리드 폭·배율의 즉시 미리보기 — 입력값이 실제 발주가·수량으로 어떻게 번역되는지 그 자리에서 보여준다.
+   * ("매수 배율 1"이 왜 수량 2배가 되는지가 숫자로 보이지 않아 오해가 잦았다.)
+   * 입력이 유효 범위를 벗어나면 null — 저장 시 Alert로 막히므로 여기서는 미리보기만 숨긴다.
+   */
   const gridPreview = (() => {
     const w = Number(gridWidthPct);
     const m = Number(gridBuyMultiplier);
@@ -276,217 +221,191 @@ export default function SettingsScreen() {
     };
   })();
 
+  /** 첫 진입에 한 번에 들어갈 수 있는 최대 금액 — 진입금액 × 동시 그리드 수. */
+  const exposure = (() => {
+    const amount = Number(startAmountUsd);
+    const grids = Number(maxConcurrentGrids);
+    if (!Number.isFinite(amount) || amount <= 0) return null;
+    if (!Number.isFinite(grids) || grids < 1) return null;
+    return (amount * Math.min(Math.floor(grids), MAX_GRIDS_LIMIT)).toFixed(2);
+  })();
+
   return (
     <View className="flex-1 bg-[#f2f4f6]">
       <BackHeader title="설정" />
       <ScrollView className="flex-1" contentContainerStyle={{ paddingBottom: 48 }}>
-        {section === 'account' && (
-          <>
-            <Panel title="계좌 연결">
-              <View className="px-5 pb-5">
-                <Text className="mb-1 text-xs text-[#8b95a1]">AppKey</Text>
-                <TextInput
-                  value={appKey}
-                  onChangeText={setAppKey}
-                  placeholder="KIS AppKey"
-                  placeholderTextColor="#8b95a1"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  className="mb-4 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
-                />
+        <Panel title="트레이딩 설정">
+          <View className="px-5 pb-5">
+            <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
+              변곡점이 잡힐 때마다 한 종목씩 진입하고, 진입한 종목은 ±폭 그리드가 이어받아 관리해요. 이미 보유 중인
+              종목은 다시 사지 않고, 그리드가 익절되면 그 자리에 새 종목이 들어와요.
+            </Text>
 
-                <View className="mb-1 flex-row items-center justify-between">
-                  <Text className="text-xs text-[#8b95a1]">AppSecret</Text>
-                  {hasSavedAppSecret && (
-                    <View className="rounded-full bg-[#e6f4ea] px-2 py-0.5">
-                      <Text className="text-[11px] font-semibold text-[#03b26c]">저장돼 있어요</Text>
-                    </View>
-                  )}
-                </View>
-                <TextInput
-                  value={appSecret}
-                  onChangeText={setAppSecret}
-                  placeholder={hasSavedAppSecret ? '●●●●●● 저장돼 있어요 · 바꾸려면 새로 입력하세요' : 'KIS AppSecret'}
-                  placeholderTextColor="#8b95a1"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  secureTextEntry
-                  className="mb-4 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
-                />
+            <Text className="mb-1 text-xs text-[#8b95a1]">진입금액 (USD) — 종목 하나를 살 때 쓰는 금액</Text>
+            <TextInput
+              value={startAmountUsd}
+              onChangeText={setStartAmountUsd}
+              keyboardType="decimal-pad"
+              placeholder="예: 100"
+              placeholderTextColor="#8b95a1"
+              className="mb-4 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
+            />
 
-                <Text className="mb-1 text-xs text-[#8b95a1]">계좌번호 (8-2 형식)</Text>
-                <TextInput
-                  value={accountNoInput}
-                  onChangeText={setAccountNoInput}
-                  placeholder="예: 12345678-01"
-                  placeholderTextColor="#8b95a1"
-                  keyboardType="numbers-and-punctuation"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  className="mb-2 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
-                />
+            <Text className="mb-1 text-xs text-[#8b95a1]">
+              동시 그리드 수 (1~{MAX_GRIDS_LIMIT}) — 한 번에 관리할 종목 개수
+            </Text>
+            <TextInput
+              value={maxConcurrentGrids}
+              onChangeText={setMaxConcurrentGrids}
+              keyboardType="number-pad"
+              placeholder={`기본 ${DEFAULT_APP_SETTINGS.maxConcurrentGrids}`}
+              placeholderTextColor="#8b95a1"
+              className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
+            />
+            <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
+              {exposure
+                ? `첫 진입에만 최대 $${exposure}가 들어가요. 그리드가 물타기(−폭 매수)를 하면 종목당 금액이 더 늘어날 수 있어요.`
+                : '그리드가 물타기(−폭 매수)를 하면 종목당 금액이 더 늘어날 수 있어요.'}
+            </Text>
 
-                <Pressable
-                  onPress={handleIssueToken}
-                  className="mt-4 items-center justify-center rounded-2xl bg-[#191f28] active:opacity-80"
-                  style={{ minHeight: 52 }}
-                >
-                  <Text className="text-base font-semibold text-white">
-                    {tokenStatus.kind === 'checking' ? '발급 중이에요…' : '토큰 발급'}
-                  </Text>
-                </Pressable>
+            <Text className="mb-1 text-xs text-[#8b95a1]">
+              최소 속도 (틱/초) — 이보다 조용한 종목은 감시하지 않아요
+            </Text>
+            <TextInput
+              value={minTickRate}
+              onChangeText={setMinTickRate}
+              keyboardType="decimal-pad"
+              placeholder={`기본 ${DEFAULT_APP_SETTINGS.minTickRate}`}
+              placeholderTextColor="#8b95a1"
+              className="mb-4 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
+            />
 
-                {tokenStatus.kind === 'success' && (
-                  <View className="mt-3 items-center rounded-2xl bg-[#e6f4ea] py-2">
-                    <Text className="text-sm font-medium text-[#03b26c]">
-                      계좌 조회까지 확인했어요 · 만료 {formatHHmm(tokenStatus.expiresAt)}
-                    </Text>
-                  </View>
-                )}
-                {tokenStatus.kind === 'failure' && (
-                  <View className="mt-3 rounded-2xl bg-[#fdecee] px-3 py-2">
-                    <Text className="text-sm text-[#f04452]">연결하지 못했어요: {tokenStatus.reason}</Text>
-                  </View>
-                )}
-              </View>
-            </Panel>
-
-            <Panel title="거래 모드">
-              <View className="px-5 pb-5">
-                <Text className="text-sm text-[#4e5968]">
-                  실전(LIVE) 전용이에요 — 모의투자는 KIS가 시세·순위 API를 지원하지 않아 쓸 수 없어요.
-                </Text>
-              </View>
-            </Panel>
-          </>
-        )}
-
-        {section === 'params' && (
-          <>
-            <Panel title="진입 감지">
-              <View className="px-5 pb-5">
-                <Text className="mb-1 text-xs text-[#8b95a1]">
-                  진입 간격 (%) — 최대 {LADDER_INTERVAL_MAX_PCT}
-                </Text>
-                <TextInput
-                  value={entryLadderIntervalPct}
-                  onChangeText={setEntryLadderIntervalPct}
-                  keyboardType="decimal-pad"
-                  placeholder="예: 1"
-                  placeholderTextColor="#8b95a1"
-                  className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
-                />
-                <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
-                  최근 고점에서 이 %씩 내려올 때마다 한 칸으로 세요.
-                </Text>
-
-                <Text className="mb-1 text-xs text-[#8b95a1]">진입 횟수 — 최대 {LADDER_COUNT_MAX}</Text>
-                <TextInput
-                  value={entryLadderCount}
-                  onChangeText={setEntryLadderCount}
-                  keyboardType="number-pad"
-                  placeholder="예: 3"
-                  placeholderTextColor="#8b95a1"
-                  className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
-                />
-                <Text className="mb-1 text-xs leading-5 text-[#8b95a1]">
-                  이 횟수만큼 칸이 쌓이면 바닥으로 보고 매수해요. 중간에 한 칸 이상 반등하면 처음부터 다시 세요.
-                  {ladderPreview && (
-                    <Text className="text-[#4e5968]">
-                      {' '}지금 설정이면 고점에서 약 {ladderPreview.dropPct}% 떨어져야 진입해요.
-                    </Text>
-                  )}
-                </Text>
-                <Text className="text-xs leading-5 text-[#8b95a1]">
-                  잔파동(간격 미만의 오르내림)에서는 진입하지 않아요. 매수 뒤 관리는 아래 그리드가 맡아요.
-                </Text>
-              </View>
-            </Panel>
-
-            <Panel title="매도 그리드">
-              <View className="px-5 pb-5">
-                <Text className="mb-1 text-xs text-[#8b95a1]">그리드 폭 (%) — 최대 {GRID_WIDTH_MAX_PCT}</Text>
-                <TextInput
-                  value={gridWidthPct}
-                  onChangeText={setGridWidthPct}
-                  keyboardType="decimal-pad"
-                  placeholder="예: 10"
-                  placeholderTextColor="#8b95a1"
-                  className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
-                />
-                <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
-                  평단 ±이 %에 매도·매수 지정가를 걸어요.
-                  {gridPreview && (
-                    <Text className="text-[#4e5968]">
-                      {' '}평단 $100이면 매수 ${gridPreview.buy} · 매도 ${gridPreview.sell}에 걸려요.
-                    </Text>
-                  )}
-                </Text>
-
-                <Text className="mb-1 text-xs text-[#8b95a1]">
-                  매수 배율 — 최대 {GRID_BUY_MULTIPLIER_MAX}
-                </Text>
-                <TextInput
-                  value={gridBuyMultiplier}
-                  onChangeText={setGridBuyMultiplier}
-                  keyboardType="decimal-pad"
-                  placeholder="예: 1"
-                  placeholderTextColor="#8b95a1"
-                  className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
-                />
-                <Text className="mb-1 text-xs leading-5 text-[#8b95a1]">
-                  물타기 매수는 보유수량 × 이 배율만큼 발주해요.
-                  {gridPreview && (
-                    <Text className="text-[#4e5968]">
-                      {' '}10주를 갖고 있으면 {gridPreview.addQty}주를 더 사서 총 {10 + gridPreview.addQty}주가 돼요.
-                    </Text>
-                  )}
-                </Text>
-                <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
-                  배율을 1로 두면 물타기마다 수량이 2배가 돼요. 0.5로 낮추면 1.5배씩 늘어나요.
-                </Text>
-
-                <View className="rounded-2xl bg-[#f2f4f6] px-4 py-3">
-                  <Text className="text-xs leading-5 text-[#4e5968]">
-                    폭·배율은 <Text className="font-semibold text-[#191f28]">다음에 새로 여는 그리드부터</Text>{' '}
-                    적용돼요. 지금 돌고 있는 그리드는 이미 주문이 접수돼 있어서 그대로 관리돼요.
-                  </Text>
-                </View>
-              </View>
-            </Panel>
-
-            <Panel title="주문">
-              <View className="px-5 pb-5">
-                <SettingSlider
-                  label="매수 미체결 취소 (초)"
-                  value={buyCancelAfterSec}
-                  onChange={setBuyCancelAfterSec}
-                  min={0}
-                  max={10}
-                  step={1}
-                  formatValue={(v) => `${v}초`}
-                  helper="매수 주문이 이 시간 안에 안 붙으면 취소하고 다시 변곡점을 기다려요. 권장 2~3초. 일부라도 체결됐으면 취소하지 않고 그대로 기다려요. 취소가 3번 이어지면 그 종목은 1분간 쉬어요. 0이면 체결될 때까지 계속 기다려요."
-                  offAtZero
-                />
-              </View>
-            </Panel>
-
-            <View className="px-5">
-              <Pressable
-                onPress={handleSave}
-                disabled={saving}
-                className="items-center justify-center rounded-2xl bg-[#3182f6] active:opacity-80"
-                style={{ minHeight: 52 }}
-              >
-                <Text className="text-base font-semibold text-white">{saving ? '저장 중이에요…' : '저장하기'}</Text>
-              </Pressable>
-
-              <Text className="mt-6 text-center text-xs text-[#8b95a1]">매매 중에는 화면을 켠 채로 두세요.</Text>
+            <View className="rounded-2xl bg-[#f2f4f6] px-4 py-3">
+              <Text className="text-xs leading-5 text-[#4e5968]">
+                이 세 값은 <Text className="font-semibold text-[#191f28]">정지 상태에서만</Text> 적용돼요. 매매 중에
+                저장하면 정지한 뒤 트레이딩 화면으로 돌아올 때 반영돼요.
+              </Text>
             </View>
-          </>
-        )}
+          </View>
+        </Panel>
+
+        <Panel title="진입 감지">
+          <View className="px-5 pb-5">
+            <Text className="mb-1 text-xs text-[#8b95a1]">진입 간격 (%) — 최대 {LADDER_INTERVAL_MAX_PCT}</Text>
+            <TextInput
+              value={entryLadderIntervalPct}
+              onChangeText={setEntryLadderIntervalPct}
+              keyboardType="decimal-pad"
+              placeholder="예: 1"
+              placeholderTextColor="#8b95a1"
+              className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
+            />
+            <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
+              최근 고점에서 이 %씩 내려올 때마다 한 칸으로 세요.
+            </Text>
+
+            <Text className="mb-1 text-xs text-[#8b95a1]">진입 횟수 — 최대 {LADDER_COUNT_MAX}</Text>
+            <TextInput
+              value={entryLadderCount}
+              onChangeText={setEntryLadderCount}
+              keyboardType="number-pad"
+              placeholder="예: 3"
+              placeholderTextColor="#8b95a1"
+              className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
+            />
+            <Text className="mb-1 text-xs leading-5 text-[#8b95a1]">
+              이 횟수만큼 칸이 쌓이면 바닥으로 보고 매수해요. 중간에 한 칸 이상 반등하면 처음부터 다시 세요.
+              {ladderPreview && (
+                <Text className="text-[#4e5968]">
+                  {' '}지금 설정이면 고점에서 약 {ladderPreview.dropPct}% 떨어져야 진입해요.
+                </Text>
+              )}
+            </Text>
+            <Text className="text-xs leading-5 text-[#8b95a1]">
+              잔파동(간격 미만의 오르내림)에서는 진입하지 않아요. 매수 뒤 관리는 아래 그리드가 맡아요.
+            </Text>
+          </View>
+        </Panel>
+
+        <Panel title="매도 그리드">
+          <View className="px-5 pb-5">
+            <Text className="mb-1 text-xs text-[#8b95a1]">그리드 폭 (%) — 최대 {GRID_WIDTH_MAX_PCT}</Text>
+            <TextInput
+              value={gridWidthPct}
+              onChangeText={setGridWidthPct}
+              keyboardType="decimal-pad"
+              placeholder="예: 10"
+              placeholderTextColor="#8b95a1"
+              className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
+            />
+            <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
+              평단 ±이 %에 매도·매수 지정가를 걸어요.
+              {gridPreview && (
+                <Text className="text-[#4e5968]">
+                  {' '}평단 $100이면 매수 ${gridPreview.buy} · 매도 ${gridPreview.sell}에 걸려요.
+                </Text>
+              )}
+            </Text>
+
+            <Text className="mb-1 text-xs text-[#8b95a1]">매수 배율 — 최대 {GRID_BUY_MULTIPLIER_MAX}</Text>
+            <TextInput
+              value={gridBuyMultiplier}
+              onChangeText={setGridBuyMultiplier}
+              keyboardType="decimal-pad"
+              placeholder="예: 1"
+              placeholderTextColor="#8b95a1"
+              className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
+            />
+            <Text className="mb-1 text-xs leading-5 text-[#8b95a1]">
+              물타기 매수는 보유수량 × 이 배율만큼 발주해요.
+              {gridPreview && (
+                <Text className="text-[#4e5968]">
+                  {' '}10주를 갖고 있으면 {gridPreview.addQty}주를 더 사서 총 {10 + gridPreview.addQty}주가 돼요.
+                </Text>
+              )}
+            </Text>
+            <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
+              배율을 1로 두면 물타기마다 수량이 2배가 돼요. 0.5로 낮추면 1.5배씩 늘어나요.
+            </Text>
+
+            <View className="rounded-2xl bg-[#f2f4f6] px-4 py-3">
+              <Text className="text-xs leading-5 text-[#4e5968]">
+                폭·배율은 <Text className="font-semibold text-[#191f28]">다음에 새로 여는 그리드부터</Text> 적용돼요.
+                지금 돌고 있는 그리드는 이미 주문이 접수돼 있어서 그대로 관리돼요.
+              </Text>
+            </View>
+          </View>
+        </Panel>
+
+        <Panel title="주문">
+          <View className="px-5 pb-5">
+            <SettingSlider
+              label="매수 미체결 취소 (초)"
+              value={buyCancelAfterSec}
+              onChange={setBuyCancelAfterSec}
+              min={0}
+              max={10}
+              step={1}
+              formatValue={(v) => `${v}초`}
+              helper="매수 주문이 이 시간 안에 안 붙으면 취소하고 다시 변곡점을 기다려요. 권장 2~3초. 일부라도 체결됐으면 취소하지 않고 그대로 기다려요. 취소가 3번 이어지면 그 종목은 1분간 쉬어요. 0이면 체결될 때까지 계속 기다려요."
+              offAtZero
+            />
+          </View>
+        </Panel>
+
+        <View className="px-5">
+          <Pressable
+            onPress={handleSave}
+            disabled={saving}
+            className="items-center justify-center rounded-2xl bg-[#3182f6] active:opacity-80"
+            style={{ minHeight: 52 }}
+          >
+            <Text className="text-base font-semibold text-white">{saving ? '저장 중이에요…' : '저장하기'}</Text>
+          </Pressable>
+
+          <Text className="mt-6 text-center text-xs text-[#8b95a1]">매매 중에는 화면을 켠 채로 두세요.</Text>
+        </View>
       </ScrollView>
-      <BottomMenu items={MENU_ITEMS} value={section} onChange={setSection} />
     </View>
   );
 }

@@ -45,7 +45,7 @@ export function SetupNotice() {
     <EmptyState
       icon="key-outline"
       title="아직 키가 등록되지 않았어요"
-      description="설정 화면에서 키를 먼저 등록해 주세요"
+      description="계좌 화면에서 키를 먼저 등록해 주세요"
     />
   );
 }
