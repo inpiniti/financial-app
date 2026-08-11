@@ -145,7 +145,7 @@ export function CommentsPanel({ ticker }: CommentsPanelProps) {
   const [productCode, setProductCode] = useState<string | null>(null);
   const [comments, setComments] = useState<TossComment[]>([]);
   const [hasNext, setHasNext] = useState(false);
-  const [nextKey, setNextKey] = useState<string | null>(null);
+  const [nextKey, setNextKey] = useState<string | number | null>(null);
   const [state, setState] = useState<LoadState>({ kind: 'resolving' });
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -222,8 +222,14 @@ export function CommentsPanel({ ticker }: CommentsPanelProps) {
     setLoadingMore(true);
     try {
       const page = await fetchTossComments(productCode, sort, nextKey);
-      setComments((prev) => [...prev, ...page.results]);
-      setHasNext(page.hasNext);
+      // 이미 가진 댓글은 걸러낸다 — 서버가 같은 페이지를 다시 주더라도 중복 key로 리스트가 깨지지 않게.
+      setComments((prev) => {
+        const seen = new Set(prev.map((c) => String(c.commentId)));
+        const fresh = page.results.filter((c) => !seen.has(String(c.commentId)));
+        return fresh.length ? [...prev, ...fresh] : prev;
+      });
+      // 커서가 안 움직이면 더 받아봐야 같은 페이지다 — 무한 재요청을 끊는다.
+      setHasNext(page.hasNext && page.key != null && String(page.key) !== String(nextKey));
       setNextKey(page.key);
     } catch {
       // 다음 페이지 실패는 조용히 무시 — 이미 로드된 목록은 유지하고, 당겨서 새로고침으로 다시 시도할 수 있다.
@@ -264,7 +270,7 @@ export function CommentsPanel({ ticker }: CommentsPanelProps) {
         ) : (
           <FlatList
             data={comments}
-            keyExtractor={(item) => item.commentId}
+            keyExtractor={(item) => String(item.commentId)}
             renderItem={({ item }) => <CommentRow comment={item} />}
             contentContainerStyle={{ paddingBottom: 24, flexGrow: 1 }}
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#3182f6" />}

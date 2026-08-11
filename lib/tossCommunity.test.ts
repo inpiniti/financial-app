@@ -94,18 +94,19 @@ describe('fetchTossComments', () => {
     expect(url).toContain('subjectId=US19801212001');
     expect(url).toContain('subjectType=STOCK');
     expect(url).toContain('commentSortType=RECENT');
-    expect(url).not.toContain('key=');
+    expect(url).not.toContain('lastCommentId=');
   });
 
-  it('key를 넘기면 쿼리에 커서를 붙여 다음 페이지를 요청한다', async () => {
+  it('key를 넘기면 lastCommentId 커서로 다음 페이지를 요청한다(key= 로 보내면 서버가 무시하고 1페이지를 반복한다)', async () => {
     const fetchImpl = vi.fn().mockResolvedValue({
       json: async () => ({ result: { results: [], hasNext: false, key: null } }),
     });
 
-    await fetchTossComments('US19801212001', 'POPULAR', 'cursor-2', { fetchImpl });
+    await fetchTossComments('US19801212001', 'POPULAR', 308548934, { fetchImpl });
 
     const [url] = fetchImpl.mock.calls[0];
-    expect(url).toContain('key=cursor-2');
+    expect(url).toContain('lastCommentId=308548934');
+    expect(url).not.toContain('key=');
     expect(url).toContain('commentSortType=POPULAR');
   });
 });

@@ -91,7 +91,8 @@ export interface TossCommentStatistic {
 }
 
 export interface TossComment {
-  commentId: string;
+  /** 실호출 응답에서는 숫자로 내려온다(문자열로 오는 경우도 있어 둘 다 받는다). */
+  commentId: string | number;
   author: TossCommentAuthor;
   message: TossCommentMessage;
   statistic: TossCommentStatistic;
@@ -101,22 +102,28 @@ export interface TossComment {
 export interface TossCommentsPage {
   results: TossComment[];
   hasNext: boolean;
-  key: string | null;
+  /** 다음 페이지 커서 = 이 페이지 마지막 댓글의 commentId. 다음 호출에 `lastCommentId`로 넣는다. */
+  key: string | number | null;
 }
 
 interface TossCommentsResponse {
   result: {
     results: TossComment[];
     hasNext: boolean;
-    key: string | null;
+    key: string | number | null;
   };
 }
 
-/** 종목 댓글 1페이지 조회. key를 넘기면 그 커서 이후 페이지를 이어 받는다(무한 스크롤용). */
+/**
+ * 종목 댓글 1페이지 조회(페이지당 11건). key를 넘기면 그 커서 이후 페이지를 이어 받는다(무한 스크롤용).
+ *
+ * 커서 쿼리 파라미터는 반드시 `lastCommentId`다 — 응답 필드명이 `key`라고 해서 `key=`로 보내면
+ * 서버가 조용히 무시하고 매번 1페이지를 돌려준다(같은 댓글이 무한 반복되는 증상). RECENT/POPULAR 둘 다 동일.
+ */
 export async function fetchTossComments(
   productCode: string,
   sort: TossCommentSort,
-  key?: string | null,
+  key?: string | number | null,
   deps: TossCommunityDeps = {},
 ): Promise<TossCommentsPage> {
   const fetchImpl = deps.fetchImpl ?? fetch;
@@ -125,7 +132,7 @@ export async function fetchTossComments(
     subjectType: 'STOCK',
     commentSortType: sort,
   });
-  if (key) params.set('key', key);
+  if (key !== undefined && key !== null && key !== '') params.set('lastCommentId', String(key));
 
   const res = await fetchImpl(`${COMMENTS_URL}?${params.toString()}`, {
     method: 'GET',
