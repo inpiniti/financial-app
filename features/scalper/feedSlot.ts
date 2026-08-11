@@ -92,7 +92,11 @@ export class FeedSlot {
     minStrength?: number;
   };
 
-  private readonly ladderOptions: LadderEntryOptions | undefined;
+  /**
+   * 사다리 감지 옵션 — 생성 시 주입값으로 시작하고, 설정 탭 저장 후 setLadderOptions로 갈아끼운다.
+   * (readonly면 이미 만들어진 슬롯이 앱을 껐다 켤 때까지 옛 간격·횟수로 계속 판정한다 — 실제 사고.)
+   */
+  private ladderOptions: LadderEntryOptions | undefined;
 
   private detector: TrendDetector | null = null;
   /** 사다리 감지기 — LADDER_ENTRY && ladderOptions일 때 detector 대신 이쪽이 부착된다(상호 배타). */
@@ -225,6 +229,31 @@ export class FeedSlot {
     this.ladderState = null;
     this.onSignal = onSignal;
     this.lastSignal = null;
+  }
+
+  /**
+   * 사다리 감지 옵션 교체(설정 탭 저장 반영). 값이 그대로면 아무것도 하지 않는다.
+   * 실제로 바뀌었고 지금 사다리로 감시 중이면 감지기를 새로 만든다 — 새 간격에 맞춘 새 앵커에서
+   * 홀 카운트를 다시 센다(옛 앵커에 새 간격을 섞으면 어느 쪽 기준인지 알 수 없는 판정이 된다).
+   * 바뀌었으면 true.
+   */
+  setLadderOptions(options: LadderEntryOptions | undefined): boolean {
+    const prev = this.ladderOptions;
+    if (prev === options) return false;
+    if (
+      prev !== undefined &&
+      options !== undefined &&
+      prev.interval === options.interval &&
+      prev.triggerCount === options.triggerCount
+    ) {
+      return false;
+    }
+    this.ladderOptions = options;
+    if (this.onSignal !== null) {
+      // 감시 중 — 같은 리스너로 즉시 재부착해 새 옵션으로 감지기를 다시 만든다.
+      this.attachDetector(this.onSignal);
+    }
+    return true;
   }
 
   /** 감시 중단 — 리샘플·틱/초는 계속 돈다(재부착 대비). */

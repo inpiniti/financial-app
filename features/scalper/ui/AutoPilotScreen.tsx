@@ -10,7 +10,8 @@ import { Panel } from '../../../components/Panel';
 import { TickerAvatar } from '../../../components/TickerAvatar';
 import { EmptyState } from '../../inquiry/components';
 import { TradeHistoryPanel, useTodayTrades } from '../../inquiry/TradeHistory';
-import { formatSignedUsd, formatUsd, pnlColor } from '../../../lib/format';
+import { formatSignedKrw, formatSignedUsd, formatUsd, pnlColor } from '../../../lib/format';
+import { useUsdKrwRate } from '../../../lib/useUsdKrwRate';
 import type { AutoPilotEvent, AutoPilotState, AutoPilotView } from '../autopilot';
 import type { AutoPilotManager, AutoPilotSlotRow } from '../autopilotManager';
 import type { FeedEvent, ScalperManager } from '../scalperManager';
@@ -128,14 +129,21 @@ function SlotRow({
 }: {
   item: AutoPilotSlotRow;
   activeTickers: readonly string[];
-  onPress: (ticker: string, market: string) => void;
+  onPress: (ticker: string, market: string, name?: string) => void;
 }) {
+  // 종목명이 있으면 이름을 제목으로, 티커는 부제 맨 앞으로 — 이름 없이 티커만 보이면 무슨 종목인지
+  // 알 수 없어 조회 탭 리스트(종목명 · 티커)와 읽는 방식이 달랐다.
+  const { ticker, name } = item.entry;
   return (
-    <Pressable className="bg-white" onPress={() => onPress(item.entry.ticker, item.entry.market)} android_ripple={{ color: '#f2f4f6' }}>
+    <Pressable
+      className="bg-white"
+      onPress={() => onPress(ticker, item.entry.market, name)}
+      android_ripple={{ color: '#f2f4f6' }}
+    >
       <ListRow
-        leading={<TickerAvatar ticker={item.entry.ticker} />}
-        title={item.entry.ticker}
-        subtitle={`${WATCH_SOURCE_LABEL[item.entry.source]} · ${item.view.tickRate.toFixed(1)}틱/초`}
+        leading={<TickerAvatar ticker={ticker} />}
+        title={name || ticker}
+        subtitle={`${name ? `${ticker} · ` : ''}${WATCH_SOURCE_LABEL[item.entry.source]} · ${item.view.tickRate.toFixed(1)}틱/초`}
         trailing={
           <View className="items-end">
             <Text className="text-base font-bold text-[#191f28]">{formatPrice(item.view.price)}</Text>
@@ -165,6 +173,8 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
   // 시세 피드 진단 — 매니저가 이미 보존 중인 연결 상태·마지막 진단 이벤트를 구독해 그린다.
   const [feedStatus, setFeedStatus] = useState<FeedStatus>(() => manager.getFeedStatus());
   const [feedEvent, setFeedEvent] = useState<FeedEvent | null>(() => manager.lastFeedEvent);
+  // 오늘 성과 원화 병기용 환율(잔고 기준·30분 캐시) — 못 구하면 null이라 USD만 보여준다.
+  const usdKrw = useUsdKrwRate();
 
   useEffect(() => autopilot.subscribeView(setView), [autopilot]);
   useEffect(() => autopilot.subscribeList(setRows), [autopilot]);
@@ -217,8 +227,9 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
   const handleResume = useCallback(() => autopilot.pilot.resume(), [autopilot]);
 
   // 행 탭 → 종목 상세화면(차트/댓글/호가) — 3거래소 병합 리스트라 행마다 채용 거래소를 넘긴다.
-  const handleRowPress = useCallback((ticker: string, market: string) => {
-    router.push({ pathname: '/stock/[ticker]', params: { ticker, market } });
+  // 종목명도 함께 넘겨 상세 상단바가 티커만 덩그러니 뜨지 않게 한다(리스트와 같은 제목).
+  const handleRowPress = useCallback((ticker: string, market: string, name?: string) => {
+    router.push({ pathname: '/stock/[ticker]', params: name ? { ticker, market, name } : { ticker, market } });
   }, []);
 
   const renderRow = useCallback(
@@ -271,9 +282,22 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                 title="오늘 성과"
                 subtitle={`사이클 ${view.cycles}회 · 그리드 ${view.activeTickers.length}/${view.maxGrids}개 관리 중`}
                 trailing={
-                  <Text className="text-base font-bold" style={{ color: pnlColor(view.cumPnl) }}>
-                    {formatSignedUsd(view.cumPnl)}
-                  </Text>
+                  // 누적 손익은 USD로 쌓이지만 체감은 원화라 둘 다 보여준다 —
+                  // 환율(잔고 기준)을 못 구했을 때만 예전처럼 USD 한 줄.
+                  usdKrw !== null ? (
+                    <>
+                      <Text className="text-base font-bold" style={{ color: pnlColor(view.cumPnl) }}>
+                        {formatSignedKrw(view.cumPnl * usdKrw)}
+                      </Text>
+                      <Text className="mt-0.5 text-xs font-semibold" style={{ color: pnlColor(view.cumPnl) }}>
+                        {formatSignedUsd(view.cumPnl)}
+                      </Text>
+                    </>
+                  ) : (
+                    <Text className="text-base font-bold" style={{ color: pnlColor(view.cumPnl) }}>
+                      {formatSignedUsd(view.cumPnl)}
+                    </Text>
+                  )
                 }
               />
               {view.lastFault && (

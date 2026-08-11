@@ -61,7 +61,7 @@ function snapshotOf(tickers: string[]): RankingSnapshot {
   };
 }
 
-function makeManager(opts: { holdings?: string[] } = {}) {
+function makeManager(opts: { holdings?: string[]; entryLadder?: { interval: number; triggerCount: number } } = {}) {
   const feed = new PairFeed();
   const store = new FakeStore();
   const clock = fakeClock(1000);
@@ -79,6 +79,7 @@ function makeManager(opts: { holdings?: string[] } = {}) {
     keepAwake,
     chunkSeconds: 1,
     bufferSize: 7,
+    entryLadder: opts.entryLadder,
   });
   manager.pilot.setConfig({ startAmountUsd: 100, minTickRate: 0.01 });
   return { manager, feed, store, clock, fetchSnapshot, keepAwake, scheduler };
@@ -217,6 +218,54 @@ describe('AutoPilotManager — 배선(구독 예산·라우팅·상호 배타)',
     manager.stop();
     expect(keepAwake.deactivate).toHaveBeenCalled();
     expect(manager.pilot.getView().state).toBe('IDLE');
+  });
+
+  it('[사고 재현] setEntryLadder — 이미 감시 중인 슬롯도 새 간격·횟수로 갈아탄다(앱 재시작 불필요)', async () => {
+    const { manager } = makeManager({ entryLadder: { interval: 0.01, triggerCount: 3 } });
+    manager.start();
+    await vi.waitFor(() => expect(manager.watchlist.size).toBe(12));
+    await flush();
+
+    const ladderOf = (ticker: string) => manager.getRows().find((r) => r.entry.ticker === ticker)!.view.ladder;
+    manager.routeTick('A', 100, 0);
+    manager.routeTick('A', 99, 1000);
+    manager.routeTick('A', 99, 2000);
+    expect(ladderOf('A')!.triggerCount).toBe(3);
+    expect(ladderOf('A')!.count).toBe(1);
+
+    manager.setEntryLadder({ interval: 0.02, triggerCount: 2 });
+    manager.routeTick('A', 100, 3000);
+    manager.routeTick('A', 98, 4000);
+    manager.routeTick('A', 98, 5000);
+    expect(ladderOf('A')!.triggerCount).toBe(2);
+    expect(ladderOf('A')!.count).toBe(1); // 새 앵커(100)에서 −2% 한 칸.
+    expect(manager.recentEvents.some((e) => e.text.includes('진입 감지 설정 적용'))).toBe(true);
+  });
+
+  it('setEntryLadder — 이후 리스트에 새로 들어오는 종목도 새 값으로 만들어진다', async () => {
+    const { manager, fetchSnapshot } = makeManager({ entryLadder: { interval: 0.01, triggerCount: 3 } });
+    manager.start();
+    await vi.waitFor(() => expect(manager.watchlist.size).toBe(12));
+
+    manager.setEntryLadder({ interval: 0.02, triggerCount: 2 });
+    fetchSnapshot.mockResolvedValue(snapshotOf(['NEW', ...TWELVE.slice(0, 11)]));
+    await manager.watchlist.refresh();
+    await flush();
+
+    manager.routeTick('NEW', 100, 0);
+    manager.routeTick('NEW', 98, 1000);
+    manager.routeTick('NEW', 98, 2000);
+    const ladder = manager.getRows().find((r) => r.entry.ticker === 'NEW')!.view.ladder;
+    expect(ladder!.triggerCount).toBe(2);
+  });
+
+  it('setBuyCancelAfterMs — 파일럿으로 흘러가 이벤트로 확인된다', async () => {
+    const { manager } = makeManager();
+    manager.setBuyCancelAfterMs(3000);
+    expect(manager.recentEvents.some((e) => e.text.includes('매수 미체결 취소 3초'))).toBe(true);
+
+    manager.setBuyCancelAfterMs(0);
+    expect(manager.recentEvents.some((e) => e.text.includes('매수 미체결 취소를 껐어요'))).toBe(true);
   });
 
   it('AUTOPILOT_TRADE_ID 상수 계약', () => {

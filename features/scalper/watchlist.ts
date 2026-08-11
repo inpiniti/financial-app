@@ -49,6 +49,8 @@ export interface WatchCandidateRow {
   last?: string;
   /** 거래소코드(NAS·NYS·AMS) — 3거래소 병합 조회(2026-08-08) 이후 채용 거래소 판별용. 없으면 NAS 취급. */
   excd?: string;
+  /** 종목명(순위 응답의 name, 없으면 ename) — 리스트·종목상세 표시용. 매매 판정에는 쓰지 않는다. */
+  name?: string;
 }
 
 /** 리스트가 다루는 미국 3거래소 — WS 구독 시장구분·주문 거래소를 티커별로 고르는 근거. */
@@ -71,6 +73,8 @@ export interface WatchEntry {
   readonly rate: number;
   /** 채용 거래소(NAS·NYS·AMS) — WS trKey 시장구분·주문 거래소가 이 값을 따른다. */
   readonly market: WatchMarket;
+  /** 종목명 — 순위 응답에 있으면 채운다(없으면 undefined, 화면은 티커로 폴백). */
+  readonly name?: string;
   /** 사이클 진행 중이라 제거가 유예된 상태(리스트 탈락 후에도 잔류). */
   readonly pinned: boolean;
 }
@@ -142,7 +146,14 @@ export function computeDesired(snapshot: RankingSnapshot, maxPriceUsd?: number |
       if (!isOrderable(row)) continue;
       if (!isWithinMaxPrice(row, maxPriceUsd)) continue;
       taken.add(ticker);
-      desired.push({ ticker, source, rate, market: toWatchMarket(row.excd), pinned: false });
+      desired.push({
+        ticker,
+        source,
+        rate,
+        market: toWatchMarket(row.excd),
+        name: row.name?.trim() || undefined,
+        pinned: false,
+      });
       slots += 1;
     }
   }
@@ -248,7 +259,8 @@ export class ScalperWatchlist {
       const existing = this.entries.get(entry.ticker);
       if (existing) {
         // 유지 종목 — 출처·등락률만 최신화(핀 상태 보존). 변경 통지는 하지 않는다(구독 변화 없음).
-        this.entries.set(entry.ticker, { ...entry, pinned: existing.pinned });
+        // 종목명은 한 번 알아낸 값을 유지한다 — 순위 종류에 따라 비어 오는 응답에 이름이 사라지지 않게.
+        this.entries.set(entry.ticker, { ...entry, name: entry.name ?? existing.name, pinned: existing.pinned });
       } else {
         const fresh = { ...entry, pinned: this.pinnedTickers.has(entry.ticker) };
         this.entries.set(entry.ticker, fresh);

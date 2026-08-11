@@ -296,7 +296,11 @@ export class AutoPilot {
   private readonly deps: AutoPilotDeps;
   private readonly pollIntervalMs: number;
   private readonly repriceIntervalMs: number;
-  private readonly buyCancelAfterMs: number;
+  /**
+   * 매수 미체결 자동 취소 대기(ms, 0=끔). deps에서 **초기값만** 받고 이후 setBuyCancelAfterMs로 바꾼다 —
+   * 설정 탭 저장이 앱 재시작 전까지 먹지 않던 문제(gridConfig와 같은 원인)를 여기서도 막는다.
+   */
+  private buyCancelAfterMs: number;
   private readonly reselectIntervalMs: number;
   private readonly hysteresisRatio: number;
   private readonly watchCount: number;
@@ -480,6 +484,17 @@ export class AutoPilot {
       );
     }
     this.emit();
+  }
+
+  /**
+   * 매수 미체결 취소 대기 교체(설정 탭 저장 반영). **실행 중에도 안전하다** — 판정은 매 리프라이스 틱마다
+   * 현재 값을 읽으므로, 이미 대기 중인 매수도 다음 틱부터 새 기준(buyingSince로부터의 경과)으로 잰다.
+   */
+  setBuyCancelAfterMs(ms: number): void {
+    const next = Number.isFinite(ms) && ms > 0 ? ms : 0;
+    if (next === this.buyCancelAfterMs) return;
+    this.buyCancelAfterMs = next;
+    this.event(next > 0 ? `매수 미체결 취소 ${Math.round(next / 1000)}초로 적용했어요` : '매수 미체결 취소를 껐어요');
   }
 
   /** 현재 그리드 설정(읽기 전용) — UI 표시용. 그리드를 쓰지 않는 하네스면 undefined. */

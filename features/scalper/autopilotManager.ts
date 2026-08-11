@@ -119,6 +119,8 @@ export class AutoPilotManager {
   readonly watchlist: ScalperWatchlist;
 
   private readonly deps: AutoPilotManagerDeps;
+  /** 새 슬롯에 주입할 사다리 감지 옵션 — deps에서 초기값만 받고 setEntryLadder로 갈아끼운다. */
+  private entryLadder: LadderEntryOptions | undefined;
   private readonly slots = new Map<string, FeedSlot>();
   /**
    * 체결가 구독 중인 티커 → 실제 구독에 쓴 trKey 문자열. 구독 시점의 키로 고정해 기억해둔다 —
@@ -154,6 +156,7 @@ export class AutoPilotManager {
 
   constructor(deps: AutoPilotManagerDeps) {
     this.deps = deps;
+    this.entryLadder = deps.entryLadder;
     const scheduler = deps.scheduler ?? defaultScheduler;
     this.scheduler = scheduler;
     this.lastDaytime = isDaytimeSessionOpen(deps.clock.now());
@@ -249,6 +252,38 @@ export class AutoPilotManager {
    */
   setGridConfig(config: GridExitConfig | undefined): void {
     this.pilot.setGridConfig(config);
+  }
+
+  /**
+   * 사다리 진입 감지(간격·홀 횟수) 교체 — 그리드 폭과 같은 이유로 필요한 경로다.
+   * 감지 옵션은 슬롯(FeedSlot)마다 박혀 있어 여기서 **살아 있는 슬롯 전부**에 흘려 넣고,
+   * 앞으로 만들어질 슬롯을 위해 기준값도 갈아끼운다(addSlot이 이 값을 읽는다).
+   * 감시 중이던 슬롯은 새 간격 기준의 새 앵커에서 홀을 다시 센다(FeedSlot.setLadderOptions).
+   */
+  setEntryLadder(options: LadderEntryOptions | undefined): void {
+    const prev = this.entryLadder;
+    if (
+      prev === options ||
+      (prev !== undefined &&
+        options !== undefined &&
+        prev.interval === options.interval &&
+        prev.triggerCount === options.triggerCount)
+    ) {
+      return;
+    }
+    this.entryLadder = options;
+    for (const slot of this.slots.values()) slot.setLadderOptions(options);
+    if (options) {
+      this.pushEvent({
+        at: this.deps.clock.now(),
+        text: `진입 감지 설정 적용 · 간격 ${(options.interval * 100).toFixed(2)}% · ${options.triggerCount}칸`,
+      });
+    }
+  }
+
+  /** 매수 미체결 취소 대기(ms) 교체 — 파일럿으로 그대로 흘려보낸다(설정 탭 저장 반영). */
+  setBuyCancelAfterMs(ms: number): void {
+    this.pilot.setBuyCancelAfterMs(ms);
   }
 
   // ---- 잔고 보유분 입양(FAULT 이후 복구) ----
@@ -410,7 +445,7 @@ export class AutoPilotManager {
         minSellMomentum: this.deps.minSellMomentum,
         minVolumeSpikeRatio: this.deps.minVolumeSpikeRatio,
         minStrength: this.deps.minStrength,
-        ladder: this.deps.entryLadder,
+        ladder: this.entryLadder,
       }),
     );
     const trKey = this.marketTrKeyOf(ticker); // 체결가 — 전 종목(정규장 D 또는 주간거래 R).

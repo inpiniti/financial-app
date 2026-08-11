@@ -3,7 +3,8 @@
 // (일별 접기/월 범위 계산은 features/inquiry/dailyProfit.ts). 금액은 WCRC_FRCR_DVSN_CD 기본값 02(원화)로
 // 받으므로 원화(formatSignedKrw)로 표시한다.
 // KIS가 당일 손익을 제공하지 않아, 현재 달에서는 앱 자체 기록(features/scalper/tradeStore)을 합산한
-// "오늘예상" 행을 일별 리스트와 같은 형식으로 맨 위에 얹는다(응답 환율로 원화 환산, 환율 없으면 USD).
+// "오늘예상" 행을 일별 리스트와 같은 형식으로 맨 위에 얹는다(응답 환율 → 잔고 환율 순으로 원화 환산,
+// 둘 다 없을 때만 USD).
 // 개별 사이클 상세는 홈 트레이딩 섹션 하단 "오늘 거래 기록" 패널(TradeHistory.tsx)로 분리했다.
 // 일별 행을 누르면 그 날의 종목별 합계(실현손익·평균매수가→평균매도가·수량) 상세로 들어간다.
 import { Ionicons } from '@expo/vector-icons';
@@ -18,6 +19,7 @@ import { Panel } from '../../components/Panel';
 import { TickerAvatar } from '../../components/TickerAvatar';
 import { inquireOverseasPeriodProfitAll, type PeriodProfitItem, type PeriodProfitSummary } from '../../kis/periodProfit';
 import { formatKrw, formatSignedKrw, formatSignedPercent, formatSignedUsd, pnlColor } from '../../lib/format';
+import { useUsdKrwRate } from '../../lib/useUsdKrwRate';
 import { readTodayTrades, type StoredTrade } from '../scalper/tradeStore';
 import { toStockMarketCode } from '../stock/marketCodes';
 import { EmptyState, ErrorNotice, SetupNotice, SkeletonList } from './components';
@@ -231,12 +233,16 @@ export function ProfitLoss({ onDetailOpenChange }: ProfitLossProps = {}) {
     fetchProfit();
   }, [fetchProfit]);
 
-  // 원화 환산용 환율 — 응답 summary의 exrt를 우선, 없으면 종목 행에서 찾는다(둘 다 없으면 USD 표시).
+  // 원화 환산용 환율 — 응답 summary의 exrt → 종목 행 exrt → 잔고 환율(lib/usdKrw) 순.
+  // ⚠ 이 달에 청산 내역이 아직 없으면 기간손익 응답이 통째로 비어 exrt도 0이라, 정작 "오늘예상"이
+  //   필요한 날에 환율이 없었다(= 달러 표시). 잔고 기준 환율 폴백이 그 구멍을 메운다.
+  const balanceRate = useUsdKrwRate(reloadKey);
   const exchangeRate = useMemo(() => {
     if (summary && summary.exchangeRate > 0) return summary.exchangeRate;
     const fromItem = (items ?? []).find((i) => i.exchangeRate > 0);
-    return fromItem ? fromItem.exchangeRate : null;
-  }, [summary, items]);
+    if (fromItem) return fromItem.exchangeRate;
+    return balanceRate;
+  }, [summary, items, balanceRate]);
 
   const todayDt = todayKstDt(clock.now());
   // KIS가 당일 행을 이미 내려주면(제공 시작 등) 예상 행을 겹쳐 그리지 않는다.

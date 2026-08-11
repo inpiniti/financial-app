@@ -168,6 +168,17 @@ describe('computeDesired — 필터·중복 우선권·차순위 충원', () => 
     ]);
   });
 
+  it('행의 종목명(name)을 엔트리로 옮긴다 — 공백·빈 값은 undefined(화면이 티커로 폴백)', () => {
+    const desired = computeDesired(
+      snapshot({ tradeVolume: [row('TSLA', '1', { name: ' 테슬라 ' }), row('NVDA', '1', { name: '  ' }), row('AMD', '1')] }),
+    );
+    expect(desired.map((e) => [e.ticker, e.name])).toEqual([
+      ['TSLA', '테슬라'],
+      ['NVDA', undefined],
+      ['AMD', undefined],
+    ]);
+  });
+
   it('상한 미지정이면 가격 필터 없이 기존과 동일하게 동작한다', () => {
     const desired = computeDesired(
       snapshot({ tradeVolume: [row('RICH', '5', { last: '42.10' }), row('A', '1', { last: '0.5' })] }),
@@ -261,6 +272,21 @@ describe('ScalperWatchlist — 폴링·diff·핀 유예', () => {
     wl.unpin('A');
     expect(wl.has('A')).toBe(true);
     expect(wl.list.find((e) => e.ticker === 'A')!.pinned).toBe(false);
+  });
+
+  it('유지 종목의 종목명은 한 번 알아낸 값을 지킨다 — 이름 없이 온 응답에 이름이 사라지지 않는다', async () => {
+    const { scheduler } = manualScheduler();
+    const fetchSnapshot = vi
+      .fn<() => Promise<RankingSnapshot>>()
+      .mockResolvedValueOnce(snapshot({ tradeVolume: [row('TSLA', '1', { name: '테슬라' })] }))
+      .mockResolvedValueOnce(snapshot({ tradeVolume: [row('TSLA', '2')] }));
+    const wl = new ScalperWatchlist({ fetchSnapshot, scheduler });
+
+    await wl.refresh();
+    expect(wl.list[0].name).toBe('테슬라');
+    await wl.refresh();
+    expect(wl.list[0].name).toBe('테슬라');
+    expect(wl.list[0].rate).toBe(2); // 등락률은 최신화된다.
   });
 
   it('maxPriceUsd getter를 갱신마다 읽어 진입금액 초과 종목을 거른다 — 설정 변경도 다음 갱신에 반영', async () => {

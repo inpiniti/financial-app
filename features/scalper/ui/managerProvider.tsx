@@ -86,11 +86,20 @@ async function buildManager(): Promise<ManagerBootstrap> {
 
   // 랭킹 응답 행의 공통 부분집합 — 병합 정렬 지표(tvol 등)는 인덱스 시그니처로 함께 들고 간다.
   type RawRankingRow = {
-    symb: string; rate: string; sign?: string; e_ordyn?: string; last?: string;
+    symb: string; rate: string; sign?: string; e_ordyn?: string; last?: string; name?: string; ename?: string;
   } & Record<string, unknown>;
 
+  // 종목명은 한글명(name) 우선, 비어 있으면 영문명(ename) — 순위 4종 모두 두 필드를 함께 내려준다.
   const toWatchRows = (rows: RawRankingRow[]): WatchCandidateRow[] =>
-    rows.map((r) => ({ symb: r.symb, rate: r.rate, sign: r.sign, e_ordyn: r.e_ordyn, last: r.last, excd: r.excd as string | undefined }));
+    rows.map((r) => ({
+      symb: r.symb,
+      rate: r.rate,
+      sign: r.sign,
+      e_ordyn: r.e_ordyn,
+      last: r.last,
+      excd: r.excd as string | undefined,
+      name: r.name?.trim() || r.ename?.trim() || undefined,
+    }));
 
   // 순위 4종 × 미국 거래소(NAS·NYS) 폴링 — 유량을 아끼려 직렬 호출(2026-08-08 3거래소 확대, 2026-08-10 아멕스 제외).
   // 순위 7종은 전부 실전 도메인 전용(kis/ranking.ts). 거래소별 결과는 순위 지표로 재정렬해 하나로 합친다.
@@ -230,11 +239,13 @@ function getOrCreateManager(): Promise<ManagerBootstrap> {
 }
 
 /**
- * 캐시된 매니저에 최신 설정을 다시 흘려 넣는다 — 지금은 그리드 폭·매수배율만.
+ * 캐시된 매니저에 최신 설정을 다시 흘려 넣는다 — 설정 탭의 매매파라미터 **전부**.
  *
  * ⚠ 매니저는 모듈 스코프 싱글턴이라 buildManager()가 앱 부팅에 딱 한 번만 돈다. 그래서 설정 탭에서
- *   그리드 폭을 바꿔 저장해도 앱을 완전히 껐다 켜기 전에는 반영되지 않았다(실제 사고 — 항상 10%·1배).
- *   나머지 파라미터(청크·버퍼·문턱 등)는 이미 만들어진 FeedSlot/detector에 박혀 있어 여기서 못 바꾼다.
+ *   값을 바꿔 저장해도 앱을 완전히 껐다 켜기 전에는 반영되지 않았다(실제 사고 — 항상 부팅 때 값).
+ *   그리드 폭·배율만 이 경로가 있었고 진입 감지(간격·홀 횟수)·매수 미체결 취소는 빠져 있어,
+ *   사용자가 저장할 때마다 앱을 껐다 켜야 했다(2026-08-11 제보). 셋 다 여기서 갈아끼운다.
+ *   (청크·버퍼·문턱은 설정에서 제거된 코드 고정값이라 대상이 아니다.)
  */
 async function refreshLiveSettings(boot: ManagerBootstrap): Promise<void> {
   const appSettings = await loadAppSettings();
@@ -242,6 +253,11 @@ async function refreshLiveSettings(boot: ManagerBootstrap): Promise<void> {
     width: appSettings.gridWidthPct / 100,
     buyMultiplier: appSettings.gridBuyMultiplier,
   });
+  boot.autopilot.setEntryLadder({
+    interval: ladderIntervalToRatio(appSettings.entryLadderIntervalPct),
+    triggerCount: ladderCountOf(appSettings.entryLadderCount),
+  });
+  boot.autopilot.setBuyCancelAfterMs(buyCancelAfterToMs(appSettings.buyCancelAfterSec));
 }
 
 /**

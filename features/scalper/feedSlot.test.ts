@@ -231,6 +231,65 @@ describe('FeedSlot — 상시 수신(틱/초·리샘플) + detector 탈부착', 
     expect(onSignal.mock.calls[0][0]).toBe('BUY');
   });
 
+  it('[사고 재현] setLadderOptions — 감시 중에도 새 간격·횟수가 즉시 먹는다(앱 재시작 불필요)', () => {
+    const clock = fakeClock(1000);
+    const slot = new FeedSlot({
+      ticker: 'AAPL',
+      clock,
+      chunkSeconds: 1,
+      bufferSize: 7,
+      ladder: { interval: 0.01, triggerCount: 3 },
+    });
+    const onSignal = vi.fn();
+    slot.attachDetector(onSignal);
+    replay(slot, clock, [100, 99, 99]); // 앵커 100(첫 청크 마감) → 홀 1칸(99).
+    expect(slot.getView().ladder!.count).toBe(1);
+
+    // 설정 탭에서 간격 2%·2칸으로 저장 — 감시 중인 슬롯도 새 앵커에서 다시 센다.
+    expect(slot.setLadderOptions({ interval: 0.02, triggerCount: 2 })).toBe(true);
+    expect(slot.getView().ladder).toBeNull(); // 새 감지기 — 앵커부터 다시.
+    expect(slot.getView().watched).toBe(true);
+
+    replay(slot, clock, [100, 98, 96, 96], 3); // 새 앵커 100 → −2%×2(98→96) → BUY.
+    expect(onSignal).toHaveBeenCalledTimes(1);
+    expect(slot.getView().ladder!.triggerCount).toBe(2);
+  });
+
+  it('setLadderOptions — 값이 같으면 감지기를 건드리지 않는다(홀 카운트 유지)', () => {
+    const clock = fakeClock(1000);
+    const slot = new FeedSlot({
+      ticker: 'AAPL',
+      clock,
+      chunkSeconds: 1,
+      bufferSize: 7,
+      ladder: { interval: 0.01, triggerCount: 3 },
+    });
+    slot.attachDetector(vi.fn());
+    replay(slot, clock, [100, 99, 99]);
+    expect(slot.getView().ladder!.count).toBe(1);
+
+    expect(slot.setLadderOptions({ interval: 0.01, triggerCount: 3 })).toBe(false);
+    expect(slot.getView().ladder!.count).toBe(1);
+  });
+
+  it('setLadderOptions — 미감시 슬롯은 값만 갈아끼우고, 다음 부착부터 새 값으로 판정한다', () => {
+    const clock = fakeClock(1000);
+    const slot = new FeedSlot({
+      ticker: 'AAPL',
+      clock,
+      chunkSeconds: 1,
+      bufferSize: 7,
+      ladder: { interval: 0.01, triggerCount: 3 },
+    });
+    expect(slot.setLadderOptions({ interval: 0.02, triggerCount: 2 })).toBe(true);
+    expect(slot.getView().watched).toBe(false);
+
+    slot.attachDetector(vi.fn());
+    replay(slot, clock, [100, 98, 98]);
+    expect(slot.getView().ladder!.triggerCount).toBe(2);
+    expect(slot.getView().ladder!.count).toBe(1);
+  });
+
   it('재부착하면 이전 감시의 lastSignal이 초기화된다', () => {
     const { slot, clock } = makeSlot();
     const onSignal = vi.fn();
