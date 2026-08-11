@@ -289,12 +289,7 @@ const ACCOUNT: KisAccount = { cano: '12345678', acntPrdtCd: '01' };
 
 /** 순위 스냅샷(12종) — AAPL을 선두에 두고 나머지는 틱이 없는 더미 티커로 채운다. */
 export function snapshotOf(tickers: string[]): RankingSnapshot {
-  return {
-    tradeVolume: tickers.slice(0, 3).map((t) => ({ symb: t, rate: '1' })),
-    tradeGrowth: tickers.slice(3, 6).map((t) => ({ symb: t, rate: '1' })),
-    tradeTurnover: tickers.slice(6, 9).map((t) => ({ symb: t, rate: '1' })),
-    upDownRate: tickers.slice(9, 12).map((t) => ({ symb: t, rate: '1' })),
-  };
+  return { tossVolume: tickers.map((t) => ({ symb: t, rate: '1' })) };
 }
 
 export const TWELVE = ['AAPL', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'];

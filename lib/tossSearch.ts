@@ -8,8 +8,11 @@ export interface TossSearchDeps {
 
 const SEARCH_URL = 'https://wts-info-api.tossinvest.com/api/v2/search-all/wts-auto-complete';
 
-/** 토스 응답 market 코드 → 앱/KIS 마켓 코드(features/stock/marketCodes.ts가 받는 값). */
-const TOSS_MARKET_TO_APP: Record<string, 'NAS' | 'NYS' | 'AMS'> = {
+/** 앱/KIS 마켓 코드(features/stock/marketCodes.ts가 받는 값). */
+export type TossAppMarket = 'NAS' | 'NYS' | 'AMS';
+
+/** 토스 응답 market 코드 → 앱/KIS 마켓 코드. 순위(tossRanking.ts)도 같은 표를 쓴다. */
+export const TOSS_MARKET_TO_APP: Record<string, TossAppMarket> = {
   NSQ: 'NAS',
   NYS: 'NYS',
   AMX: 'AMS',
@@ -17,7 +20,7 @@ const TOSS_MARKET_TO_APP: Record<string, 'NAS' | 'NYS' | 'AMS'> = {
 
 export interface TossSearchResult {
   symbol: string;
-  market: 'NAS' | 'NYS' | 'AMS';
+  market: TossAppMarket;
   /** 토스 productName — 한글 종목명(없으면 영문). */
   name: string;
   logoImageUrl?: string;

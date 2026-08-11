@@ -62,7 +62,7 @@ export interface AutoPilotManagerDeps {
   scheduler?: SchedulerLike;
   /** 티커별 주문 게이트웨이 — 거래소는 채용 거래소(WatchEntry.market → NASD/NYSE/AMEX)를 넘긴다. */
   makeBroker: (ticker: string, exchange: OverseasExchangeCode) => ScalperBroker;
-  /** 순위 4종 1회 폴링(거래량·증가율·회전율·상승률, 미국 NAS·NYS 병합·당일) — provider가 kis/ranking 직렬 콜로 구현. */
+  /** 리스트 원천 1회 폴링 — provider가 토스 거래량 실시간 순위(lib/tossRanking.ts)로 구현한다. */
   fetchSnapshot: () => Promise<RankingSnapshot>;
   /** 매수가능금액(USD) 사전 조회 — 현금 부족 PAUSED 판정. 실패/미주입 시 판정 생략. */
   fetchBuyableUsd?: (ticker: string, price: number, exchange: OverseasExchangeCode) => Promise<number | null>;

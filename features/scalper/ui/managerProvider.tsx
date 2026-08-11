@@ -18,23 +18,14 @@ import { loadKisSettings } from '../../../lib/kisSettings';
 import { secureTokenStorage } from '../../../lib/secureTokenStorage';
 import { inquireOverseasBalance } from '../../../kis/balance';
 import { buyableUsdOf, inquirePsAmount } from '../../../kis/psamount';
-import {
-  inquireTradeGrowthRanking,
-  inquireTradeTurnoverRanking,
-  inquireTradeVolumeRanking,
-  inquireUpDownRateRanking,
-  mergeRankingRows,
-  US_RANKING_EXCHANGES,
-  type RankingExchangeCode,
-  type RankingKind,
-} from '../../../kis/ranking';
+import { fetchTossVolumeRanking } from '../../../lib/tossRanking';
 import type { OverseasExchangeCode } from '../../../kis/trId';
 import { AutoPilotManager } from '../autopilotManager';
 import { createKisBroker } from '../createKisBroker';
 import { createRealtimeFeed } from '../createRealtimeFeed';
 import { expoKeepAwake } from '../keepAwake';
 import { ScalperManager } from '../scalperManager';
-import { WATCH_SOURCES, type RankingSnapshot, type WatchCandidateRow } from '../watchlist';
+import type { RankingSnapshot, WatchCandidateRow } from '../watchlist';
 
 export interface ManagerBootstrap {
   /** 피드 허브 — WS 단일 연결 소유, 자동 단타·상세화면으로 틱·호가 분배. */
@@ -84,62 +75,20 @@ async function buildManager(): Promise<ManagerBootstrap> {
     return token.accessToken;
   };
 
-  // 랭킹 응답 행의 공통 부분집합 — 병합 정렬 지표(tvol 등)는 인덱스 시그니처로 함께 들고 간다.
-  type RawRankingRow = {
-    symb: string; rate: string; sign?: string; e_ordyn?: string; last?: string; name?: string; ename?: string;
-  } & Record<string, unknown>;
-
-  // 종목명은 한글명(name) 우선, 비어 있으면 영문명(ename) — 순위 4종 모두 두 필드를 함께 내려준다.
-  const toWatchRows = (rows: RawRankingRow[]): WatchCandidateRow[] =>
-    rows.map((r) => ({
-      symb: r.symb,
-      rate: r.rate,
-      sign: r.sign,
-      e_ordyn: r.e_ordyn,
-      last: r.last,
-      excd: r.excd as string | undefined,
-      name: r.name?.trim() || r.ename?.trim() || undefined,
-    }));
-
-  // 순위 4종 × 미국 거래소(NAS·NYS) 폴링 — 유량을 아끼려 직렬 호출(2026-08-08 3거래소 확대, 2026-08-10 아멕스 제외).
-  // 순위 7종은 전부 실전 도메인 전용(kis/ranking.ts). 거래소별 결과는 순위 지표로 재정렬해 하나로 합친다.
-  // (순위, 거래소) 콜 단위 부분 실패 허용(확장 plan §4-3의 확장): 실패 콜만 빼고 리스트를 구성한다.
-  // 전부 실패하면 throw — ScalperWatchlist가 직전 리스트를 그대로 유지하고 다음 주기에 재시도한다.
+  // 리스트 원천 — 토스 거래량 실시간 순위(2026-08-11 사용자 요청으로 KIS 순위 4종을 대체).
+  // ETF·ETN은 lib/tossRanking.ts가 종목구분(group)으로 이미 걸러낸 상태로 온다.
+  // KIS 토큰이 필요 없다(비공식 공개 API) — 실패하면 throw해서 ScalperWatchlist가 직전 리스트를 유지한다.
   const fetchSnapshot = async (): Promise<RankingSnapshot> => {
-    const accessToken = await getTokenStr();
-    const failures: string[] = [];
-    const fetchAcross = async (
-      kind: RankingKind,
-      label: string,
-      call: (excd: RankingExchangeCode) => Promise<{ output2: RawRankingRow[] }>,
-    ): Promise<WatchCandidateRow[]> => {
-      const lists: RawRankingRow[][] = [];
-      for (const excd of US_RANKING_EXCHANGES) {
-        try {
-          // 응답의 excd 표기를 믿지 않고 요청 거래소로 덮어쓴다 — 구독·주문 거래소 판별의 근거라 확실해야 한다.
-          lists.push((await call(excd)).output2.map((r) => ({ ...r, excd })));
-        } catch (err) {
-          failures.push(`${label}(${excd})`);
-          manager.reportFeedError(err);
-        }
-      }
-      return toWatchRows(mergeRankingRows(kind, lists));
-    };
-
-    const tradeVolume = await fetchAcross('tradeVolume', '거래량순위', (excd) =>
-      inquireTradeVolumeRanking(credentials, accessToken, { excd, nday: '0' }));
-    const tradeGrowth = await fetchAcross('tradeGrowth', '거래증가율순위', (excd) =>
-      inquireTradeGrowthRanking(credentials, accessToken, { excd, nday: '0' }));
-    const tradeTurnover = await fetchAcross('tradeTurnover', '거래회전율순위', (excd) =>
-      inquireTradeTurnoverRanking(credentials, accessToken, { excd, nday: '0' }));
-    // 상승률만 VOL_RANG='3'(1만주 이상) — 등락률만 보는 순위라 저유동성 잡주가 상단을 점거한다(확장 plan §1-1 C).
-    const upDownRate = await fetchAcross('upDownRate', '상승율순위', (excd) =>
-      inquireUpDownRateRanking(credentials, accessToken, { excd, gubn: '1', nday: '0', volRang: '3' }));
-
-    if (failures.length === WATCH_SOURCES.length * US_RANKING_EXCHANGES.length) {
-      throw new Error(`순위 조회 전건 실패 (${failures.join(', ')})`);
-    }
-    return { tradeVolume, tradeGrowth, tradeTurnover, upDownRate };
+    const rows = await fetchTossVolumeRanking();
+    const tossVolume: WatchCandidateRow[] = rows.map((r) => ({
+      symb: r.symbol,
+      // 등락률은 소수 문자열로 넘긴다 — 부호는 sign 없이 rate 원문 그대로 읽힌다(parseSignedRate).
+      rate: r.ratePct.toFixed(2),
+      last: String(r.price),
+      excd: r.market,
+      name: r.name,
+    }));
+    return { tossVolume };
   };
 
   // 재시작 보유 감지(plan §2-6) — 잔고에 수량이 남은 종목 티커 목록.

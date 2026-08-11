@@ -400,7 +400,7 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
             <View className="bg-white">
               <View className="flex-row items-center justify-between px-5 pb-2 pt-4">
                 <Text className="text-[15px] font-bold text-[#191f28]">단타 리스트</Text>
-                <Text className="text-xs text-[#8b95a1]">거래량·증가율·회전율·상승률 상위 {rows.length}종목</Text>
+                <Text className="text-xs text-[#8b95a1]">토스 거래량 실시간 순위 상위 {rows.length}종목</Text>
               </View>
             </View>
           </>

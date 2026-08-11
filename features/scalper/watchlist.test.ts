@@ -19,7 +19,7 @@ function row(symb: string, rate: string, extra: Partial<WatchCandidateRow> = {})
 }
 
 function snapshot(partial: Partial<RankingSnapshot>): RankingSnapshot {
-  return { tradeVolume: [], tradeGrowth: [], tradeTurnover: [], upDownRate: [], ...partial };
+  return { tossVolume: [], ...partial };
 }
 
 /** 수동 트리거 스케줄러 — setInterval 콜백을 잡아두고 tick()으로 강제 실행. */
@@ -63,47 +63,28 @@ describe('parseSignedRate / isOrderable', () => {
   });
 });
 
-describe('computeDesired — 필터·중복 우선권·차순위 충원', () => {
-  it('각 순위에서 +등락 상위 5개씩, 합계 20개(서로 다른 티커)', () => {
+describe('computeDesired — 필터·중복 제거·차순위 충원', () => {
+  it('토스 순위 상위에서 +등락 20개만 채용하고 나머지는 버린다', () => {
     const rows = (prefix: string, n: number) =>
       Array.from({ length: n }, (_, i) => row(`${prefix}${i + 1}`, '1'));
-    const desired = computeDesired(
-      snapshot({
-        tradeVolume: rows('V', 6),
-        tradeGrowth: rows('G', 5),
-        tradeTurnover: rows('T', 5),
-        upDownRate: rows('U', 6),
-      }),
-    );
+    const desired = computeDesired(snapshot({ tossVolume: rows('V', 25) }));
+
     expect(desired).toHaveLength(WATCHLIST_MAX_SIZE);
     expect(WATCHLIST_MAX_SIZE).toBe(20);
-    expect(desired.map((e) => e.ticker)).toEqual([
-      'V1', 'V2', 'V3', 'V4', 'V5',
-      'G1', 'G2', 'G3', 'G4', 'G5',
-      'T1', 'T2', 'T3', 'T4', 'T5',
-      'U1', 'U2', 'U3', 'U4', 'U5',
-    ]);
-    expect(desired.filter((e) => e.source === 'tradeVolume')).toHaveLength(WATCH_SLOTS_PER_SOURCE);
-    expect(desired.filter((e) => e.source === 'upDownRate')).toHaveLength(WATCH_SLOTS_PER_SOURCE);
+    expect(WATCH_SLOTS_PER_SOURCE).toBe(20);
+    expect(desired[0].ticker).toBe('V1');
+    expect(desired[19].ticker).toBe('V20');
+    expect(desired.every((e) => e.source === 'tossVolume')).toBe(true);
   });
 
-  it('상승률 원천이 비어도(조회 실패 등) 나머지 3종으로 15개를 유지한다', () => {
-    const rows = (prefix: string) => Array.from({ length: 5 }, (_, i) => row(`${prefix}${i + 1}`, '1'));
-    const desired = computeDesired(
-      snapshot({
-        tradeVolume: rows('V'),
-        tradeGrowth: rows('G'),
-        tradeTurnover: rows('T'),
-        upDownRate: [],
-      }),
-    );
-    expect(desired).toHaveLength(15);
+  it('순위가 비면(조회 실패 등) 리스트도 비운다', () => {
+    expect(computeDesired(snapshot({ tossVolume: [] }))).toHaveLength(0);
   });
 
   it('음전(-)·보합(0)·주문불가·빈 티커는 건너뛰고 차순위로 충원한다', () => {
     const desired = computeDesired(
       snapshot({
-        tradeVolume: [
+        tossVolume: [
           row('DOWN', '2.0', { sign: '5' }), // 음전
           row('ZERO', '0'), // 보합
           row('NOPE', '1.0', { e_ordyn: 'X' }), // 주문불가
@@ -117,32 +98,23 @@ describe('computeDesired — 필터·중복 우선권·차순위 충원', () => 
     expect(desired.map((e) => e.ticker)).toEqual(['A', 'B', 'C']);
   });
 
-  it('중복 티커는 우선권(거래량→증가율→회전율→상승률)이 가져가고 뒤 순위는 차순위로 채운다', () => {
+  it('같은 티커가 두 번 오면 첫 번째만 채용한다', () => {
     const desired = computeDesired(
-      snapshot({
-        tradeVolume: [row('AAPL', '1'), row('MSFT', '1'), row('NVDA', '1')],
-        tradeGrowth: [row('AAPL', '9'), row('TSLA', '1'), row('AMD', '1'), row('AMZN', '1')],
-        tradeTurnover: [row('MSFT', '9'), row('TSLA', '9'), row('GOOG', '1'), row('META', '1'), row('NFLX', '1')],
-        upDownRate: [row('NVDA', '9'), row('GOOG', '9'), row('SMCI', '5'), row('PLTR', '4'), row('SOUN', '3')],
-      }),
+      snapshot({ tossVolume: [row('AAPL', '1'), row('MSFT', '1'), row('AAPL', '9'), row('NVDA', '1')] }),
     );
-    expect(desired.map((e) => e.ticker)).toEqual([
-      'AAPL', 'MSFT', 'NVDA', // 거래량
-      'TSLA', 'AMD', 'AMZN', // 증가율 — AAPL은 거래량이 선점, 차순위 충원
-      'GOOG', 'META', 'NFLX', // 회전율 — MSFT·TSLA 선점, 차순위 충원
-      'SMCI', 'PLTR', 'SOUN', // 상승률 — NVDA·GOOG 선점, 차순위 충원
-    ]);
+    expect(desired.map((e) => e.ticker)).toEqual(['AAPL', 'MSFT', 'NVDA']);
+    expect(desired[0].rate).toBe(1); // 나중 행이 앞 행을 덮어쓰지 않는다.
   });
 
-  it('후보가 모자라면 그 순위 슬롯은 비워둔다(억지 충원 없음)', () => {
-    const desired = computeDesired(snapshot({ tradeVolume: [row('A', '1')] }));
+  it('후보가 모자라면 슬롯을 비워둔다(억지 충원 없음)', () => {
+    const desired = computeDesired(snapshot({ tossVolume: [row('A', '1')] }));
     expect(desired).toHaveLength(1);
   });
 
   it('진입금액 상한을 넘는 종목은 건너뛰고 차순위로 충원한다', () => {
     const desired = computeDesired(
       snapshot({
-        tradeVolume: [
+        tossVolume: [
           row('RICH', '5', { last: '42.10' }), // $1 초과 — 제외.
           row('EDGE', '4', { last: '1.00' }), // 정확히 $1 — 1주 진입 가능, 채용.
           row('PENNY', '3', { last: '0.42' }),
@@ -158,7 +130,7 @@ describe('computeDesired — 필터·중복 우선권·차순위 충원', () => 
   it('행의 excd를 채용 거래소(market)로 기록한다 — 없거나 모르는 값은 NAS', () => {
     const desired = computeDesired(
       snapshot({
-        tradeVolume: [row('N', '1', { excd: 'NYS' }), row('A', '1', { excd: 'AMS' }), row('X', '1')],
+        tossVolume: [row('N', '1', { excd: 'NYS' }), row('A', '1', { excd: 'AMS' }), row('X', '1')],
       }),
     );
     expect(desired.map((e) => [e.ticker, e.market])).toEqual([
@@ -170,7 +142,7 @@ describe('computeDesired — 필터·중복 우선권·차순위 충원', () => 
 
   it('행의 종목명(name)을 엔트리로 옮긴다 — 공백·빈 값은 undefined(화면이 티커로 폴백)', () => {
     const desired = computeDesired(
-      snapshot({ tradeVolume: [row('TSLA', '1', { name: ' 테슬라 ' }), row('NVDA', '1', { name: '  ' }), row('AMD', '1')] }),
+      snapshot({ tossVolume: [row('TSLA', '1', { name: ' 테슬라 ' }), row('NVDA', '1', { name: '  ' }), row('AMD', '1')] }),
     );
     expect(desired.map((e) => [e.ticker, e.name])).toEqual([
       ['TSLA', '테슬라'],
@@ -181,7 +153,7 @@ describe('computeDesired — 필터·중복 우선권·차순위 충원', () => 
 
   it('상한 미지정이면 가격 필터 없이 기존과 동일하게 동작한다', () => {
     const desired = computeDesired(
-      snapshot({ tradeVolume: [row('RICH', '5', { last: '42.10' }), row('A', '1', { last: '0.5' })] }),
+      snapshot({ tossVolume: [row('RICH', '5', { last: '42.10' }), row('A', '1', { last: '0.5' })] }),
     );
     expect(desired.map((e) => e.ticker)).toEqual(['RICH', 'A']);
   });
@@ -192,7 +164,7 @@ describe('ScalperWatchlist — 폴링·diff·핀 유예', () => {
     const sched = manualScheduler();
     const fetchSnapshot = vi
       .fn<() => Promise<RankingSnapshot>>()
-      .mockResolvedValue(snapshot({ tradeVolume: [row('A', '1')] }));
+      .mockResolvedValue(snapshot({ tossVolume: [row('A', '1')] }));
     const wl = new ScalperWatchlist({ fetchSnapshot, scheduler: sched.scheduler });
 
     wl.start();
@@ -212,8 +184,8 @@ describe('ScalperWatchlist — 폴링·diff·핀 유예', () => {
     const onChange = vi.fn();
     const fetchSnapshot = vi
       .fn<() => Promise<RankingSnapshot>>()
-      .mockResolvedValueOnce(snapshot({ tradeVolume: [row('A', '1'), row('B', '1')] }))
-      .mockResolvedValueOnce(snapshot({ tradeVolume: [row('B', '1'), row('C', '1')] }));
+      .mockResolvedValueOnce(snapshot({ tossVolume: [row('A', '1'), row('B', '1')] }))
+      .mockResolvedValueOnce(snapshot({ tossVolume: [row('B', '1'), row('C', '1')] }));
     const wl = new ScalperWatchlist({ fetchSnapshot, scheduler, onChange });
 
     await wl.refresh();
@@ -230,12 +202,7 @@ describe('ScalperWatchlist — 폴링·diff·핀 유예', () => {
     const { scheduler } = manualScheduler();
     const onChange = vi.fn();
     const twelve = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'];
-    const twelveRows = (names: string[]) => ({
-      tradeVolume: names.slice(0, 3).map((n) => row(n, '1')),
-      tradeGrowth: names.slice(3, 6).map((n) => row(n, '1')),
-      tradeTurnover: names.slice(6, 9).map((n) => row(n, '1')),
-      upDownRate: names.slice(9, 12).map((n) => row(n, '1')),
-    });
+    const twelveRows = (names: string[]) => ({ tossVolume: names.map((n) => row(n, '1')) });
     const fetchSnapshot = vi
       .fn<() => Promise<RankingSnapshot>>()
       .mockResolvedValueOnce(snapshot(twelveRows(twelve)))
@@ -263,7 +230,7 @@ describe('ScalperWatchlist — 폴링·diff·핀 유예', () => {
     const { scheduler } = manualScheduler();
     const fetchSnapshot = vi
       .fn<() => Promise<RankingSnapshot>>()
-      .mockResolvedValue(snapshot({ tradeVolume: [row('A', '1')] }));
+      .mockResolvedValue(snapshot({ tossVolume: [row('A', '1')] }));
     const wl = new ScalperWatchlist({ fetchSnapshot, scheduler });
 
     await wl.refresh();
@@ -278,8 +245,8 @@ describe('ScalperWatchlist — 폴링·diff·핀 유예', () => {
     const { scheduler } = manualScheduler();
     const fetchSnapshot = vi
       .fn<() => Promise<RankingSnapshot>>()
-      .mockResolvedValueOnce(snapshot({ tradeVolume: [row('TSLA', '1', { name: '테슬라' })] }))
-      .mockResolvedValueOnce(snapshot({ tradeVolume: [row('TSLA', '2')] }));
+      .mockResolvedValueOnce(snapshot({ tossVolume: [row('TSLA', '1', { name: '테슬라' })] }))
+      .mockResolvedValueOnce(snapshot({ tossVolume: [row('TSLA', '2')] }));
     const wl = new ScalperWatchlist({ fetchSnapshot, scheduler });
 
     await wl.refresh();
@@ -294,7 +261,7 @@ describe('ScalperWatchlist — 폴링·diff·핀 유예', () => {
     let limit: number | null = 1;
     const fetchSnapshot = vi
       .fn<() => Promise<RankingSnapshot>>()
-      .mockResolvedValue(snapshot({ tradeVolume: [row('RICH', '5', { last: '42.10' }), row('A', '1', { last: '0.50' })] }));
+      .mockResolvedValue(snapshot({ tossVolume: [row('RICH', '5', { last: '42.10' }), row('A', '1', { last: '0.50' })] }));
     const wl = new ScalperWatchlist({ fetchSnapshot, scheduler, maxPriceUsd: () => limit });
 
     await wl.refresh();
@@ -310,7 +277,7 @@ describe('ScalperWatchlist — 폴링·diff·핀 유예', () => {
     const onError = vi.fn();
     const fetchSnapshot = vi
       .fn<() => Promise<RankingSnapshot>>()
-      .mockResolvedValueOnce(snapshot({ tradeVolume: [row('A', '1')] }))
+      .mockResolvedValueOnce(snapshot({ tossVolume: [row('A', '1')] }))
       .mockRejectedValueOnce(new Error('KIS 500'));
     const wl = new ScalperWatchlist({ fetchSnapshot, scheduler, onError });
 

@@ -53,12 +53,7 @@ class PairFeed implements RealtimeFeed {
 const TWELVE = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'];
 
 function snapshotOf(tickers: string[]): RankingSnapshot {
-  return {
-    tradeVolume: tickers.slice(0, 3).map((t) => ({ symb: t, rate: '1' })),
-    tradeGrowth: tickers.slice(3, 6).map((t) => ({ symb: t, rate: '1' })),
-    tradeTurnover: tickers.slice(6, 9).map((t) => ({ symb: t, rate: '1' })),
-    upDownRate: tickers.slice(9, 12).map((t) => ({ symb: t, rate: '1' })),
-  };
+  return { tossVolume: tickers.map((t) => ({ symb: t, rate: '1' })) };
 }
 
 function makeManager(opts: { holdings?: string[]; entryLadder?: { interval: number; triggerCount: number } } = {}) {
@@ -108,10 +103,11 @@ describe('AutoPilotManager — 배선(구독 예산·라우팅·상호 배타)',
   it('3거래소 병합 리스트 — 채용 거래소(NYS/AMS)로 체결가 trKey를 조립한다(excd 없으면 NAS)', async () => {
     const { manager, feed, fetchSnapshot } = makeManager();
     fetchSnapshot.mockResolvedValue({
-      tradeVolume: [{ symb: 'NY1', rate: '1', excd: 'NYS' }],
-      tradeGrowth: [{ symb: 'AM1', rate: '1', excd: 'AMS' }],
-      tradeTurnover: [{ symb: 'NQ1', rate: '1' }],
-      upDownRate: [],
+      tossVolume: [
+        { symb: 'NY1', rate: '1', excd: 'NYS' },
+        { symb: 'AM1', rate: '1', excd: 'AMS' },
+        { symb: 'NQ1', rate: '1' },
+      ],
     });
     manager.start();
     await vi.waitFor(() => expect(manager.watchlist.size).toBe(3));

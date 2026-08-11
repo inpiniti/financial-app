@@ -1,4 +1,9 @@
-// 홈 순위 섹션 — 순위 6종 (kis/ranking.ts). 행 탭 시 종목 상세화면으로 이동한다.
+// 홈 순위 섹션 — 토스 거래량 실시간 순위(기본) + KIS 순위 7종(kis/ranking.ts).
+// 행 탭 시 종목 상세화면으로 이동한다.
+//
+// 토스 순위(lib/tossRanking.ts)는 KIS 키가 없어도 보이는 공개 API라 세션 게이트를 걸지 않는다 —
+// 그래서 안내(설정 필요·오류)는 화면 전체가 아니라 목록 자리에만 그린다(선택 상자를 남겨
+// 사용자가 다시 토스 순위로 돌아올 수 있게).
 import { useCallback, useEffect, useState } from 'react';
 import { FlatList, RefreshControl, Text, View } from 'react-native';
 import { router } from 'expo-router';
@@ -25,11 +30,17 @@ import {
   type RankingExchangeCode,
   type RankingKind,
 } from '../../kis/ranking';
+import { fetchTossVolumeRanking } from '../../lib/tossRanking';
 import { toStockMarketCode } from '../stock/marketCodes';
 import { EmptyState, ErrorNotice, SetupNotice, SkeletonList } from './components';
 import { useKisSession } from './useKisSession';
 
-const KIND_ORDER: RankingKind[] = [
+/** 토스 순위는 KIS 순위와 원천이 달라 UI에서만 한 종류로 합쳐 다룬다. */
+const TOSS_KIND = 'tossVolume';
+type UiRankingKind = typeof TOSS_KIND | RankingKind;
+
+const KIND_ORDER: UiRankingKind[] = [
+  TOSS_KIND, // 기본값 — 사용자가 가장 먼저 보는 순위(2026-08-11).
   'tradeVolume',
   'volumeSurge',
   'priceFluct',
@@ -39,7 +50,12 @@ const KIND_ORDER: RankingKind[] = [
   'upDownRate',
 ];
 
-const KIND_OPTIONS = KIND_ORDER.map((k) => ({ value: k, label: RANKING_KIND_LABEL[k] }));
+const KIND_LABEL: Record<UiRankingKind, string> = {
+  [TOSS_KIND]: '토스거래량실시간순위',
+  ...RANKING_KIND_LABEL,
+};
+
+const KIND_OPTIONS = KIND_ORDER.map((k) => ({ value: k, label: KIND_LABEL[k] }));
 
 // 방향(GUBN) — 가격급등락과 상승율/하락율이 값은 같고(0·1) 라벨만 다르다.
 const DIRECTION_OPTIONS: Array<{ value: PriceFluctDirection; label: string }> = [
@@ -53,7 +69,7 @@ const UPDOWN_DIRECTION_OPTIONS: Array<{ value: PriceFluctDirection; label: strin
 ];
 
 /** 방향 셀렉트를 쓰는 순위 종류 — 둘 다 GUBN 0/1이라 상태를 하나로 공유한다. */
-const DIRECTION_KINDS: RankingKind[] = ['priceFluct', 'upDownRate'];
+const DIRECTION_KINDS: UiRankingKind[] = ['priceFluct', 'upDownRate'];
 
 // 일 단위 창(거래량순위·거래증가율순위·거래회전율순위) 프리셋 — 문서 설명 그대로.
 const DAY_WINDOW_OPTIONS: Array<{ value: DayWindow; label: string }> = [
@@ -98,7 +114,7 @@ export function Ranking() {
   const [reloadKey, setReloadKey] = useState(0);
   const session = useKisSession(reloadKey);
 
-  const [kind, setKind] = useState<RankingKind>('tradeVolume');
+  const [kind, setKind] = useState<UiRankingKind>(TOSS_KIND);
   const [dayWindow, setDayWindow] = useState<DayWindow>('0');
   const [minuteWindow, setMinuteWindow] = useState<MinuteWindow>('0');
   const [priceDirection, setPriceDirection] = useState<PriceFluctDirection>('1');
@@ -108,7 +124,34 @@ export function Ranking() {
   const [dataError, setDataError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
-  const fetchRanking = useCallback(async () => {
+  // 토스 순위 — KIS 세션 없이 바로 조회한다(공개 API). 세션에 의존하지 않아야
+  // 세션 로딩 완료로 콜백이 새로 만들어질 때 같은 조회를 두 번 하지 않는다.
+  const fetchToss = useCallback(async () => {
+    setLoadingData(true);
+    setDataError(null);
+    try {
+      const tossRows = await fetchTossVolumeRanking();
+      // 응답에 등락률 필드가 없어 기준가 대비로 계산된 값이 온다 — 색은 KIS의 sign 관례로 맞춘다.
+      setRows(
+        tossRows.map((r) => ({
+          symb: r.symbol,
+          last: String(r.price),
+          rate: r.ratePct.toFixed(2),
+          sign: r.ratePct > 0 ? '2' : r.ratePct < 0 ? '5' : '4',
+          excd: r.market,
+          name: r.name,
+        })),
+      );
+    } catch (e) {
+      setDataError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoadingData(false);
+      setRefreshing(false);
+    }
+  }, []);
+
+  const fetchKisRanking = useCallback(async () => {
+    if (kind === TOSS_KIND) return;
     if (session.kind !== 'ready') return;
     setLoadingData(true);
     setDataError(null);
@@ -154,15 +197,24 @@ export function Ranking() {
     }
   }, [session, kind, dayWindow, minuteWindow, priceDirection]);
 
+  // 원천이 둘이라 효과도 둘 — 토스 쪽이 세션 변화(로딩→준비)에 딸려 다시 돌지 않게 분리한다.
   useEffect(() => {
-    if (session.kind === 'ready') fetchRanking();
-  }, [session, fetchRanking]);
+    if (kind === TOSS_KIND) void fetchToss();
+  }, [kind, fetchToss]);
+
+  useEffect(() => {
+    if (kind !== TOSS_KIND && session.kind === 'ready') void fetchKisRanking();
+  }, [kind, session, fetchKisRanking]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
-    setReloadKey((k) => k + 1);
-    fetchRanking();
-  }, [fetchRanking]);
+    if (kind === TOSS_KIND) {
+      void fetchToss();
+      return;
+    }
+    setReloadKey((k) => k + 1); // KIS는 토큰 만료도 함께 재확인한다.
+    void fetchKisRanking();
+  }, [kind, fetchToss, fetchKisRanking]);
 
   // 행 탭 → 종목 상세화면. 병합 조회라 행마다 거래소가 다르다 — 행에 박아둔 excd를 넘긴다.
   const handleRowPress = useCallback((row: RankingRowShape) => {
@@ -172,10 +224,11 @@ export function Ranking() {
     });
   }, []);
 
-  const timeUnit = RANKING_TIME_UNIT[kind];
-
-  if (session.kind === 'needsSetup') return <SetupNotice />;
-  if (session.kind === 'error') return <ErrorNotice message={session.message} />;
+  const isToss = kind === TOSS_KIND;
+  // 토스 순위는 기간·방향 선택이 없다(항상 실시간). 시간창 라벨은 KIS 순위에서만 쓴다.
+  const timeUnit = isToss ? 'none' : RANKING_TIME_UNIT[kind];
+  // 토스 순위는 KIS 키 없이도 보인다 — 세션 안내는 KIS 순위를 골랐을 때만.
+  const sessionBlocked = !isToss && (session.kind === 'needsSetup' || session.kind === 'error');
 
   const periodOptions = timeUnit === 'minute' ? MINUTE_WINDOW_OPTIONS : DAY_WINDOW_OPTIONS;
   const periodValue = timeUnit === 'minute' ? minuteWindow : dayWindow;
@@ -185,13 +238,25 @@ export function Ranking() {
     <View className="flex-1 bg-[#f2f4f6]">
       <View className="mb-2 bg-white px-4 pb-3 pt-3">
         <View className="flex-row" style={{ gap: 8 }}>
-          <SelectBox label="순위 종류" value={kind} options={KIND_OPTIONS} onChange={(v) => setKind(v as RankingKind)} />
           <SelectBox
-            label={timeUnit === 'minute' ? '기간(분)' : '기간(일)'}
-            value={periodValue}
-            options={periodOptions}
-            onChange={(v) => handlePeriodChange(v as DayWindow)}
+            label="순위 종류"
+            value={kind}
+            options={KIND_OPTIONS}
+            onChange={(v) => {
+              // 종류가 바뀌면 직전 결과를 비운다 — 원천이 달라 잔상이 남으면 오해를 부른다.
+              setRows(null);
+              setDataError(null);
+              setKind(v as UiRankingKind);
+            }}
           />
+          {!isToss && (
+            <SelectBox
+              label={timeUnit === 'minute' ? '기간(분)' : '기간(일)'}
+              value={periodValue}
+              options={periodOptions}
+              onChange={(v) => handlePeriodChange(v as DayWindow)}
+            />
+          )}
         </View>
 
         {DIRECTION_KINDS.includes(kind) && (
@@ -206,7 +271,13 @@ export function Ranking() {
         )}
       </View>
 
-      {session.kind === 'loading' || (loadingData && rows === null) ? (
+      {sessionBlocked ? (
+        session.kind === 'needsSetup' ? (
+          <SetupNotice />
+        ) : (
+          <ErrorNotice message={session.kind === 'error' ? session.message : ''} />
+        )
+      ) : (!isToss && session.kind === 'loading') || (loadingData && rows === null) ? (
         <Panel style={{ flex: 1, marginBottom: 0 }}>
           <SkeletonList />
         </Panel>

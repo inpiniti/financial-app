@@ -1,11 +1,12 @@
 // 단타 리스트 관리자 — plan §2-3 (docs/development/2026-07-31_단타-자동관리-plan.md).
 // 원천 확장(3종→4종, 상승률 추가): docs/development/2026-08-03_단타-리스트-상승률확장-plan.md.
 //
-// 순위 4종(거래량·거래증가율·거래회전율·상승률, 미국 거래소(NAS·NYS) 병합·당일, 아멕스는 2026-08-10 제외)을 3분 간격으로 폴링해
-// "등락률 +, 주문가능, 진입금액 이하" 상위 5종목씩 → 서로 다른 20티커를 상시 유지한다.
+// 원천 교체(2026-08-11 사용자 요청): KIS 순위 4종 → **토스 거래량 실시간 순위**(lib/tossRanking.ts) 1종.
+// 토스 순위 상위 100종(ETF·ETN 제외)을 3분 간격으로 폴링해
+// "등락률 +, 주문가능, 진입금액 이하" 상위 20티커를 상시 유지한다(모자라면 차순위로 충원).
 //  · 현재가 > 진입금액이면 어차피 1주도 못 사서(qtyForAmount=0) 감시·WS 구독이 낭비다 —
 //    리스트 구성 단계에서 걸러내고 차순위로 충원한다(maxPriceUsd).
-//  · 랭킹 간 중복 티커는 우선권(거래량→증가율→회전율→상승률)에 따라 1개만 올리고 차순위로 충원.
+//  · 중복 티커는 1개만 올리고 차순위로 충원(원천이 여러 개면 배열 순서가 곧 우선권).
 //  · 리스트에서 밀려난 종목은 즉시 제거하되, 사이클 진행 중(핀 고정)이면 제거를 유예하고
 //    unpin(사이클 종료) 시점에 즉시 제거한다 — 핀은 여러 개 걸릴 수 있어(다중 그리드)
 //    일시적으로 12+동시그리드수 종목까지 허용된다.
@@ -16,21 +17,18 @@
 import type { SchedulerLike } from './types';
 
 /**
- * 리스트 원천 순위 4종 — 배열 순서가 곧 중복 티커 우선권이다(plan §4-2).
- * 상승률(upDownRate)은 맨 뒤 — 기존 3종 구성을 보존하고 남은 티커만 채운다(확장 plan §1-1 A).
+ * 리스트 원천 — 토스 거래량 실시간 순위 1종(2026-08-11 사용자 요청).
+ * 배열 구조(여러 원천 + 우선권)는 그대로 남겨둔다 — 나중에 원천을 다시 늘릴 때 이 자리에 붙인다.
  */
-export const WATCH_SOURCES = ['tradeVolume', 'tradeGrowth', 'tradeTurnover', 'upDownRate'] as const;
+export const WATCH_SOURCES = ['tossVolume'] as const;
 export type WatchSource = (typeof WATCH_SOURCES)[number];
 
 export const WATCH_SOURCE_LABEL: Record<WatchSource, string> = {
-  tradeVolume: '거래량',
-  tradeGrowth: '증가율',
-  tradeTurnover: '회전율',
-  upDownRate: '상승률',
+  tossVolume: '토스거래량',
 };
 
-/** 순위별 채용 슬롯 수(상위 5 — 2026-08-06 사용자 요청으로 3→5 확대) · 폴링 주기 3분(plan §4-10). */
-export const WATCH_SLOTS_PER_SOURCE = 5;
+/** 원천별 채용 슬롯 수 — 원천이 1종이라 곧 리스트 크기(20) · 폴링 주기 3분(plan §4-10). */
+export const WATCH_SLOTS_PER_SOURCE = 20;
 /** 평시 리스트 최대 크기(원천 수 × 슬롯 수 = 20) — 핀 유예 중에는 이보다 커질 수 있다. */
 export const WATCHLIST_MAX_SIZE = WATCH_SOURCES.length * WATCH_SLOTS_PER_SOURCE;
 export const WATCHLIST_POLL_INTERVAL_MS = 180_000;
@@ -62,7 +60,7 @@ export function toWatchMarket(excd: string | undefined): WatchMarket {
   return v === 'NYS' || v === 'AMS' ? v : 'NAS';
 }
 
-/** 한 번의 폴링에서 얻은 순위 4종 스냅샷 — 각 배열은 순위 순서(상위부터)라고 가정한다. */
+/** 한 번의 폴링에서 얻은 원천별 스냅샷 — 각 배열은 순위 순서(상위부터)라고 가정한다. */
 export type RankingSnapshot = Record<WatchSource, readonly WatchCandidateRow[]>;
 
 export interface WatchEntry {
@@ -85,7 +83,7 @@ export interface WatchlistDiff {
 }
 
 export interface WatchlistDeps {
-  /** 순위 4종 1회 폴링 — 실서비스는 kis/ranking.ts 4콜 직렬, 테스트는 가짜 스냅샷. */
+  /** 원천 1회 폴링 — 실서비스는 lib/tossRanking.ts(순위+종목정보 2콜), 테스트는 가짜 스냅샷. */
   fetchSnapshot: () => Promise<RankingSnapshot>;
   scheduler: SchedulerLike;
   pollIntervalMs?: number;

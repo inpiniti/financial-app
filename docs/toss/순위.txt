@@ -1,0 +1,2577 @@
+fetch("https://wts-cert-api.tossinvest.com/api/v2/dashboard/wts/overview/ranking", {
+  "headers": {
+    "accept": "application/json",
+    "app-version": "v260810.2002",
+    "browser-tab-id": "browser-tab-888eacd8bbd0449a856e10c60be0a7b5",
+    "content-type": "application/json",
+    "sec-ch-ua": "\"Not=A?Brand\";v=\"99\", \"Google Chrome\";v=\"151\", \"Chromium\";v=\"151\"",
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": "\"Windows\"",
+    "x-xsrf-token": "29a778a2-b27d-4c08-83eb-ec04bcaba852"
+  },
+  "referrer": "https://www.tossinvest.com/?market=us&live-chart=biggest_market_volume&duration=realtime",
+  "body": "{\"id\":\"biggest_market_volume\",\"filters\":[\"KRX_MANAGEMENT_STOCK\",\"MARKET_CAP_GREATER_THAN_50M\",\"STOCKS_PRICE_GREATER_THAN_ONE_DOLLAR\"],\"duration\":\"realtime\",\"tag\":\"us\"}",
+  "method": "POST",
+  "mode": "cors",
+  "credentials": "omit"
+});
+
+{
+    "result": {
+        "basedAt": "2026-08-11T12:34:58.37+09:00",
+        "type": "STOCK",
+        "products": [
+            {
+                "rank": 1,
+                "productCode": "US20130410003",
+                "name": "KORU",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-KORU.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 16.41,
+                    "close": 17.25,
+                    "baseKrw": 23220,
+                    "closeKrw": 24413,
+                    "marketVolume": 401209,
+                    "marketAmount": 9810736420
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 23523,
+                    "tossSecuritiesSell": 53642
+                },
+                "marketCapKrw": 1926057389382,
+                "marketCapUsd": 1357525648
+            },
+            {
+                "rank": 2,
+                "productCode": "US20100311002",
+                "name": "SOXL",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-SOXL.png?20240409",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 130,
+                    "close": 134.39,
+                    "baseKrw": 183950,
+                    "closeKrw": 190202,
+                    "marketVolume": 91826,
+                    "marketAmount": 17445233679
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 5387,
+                    "tossSecuritiesSell": 4537
+                },
+                "marketCapKrw": 33917294954202,
+                "marketCapUsd": 23905620915,
+                "primaryTics": {
+                    "ticsId": 169,
+                    "name": "반도체"
+                }
+            },
+            {
+                "rank": 3,
+                "productCode": "NAS2607014009",
+                "name": "SKUU",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-SKUU.png?20260714",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 16.5,
+                    "close": 17.01,
+                    "baseKrw": 23347,
+                    "closeKrw": 24074,
+                    "marketVolume": 67925,
+                    "marketAmount": 1636869153
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 0,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 213395347520,
+                "marketCapUsd": 150405517,
+                "primaryTics": {
+                    "ticsId": 553,
+                    "name": "종합반도체"
+                }
+            },
+            {
+                "rank": 4,
+                "productCode": "NAS2607010002",
+                "name": "SK하이닉스(ADR)",
+                "logoImageUrl": "https://static.toss.im/logos/securities/icn-sec-fill-SKHYV.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 135.29,
+                    "close": 137.49,
+                    "baseKrw": 191435,
+                    "closeKrw": 194589,
+                    "marketVolume": 59960,
+                    "marketAmount": 11659231353
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 1580,
+                    "tossSecuritiesSell": 1903
+                },
+                "marketCapKrw": 1426147129597740,
+                "marketCapUsd": 1005178411050,
+                "primaryTics": {
+                    "ticsId": 553,
+                    "name": "종합반도체"
+                }
+            },
+            {
+                "rank": 5,
+                "productCode": "US20100211002",
+                "name": "SQQQ",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-SQQQ.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 37.73,
+                    "close": 37.42,
+                    "baseKrw": 53387,
+                    "closeKrw": 52960,
+                    "marketVolume": 47963,
+                    "marketAmount": 2537503415
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 113,
+                    "tossSecuritiesSell": 63
+                },
+                "marketCapKrw": 2653219834650,
+                "marketCapUsd": 1870044992
+            },
+            {
+                "rank": 6,
+                "productCode": "AMX2604002001",
+                "name": "DRAM",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-DRAM.png?2026-04-03",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 49.6,
+                    "close": 50.83,
+                    "baseKrw": 70184,
+                    "closeKrw": 71939,
+                    "marketVolume": 47111,
+                    "marketAmount": 3383700821
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 158,
+                    "tossSecuritiesSell": 361
+                },
+                "marketCapKrw": 33724671692800,
+                "marketCapUsd": 23769856000,
+                "primaryTics": {
+                    "ticsId": 169,
+                    "name": "반도체"
+                }
+            },
+            {
+                "rank": 7,
+                "productCode": "US20100311003",
+                "name": "SOXS",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-SOXS.png?20240417",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 45.21,
+                    "close": 43.68,
+                    "baseKrw": 63972,
+                    "closeKrw": 61820,
+                    "marketVolume": 45945,
+                    "marketAmount": 2844156722
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 6478,
+                    "tossSecuritiesSell": 6395
+                },
+                "marketCapKrw": 2060847983457,
+                "marketCapUsd": 1452528886,
+                "primaryTics": {
+                    "ticsId": 169,
+                    "name": "반도체"
+                }
+            },
+            {
+                "rank": 8,
+                "productCode": "US20060428002",
+                "name": "SLV",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-SLV.png?20240411",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 59.41,
+                    "close": 59.55,
+                    "baseKrw": 84065,
+                    "closeKrw": 84281,
+                    "marketVolume": 41612,
+                    "marketAmount": 3502124476
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 1,
+                    "tossSecuritiesSell": 17
+                },
+                "marketCapKrw": 44029265700000,
+                "marketCapUsd": 31032750000,
+                "primaryTics": {
+                    "ticsId": 147,
+                    "name": "금속"
+                }
+            },
+            {
+                "rank": 9,
+                "productCode": "US20210825002",
+                "name": "로켓 랩",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-RKLB.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 80.04,
+                    "close": 74.09,
+                    "baseKrw": 113256,
+                    "closeKrw": 104859,
+                    "marketVolume": 28278,
+                    "marketAmount": 2963741763
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 1001,
+                    "tossSecuritiesSell": 1175
+                },
+                "marketCapKrw": 70297662480608,
+                "marketCapUsd": 49547267043,
+                "primaryTics": {
+                    "ticsId": 85,
+                    "name": "우주항공"
+                },
+                "notice": {
+                    "message": null,
+                    "alert": null,
+                    "splitMerge": false,
+                    "earningsAnnouncement": true
+                }
+            },
+            {
+                "rank": 10,
+                "productCode": "AMX2606024015",
+                "name": "RAM",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-RAM.png?20260625",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 9.98,
+                    "close": 10.47,
+                    "baseKrw": 14121,
+                    "closeKrw": 14818,
+                    "marketVolume": 27978,
+                    "marketAmount": 413785660
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 11516,
+                    "tossSecuritiesSell": 7866
+                },
+                "marketCapKrw": 690850325040,
+                "marketCapUsd": 486925800,
+                "primaryTics": {
+                    "ticsId": 553,
+                    "name": "종합반도체"
+                }
+            },
+            {
+                "rank": 11,
+                "productCode": "US20100211003",
+                "name": "TQQQ",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-TQQQ.png?20240409",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 73.8,
+                    "close": 74.42,
+                    "baseKrw": 104427,
+                    "closeKrw": 105326,
+                    "marketVolume": 25521,
+                    "marketAmount": 2688541371
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 561,
+                    "tossSecuritiesSell": 161
+                },
+                "marketCapKrw": 52998070857600,
+                "marketCapUsd": 37354152000
+            },
+            {
+                "rank": 12,
+                "productCode": "US20201123016",
+                "name": "GDXU",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-GDXU.png?20240409",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 133.31,
+                    "close": 137,
+                    "baseKrw": 188633,
+                    "closeKrw": 193896,
+                    "marketVolume": 25135,
+                    "marketAmount": 4858750248
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 1163,
+                    "tossSecuritiesSell": 234
+                },
+                "marketCapKrw": 1665490642093,
+                "marketCapUsd": 1173872739,
+                "primaryTics": {
+                    "ticsId": 777,
+                    "name": "광산개발"
+                }
+            },
+            {
+                "rank": 13,
+                "productCode": "US19711013001",
+                "name": "인텔",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NAS000N01-E0.png?20240502",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 97.52,
+                    "close": 98.54,
+                    "baseKrw": 137990,
+                    "closeKrw": 139463,
+                    "marketVolume": 18494,
+                    "marketAmount": 2579830335
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 89,
+                    "tossSecuritiesSell": 101
+                },
+                "marketCapKrw": 727450824880000,
+                "marketCapUsd": 512722600000,
+                "primaryTics": {
+                    "ticsId": 553,
+                    "name": "종합반도체"
+                }
+            },
+            {
+                "rank": 14,
+                "productCode": "US20180910002",
+                "name": "니오(ADR)",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NYS0JWGJB-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 4.82,
+                    "close": 4.7,
+                    "baseKrw": 6820,
+                    "closeKrw": 6651,
+                    "marketVolume": 16918,
+                    "marketAmount": 112451678
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 21,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 16450831862987,
+                "marketCapUsd": 11594891361,
+                "primaryTics": {
+                    "ticsId": 295,
+                    "name": "전기차"
+                }
+            },
+            {
+                "rank": 15,
+                "productCode": "US20220809012",
+                "name": "TSLL",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-TSLL.png?20250604",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 8.21,
+                    "close": 8.25,
+                    "baseKrw": 11617,
+                    "closeKrw": 11676,
+                    "marketVolume": 16442,
+                    "marketAmount": 191888023
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 3900,
+                    "tossSecuritiesSell": 1089
+                },
+                "marketCapKrw": 4652928008850,
+                "marketCapUsd": 3279481258,
+                "primaryTics": {
+                    "ticsId": 295,
+                    "name": "전기차"
+                }
+            },
+            {
+                "rank": 16,
+                "productCode": "AMX2603012002",
+                "name": "SNDU",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-SNDU.png?2026-03-13",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 14.75,
+                    "close": 15.12,
+                    "baseKrw": 20871,
+                    "closeKrw": 21399,
+                    "marketVolume": 16395,
+                    "marketAmount": 350444137
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 10,
+                    "tossSecuritiesSell": 3
+                },
+                "marketCapKrw": 182820892800,
+                "marketCapUsd": 128856000,
+                "primaryTics": {
+                    "ticsId": 553,
+                    "name": "종합반도체"
+                }
+            },
+            {
+                "rank": 17,
+                "productCode": "US20210121009",
+                "name": "힘스 앤 허스 헬스",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NYS0N9YGZ-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 31.77,
+                    "close": 29.81,
+                    "baseKrw": 44954,
+                    "closeKrw": 42190,
+                    "marketVolume": 16115,
+                    "marketAmount": 678908271
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 41,
+                    "tossSecuritiesSell": 371
+                },
+                "marketCapKrw": 10373908892398,
+                "marketCapUsd": 7311748585,
+                "primaryTics": {
+                    "ticsId": 925,
+                    "name": "의료서비스"
+                },
+                "notice": {
+                    "message": null,
+                    "alert": null,
+                    "splitMerge": false,
+                    "earningsAnnouncement": true
+                }
+            },
+            {
+                "rank": 18,
+                "productCode": "NAS0251001003",
+                "name": "퍼미",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-FRMI.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 5.88,
+                    "close": 7.03,
+                    "baseKrw": 8320,
+                    "closeKrw": 9949,
+                    "marketVolume": 15678,
+                    "marketAmount": 156171565
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 1493,
+                    "tossSecuritiesSell": 201
+                },
+                "marketCapKrw": 5590368241184,
+                "marketCapUsd": 3940208797,
+                "primaryTics": {
+                    "ticsId": 731,
+                    "name": "인프라 리츠"
+                },
+                "notice": {
+                    "message": null,
+                    "alert": null,
+                    "splitMerge": false,
+                    "earningsAnnouncement": true
+                }
+            },
+            {
+                "rank": 19,
+                "productCode": "US20140915003",
+                "name": "알리바바(ADR)",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NYS06ZPRF-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 132.32,
+                    "close": 129.53,
+                    "baseKrw": 187232,
+                    "closeKrw": 183323,
+                    "marketVolume": 14378,
+                    "marketAmount": 2642050557
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 137,
+                    "tossSecuritiesSell": 10
+                },
+                "marketCapKrw": 436681869031758,
+                "marketCapUsd": 307782540902,
+                "primaryTics": {
+                    "ticsId": 215,
+                    "name": "온라인쇼핑"
+                }
+            },
+            {
+                "rank": 20,
+                "productCode": "AMX0240918002",
+                "name": "MSTU",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-MSTU.png?20251223",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 1.89,
+                    "close": 1.9,
+                    "baseKrw": 2674,
+                    "closeKrw": 2689,
+                    "marketVolume": 14219,
+                    "marketAmount": 38233391
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 0,
+                    "tossSecuritiesSell": 12
+                },
+                "marketCapKrw": 486532763544,
+                "marketCapUsd": 342918497,
+                "primaryTics": {
+                    "ticsId": 389,
+                    "name": "소프트웨어"
+                }
+            },
+            {
+                "rank": 21,
+                "productCode": "NAS2606012004",
+                "name": "스페이스X",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-SPCX.png?20260612",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 138.74,
+                    "close": 136.7,
+                    "baseKrw": 196317,
+                    "closeKrw": 193471,
+                    "marketVolume": 13563,
+                    "marketAmount": 2624194800
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 410,
+                    "tossSecuritiesSell": 472
+                },
+                "marketCapKrw": 2489464402366005,
+                "marketCapUsd": 1754626728479,
+                "primaryTics": {
+                    "ticsId": 85,
+                    "name": "우주항공"
+                }
+            },
+            {
+                "rank": 22,
+                "productCode": "US19990122001",
+                "name": "엔비디아",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NAS00208X-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 217.55,
+                    "close": 219.02,
+                    "baseKrw": 307833,
+                    "closeKrw": 309979,
+                    "marketVolume": 13200,
+                    "marketAmount": 4090992546
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 92,
+                    "tossSecuritiesSell": 219
+                },
+                "marketCapKrw": 7689657641600000,
+                "marketCapUsd": 5419832000000,
+                "primaryTics": {
+                    "ticsId": 179,
+                    "name": "반도체팹리스"
+                }
+            },
+            {
+                "rank": 23,
+                "productCode": "NAS0230105005",
+                "name": "테낙스 테라퓨틱스",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NAS0019FG-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 1.37,
+                    "close": 1.53,
+                    "baseKrw": 1938,
+                    "closeKrw": 2165,
+                    "marketVolume": 13031,
+                    "marketAmount": 28048283
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 10987,
+                    "tossSecuritiesSell": 12245
+                },
+                "marketCapKrw": 713624397547,
+                "marketCapUsd": 502977444,
+                "primaryTics": {
+                    "ticsId": 37,
+                    "name": "바이오신약"
+                }
+            },
+            {
+                "rank": 24,
+                "productCode": "US20000512001",
+                "name": "EWY",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-EWY.png?20240618",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 163.12,
+                    "close": 165.95,
+                    "baseKrw": 230814,
+                    "closeKrw": 234869,
+                    "marketVolume": 12974,
+                    "marketAmount": 3051771409
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 0,
+                    "tossSecuritiesSell": 7
+                },
+                "marketCapKrw": 36466604137000,
+                "marketCapUsd": 25702427500
+            },
+            {
+                "rank": 25,
+                "productCode": "US20180823002",
+                "name": "HF 푸즈 그룹",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NAS0JXCRG-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 1.56,
+                    "close": 1.79,
+                    "baseKrw": 2207,
+                    "closeKrw": 2533,
+                    "marketVolume": 12721,
+                    "marketAmount": 32268125
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 4738,
+                    "tossSecuritiesSell": 4129
+                },
+                "marketCapKrw": 118358638439,
+                "marketCapUsd": 83421651,
+                "primaryTics": {
+                    "ticsId": 225,
+                    "name": "식자재유통"
+                },
+                "notice": {
+                    "message": null,
+                    "alert": null,
+                    "splitMerge": false,
+                    "earningsAnnouncement": true
+                }
+            },
+            {
+                "rank": 26,
+                "productCode": "US20171019002",
+                "name": "라이엇 플랫폼스",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-RIOT.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 19.4,
+                    "close": 24.09,
+                    "baseKrw": 27451,
+                    "closeKrw": 34094,
+                    "marketVolume": 11760,
+                    "marketAmount": 402155869
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 157,
+                    "tossSecuritiesSell": 214
+                },
+                "marketCapKrw": 11009410204912,
+                "marketCapUsd": 7759663240,
+                "primaryTics": {
+                    "ticsId": 955,
+                    "name": "비트코인"
+                },
+                "notice": {
+                    "message": null,
+                    "alert": null,
+                    "splitMerge": false,
+                    "earningsAnnouncement": true
+                }
+            },
+            {
+                "rank": 27,
+                "productCode": "US19890516001",
+                "name": "마이크론 테크놀로지",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NAS000PZY-E0.png?20241104",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 861,
+                    "close": 871.64,
+                    "baseKrw": 1218315,
+                    "closeKrw": 1233632,
+                    "marketVolume": 11736,
+                    "marketAmount": 14477445377
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 66,
+                    "tossSecuritiesSell": 78
+                },
+                "marketCapKrw": 1406203251625632,
+                "marketCapUsd": 991121547523,
+                "primaryTics": {
+                    "ticsId": 553,
+                    "name": "종합반도체"
+                }
+            },
+            {
+                "rank": 28,
+                "productCode": "NAS0241127002",
+                "name": "포니 AI (ADR)",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-PONY.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 8.46,
+                    "close": 8.7,
+                    "baseKrw": 11970,
+                    "closeKrw": 12313,
+                    "marketVolume": 11728,
+                    "marketAmount": 144138897
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 0,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 5023220200886,
+                "marketCapUsd": 3540470962,
+                "primaryTics": {
+                    "ticsId": 239,
+                    "name": "물류"
+                }
+            },
+            {
+                "rank": 29,
+                "productCode": "US19990310001",
+                "name": "QQQ",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-QQQ.png?20240415",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 720.87,
+                    "close": 723.04,
+                    "baseKrw": 1020031,
+                    "closeKrw": 1023318,
+                    "marketVolume": 10266,
+                    "marketAmount": 10506203307
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 26,
+                    "tossSecuritiesSell": 10
+                },
+                "marketCapKrw": 690079180282800,
+                "marketCapUsd": 486382281000,
+                "primaryTics": {
+                    "ticsId": 87,
+                    "name": "IT"
+                }
+            },
+            {
+                "rank": 30,
+                "productCode": "NAS0241010007",
+                "name": "MUU",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-MUU.png?20241104",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 25.62,
+                    "close": 26.3,
+                    "baseKrw": 36252,
+                    "closeKrw": 37222,
+                    "marketVolume": 9703,
+                    "marketAmount": 360368987
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 20,
+                    "tossSecuritiesSell": 19
+                },
+                "marketCapKrw": 5334795164802,
+                "marketCapUsd": 3760075532,
+                "primaryTics": {
+                    "ticsId": 553,
+                    "name": "종합반도체"
+                }
+            },
+            {
+                "rank": 31,
+                "productCode": "US20041118001",
+                "name": "GLD",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-GLD.png?20251223",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 402.54,
+                    "close": 405.42,
+                    "baseKrw": 569594,
+                    "closeKrw": 573790,
+                    "marketVolume": 9232,
+                    "marketAmount": 5292170013
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 11,
+                    "tossSecuritiesSell": 8
+                },
+                "marketCapKrw": 200981653398000,
+                "marketCapUsd": 141656085000,
+                "primaryTics": {
+                    "ticsId": 147,
+                    "name": "금속"
+                }
+            },
+            {
+                "rank": 32,
+                "productCode": "AMX2604024001",
+                "name": "AXTX",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-defaultETF.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 9.9,
+                    "close": 10.38,
+                    "baseKrw": 14008,
+                    "closeKrw": 14690,
+                    "marketVolume": 9159,
+                    "marketAmount": 133920643
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 0,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 384867093120,
+                "marketCapUsd": 271262400
+            },
+            {
+                "rank": 33,
+                "productCode": "AMX2606015011",
+                "name": "SPCH",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-SPCH.png?20260615",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 8.97,
+                    "close": 8.72,
+                    "baseKrw": 12692,
+                    "closeKrw": 12341,
+                    "marketVolume": 7804,
+                    "marketAmount": 96302906
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 2,
+                    "tossSecuritiesSell": 33
+                },
+                "marketCapKrw": 382915108080,
+                "marketCapUsd": 269886600,
+                "primaryTics": {
+                    "ticsId": 85,
+                    "name": "우주항공"
+                }
+            },
+            {
+                "rank": 34,
+                "productCode": "AMX2603024001",
+                "name": "AAOX",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-AAOX.png?2026-03-31",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 19.41,
+                    "close": 19.22,
+                    "baseKrw": 27465,
+                    "closeKrw": 27202,
+                    "marketVolume": 7487,
+                    "marketAmount": 202949804
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 0,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 430759172280,
+                "marketCapUsd": 303608100,
+                "primaryTics": {
+                    "ticsId": 747,
+                    "name": "유선장비"
+                }
+            },
+            {
+                "rank": 35,
+                "productCode": "AMX0240918003",
+                "name": "MSTZ",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-MSTZ.png?20251223",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 10.82,
+                    "close": 10.78,
+                    "baseKrw": 15310,
+                    "closeKrw": 15256,
+                    "marketVolume": 7470,
+                    "marketAmount": 114167750
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 0,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 128453895600,
+                "marketCapUsd": 90537000,
+                "primaryTics": {
+                    "ticsId": 389,
+                    "name": "소프트웨어"
+                }
+            },
+            {
+                "rank": 36,
+                "productCode": "AMX0230627001",
+                "name": "BITX",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-BITX.png?20240409",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 12.02,
+                    "close": 12.06,
+                    "baseKrw": 17008,
+                    "closeKrw": 17068,
+                    "marketVolume": 7327,
+                    "marketAmount": 124734768
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 248,
+                    "tossSecuritiesSell": 77
+                },
+                "marketCapKrw": 1290087457160,
+                "marketCapUsd": 909280700,
+                "primaryTics": {
+                    "ticsId": 955,
+                    "name": "비트코인"
+                }
+            },
+            {
+                "rank": 37,
+                "productCode": "US20091203003",
+                "name": "YINN",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-YINN.png?20240409",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 32.3,
+                    "close": 31.05,
+                    "baseKrw": 45704,
+                    "closeKrw": 43945,
+                    "marketVolume": 7325,
+                    "marketAmount": 322128699
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 4,
+                    "tossSecuritiesSell": 1
+                },
+                "marketCapKrw": 1036535782027,
+                "marketCapUsd": 730572161
+            },
+            {
+                "rank": 38,
+                "productCode": "US19971008002",
+                "name": "TSMC(ADR)",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NYS001Y70-E0.png?20240424",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 418.47,
+                    "close": 421.9,
+                    "baseKrw": 592135,
+                    "closeKrw": 597115,
+                    "marketVolume": 7249,
+                    "marketAmount": 4330549339
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 9,
+                    "tossSecuritiesSell": 8
+                },
+                "marketCapKrw": 3090893453476448,
+                "marketCapUsd": 2178526538960,
+                "primaryTics": {
+                    "ticsId": 205,
+                    "name": "반도체파운드리"
+                }
+            },
+            {
+                "rank": 39,
+                "productCode": "US19991029003",
+                "name": "플러그 파워",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-PLUG.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 2.11,
+                    "close": 2.26,
+                    "baseKrw": 2985,
+                    "closeKrw": 3198,
+                    "marketVolume": 7115,
+                    "marketAmount": 22660236
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 954,
+                    "tossSecuritiesSell": 3963
+                },
+                "marketCapKrw": 4314926349861,
+                "marketCapUsd": 3041250599,
+                "primaryTics": {
+                    "ticsId": 611,
+                    "name": "수소에너지"
+                },
+                "notice": {
+                    "message": null,
+                    "alert": null,
+                    "splitMerge": false,
+                    "earningsAnnouncement": true
+                }
+            },
+            {
+                "rank": 40,
+                "productCode": "AMX2604023002",
+                "name": "SNDQ",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-SNDQ.png?2026-04-27",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 28.61,
+                    "close": 27.85,
+                    "baseKrw": 40483,
+                    "closeKrw": 39416,
+                    "marketVolume": 6154,
+                    "marketAmount": 243247647
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 22,
+                    "tossSecuritiesSell": 600
+                },
+                "marketCapKrw": 241200446519,
+                "marketCapUsd": 170003134,
+                "primaryTics": {
+                    "ticsId": 553,
+                    "name": "종합반도체"
+                }
+            },
+            {
+                "rank": 41,
+                "productCode": "US20081203001",
+                "name": "GLL",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-GLL.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 22.47,
+                    "close": 22.12,
+                    "baseKrw": 31795,
+                    "closeKrw": 31306,
+                    "marketVolume": 6137,
+                    "marketAmount": 192310957
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 10,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 150712336461,
+                "marketCapUsd": 106225216,
+                "primaryTics": {
+                    "ticsId": 147,
+                    "name": "금속"
+                }
+            },
+            {
+                "rank": 42,
+                "productCode": "US20110524001",
+                "name": "네비우스 그룹",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NBIS.png?20250924",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 184.11,
+                    "close": 186.29,
+                    "baseKrw": 260515,
+                    "closeKrw": 263656,
+                    "marketVolume": 6120,
+                    "marketAmount": 1615474825
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 182,
+                    "tossSecuritiesSell": 41
+                },
+                "marketCapKrw": 67712575514689,
+                "marketCapUsd": 47725243526,
+                "primaryTics": {
+                    "ticsId": 823,
+                    "name": "인공지능"
+                },
+                "notice": {
+                    "message": null,
+                    "alert": null,
+                    "splitMerge": false,
+                    "earningsAnnouncement": true
+                }
+            },
+            {
+                "rank": 43,
+                "productCode": "NAS0250207004",
+                "name": "시오나 테라퓨틱스",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NAS0N3VH2-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 4.5,
+                    "close": 4.36,
+                    "baseKrw": 6367,
+                    "closeKrw": 6170,
+                    "marketVolume": 5935,
+                    "marketAmount": 36742670
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 8515,
+                    "tossSecuritiesSell": 5140
+                },
+                "marketCapKrw": 3274080830886,
+                "marketCapUsd": 2307640845,
+                "primaryTics": {
+                    "ticsId": 37,
+                    "name": "바이오신약"
+                }
+            },
+            {
+                "rank": 44,
+                "productCode": "US19980521001",
+                "name": "AXT",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NAS0020LW-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 73.81,
+                    "close": 75.45,
+                    "baseKrw": 104441,
+                    "closeKrw": 106784,
+                    "marketVolume": 5842,
+                    "marketAmount": 621987272
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 21,
+                    "tossSecuritiesSell": 90
+                },
+                "marketCapKrw": 8222209384613,
+                "marketCapUsd": 5795185639,
+                "primaryTics": {
+                    "ticsId": 715,
+                    "name": "반도체 전공정 소재"
+                }
+            },
+            {
+                "rank": 45,
+                "productCode": "US20060619001",
+                "name": "SH",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-SH.png?20241114",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 32.07,
+                    "close": 32.03,
+                    "baseKrw": 45379,
+                    "closeKrw": 45332,
+                    "marketVolume": 5600,
+                    "marketAmount": 253859200
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 0,
+                    "tossSecuritiesSell": 23
+                },
+                "marketCapKrw": 1195009666725,
+                "marketCapUsd": 842267879
+            },
+            {
+                "rank": 46,
+                "productCode": "US20211227003",
+                "name": "GCT 세미컨덕터 홀딩",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NYS0Z1TMF-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 2.45,
+                    "close": 2.18,
+                    "baseKrw": 3466,
+                    "closeKrw": 3085,
+                    "marketVolume": 5353,
+                    "marketAmount": 16590011
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 1353,
+                    "tossSecuritiesSell": 297
+                },
+                "marketCapKrw": 332726702469,
+                "marketCapUsd": 234512759,
+                "primaryTics": {
+                    "ticsId": 179,
+                    "name": "반도체팹리스"
+                },
+                "notice": {
+                    "message": null,
+                    "alert": null,
+                    "splitMerge": false,
+                    "earningsAnnouncement": true
+                }
+            },
+            {
+                "rank": 47,
+                "productCode": "US20140522001",
+                "name": "징동닷컴(ADR)",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-JD.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 33.47,
+                    "close": 32.4,
+                    "baseKrw": 47360,
+                    "closeKrw": 45855,
+                    "marketVolume": 5317,
+                    "marketAmount": 244101987
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 29,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 58390878316903,
+                "marketCapUsd": 41155115814,
+                "primaryTics": {
+                    "ticsId": 215,
+                    "name": "온라인쇼핑"
+                },
+                "notice": {
+                    "message": null,
+                    "alert": null,
+                    "splitMerge": false,
+                    "earningsAnnouncement": true
+                }
+            },
+            {
+                "rank": 48,
+                "productCode": "US20200114002",
+                "name": "슈퍼 마이크로 컴퓨터",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NAS008MS1-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 31.46,
+                    "close": 32.03,
+                    "baseKrw": 44515,
+                    "closeKrw": 45332,
+                    "marketVolume": 4844,
+                    "marketAmount": 219424756
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 403,
+                    "tossSecuritiesSell": 8
+                },
+                "marketCapKrw": 34346866422045,
+                "marketCapUsd": 24208391896,
+                "primaryTics": {
+                    "ticsId": 475,
+                    "name": "클라우드"
+                }
+            },
+            {
+                "rank": 49,
+                "productCode": "AMX2607010013",
+                "name": "SKHU",
+                "logoImageUrl": "https://static.toss.im/logos/securities/icn-sec-fill-SKHU.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 13.01,
+                    "close": 13.5,
+                    "baseKrw": 18409,
+                    "closeKrw": 19106,
+                    "marketVolume": 4828,
+                    "marketAmount": 92026203
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 0,
+                    "tossSecuritiesSell": 4
+                },
+                "marketCapKrw": 81260654823,
+                "marketCapUsd": 57274214,
+                "primaryTics": {
+                    "ticsId": 553,
+                    "name": "종합반도체"
+                }
+            },
+            {
+                "rank": 50,
+                "productCode": "US20101029002",
+                "name": "PSLV",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-PSLV.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 21.6,
+                    "close": 21.87,
+                    "baseKrw": 30564,
+                    "closeKrw": 30952,
+                    "marketVolume": 4795,
+                    "marketAmount": 148132657
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 53,
+                    "tossSecuritiesSell": 142
+                },
+                "marketCapKrw": 18780639706602,
+                "marketCapUsd": 13236988798,
+                "primaryTics": {
+                    "ticsId": 147,
+                    "name": "금속"
+                }
+            },
+            {
+                "rank": 51,
+                "productCode": "US19940701001",
+                "name": "노키아(ADR)",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NOK.png?20260122",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 9.13,
+                    "close": 9.17,
+                    "baseKrw": 12918,
+                    "closeKrw": 12978,
+                    "marketVolume": 4779,
+                    "marketAmount": 61889629
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 54,
+                    "tossSecuritiesSell": 2
+                },
+                "marketCapKrw": 74349821104416,
+                "marketCapUsd": 52403313437,
+                "primaryTics": {
+                    "ticsId": 747,
+                    "name": "유선장비"
+                }
+            },
+            {
+                "rank": 52,
+                "productCode": "US20201204002",
+                "name": "온다스",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NAS0K6GPQ-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 9.31,
+                    "close": 9.38,
+                    "baseKrw": 13173,
+                    "closeKrw": 13275,
+                    "marketVolume": 4718,
+                    "marketAmount": 62574904
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 168,
+                    "tossSecuritiesSell": 180
+                },
+                "marketCapKrw": 7365576703392,
+                "marketCapUsd": 5191412957,
+                "primaryTics": {
+                    "ticsId": 389,
+                    "name": "소프트웨어"
+                },
+                "notice": {
+                    "message": null,
+                    "alert": null,
+                    "splitMerge": false,
+                    "earningsAnnouncement": true
+                }
+            },
+            {
+                "rank": 53,
+                "productCode": "NAS0250313006",
+                "name": "RKLX",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-RKLX.png?20251121",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 24.44,
+                    "close": 20.69,
+                    "baseKrw": 34582,
+                    "closeKrw": 29282,
+                    "marketVolume": 4616,
+                    "marketAmount": 134516646
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 50,
+                    "tossSecuritiesSell": 136
+                },
+                "marketCapKrw": 390823357400,
+                "marketCapUsd": 275460500,
+                "primaryTics": {
+                    "ticsId": 85,
+                    "name": "우주항공"
+                }
+            },
+            {
+                "rank": 54,
+                "productCode": "US20200930014",
+                "name": "팔란티어",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NYS00726J-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 175.23,
+                    "close": 173.14,
+                    "baseKrw": 247950,
+                    "closeKrw": 245045,
+                    "marketVolume": 4443,
+                    "marketAmount": 1088972003
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 186,
+                    "tossSecuritiesSell": 316
+                },
+                "marketCapKrw": 586461106478926,
+                "marketCapUsd": 413350089145,
+                "primaryTics": {
+                    "ticsId": 389,
+                    "name": "소프트웨어"
+                }
+            },
+            {
+                "rank": 55,
+                "productCode": "NYS0250605001",
+                "name": "써클 인터넷 그룹",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-CRCL.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 67.05,
+                    "close": 67.13,
+                    "baseKrw": 94875,
+                    "closeKrw": 95009,
+                    "marketVolume": 4408,
+                    "marketAmount": 418438789
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 52,
+                    "tossSecuritiesSell": 52
+                },
+                "marketCapKrw": 24014473994137,
+                "marketCapUsd": 16925904986,
+                "primaryTics": {
+                    "ticsId": 605,
+                    "name": "암호화폐"
+                }
+            },
+            {
+                "rank": 56,
+                "productCode": "US20200826004",
+                "name": "샤오펑(ADR)",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NYS0MPJ6W-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 12,
+                    "close": 11.87,
+                    "baseKrw": 16980,
+                    "closeKrw": 16799,
+                    "marketVolume": 4347,
+                    "marketAmount": 73126463
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 50,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 16488429780646,
+                "marketCapUsd": 11621391162,
+                "primaryTics": {
+                    "ticsId": 295,
+                    "name": "전기차"
+                }
+            },
+            {
+                "rank": 57,
+                "productCode": "US20190503008",
+                "name": "VXX",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-VXX.png?20240725",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 20.21,
+                    "close": 20.2,
+                    "baseKrw": 28597,
+                    "closeKrw": 28589,
+                    "marketVolume": 4308,
+                    "marketAmount": 123277948
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 0,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 735606189434,
+                "marketCapUsd": 518470672
+            },
+            {
+                "rank": 58,
+                "productCode": "US20180501002",
+                "name": "ASE 테크놀로지 홀딩(ADR)",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NYS0JH2SY-E0.png?20241211",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 37.59,
+                    "close": 38.63,
+                    "baseKrw": 53189,
+                    "closeKrw": 54673,
+                    "marketVolume": 4272,
+                    "marketAmount": 233091340
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 10,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 118579542494466,
+                "marketCapUsd": 83577348812,
+                "primaryTics": {
+                    "ticsId": 177,
+                    "name": "반도체패키징"
+                }
+            },
+            {
+                "rank": 59,
+                "productCode": "US20210903005",
+                "name": "레드와이어",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-RDW.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 13.12,
+                    "close": 12.86,
+                    "baseKrw": 18564,
+                    "closeKrw": 18200,
+                    "marketVolume": 4118,
+                    "marketAmount": 74810442
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 118,
+                    "tossSecuritiesSell": 427
+                },
+                "marketCapKrw": 4820230490053,
+                "marketCapUsd": 3397399556,
+                "primaryTics": {
+                    "ticsId": 85,
+                    "name": "우주항공"
+                }
+            },
+            {
+                "rank": 60,
+                "productCode": "AMX2603030001",
+                "name": "NASA",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NASA.png?2026-05-15",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 25.39,
+                    "close": 25.37,
+                    "baseKrw": 35926,
+                    "closeKrw": 35906,
+                    "marketVolume": 4044,
+                    "marketAmount": 145246876
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 2,
+                    "tossSecuritiesSell": 45
+                },
+                "marketCapKrw": 1675853218200,
+                "marketCapUsd": 1181176500,
+                "primaryTics": {
+                    "ticsId": 85,
+                    "name": "우주항공"
+                }
+            },
+            {
+                "rank": 61,
+                "productCode": "US20210917001",
+                "name": "아처 에비에이션",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NYS0P5C3L-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 6.26,
+                    "close": 6.25,
+                    "baseKrw": 8857,
+                    "closeKrw": 8845,
+                    "marketVolume": 4023,
+                    "marketAmount": 35484469
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 66,
+                    "tossSecuritiesSell": 297
+                },
+                "marketCapKrw": 6024441691956,
+                "marketCapUsd": 4246152870,
+                "primaryTics": {
+                    "ticsId": 609,
+                    "name": "드론"
+                },
+                "notice": {
+                    "message": null,
+                    "alert": null,
+                    "splitMerge": false,
+                    "earningsAnnouncement": true
+                }
+            },
+            {
+                "rank": 62,
+                "productCode": "US20181211008",
+                "name": "텐센트 뮤직 엔터테인먼트(ADR)",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-TME.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 9.9,
+                    "close": 9.75,
+                    "baseKrw": 14008,
+                    "closeKrw": 13799,
+                    "marketVolume": 3995,
+                    "marketAmount": 55235127
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 100,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 21281020864838,
+                "marketCapUsd": 14999309885,
+                "primaryTics": {
+                    "ticsId": 343,
+                    "name": "음원"
+                },
+                "notice": {
+                    "message": null,
+                    "alert": null,
+                    "splitMerge": false,
+                    "earningsAnnouncement": true
+                }
+            },
+            {
+                "rank": 63,
+                "productCode": "US20050805002",
+                "name": "바이두(ADR)",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NAS05YVV5-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 109.5,
+                    "close": 107,
+                    "baseKrw": 154942,
+                    "closeKrw": 151437,
+                    "marketVolume": 3798,
+                    "marketAmount": 575713329
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 4,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 52968780609837,
+                "marketCapUsd": 37333507619,
+                "primaryTics": {
+                    "ticsId": 359,
+                    "name": "인터넷"
+                }
+            },
+            {
+                "rank": 64,
+                "productCode": "AMX2607014019",
+                "name": "SKHX",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-SKHX.png?20260714",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 9.89,
+                    "close": 10.19,
+                    "baseKrw": 13994,
+                    "closeKrw": 14421,
+                    "marketVolume": 3793,
+                    "marketAmount": 54805348
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 0,
+                    "tossSecuritiesSell": 12
+                },
+                "marketCapKrw": 91234869900,
+                "marketCapUsd": 64304250,
+                "primaryTics": {
+                    "ticsId": 553,
+                    "name": "종합반도체"
+                }
+            },
+            {
+                "rank": 65,
+                "productCode": "US20200527004",
+                "name": "SGOV",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-SGOV.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 100.5,
+                    "close": 100.5,
+                    "baseKrw": 142207,
+                    "closeKrw": 142237,
+                    "marketVolume": 3787,
+                    "marketAmount": 538654403
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 1610,
+                    "tossSecuritiesSell": 429
+                },
+                "marketCapKrw": 144293140441600,
+                "marketCapUsd": 101700832000
+            },
+            {
+                "rank": 66,
+                "productCode": "US19450521001",
+                "name": "코닝",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NYS000F7B-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 157.76,
+                    "close": 158.66,
+                    "baseKrw": 223230,
+                    "closeKrw": 224551,
+                    "marketVolume": 3752,
+                    "marketAmount": 840620491
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 13,
+                    "tossSecuritiesSell": 84
+                },
+                "marketCapKrw": 202483784743184,
+                "marketCapUsd": 142714818680,
+                "primaryTics": {
+                    "ticsId": 747,
+                    "name": "유선장비"
+                }
+            },
+            {
+                "rank": 67,
+                "productCode": "US20211001008",
+                "name": "아이온큐",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-IONQ.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 42.53,
+                    "close": 42.77,
+                    "baseKrw": 60179,
+                    "closeKrw": 60532,
+                    "marketVolume": 3660,
+                    "marketAmount": 221608135
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 675,
+                    "tossSecuritiesSell": 209
+                },
+                "marketCapKrw": 25044495770253,
+                "marketCapUsd": 17651885939,
+                "primaryTics": {
+                    "ticsId": 956,
+                    "name": "양자컴퓨터"
+                }
+            },
+            {
+                "rank": 68,
+                "productCode": "AMX0230221005",
+                "name": "SHNY",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-SHNY.png?20240411",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 9.94,
+                    "close": 10.16,
+                    "baseKrw": 14065,
+                    "closeKrw": 14379,
+                    "marketVolume": 3618,
+                    "marketAmount": 51901602
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 1349,
+                    "tossSecuritiesSell": 4
+                },
+                "marketCapKrw": 137056080000,
+                "marketCapUsd": 96600000,
+                "primaryTics": {
+                    "ticsId": 147,
+                    "name": "금속"
+                }
+            },
+            {
+                "rank": 69,
+                "productCode": "US20060622004",
+                "name": "XOP",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-XOP.png?20240415",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 175.93,
+                    "close": 174.41,
+                    "baseKrw": 248940,
+                    "closeKrw": 246842,
+                    "marketVolume": 3577,
+                    "marketAmount": 883500016
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 0,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 4863419392000,
+                "marketCapUsd": 3427840000,
+                "primaryTics": {
+                    "ticsId": 549,
+                    "name": "원유개발"
+                }
+            },
+            {
+                "rank": 70,
+                "productCode": "US20090625002",
+                "name": "SPXU",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-defaultETF.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 33.6,
+                    "close": 33.45,
+                    "baseKrw": 47544,
+                    "closeKrw": 47341,
+                    "marketVolume": 3380,
+                    "marketAmount": 160204485
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 11,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 551910277272,
+                "marketCapUsd": 388997940
+            },
+            {
+                "rank": 71,
+                "productCode": "US19860312001",
+                "name": "오라클",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NYS000SY8-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 151.05,
+                    "close": 150.97,
+                    "baseKrw": 213735,
+                    "closeKrw": 213667,
+                    "marketVolume": 3377,
+                    "marketAmount": 720590574
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 10,
+                    "tossSecuritiesSell": 41
+                },
+                "marketCapKrw": 607382386900696,
+                "marketCapUsd": 428095846420,
+                "primaryTics": {
+                    "ticsId": 475,
+                    "name": "클라우드"
+                }
+            },
+            {
+                "rank": 72,
+                "productCode": "US20191105003",
+                "name": "트립닷컴(ADR)",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-TCOM.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 47.12,
+                    "close": 46.77,
+                    "baseKrw": 66674,
+                    "closeKrw": 66193,
+                    "marketVolume": 3315,
+                    "marketAmount": 218729915
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 0,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 42787123825018,
+                "marketCapUsd": 30157262352,
+                "primaryTics": {
+                    "ticsId": 353,
+                    "name": "여행플랫폼"
+                }
+            },
+            {
+                "rank": 73,
+                "productCode": "US20211116005",
+                "name": "아이렌",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NAS0PBSVR-E0.png?20241209",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 38.74,
+                    "close": 39.29,
+                    "baseKrw": 54817,
+                    "closeKrw": 55607,
+                    "marketVolume": 3304,
+                    "marketAmount": 183473340
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 461,
+                    "tossSecuritiesSell": 34
+                },
+                "marketCapKrw": 21644573966856,
+                "marketCapUsd": 15255549737,
+                "primaryTics": {
+                    "ticsId": 605,
+                    "name": "암호화폐"
+                }
+            },
+            {
+                "rank": 74,
+                "productCode": "US19801212001",
+                "name": "애플",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NAS000C7F-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 308.26,
+                    "close": 308.82,
+                    "baseKrw": 436187,
+                    "closeKrw": 437072,
+                    "marketVolume": 3303,
+                    "marketAmount": 1444115948
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 32,
+                    "tossSecuritiesSell": 18
+                },
+                "marketCapKrw": 6487880722244720,
+                "marketCapUsd": 4572794419400,
+                "primaryTics": {
+                    "ticsId": 203,
+                    "name": "스마트폰제조"
+                }
+            },
+            {
+                "rank": 75,
+                "productCode": "NAS0250224006",
+                "name": "샌디스크",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-SNDK.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 1237.92,
+                    "close": 1253,
+                    "baseKrw": 1751656,
+                    "closeKrw": 1773370,
+                    "marketVolume": 3183,
+                    "marketAmount": 5644915515
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 105,
+                    "tossSecuritiesSell": 61
+                },
+                "marketCapKrw": 254697138411246,
+                "marketCapUsd": 179515885545,
+                "primaryTics": {
+                    "ticsId": 553,
+                    "name": "종합반도체"
+                }
+            },
+            {
+                "rank": 76,
+                "productCode": "NAS0230214003",
+                "name": "인튜이티브 머신스",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NAS0TM8TB-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 15.78,
+                    "close": 15.71,
+                    "baseKrw": 22328,
+                    "closeKrw": 22234,
+                    "marketVolume": 3176,
+                    "marketAmount": 70453142
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 51,
+                    "tossSecuritiesSell": 1052
+                },
+                "marketCapKrw": 5049712888603,
+                "marketCapUsd": 3559143564,
+                "primaryTics": {
+                    "ticsId": 85,
+                    "name": "우주항공"
+                },
+                "notice": {
+                    "message": null,
+                    "alert": null,
+                    "splitMerge": false,
+                    "earningsAnnouncement": true
+                }
+            },
+            {
+                "rank": 77,
+                "productCode": "US20210727005",
+                "name": "로빈후드",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NAS0DHQ0D-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 94.52,
+                    "close": 94.91,
+                    "baseKrw": 133745,
+                    "closeKrw": 134326,
+                    "marketVolume": 3096,
+                    "marketAmount": 416082173
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 2,
+                    "tossSecuritiesSell": 10
+                },
+                "marketCapKrw": 119002396589862,
+                "marketCapUsd": 83875385248,
+                "primaryTics": {
+                    "ticsId": 363,
+                    "name": "증권"
+                }
+            },
+            {
+                "rank": 78,
+                "productCode": "AMX0250605001",
+                "name": "비트마인 이머션 테크놀로지스",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-BMNR.png?20251002",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 18.1,
+                    "close": 18.19,
+                    "baseKrw": 25611,
+                    "closeKrw": 25744,
+                    "marketVolume": 3060,
+                    "marketAmount": 78664929
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 19,
+                    "tossSecuritiesSell": 32
+                },
+                "marketCapKrw": 16550686118818,
+                "marketCapUsd": 11665270735,
+                "primaryTics": {
+                    "ticsId": 605,
+                    "name": "암호화폐"
+                }
+            },
+            {
+                "rank": 79,
+                "productCode": "US19980611001",
+                "name": "스트래티지",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-MSTR.png?20251223",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 97.33,
+                    "close": 97.67,
+                    "baseKrw": 137721,
+                    "closeKrw": 138232,
+                    "marketVolume": 3045,
+                    "marketAmount": 420582638
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 101,
+                    "tossSecuritiesSell": 1
+                },
+                "marketCapKrw": 73055094395426,
+                "marketCapUsd": 51490762895,
+                "primaryTics": {
+                    "ticsId": 389,
+                    "name": "소프트웨어"
+                }
+            },
+            {
+                "rank": 80,
+                "productCode": "US20140728001",
+                "name": "마라 홀딩스",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NAS00CY6L-E0.png?20240910",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 9.56,
+                    "close": 9.7,
+                    "baseKrw": 13527,
+                    "closeKrw": 13728,
+                    "marketVolume": 3019,
+                    "marketAmount": 41424487
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 1,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 5530141756052,
+                "marketCapUsd": 3897759907,
+                "primaryTics": {
+                    "ticsId": 955,
+                    "name": "비트코인"
+                }
+            },
+            {
+                "rank": 81,
+                "productCode": "US20000526007",
+                "name": "IWM",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-IWM.png?20240618",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 299.98,
+                    "close": 300.72,
+                    "baseKrw": 424471,
+                    "closeKrw": 425609,
+                    "marketVolume": 3019,
+                    "marketAmount": 1284621421
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 0,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 115798503223200,
+                "marketCapUsd": 81617214000
+            },
+            {
+                "rank": 82,
+                "productCode": "US20130925001",
+                "name": "어플라이드 옵토일렉트로닉스",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NAS008X2J-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 132.81,
+                    "close": 132.09,
+                    "baseKrw": 187926,
+                    "closeKrw": 186946,
+                    "marketVolume": 2938,
+                    "marketAmount": 549256064
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 82,
+                    "tossSecuritiesSell": 2
+                },
+                "marketCapKrw": 16273814221143,
+                "marketCapUsd": 11470125614,
+                "primaryTics": {
+                    "ticsId": 747,
+                    "name": "유선장비"
+                }
+            },
+            {
+                "rank": 83,
+                "productCode": "US19930122001",
+                "name": "SPY",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-SPY.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 773.03,
+                    "close": 774.11,
+                    "baseKrw": 1093837,
+                    "closeKrw": 1095597,
+                    "marketVolume": 2935,
+                    "marketAmount": 3215330657
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 5,
+                    "tossSecuritiesSell": 3
+                },
+                "marketCapKrw": 1149358543813538,
+                "marketCapUsd": 810092010018
+            },
+            {
+                "rank": 84,
+                "productCode": "NAS0250114003",
+                "name": "블레이즈 홀딩스",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NAS0Y43CD-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 1.03,
+                    "close": 1.06,
+                    "baseKrw": 1457,
+                    "closeKrw": 1500,
+                    "marketVolume": 2900,
+                    "marketAmount": 4350000
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 270,
+                    "tossSecuritiesSell": 200
+                },
+                "marketCapKrw": 225205282652,
+                "marketCapUsd": 158729407,
+                "primaryTics": {
+                    "ticsId": 823,
+                    "name": "인공지능"
+                },
+                "notice": {
+                    "message": null,
+                    "alert": null,
+                    "splitMerge": false,
+                    "earningsAnnouncement": true
+                }
+            },
+            {
+                "rank": 85,
+                "productCode": "US20040819001",
+                "name": "알파벳 C",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NASWFJYTJ-R0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 355.84,
+                    "close": 356.14,
+                    "baseKrw": 503513,
+                    "closeKrw": 504044,
+                    "marketVolume": 2887,
+                    "marketAmount": 1455564257
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 18,
+                    "tossSecuritiesSell": 10
+                },
+                "marketCapKrw": 6168707397062000,
+                "marketCapUsd": 4347834365000,
+                "primaryTics": {
+                    "ticsId": 359,
+                    "name": "인터넷"
+                }
+            },
+            {
+                "rank": 86,
+                "productCode": "US20081203002",
+                "name": "UGL",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-UGL.png?20240411",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 51.71,
+                    "close": 52.45,
+                    "baseKrw": 73169,
+                    "closeKrw": 74232,
+                    "marketVolume": 2855,
+                    "marketAmount": 211812654
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 17,
+                    "tossSecuritiesSell": 1
+                },
+                "marketCapKrw": 1125531911800,
+                "marketCapUsd": 793298500,
+                "primaryTics": {
+                    "ticsId": 147,
+                    "name": "금속"
+                }
+            },
+            {
+                "rank": 87,
+                "productCode": "US20171019004",
+                "name": "씨(ADR)",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-SE.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 114.8,
+                    "close": 117.23,
+                    "baseKrw": 162442,
+                    "closeKrw": 165915,
+                    "marketVolume": 2676,
+                    "marketAmount": 443938270
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 1,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 98569880505404,
+                "marketCapUsd": 69474119330,
+                "primaryTics": {
+                    "ticsId": 123,
+                    "name": "게임"
+                },
+                "notice": {
+                    "message": null,
+                    "alert": null,
+                    "splitMerge": false,
+                    "earningsAnnouncement": true
+                }
+            },
+            {
+                "rank": 88,
+                "productCode": "US20211109010",
+                "name": "허츠 글로벌 홀딩스",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NAS0FZ6XP-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 2.12,
+                    "close": 2.09,
+                    "baseKrw": 2997,
+                    "closeKrw": 2957,
+                    "marketVolume": 2646,
+                    "marketAmount": 7825032
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 30,
+                    "tossSecuritiesSell": 88
+                },
+                "marketCapKrw": 1148014446446,
+                "marketCapUsd": 809144662,
+                "primaryTics": {
+                    "ticsId": 45,
+                    "name": "렌터카"
+                }
+            },
+            {
+                "rank": 89,
+                "productCode": "US20110104002",
+                "name": "VIXY",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-VIXY.png?20241108",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 19.55,
+                    "close": 19.48,
+                    "baseKrw": 27663,
+                    "closeKrw": 27570,
+                    "marketVolume": 2576,
+                    "marketAmount": 71021034
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 0,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 275193128113,
+                "marketCapUsd": 193961889
+            },
+            {
+                "rank": 90,
+                "productCode": "NAS0241126008",
+                "name": "윙입푸드(ADR)",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-900340.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 5.72,
+                    "close": 6.44,
+                    "baseKrw": 8093,
+                    "closeKrw": 9114,
+                    "marketVolume": 2547,
+                    "marketAmount": 23382878
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 3355,
+                    "tossSecuritiesSell": 2089
+                },
+                "marketCapKrw": 79086044456,
+                "marketCapUsd": 55741503,
+                "primaryTics": {
+                    "ticsId": 183,
+                    "name": "지주사"
+                }
+            },
+            {
+                "rank": 91,
+                "productCode": "US20100629001",
+                "name": "테슬라",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NAS006XY7-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 330.88,
+                    "close": 331.67,
+                    "baseKrw": 468195,
+                    "closeKrw": 469412,
+                    "marketVolume": 2513,
+                    "marketAmount": 1179165762
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 86,
+                    "tossSecuritiesSell": 29
+                },
+                "marketCapKrw": 1841236750724555,
+                "marketCapUsd": 1297742282721,
+                "primaryTics": {
+                    "ticsId": 295,
+                    "name": "전기차"
+                }
+            },
+            {
+                "rank": 92,
+                "productCode": "US20210830003",
+                "name": "사이퍼 마이닝",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NAS0NTWRR-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 16.33,
+                    "close": 16.59,
+                    "baseKrw": 23106,
+                    "closeKrw": 23479,
+                    "marketVolume": 2479,
+                    "marketAmount": 58141259
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 15,
+                    "tossSecuritiesSell": 5
+                },
+                "marketCapKrw": 10116367208315,
+                "marketCapUsd": 7130227804,
+                "primaryTics": {
+                    "ticsId": 605,
+                    "name": "암호화폐"
+                }
+            },
+            {
+                "rank": 93,
+                "productCode": "US20000627001",
+                "name": "마벨 테크놀로지",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-MRVL.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 208.56,
+                    "close": 211.17,
+                    "baseKrw": 295112,
+                    "closeKrw": 298868,
+                    "marketVolume": 2399,
+                    "marketAmount": 716714947
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 31,
+                    "tossSecuritiesSell": 17
+                },
+                "marketCapKrw": 271767780336933,
+                "marketCapUsd": 191547632039,
+                "primaryTics": {
+                    "ticsId": 179,
+                    "name": "반도체팹리스"
+                }
+            },
+            {
+                "rank": 94,
+                "productCode": "NAS0241112005",
+                "name": "MULL",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-MULL.png?202502",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 17.86,
+                    "close": 18.32,
+                    "baseKrw": 25271,
+                    "closeKrw": 25928,
+                    "marketVolume": 2371,
+                    "marketAmount": 61457244
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 11,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 694440831123,
+                "marketCapUsd": 489456464,
+                "primaryTics": {
+                    "ticsId": 553,
+                    "name": "종합반도체"
+                }
+            },
+            {
+                "rank": 95,
+                "productCode": "US20081125007",
+                "name": "SCO",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-SCO.png?20240618",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 26.2,
+                    "close": 26.18,
+                    "baseKrw": 37073,
+                    "closeKrw": 37052,
+                    "marketVolume": 2334,
+                    "marketAmount": 86286864
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 30,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 947755863186,
+                "marketCapUsd": 667998212
+            },
+            {
+                "rank": 96,
+                "productCode": "US20060621005",
+                "name": "PSQ",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-PSQ.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 25.61,
+                    "close": 25.53,
+                    "baseKrw": 36238,
+                    "closeKrw": 36132,
+                    "marketVolume": 2317,
+                    "marketAmount": 83721582
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 0,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 917219056324,
+                "marketCapUsd": 646475230
+            },
+            {
+                "rank": 97,
+                "productCode": "US20210422015",
+                "name": "리게티 컴퓨팅",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-RGTI.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 17.65,
+                    "close": 17.69,
+                    "baseKrw": 24974,
+                    "closeKrw": 25036,
+                    "marketVolume": 2277,
+                    "marketAmount": 57060603
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 220,
+                    "tossSecuritiesSell": 583
+                },
+                "marketCapKrw": 8495506702235,
+                "marketCapUsd": 5987811321,
+                "primaryTics": {
+                    "ticsId": 956,
+                    "name": "양자컴퓨터"
+                }
+            },
+            {
+                "rank": 98,
+                "productCode": "US20210407001",
+                "name": "AST 스페이스모바일",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-ASTS.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 68.76,
+                    "close": 68.18,
+                    "baseKrw": 97295,
+                    "closeKrw": 96495,
+                    "marketVolume": 2256,
+                    "marketAmount": 217881619
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 27,
+                    "tossSecuritiesSell": 6
+                },
+                "marketCapKrw": 39615282010148,
+                "marketCapUsd": 27921681710,
+                "primaryTics": {
+                    "ticsId": 749,
+                    "name": "무선장비"
+                },
+                "notice": {
+                    "message": null,
+                    "alert": null,
+                    "splitMerge": false,
+                    "earningsAnnouncement": true
+                }
+            },
+            {
+                "rank": 99,
+                "productCode": "US19900418001",
+                "name": "쾨르 마이닝",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-CDE.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 18.15,
+                    "close": 18.3,
+                    "baseKrw": 25682,
+                    "closeKrw": 25899,
+                    "marketVolume": 2158,
+                    "marketAmount": 55853530
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 10,
+                    "tossSecuritiesSell": 0
+                },
+                "marketCapKrw": 25362170305762,
+                "marketCapUsd": 17875789615,
+                "primaryTics": {
+                    "ticsId": 777,
+                    "name": "광산개발"
+                }
+            },
+            {
+                "rank": 100,
+                "productCode": "US20210720010",
+                "name": "N 에이블",
+                "logoImageUrl": "https://static.toss.im/png-icons/securities/icn-sec-fill-NYS0NNGQB-E0.png",
+                "price": {
+                    "priceType": "MARKET",
+                    "base": 3.21,
+                    "close": 3.27,
+                    "baseKrw": 4542,
+                    "closeKrw": 4628,
+                    "marketVolume": 2154,
+                    "marketAmount": 9968712
+                },
+                "extraInfo": {
+                    "tossSecuritiesBuy": 0,
+                    "tossSecuritiesSell": 777
+                },
+                "marketCapKrw": 1333682877940,
+                "marketCapUsd": 940007667,
+                "primaryTics": {
+                    "ticsId": 89,
+                    "name": "IT솔루션구축"
+                },
+                "notice": {
+                    "message": null,
+                    "alert": null,
+                    "splitMerge": false,
+                    "earningsAnnouncement": true
+                }
+            }
+        ],
+        "rankingIdWithDuration": "biggest_market_volume",
+        "rankingId": "biggest_market_volume",
+        "duration": "realtime",
+        "filters": [
+            "KRX_MANAGEMENT_STOCK",
+            "MARKET_CAP_GREATER_THAN_50M",
+            "STOCKS_PRICE_GREATER_THAN_ONE_DOLLAR"
+        ],
+        "tag": "us"
+    }
+}
