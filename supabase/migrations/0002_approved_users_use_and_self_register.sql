@@ -15,13 +15,19 @@ update approved_users set "use" = true where "use" is null;
 
 -- anon 등록 신청: use 는 반드시 false, memo(이름/회사명)는 비어 있으면 안 된다.
 -- 이미 있는 계좌번호는 PK 충돌(23505)로 거부되므로 남의 행을 덮어쓸 수 없다.
+grant insert on table approved_users to anon, authenticated;
+
 drop policy if exists "anon can request approval" on approved_users;
 create policy "anon can request approval"
   on approved_users
   for insert
-  to anon
+  to anon, authenticated
   with check (
     "use" is not true
     and memo is not null
     and length(btrim(memo)) > 0
   );
+
+-- 확인용 — 아래 두 줄을 함께 실행하면 컬럼과 정책이 제대로 붙었는지 볼 수 있다.
+--   select column_name, data_type from information_schema.columns where table_name = 'approved_users';
+--   select policyname, cmd, with_check from pg_policies where tablename = 'approved_users';

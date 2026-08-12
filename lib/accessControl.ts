@@ -99,7 +99,14 @@ export async function registerAccount(
 
     if (error) {
       if (error.code === '23505') return { status: 'duplicate' };
-      return { status: 'error', message: error.message };
+      // RLS 거부(42501)는 "마이그레이션 0002를 아직 안 돌렸다"가 거의 전부다 — 원인을 그대로 알려준다.
+      if (error.code === '42501') {
+        return {
+          status: 'error',
+          message: 'Supabase에서 등록 신청이 막혀 있어요 (RLS). 0002 마이그레이션을 실행해 주세요.',
+        };
+      }
+      return { status: 'error', message: error.code ? `${error.message} (${error.code})` : error.message };
     }
     return { status: 'registered' };
   } catch (e) {

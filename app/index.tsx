@@ -162,7 +162,8 @@ export default function GateScreen() {
         );
         return;
       }
-      Alert.alert('알림', '등록하지 못했어요. 조금 뒤에 다시 시도해 주세요.');
+      // 원인을 삼키지 않는다 — RLS 거부(42501)인지 네트워크인지 바로 알 수 있어야 고칠 수 있다.
+      Alert.alert('등록하지 못했어요', `${result.message}\n\n조금 뒤에 다시 시도해 주세요.`);
     } finally {
       setRegistering(false);
     }
