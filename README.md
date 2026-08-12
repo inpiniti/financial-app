@@ -28,8 +28,9 @@ Supabase 설정:
 1. [Supabase 대시보드](https://supabase.com)에서 프로젝트 생성 (또는 기존 프로젝트 사용)
 2. **Project Settings → API** 에서 **Project URL** 과 **anon public key** 복사
 3. `.env` 파일에 붙여넣기
-4. Supabase **SQL Editor** 에서 `supabase/migrations/0001_approved_users.sql` 전체 실행 (approved_users 테이블 생성)
-5. 계좌 승인: Supabase 대시보드 → `approved_users` 테이블 → 계좌번호 행 추가 (`is_active = true`)
+4. Supabase **SQL Editor** 에서 `supabase/migrations/0001_approved_users.sql` → `0002_approved_users_use_and_self_register.sql` 순서로 실행 (approved_users 테이블 + `use` 컬럼/등록 신청 정책)
+5. 계좌 승인: 앱에서 미등록 계좌로 시작하면 이름/회사명과 함께 `use = false`로 등록 신청이 들어온다.
+   대시보드 → `approved_users` 테이블에서 해당 행의 `use`를 `true`로 바꿔야 진입할 수 있다 (`is_active = false`면 차단).
 
 ### 2단계: Expo 앱 실행
 
@@ -41,7 +42,7 @@ Expo Go 앱(iOS/Android)을 폰에 설치 후 QR 코드 스캔하여 실행합�
 
 ### 3단계: 게이트 및 설정
 
-1. 앱 시작 → 계좌번호 입력 (Supabase approved_users에 등록된 계좌만 통과)
+1. 앱 시작 → 계좌번호 입력 (approved_users에 `use = true`로 승인된 계좌만 통과 / 미등록이면 등록 신청 → 승인 대기)
 2. **설정 탭** → 다음 정보 입력 (expo-secure-store에 암호화 저장):
    - KIS AppKey
    - KIS AppSecret
