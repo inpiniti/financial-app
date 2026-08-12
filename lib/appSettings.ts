@@ -19,38 +19,39 @@ export interface AppSettings {
    */
   buyCancelAfterSec: number;
   /**
-   * 매도 관리 그리드 폭 — **% 단위**. 기본 10(=10%). 진입 체결 후 평단 ±이 %에 매수·매도 지정가를 건다
+   * 매도 관리 그리드 폭 — **% 단위**. 기본 3(=3%). 진입 체결 후 평단 ±이 %에 매수·매도 지정가를 건다
    * (buyPrice=평단×(1−w), sellPrice=평단×(1+w)). managerProvider가 /100 해서 core/grid의 width(소수)로 넘긴다.
    * (매도 관리 그리드 Phase B — 2026-08-05)
    */
   gridWidthPct: number;
   /**
-   * 매도 관리 그리드 매수 배율 — 기본 1(=보유수량과 같은 수량). 리브래킷 매수 수량은
+   * 매도 관리 그리드 매수 배율 — 기본 2(=보유수량의 2배를 더 사서 총 3배). 리브래킷 매수 수량은
    * floor(보유수량 × 이 배율)로 계산된다(core/grid 몫, 여기서는 값만 전달). (Phase B)
    */
   gridBuyMultiplier: number;
   /**
-   * 사다리 진입 감지 간격 — **% 단위**. 기본 1(=1%). 감시 시작가(트레일링 고점)에서 이 %씩 떨어질
+   * 사다리 진입 감지 간격 — **% 단위**. 기본 3(=3%). 감시 시작가(트레일링 고점)에서 이 %씩 떨어질
    * 때마다 홀(가상 매수) 1회를 세고, entryLadderCount번째 홀에서 매수한다(2026-08-07 변곡점 그리드감지 plan).
    * ⚠ 매도그리드 폭(gridWidthPct)과 **별개** — 감지는 분 단위 잔파동, 그리드는 포지션 관리용이다.
    * managerProvider가 /100 해서 소수로 넘긴다.
    */
   entryLadderIntervalPct: number;
   /**
-   * 사다리 진입 홀 횟수 — 기본 3. 이 횟수째 가상 매수(누적 낙폭 ≈ 간격×횟수 %)가 찍히면 실매수를 발화한다.
+   * 사다리 진입 홀 횟수 — 기본 4. 이 횟수째 가상 매수(누적 낙폭 ≈ 간격×횟수 %)가 찍히면 실매수를 발화한다.
    * 클수록 보수적(깊은 하락에서만 진입).
    */
   entryLadderCount: number;
   /**
-   * 종목당 진입금액(USD) — 0이면 **미설정**(자동 트레이딩 시작이 거부된다).
+   * 종목당 진입금액(USD) — 기본 1. 0이면 **미설정**(자동 트레이딩 시작이 거부된다).
    * 2026-08-12까지는 트레이딩 화면 시트가 오토파일럿 저장소에 직접 넣던 값인데, 설정을 한 화면으로 모으면서
    * 여기로 옮겼다. managerProvider가 트레이딩 화면 포커스마다 pilot.setConfig로 흘려 넣는다(IDLE에서만 적용).
-   * ⚠ 기본값을 0(미설정)으로 두는 건 의도적이다 — 실계좌 발주 금액에 임의의 기본값을 심을 수 없다.
+   * ⚠ 기본값은 사용자가 직접 정한 $1이다(2026-08-12). 오발주 피해가 사실상 없는 최소 금액이라 미설정(0) 대신
+   * 이 값을 심는다 — 그보다 큰 금액을 코드가 임의로 정하지는 않는다.
    */
   startAmountUsd: number;
   /** 최소 속도(틱/초) — 이보다 조용한 종목은 감시하지 않는다. 기본 1(autopilot.DEFAULT_MIN_TICK_RATE와 같은 값). */
   minTickRate: number;
-  /** 동시에 관리할 그리드(종목) 개수. 기본 3(autopilot.DEFAULT_MAX_GRIDS와 같은 값), 상한은 autopilot이 잘라낸다. */
+  /** 동시에 관리할 그리드(종목) 개수. 기본 1(autopilot.DEFAULT_MAX_GRIDS와 같은 값), 상한은 autopilot이 잘라낸다. */
   maxConcurrentGrids: number;
 }
 
@@ -58,22 +59,22 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   environment: 'live',
   orderQty: 1,
   buyCancelAfterSec: 0,
-  gridWidthPct: 10,
-  gridBuyMultiplier: 1,
-  entryLadderIntervalPct: 1,
-  entryLadderCount: 3,
-  startAmountUsd: 0,
+  gridWidthPct: 3,
+  gridBuyMultiplier: 2,
+  entryLadderIntervalPct: 3,
+  entryLadderCount: 4,
+  startAmountUsd: 1,
   minTickRate: 1,
-  maxConcurrentGrids: 3,
+  maxConcurrentGrids: 1,
 };
 
-/** 사다리 간격 %를 소수로(1% → 0.01). 비정상·0 이하는 기본 1%로 방어(감지가 꺼지는 개념이 아니다). */
+/** 사다리 간격 %를 소수로(3% → 0.03). 비정상·0 이하는 기본값(3%)으로 방어(감지가 꺼지는 개념이 아니다). */
 export function ladderIntervalToRatio(pct: number): number {
   if (!Number.isFinite(pct) || pct <= 0) return DEFAULT_APP_SETTINGS.entryLadderIntervalPct / 100;
   return pct / 100;
 }
 
-/** 사다리 홀 횟수 정리 — 1 미만·비정상은 기본 3으로 방어, 정수 절사. */
+/** 사다리 홀 횟수 정리 — 1 미만·비정상은 기본값(4)으로 방어, 정수 절사. */
 export function ladderCountOf(count: number): number {
   if (!Number.isFinite(count) || count < 1) return DEFAULT_APP_SETTINGS.entryLadderCount;
   return Math.floor(count);

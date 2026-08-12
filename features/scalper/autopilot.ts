@@ -44,7 +44,7 @@ export const WATCH_COUNT = 3;
 export const RESELECT_INTERVAL_MS = 30_000;
 export const HYSTERESIS_RATIO = 1.2;
 /** 동시에 열 수 있는 그리드(포지션) 최대 개수의 기본값 — 설정 미지정 시. */
-export const DEFAULT_MAX_GRIDS = 3;
+export const DEFAULT_MAX_GRIDS = 1;
 /** 동시 그리드 개수의 상한 — WS 호가(R) 구독 예산과 현금 분할이 감당하는 선. */
 export const MAX_GRIDS_LIMIT = 6;
 /** 연속 매수 취소가 이 횟수에 닿으면 그 종목 매수를 잠시 쉰다. */

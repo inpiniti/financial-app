@@ -84,7 +84,7 @@ export default function SettingsScreen() {
   );
   const [entryLadderCount, setEntryLadderCount] = useState(String(DEFAULT_APP_SETTINGS.entryLadderCount));
   // 트레이딩 운용 설정 — 옛 자동 단타 설정 시트에서 옮겨 왔다(2026-08-12). 진입금액 0 = 미설정(빈 칸).
-  const [startAmountUsd, setStartAmountUsd] = useState('');
+  const [startAmountUsd, setStartAmountUsd] = useState(String(DEFAULT_APP_SETTINGS.startAmountUsd));
   const [minTickRate, setMinTickRate] = useState(String(DEFAULT_APP_SETTINGS.minTickRate));
   const [maxConcurrentGrids, setMaxConcurrentGrids] = useState(String(DEFAULT_APP_SETTINGS.maxConcurrentGrids));
 
@@ -246,7 +246,7 @@ export default function SettingsScreen() {
               value={startAmountUsd}
               onChangeText={setStartAmountUsd}
               keyboardType="decimal-pad"
-              placeholder="예: 100"
+              placeholder={`기본 ${DEFAULT_APP_SETTINGS.startAmountUsd}`}
               placeholderTextColor="#8b95a1"
               className="mb-4 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
             />
@@ -296,7 +296,7 @@ export default function SettingsScreen() {
               value={entryLadderIntervalPct}
               onChangeText={setEntryLadderIntervalPct}
               keyboardType="decimal-pad"
-              placeholder="예: 1"
+              placeholder={`기본 ${DEFAULT_APP_SETTINGS.entryLadderIntervalPct}`}
               placeholderTextColor="#8b95a1"
               className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
             />
@@ -309,7 +309,7 @@ export default function SettingsScreen() {
               value={entryLadderCount}
               onChangeText={setEntryLadderCount}
               keyboardType="number-pad"
-              placeholder="예: 3"
+              placeholder={`기본 ${DEFAULT_APP_SETTINGS.entryLadderCount}`}
               placeholderTextColor="#8b95a1"
               className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
             />
@@ -334,7 +334,7 @@ export default function SettingsScreen() {
               value={gridWidthPct}
               onChangeText={setGridWidthPct}
               keyboardType="decimal-pad"
-              placeholder="예: 10"
+              placeholder={`기본 ${DEFAULT_APP_SETTINGS.gridWidthPct}`}
               placeholderTextColor="#8b95a1"
               className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
             />
@@ -352,7 +352,7 @@ export default function SettingsScreen() {
               value={gridBuyMultiplier}
               onChangeText={setGridBuyMultiplier}
               keyboardType="decimal-pad"
-              placeholder="예: 1"
+              placeholder={`기본 ${DEFAULT_APP_SETTINGS.gridBuyMultiplier}`}
               placeholderTextColor="#8b95a1"
               className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
             />

@@ -29,6 +29,12 @@ const TINY_RATE = 0.01;
 
 const CONFIG_100: AutoPilotConfig = { startAmountUsd: 100, minTickRate: TINY_RATE };
 
+/**
+ * 다중 그리드 시나리오용 — 기본값(DEFAULT_MAX_GRIDS = 1, 2026-08-12 사용자 확정)은 한 종목만 열기 때문에
+ * "두 종목이 동시에 열린다"를 보는 테스트는 그리드 수를 명시해야 한다.
+ */
+const CONFIG_MULTI: AutoPilotConfig = { ...CONFIG_100, maxConcurrentGrids: 3 };
+
 interface Harness {
   pilot: AutoPilot;
   slots: Map<string, FeedSlot>;
@@ -347,7 +353,7 @@ describe('AutoPilot — 사이클 e2e (진입 1종목·정산)', () => {
       storage: h.store,
       onEvent: (e) => h.events.push(e.text),
     });
-    pilot.setConfig(CONFIG_100);
+    pilot.setConfig(CONFIG_MULTI);
     pilot.start();
 
     // A·B를 같은 V자 궤적으로 나란히 재생 — A의 프리플라이트만 게이트에 붙잡힌다.
@@ -749,7 +755,11 @@ describe('AutoPilot — 다중 그리드', () => {
   });
 
   it('두 종목이 각자 그리드를 연다 — 게이지가 종목별로 따로 뜬다', async () => {
-    const h = makeHarness(['A', 'B'], { autoFill: false, gridConfig: { width: 0.1, buyMultiplier: 1 } });
+    const h = makeHarness(['A', 'B'], {
+      autoFill: false,
+      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      config: CONFIG_MULTI,
+    });
     h.pilot.start();
 
     // A 진입 → 체결 → 그리드 인계.
@@ -806,7 +816,11 @@ describe('AutoPilot — 다중 그리드', () => {
 
   it('[사고 재현] setGridConfig — 폭·배율을 바꾸면 다음에 여는 그리드부터 그 값으로 발주한다', async () => {
     // 매니저가 모듈 스코프 싱글턴이라 설정 탭에서 폭을 바꿔도 앱 재시작 전에는 반영되지 않던 버그.
-    const h = makeHarness(['A', 'B'], { autoFill: false, gridConfig: { width: 0.1, buyMultiplier: 1 } });
+    const h = makeHarness(['A', 'B'], {
+      autoFill: false,
+      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      config: CONFIG_MULTI,
+    });
     h.pilot.start();
 
     // A는 기본값(±10%·배율 1)으로 인계된다.
@@ -962,6 +976,7 @@ describe('AutoPilot — 다중 그리드', () => {
     let calls = 0;
     const h = makeHarness(['A', 'B'], {
       fetchBuyableUsd: async () => (calls++ === 0 ? 1_000_000 : 1),
+      config: CONFIG_MULTI,
     });
     h.pilot.start();
     const n = await replay(h, 'A', V);
@@ -1009,7 +1024,11 @@ describe('AutoPilot — 그리드 격리·현금 소진 매도 전용', () => {
   }
 
   it('그리드 하나가 멈춰도 전역 FAULT로 번지지 않는다 — 다른 종목은 계속 정산까지 간다', async () => {
-    const h = makeHarness(['A', 'B'], { autoFill: false, gridConfig: { width: 0.1, buyMultiplier: 1 } });
+    const h = makeHarness(['A', 'B'], {
+      autoFill: false,
+      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      config: CONFIG_MULTI,
+    });
     const { ba, bb } = await armTwoGrids(h);
 
     // A: 매도 체결 후 OCO 취소가 거절 → A 그리드만 격리.
