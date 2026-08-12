@@ -3,7 +3,7 @@ import { checkApprovedAccount, registerAccount, type ApprovedUsersClient } from 
 
 function makeClient(
   result: {
-    data: { is_active: boolean | null; use: boolean | null } | null;
+    data: { is_active: boolean | null } | null;
     error: { message: string } | null;
   },
   insert: {
@@ -35,8 +35,8 @@ function makeClient(
 }
 
 describe('checkApprovedAccount', () => {
-  it('is_active=true·use=true인 계좌는 approved다', async () => {
-    const client = makeClient({ data: { is_active: true, use: true }, error: null });
+  it('is_active=true인 계좌는 approved다', async () => {
+    const client = makeClient({ data: { is_active: true }, error: null });
     expect(await checkApprovedAccount('12345678-01', client)).toEqual({ status: 'approved' });
   });
 
@@ -45,19 +45,14 @@ describe('checkApprovedAccount', () => {
     expect(await checkApprovedAccount('00000000-00', client)).toEqual({ status: 'notFound' });
   });
 
-  it('use=false면 pending이다 (승인 대기)', async () => {
-    const client = makeClient({ data: { is_active: true, use: false }, error: null });
+  it('is_active=false면 pending이다 (승인 대기)', async () => {
+    const client = makeClient({ data: { is_active: false }, error: null });
     expect(await checkApprovedAccount('12345678-01', client)).toEqual({ status: 'pending' });
   });
 
-  it('use가 null이어도 pending이다 — 승인은 명시적 true일 때만', async () => {
-    const client = makeClient({ data: { is_active: true, use: null }, error: null });
+  it('is_active가 null이어도 pending이다 — 승인은 명시적 true일 때만', async () => {
+    const client = makeClient({ data: { is_active: null }, error: null });
     expect(await checkApprovedAccount('12345678-01', client)).toEqual({ status: 'pending' });
-  });
-
-  it('is_active=false면 rejected다 (차단된 계좌)', async () => {
-    const client = makeClient({ data: { is_active: false, use: true }, error: null });
-    expect(await checkApprovedAccount('12345678-01', client)).toEqual({ status: 'rejected' });
   });
 
   it('쿼리 에러는 error 상태와 메시지를 반환한다', async () => {
@@ -82,13 +77,23 @@ describe('checkApprovedAccount', () => {
 });
 
 describe('registerAccount', () => {
-  it('use=false와 memo(이름/회사명)로 insert한다 — 앱이 스스로 승인할 수 없다', async () => {
+  it('is_active=false와 memo(이름/회사명)로 insert한다 — 앱이 스스로 승인할 수 없다', async () => {
     const spy = vi.fn();
     const client = makeClient({ data: null, error: null }, { spy });
     const result = await registerAccount('12345678-01', '홍길동', client);
 
     expect(result).toEqual({ status: 'registered' });
-    expect(spy).toHaveBeenCalledWith({ account_no: '12345678-01', memo: '홍길동', use: false });
+    expect(spy).toHaveBeenCalledWith({ account_no: '12345678-01', memo: '홍길동', is_active: false });
+  });
+
+  it('RLS 거부(42501)는 마이그레이션 안내 메시지로 바꿔 준다', async () => {
+    const client = makeClient(
+      { data: null, error: null },
+      { result: { error: { message: 'new row violates row-level security policy', code: '42501' } } },
+    );
+    const result = await registerAccount('12345678-01', '홍길동', client);
+    expect(result.status).toBe('error');
+    expect(result.status === 'error' && result.message).toContain('0003');
   });
 
   it('PK 충돌(23505)은 duplicate다 — 이미 신청된 계좌', async () => {

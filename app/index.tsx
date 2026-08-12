@@ -16,14 +16,14 @@ import { checkApprovedAccount, registerAccount, type GateResult } from '../lib/a
 import { clearApprovedAccountNo, loadApprovedAccountNo, saveApprovedAccountNo } from '../lib/gateStorage';
 
 /**
- * 게이트 화면 — 승인된(use=true) 계좌만 하단 탭으로 진입할 수 있게 막는다 (PRD §4-A).
+ * 게이트 화면 — 승인된(is_active=true) 계좌만 하단 탭으로 진입할 수 있게 막는다 (PRD §4-A).
  *
  * 상태 흐름:
  * 1) 'loading'  — env·로컬 저장 계좌를 확인하는 중 (스켈레톤)
  * 2) 'needsEnv' — Supabase env 미설정 안내 화면 (죽지 않고 안내만)
  * 3) 'autoPass' — 이전에 통과한 계좌번호가 저장돼 있음 → 확인 후 자동 진입 or 다른 계좌로 로그인
  * 4) 'form'     — 계좌번호 입력 → approved_users 조회
- * 5) 'register' — 미등록 계좌의 등록 신청(이름/회사명 입력 → use=false로 insert) → 승인 대기
+ * 5) 'register' — 미등록 계좌의 등록 신청(이름/회사명 입력 → is_active=false로 insert) → 승인 대기
  */
 type GateState = 'loading' | 'needsEnv' | 'autoPass' | 'form' | 'register';
 
@@ -75,13 +75,13 @@ export default function GateScreen() {
         Alert.alert(PENDING_TITLE, PENDING_BODY);
         return;
       }
-      if (result.status === 'notFound' || result.status === 'rejected') {
-        // 저장된 계좌가 더는 유효하지 않다 — 저장값을 버리고 계좌번호부터 다시 받는다.
+      if (result.status === 'notFound') {
+        // 저장된 계좌가 approved_users에서 사라졌다 — 저장값을 버리고 계좌번호부터 다시 받는다.
         await clearApprovedAccountNo();
         setSavedAccountNo(null);
         setAccountNo(savedAccountNo);
         setState('form');
-        Alert.alert('알림', '이 계좌로는 시작할 수 없어요. 계좌번호를 다시 확인해 주세요.');
+        Alert.alert('알림', '등록되지 않은 계좌예요. 계좌번호를 다시 확인해 주세요.');
         return;
       }
       Alert.alert('알림', '잠시 연결이 어려워요. 조금 뒤에 다시 시도해 주세요.');
@@ -120,10 +120,6 @@ export default function GateScreen() {
       askToRegister(trimmed);
       return;
     }
-    if (result.status === 'rejected') {
-      Alert.alert('알림', '이용할 수 없는 계좌예요. 개발자에게 연락해 주세요.');
-      return;
-    }
     Alert.alert('알림', '잠시 연결이 어려워요. 조금 뒤에 다시 시도해 주세요.');
   };
 
@@ -145,7 +141,7 @@ export default function GateScreen() {
     }
   };
 
-  /** 등록 신청 — use=false로 넣는다. 승인(use=true)은 개발자가 DB에서 직접 켠다. */
+  /** 등록 신청 — is_active=false로 넣는다. 승인(is_active=true)은 개발자가 DB에서 직접 켠다. */
   const handleRegister = async () => {
     const trimmed = accountNo.trim();
     const name = registerName.trim();

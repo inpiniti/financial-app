@@ -1,5 +1,8 @@
 -- 0002_approved_users_use_and_self_register.sql
 --
+-- ⚠️ 이 파일은 0003_consolidate_use_into_is_active.sql 로 대체됐다 (use 컬럼을 is_active로 통합).
+--    아직 실행하지 않았다면 이 파일은 건너뛰고 0003만 실행하면 된다 — 기록용으로만 남겨 둔다.
+--
 -- 실행 방법: Supabase 대시보드 → SQL Editor 에 붙여넣고 실행한다 (0001과 동일한 경로).
 --
 -- 목적 (2026-08-12):
