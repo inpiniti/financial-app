@@ -9,6 +9,10 @@
 --   is_active = false → 승인 대기 (앱에서 들어온 등록 신청 포함)
 --   행 없음           → 미등록 (앱이 등록 신청을 받는다)
 
+-- 0) 0002의 정책이 use 컬럼을 참조하고 있으면 컬럼을 못 지운다(2BP01) — 정책부터 걷어낸다.
+--    아래 3)에서 is_active 기준으로 다시 만든다.
+drop policy if exists "anon can request approval" on approved_users;
+
 -- 1) use에 값이 있으면 그 값이 실제 승인 상태다 — is_active로 옮긴 뒤 컬럼을 없앤다.
 --    (use 컬럼이 없는 환경에서도 실행되도록 존재할 때만 옮긴다.)
 do $$
