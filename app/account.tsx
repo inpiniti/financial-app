@@ -3,6 +3,8 @@
 // 매매 파라미터는 app/settings.tsx가 맡는다. 하단 메뉴는 양쪽 모두 없앴다(상단바에서 바로 들어온다).
 import { useCallback, useEffect, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { router } from 'expo-router';
 import { BackHeader } from '../components/BackHeader';
 import { ListRow } from '../components/ListRow';
 import { Panel } from '../components/Panel';
@@ -10,6 +12,7 @@ import { inquireOverseasBalance, type OverseasBalanceSummary } from '../kis/bala
 import { getAccessToken } from '../kis/token';
 import { secureTokenStorage } from '../lib/secureTokenStorage';
 import { formatKrw, formatSignedKrw, formatSignedPercent, pnlColor } from '../lib/format';
+import { clearApprovedAccountNo, loadApprovedAccountNo } from '../lib/gateStorage';
 import { formatAccountNo, loadKisSettings, parseAccountNo, saveKisSettings } from '../lib/kisSettings';
 import { resetUsdKrwCache } from '../lib/usdKrw';
 
@@ -57,7 +60,11 @@ export default function AccountScreen() {
   // 사용자가 빈 칸으로 둔 채 저장하면(재입력 안 함) 기존 저장값을 그대로 유지한다.
   const [hasSavedAppSecret, setHasSavedAppSecret] = useState(false);
   const [savedAppSecret, setSavedAppSecret] = useState('');
-  const [accountNoInput, setAccountNoInput] = useState('');
+  // 계좌번호는 이 화면에서 못 고친다 — 처음 화면(게이트)에서 통과한 계좌번호가 그대로 원본이다.
+  // 바꾸려면 상단바 오른쪽 "계좌 변경"으로 게이트로 돌아가 다시 입력해야 한다.
+  const [gateAccountNo, setGateAccountNo] = useState('');
+  // 키가 이미 저장돼 있으면(=연결 완료) "계좌 연결" 패널을 감춘다.
+  const [connected, setConnected] = useState(false);
 
   const [tokenStatus, setTokenStatus] = useState<TokenStatus>({ kind: 'idle' });
   const [saving, setSaving] = useState(false);
@@ -88,22 +95,47 @@ export default function AccountScreen() {
 
   useEffect(() => {
     (async () => {
-      const kisSettings = await loadKisSettings();
+      const [kisSettings, approved] = await Promise.all([loadKisSettings(), loadApprovedAccountNo()]);
+      const gateAccount = approved ? parseAccountNo(approved) : null;
+      setGateAccountNo(gateAccount ? formatAccountNo(gateAccount) : (approved ?? ''));
+
       if (kisSettings) {
         setAppKey(kisSettings.appKey);
         // AppSecret은 입력칸에 값을 채우지 않는다(노출 금지) — 배지로 저장 여부만 알린다.
         setSavedAppSecret(kisSettings.appSecret);
         setHasSavedAppSecret(true);
-        setAccountNoInput(formatAccountNo(kisSettings));
+        setConnected(true);
+
+        // 게이트에서 다른 계좌로 다시 로그인했으면 저장된 KIS 계좌도 따라간다 — 게이트가 원본이다.
+        if (gateAccount && (gateAccount.cano !== kisSettings.cano || gateAccount.acntPrdtCd !== kisSettings.acntPrdtCd)) {
+          await saveKisSettings({ ...kisSettings, ...gateAccount });
+          resetUsdKrwCache();
+        }
       }
       await loadBalance();
     })();
   }, [loadBalance]);
 
+  /** 상단바 "계좌 변경" — 게이트에 저장된 통과 계좌를 지우고 처음 화면(계좌번호 입력)으로 되돌린다. */
+  const handleSwitchAccount = () => {
+    Alert.alert('계좌 변경', '처음 화면으로 돌아가 계좌번호부터 다시 입력할게요.', [
+      { text: '취소', style: 'cancel' },
+      {
+        text: '변경할게요',
+        style: 'destructive',
+        onPress: async () => {
+          await clearApprovedAccountNo();
+          resetUsdKrwCache();
+          router.replace('/');
+        },
+      },
+    ]);
+  };
+
   const handleSave = async () => {
-    const account = parseAccountNo(accountNoInput);
+    const account = parseAccountNo(gateAccountNo);
     if (!appKey.trim() || !effectiveAppSecret || !account) {
-      Alert.alert('알림', 'AppKey·AppSecret·계좌번호(8-2 형식)를 모두 채워 주세요.');
+      Alert.alert('알림', 'AppKey·AppSecret을 모두 채워 주세요. 계좌번호는 처음 화면에서 로그인한 계좌를 써요.');
       return;
     }
 
@@ -113,6 +145,7 @@ export default function AccountScreen() {
       // 저장 성공 — 이후 재입력 없이도 배지가 최신 저장값을 가리키게 갱신한다.
       setSavedAppSecret(effectiveAppSecret);
       setHasSavedAppSecret(true);
+      setConnected(true);
       setAppSecret('');
       // 계좌가 바뀌면 환율 캐시(잔고 응답에서 뽑은 값)도 다른 계좌 것이 된다 — 버리고 다시 받게 한다.
       resetUsdKrwCache();
@@ -134,9 +167,9 @@ export default function AccountScreen() {
       Alert.alert('알림', 'AppKey·AppSecret을 먼저 입력하고 저장해 주세요.');
       return;
     }
-    const account = parseAccountNo(accountNoInput);
+    const account = parseAccountNo(gateAccountNo);
     if (!account) {
-      Alert.alert('알림', '계좌번호(8-2 형식)를 먼저 입력해 주세요.');
+      Alert.alert('알림', '계좌번호를 확인하지 못했어요. 상단 "계좌 변경"으로 처음 화면에서 다시 로그인해 주세요.');
       return;
     }
 
@@ -159,8 +192,24 @@ export default function AccountScreen() {
 
   return (
     <View className="flex-1 bg-[#f2f4f6]">
-      <BackHeader title="계좌" />
+      <BackHeader
+        title="계좌"
+        right={
+          <Pressable
+            onPress={handleSwitchAccount}
+            hitSlop={8}
+            className="items-center justify-center px-3 py-3 active:opacity-60"
+            style={{ minHeight: 44 }}
+            accessibilityRole="button"
+            accessibilityLabel="계좌 변경"
+          >
+            <Ionicons name="swap-horizontal" size={22} color="#191f28" />
+          </Pressable>
+        }
+      />
       <ScrollView className="flex-1" contentContainerStyle={{ paddingBottom: 48 }}>
+        {/* 연결이 끝나 있으면(키 저장됨 + 잔고 조회 정상) 이 패널은 감춘다 — 잔고가 안 불러와질 때만 다시 나온다. */}
+        {(!connected || balance.kind === 'failure') && (
         <Panel title="계좌 연결">
           <View className="px-5 pb-5">
             <Text className="mb-1 text-xs text-[#8b95a1]">AppKey</Text>
@@ -193,17 +242,17 @@ export default function AccountScreen() {
               className="mb-4 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
             />
 
-            <Text className="mb-1 text-xs text-[#8b95a1]">계좌번호 (8-2 형식)</Text>
+            <Text className="mb-1 text-xs text-[#8b95a1]">계좌번호</Text>
             <TextInput
-              value={accountNoInput}
-              onChangeText={setAccountNoInput}
-              placeholder="예: 12345678-01"
+              value={gateAccountNo}
+              editable={false}
+              placeholder="처음 화면에서 로그인한 계좌"
               placeholderTextColor="#8b95a1"
-              keyboardType="numbers-and-punctuation"
-              autoCapitalize="none"
-              autoCorrect={false}
-              className="mb-2 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
+              className="rounded-2xl bg-[#f2f4f6] px-4 py-3 text-base text-[#8b95a1]"
             />
+            <Text className="mt-2 text-xs leading-4 text-[#8b95a1]">
+              처음 화면에서 로그인한 계좌예요. 바꾸려면 오른쪽 위 계좌 변경을 눌러 주세요.
+            </Text>
 
             <Pressable
               onPress={handleSave}
@@ -238,6 +287,7 @@ export default function AccountScreen() {
             )}
           </View>
         </Panel>
+        )}
 
         {/* 계좌가 연결됐을 때만 — 키가 없으면(idle) 패널 자체를 그리지 않는다. */}
         {balance.kind !== 'idle' && (
@@ -261,6 +311,8 @@ export default function AccountScreen() {
             )}
             {balance.kind === 'ready' && (
               <>
+                {/* 연결 패널을 감췄을 때도 어느 계좌인지는 보여야 한다. */}
+                <SummaryRow label="계좌번호" value={gateAccountNo || '-'} />
                 <SummaryRow label="총자산" value={formatKrw(balance.summary.tot_asst_amt)} />
                 <SummaryRow label="평가금액" value={formatKrw(balance.summary.evlu_amt_smtl)} />
                 <SummaryRow label="매입금액" value={formatKrw(balance.summary.pchs_amt_smtl)} />
