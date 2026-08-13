@@ -13,6 +13,10 @@ export interface SurgeOpenInput {
   surgePrice: number;
   surgeAsk1: number | null;
   surgeAsk2: number | null;
+  /** v2 — 급등 출발가(60초 수익률 시작점). */
+  anchorPrice: number | null;
+  /** v2 — 확정 시점 σ(소수). */
+  surgeSigma: number | null;
 }
 
 /** 에피소드 종결(open→closed) 입력 — plunge_* 컬럼 = 이탈(하락 확정) 시점 값. */
@@ -21,6 +25,10 @@ export interface SurgeCloseInput {
   plungePrice: number;
   plungeBid1: number | null;
   plungeBid2: number | null;
+  /** v2 — 추적 중 트레일링 고점(MFE 기준). */
+  peakPrice: number | null;
+  /** v2 — 이탈 경로. */
+  exitReason: 'breakout_fail' | 'soft' | 'hard' | null;
 }
 
 export interface SurgeLogClient {
@@ -64,6 +72,8 @@ export function createSurgeLog(): SurgeLogClient | null {
             surge_price: input.surgePrice,
             surge_ask1: input.surgeAsk1,
             surge_ask2: input.surgeAsk2,
+            anchor_price: input.anchorPrice,
+            surge_sigma: input.surgeSigma,
             status: 'open',
           })
           .select('id')
@@ -84,6 +94,8 @@ export function createSurgeLog(): SurgeLogClient | null {
             plunge_price: input.plungePrice,
             plunge_bid1: input.plungeBid1,
             plunge_bid2: input.plungeBid2,
+            peak_price: input.peakPrice,
+            exit_reason: input.exitReason,
             status: 'closed',
           })
           .eq('id', id)

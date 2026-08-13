@@ -54,6 +54,13 @@ const MARKET_TO_EXCHANGE: Record<WatchMarket, OverseasExchangeCode> = { NAS: 'NA
 const MARKET_TO_DAYTIME: Record<WatchMarket, DaytimeMarketCode> = { NAS: 'BAQ', NYS: 'BAY', AMS: 'BAA' };
 /** 세션 전환(정규장↔주간거래) 감지 주기 — 전환 시 구독 trKey를 새 세션 키로 회전한다. */
 const SESSION_KEY_CHECK_MS = 30_000;
+/** KIS WS 등록 한도 — (tr_id, tr_key) 조합 기준 41건. 초과 등록은 "MAX SUBSCRIBE OVER"로 거절된다. */
+const MAX_WS_SUBS = 41;
+/**
+ * 종목상세 화면 몫 예약(체결가+호가 2건) + 세션 회전의 순간 중복(+1) 여유 — 오토파일럿이 한도를
+ * 다 쓰면 상세화면 진입·세션 전환 재구독이 "구독 실패 · MAX"로 거절된다(리스트 30 확대 후 실사고).
+ */
+const WS_SUBS_RESERVE = 3;
 
 const defaultScheduler: SchedulerLike = {
   setInterval: (fn, ms) => setInterval(fn, ms),
@@ -178,6 +185,8 @@ export class AutoPilotManager {
    * reconcileQuoteSubs를 다시 돌 수 있게 보관한다.
    */
   private lastView: AutoPilotView;
+  /** 직전 reconcile에서 예산 부족으로 보류한 호가 수 — 변화가 있을 때만 이벤트를 낸다(스팸 방지). */
+  private lastQuoteTrimmed = 0;
 
   constructor(deps: AutoPilotManagerDeps) {
     this.deps = deps;
@@ -549,16 +558,37 @@ export class AutoPilotManager {
    * 예산: 체결가 리스트 전 종목 + 호가 최대 (3 + 진입 중 + maxGrids)건.
    */
   private reconcileQuoteSubs(view: AutoPilotView): void {
-    // 급등 에피소드·조기경보 종목의 호가 동적 구독(상한 3, LRU — SurgeRecorder가 관리)도 합류한다.
-    // 예산: 체결가 리스트 전 종목 + 호가 (감시 3 + 진입·보유 + 에피소드 3) — 리스트 30 기준 40건 이내.
-    const targets = new Set([
-      ...view.watched,
+    // 호가 예산을 **코드가 직접 센다** — 리스트 30 확대 후 핀 유예·보유 홀드·에피소드 호가가 겹치면
+    // 계산상 예산이 실제로는 41건을 넘어 "구독 실패 · MAX SUBSCRIBE OVER"가 났다(실사고).
+    // 허용량 = 한도 − 예약(상세화면+회전 여유) − 체결가 구독 수. 우선순위(중요한 것부터):
+    //   진입 중·보유(발주 단가에 필수) → 감시 top3(예열) → 급등 에피소드·경보(기록용).
+    const quoteBudget = Math.max(0, MAX_WS_SUBS - WS_SUBS_RESERVE - this.tickTrKeys.size);
+    const ordered: string[] = [
       ...view.entering,
       ...view.activeTickers,
+      ...view.watched,
       ...this.surgeRecorder.quoteTargets(),
-    ]);
+    ];
+    const allowed = new Set<string>();
+    for (const ticker of ordered) {
+      if (allowed.size >= quoteBudget) break;
+      if (this.slots.has(ticker)) allowed.add(ticker);
+    }
+    const wanted = new Set(ordered);
+    const trimmed = [...wanted].filter((t) => this.slots.has(t) && !allowed.has(t)).length;
+    if (trimmed !== this.lastQuoteTrimmed) {
+      // 조용한 잘라내기 금지 — 예산 부족으로 호가를 보류하면 타임라인에 남긴다(0으로 회복될 때도 한 번).
+      if (trimmed > 0) {
+        this.pushEvent({
+          at: this.deps.clock.now(),
+          text: `호가 구독 예산 초과 — ${trimmed}건 보류 (한도 ${MAX_WS_SUBS}건, 체결가 ${this.tickTrKeys.size}건)`,
+        });
+      }
+      this.lastQuoteTrimmed = trimmed;
+    }
+
     for (const [ticker, trKey] of [...this.quoteSubs]) {
-      if (!targets.has(ticker)) {
+      if (!allowed.has(ticker)) {
         this.quoteSubs.delete(ticker);
         // 상세화면이 이 호가를 보고 있으면 해제를 건너뛴다 — 그쪽 releaseFeed가 마지막에 정리한다.
         if (!this.deps.isFeedHeldExternally?.(trKey, REALTIME_QUOTE_TR_ID)) {
@@ -566,8 +596,8 @@ export class AutoPilotManager {
         }
       }
     }
-    for (const ticker of targets) {
-      if (!this.quoteSubs.has(ticker) && this.slots.has(ticker)) {
+    for (const ticker of allowed) {
+      if (!this.quoteSubs.has(ticker)) {
         const trKey = this.marketTrKeyOf(ticker);
         this.quoteSubs.set(ticker, trKey);
         this.deps.realtime.subscribe(trKey, REALTIME_QUOTE_TR_ID);

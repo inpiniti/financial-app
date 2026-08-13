@@ -1,5 +1,7 @@
 # 급등주 찾기(Surge Stock Finder) — 신호 기록 기획
 
+> ⚠️ **감지 정의(§2)는 [v2 기획](./2026-08-13_surge-stock-finder-v2-plan.md)으로 대체됐다** (2026-08-13 당일 — v1 수집 데이터가 "폭 조건 부재로 미세 발작을 감지"함을 보여줌). 유니버스 발굴(§3.1)·구독 예산(§3)·가동 조건((a)안)·기록 골격은 이 문서가 계속 정본이다.
+
 > 작성일 2026-08-13 (당일 논의로 2회 개정: 범위 축소 → 이탈 재정의) · 분류: **중형** (급등 진입 + 하락 이탈 세트 감지 + DB 기록 — 매매 연동 없음)
 > 기준: `features/scalper/watchlist.ts`, `features/scalper/feedSlot.ts`, `features/scalper/autopilotManager.ts`, `core/resample/index.ts`, `kis/realtimePrice.ts`, `lib/tossRanking.ts`, `docs/koreainvestment/실시간호가.md`, `supabase/migrations/`
 > 하위 문서: [DB 스키마](./2026-08-13_surge-stock-finder-db-schema.md) · [프론트 훅 설계](./2026-08-13_surge-stock-finder-frontend-hooks.md)

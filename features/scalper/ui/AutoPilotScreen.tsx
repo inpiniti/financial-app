@@ -89,9 +89,16 @@ function isFeedFailureEvent(event: FeedEvent | null): event is FeedEvent {
   return event !== null && (event.text.startsWith('연결 오류') || event.text.startsWith('구독 실패'));
 }
 
+/** v2 이탈 사유 한글 라벨 — 화면에서 추론하지 않고 감지기가 판정한 사유만 표기(훅 문서 v2 §5). */
+const EXIT_REASON_LABEL: Record<NonNullable<SurgeEpisodeView['exitReason']>, string> = {
+  breakout_fail: '돌파 실패',
+  soft: '둔화',
+  hard: '급락',
+};
+
 /**
  * 급등(진입)·이탈 세트 행의 우측 상태 — 급등(open)은 상승색, 종결(closed)은 왕복 변동율을 pnlColor로.
- * 감지 중(alerting)·만료(expired)는 회색(docs/domain/surge-stock-finder). 단독 하락 행은 없다(세트만 기록).
+ * 감지 중(alerting)·만료(expired)는 회색. 이탈 사유·고점은 행에서 바로 보인다(훅 문서 v2 §3).
  */
 function SurgeTrailing({ ep }: { ep: SurgeEpisodeView }) {
   if (ep.status === 'alerting') {
@@ -101,16 +108,19 @@ function SurgeTrailing({ ep }: { ep: SurgeEpisodeView }) {
     return (
       <View className="items-end">
         <Text className="text-sm font-bold text-[#f04452]">급등 {formatPrice(ep.surgePrice ?? null)}</Text>
-        <Text className="mt-0.5 text-xs text-[#8b95a1]">이탈 대기</Text>
+        <Text className="mt-0.5 text-xs text-[#8b95a1]">
+          {ep.anchorPrice != null ? `출발 ${formatPrice(ep.anchorPrice)} · ` : ''}이탈 대기
+        </Text>
       </View>
     );
   }
   if (ep.status === 'expired') {
-    // 트레일링 이탈이 조용한 하락까지 잡으므로, 만료는 거래가 끊긴 극단 케이스에서만 남는다.
+    // 3경로 이탈이 웬만한 하락을 다 잡으므로, 만료는 거래가 끊긴 극단 케이스에서만 남는다.
     return <Text className="text-xs font-semibold text-[#8b95a1]">거래 끊김 — 만료</Text>;
   }
   // closed — 1호가 왕복(매도1호가에 사서 매수1호가에 판) 변동율이 핵심 지표, 없으면 체결가 변동율.
   const pct = ep.l1ChangePct ?? ep.priceChangePct;
+  const reason = ep.exitReason ? EXIT_REASON_LABEL[ep.exitReason] : null;
   return (
     <View className="items-end">
       {pct != null ? (
@@ -122,7 +132,8 @@ function SurgeTrailing({ ep }: { ep: SurgeEpisodeView }) {
         <Text className="text-xs font-semibold text-[#8b95a1]">호가 없음</Text>
       )}
       <Text className="mt-0.5 text-xs text-[#8b95a1]">
-        {ep.l1ChangePct != null ? '1호가 왕복' : '체결가 기준'}
+        {reason ? `${reason} · ` : ''}
+        {ep.peakPrice != null ? `고점 ${formatPrice(ep.peakPrice)}` : ep.l1ChangePct != null ? '1호가 왕복' : '체결가 기준'}
       </Text>
     </View>
   );

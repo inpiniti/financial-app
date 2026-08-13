@@ -159,10 +159,14 @@ export class FeedSlot {
     this.lastTickAt = this.clock.now();
     this.meter.record(this.lastTickAt);
 
-    // 급등/급락 1단계(틱 레벨 조기경보) — 청크를 기다리지 않는다. 진입 감지와 완전 독립.
+    // 급등/이탈 감지(v2 — 틱 구동, 청크 불요) — 진입 감지와 완전 독립. 체결강도·스프레드를 함께 넘긴다
+    // (참여 게이트·이탈 스프레드 하한용 — 없으면 fail-open/하한 생략).
     if (this.surge !== null) {
-      const alert = this.surge.onTick(price, tsMs);
-      if (alert) this.onSurge?.(alert, { ticker: this.ticker, price });
+      const event = this.surge.onTick(price, tsMs, {
+        strength: extras?.strength ?? null,
+        spreadPct: this.spreadPct(),
+      });
+      if (event) this.onSurge?.(event, { ticker: this.ticker, price });
     }
 
     const closed = this.resampler.addTick({
@@ -171,13 +175,6 @@ export class FeedSlot {
       volume: extras?.volume,
       strength: extras?.strength,
     });
-
-    // 급등/급락 2단계(청크 정배열/역정배열 확정) — 사다리/SG 분기보다 먼저, 마감된 청크마다 판정.
-    if (closed !== null && this.surge !== null) {
-      const signal = this.surge.onChunkClose(closed, tsMs);
-      if (signal) this.onSurge?.(signal, { ticker: this.ticker, price });
-    }
-
     if (closed === null) return null;
 
     // 사다리 모드 — 마감된 청크 값(틱 평균)으로 홀 카운트를 판정한다(SG 미분 없음, plan §3).
@@ -244,6 +241,15 @@ export class FeedSlot {
   get quote(): { bid1: number; ask1: number; bid2: number | null; ask2: number | null; at: number } | null {
     if (this.bid1 === null || this.ask1 === null || this.quoteAt === null) return null;
     return { bid1: this.bid1, ask1: this.ask1, bid2: this.bid2, ask2: this.ask2, at: this.quoteAt };
+  }
+
+  /** 신선한(10초 이내) 호가 기준 스프레드(소수) — 급등 이탈 문턱의 하한용. 없으면 null. */
+  private spreadPct(): number | null {
+    if (this.bid1 === null || this.ask1 === null || this.quoteAt === null) return null;
+    if (this.clock.now() - this.quoteAt > 10_000) return null;
+    const mid = (this.bid1 + this.ask1) / 2;
+    if (mid <= 0 || this.ask1 <= this.bid1) return null;
+    return (this.ask1 - this.bid1) / mid;
   }
 
   /**

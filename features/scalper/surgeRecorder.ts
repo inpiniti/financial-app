@@ -13,7 +13,7 @@
 //
 // 매매 연동 없음 — 이 파일은 기록·표시만 한다. AutoPilot 진입 게이트를 우회하는 경로를 만들지 않는다.
 
-import type { SurgeAlert, SurgeSignal } from '../../core/surge';
+import type { SurgeAlert, SurgeExitReason, SurgeSignal } from '../../core/surge';
 import type { SurgeCloseInput, SurgeLogClient, SurgeOpenInput } from '../../lib/surgeLog';
 import type { ClockLike, SchedulerLike } from './types';
 
@@ -29,10 +29,18 @@ export interface SurgeEpisodeView {
   readonly status: 'alerting' | 'open' | 'closed' | 'expired';
   readonly surgeAt?: number;
   readonly surgePrice?: number;
+  /** v2 — 급등 출발가(60초 수익률 시작점). */
+  readonly anchorPrice?: number | null;
+  /** v2 — 확정 시점 σ(소수). */
+  readonly surgeSigma?: number | null;
   readonly surgeAsk1?: number | null;
   readonly surgeAsk2?: number | null;
   readonly plungeAt?: number;
   readonly plungePrice?: number;
+  /** v2 — 추적 중 트레일링 고점(MFE 기준). */
+  readonly peakPrice?: number | null;
+  /** v2 — 이탈 경로(돌파 실패/둔화/급락). */
+  readonly exitReason?: SurgeExitReason;
   readonly plungeBid1?: number | null;
   readonly plungeBid2?: number | null;
   /** 체결가 변동율(%) — closed일 때만(표시용 계산, DB 생성 컬럼과 같은 정의). */
@@ -221,6 +229,8 @@ export class SurgeRecorder {
       status: 'open',
       surgeAt: signal.at,
       surgePrice: price,
+      anchorPrice: signal.anchorPrice,
+      surgeSigma: signal.sigma,
       surgeAsk1: quote?.ask1 ?? null,
       surgeAsk2: quote?.ask2 ?? null,
       logged: false,
@@ -240,6 +250,8 @@ export class SurgeRecorder {
       surgePrice: price,
       surgeAsk1: quote?.ask1 ?? null,
       surgeAsk2: quote?.ask2 ?? null,
+      anchorPrice: signal.anchorPrice,
+      surgeSigma: signal.sigma,
     };
     void (this.deps.log?.insertOpen(input) ?? Promise.resolve(null)).then((dbId) => {
       if (dbId === null) return; // 실패 — logged=false 그대로(감지는 계속).
@@ -272,14 +284,16 @@ export class SurgeRecorder {
       status: 'closed',
       plungeAt: signal.at,
       plungePrice: price,
+      peakPrice: signal.trailingHigh,
+      exitReason: signal.exitReason ?? undefined,
       plungeBid1,
       plungeBid2: quote?.bid2 ?? null,
       priceChangePct,
       l1ChangePct,
     });
     this.deps.onQuoteTargetsChanged();
-    // 이탈 경로 표기 — 둔화(soft: 폭주 식음+1%) / 급락(hard: 3%, 속도 무관). 기록 리뷰 때 경로별 성적 비교용.
-    const reason = signal.exitReason === 'soft' ? '둔화' : '급락';
+    // 이탈 경로 표기(v2 3경로) — 사유 분포가 곧 진단이다(기록 리뷰 때 경로별 성적 비교).
+    const reason = signal.exitReason === 'breakout_fail' ? '돌파 실패' : signal.exitReason === 'soft' ? '둔화' : '급락';
     this.deps.onEvent(
       `이탈 확정(${reason}) · ${ticker}${priceChangePct !== null ? ` ${priceChangePct >= 0 ? '+' : ''}${priceChangePct.toFixed(2)}%` : ''}`,
     );
@@ -289,6 +303,8 @@ export class SurgeRecorder {
         plungePrice: price,
         plungeBid1,
         plungeBid2: quote?.bid2 ?? null,
+        peakPrice: signal.trailingHigh,
+        exitReason: signal.exitReason,
       };
       void this.deps.log?.close(open.dbId, input);
     }

@@ -1,64 +1,78 @@
-// SurgeDetector — 급등(진입시점) + 하락(이탈시점) 세트 감지 (docs/domain/surge-stock-finder plan §2).
+// SurgeDetector v2 — σ 기반 급등 상태 판정 + 3경로 이탈 (docs/domain/surge-stock-finder v2 plan).
 //
-// 급등과 하락은 항상 콤보로 다닌다(2026-08-13 사용자 확정) — 단독 하락은 감지하지 않는다.
-//  · 1단계 조기경보(틱 레벨, ~1초 지연) — "틱속도 폭주" + 연속 업틱 alertRunTicks개.
-//    호가 WS 동적 구독 트리거용(기록 아님).
-//  · 2단계 급등 확정(1초 청크, 3~5초 지연) — 청크 평균가 confirmChunks개 연속 상승(정배열).
-//    단 틱속도 폭주가 최근 rateHotWindow 안에 성립했어야 한다(기둥이 4초 안에 식어도 놓치지 않게
-//    순간값이 아니라 "최근 성립 시각"을 본다). 확정 = 진입시점 → 추적 모드 진입.
-//  · 3단계 이탈 확정(틱 레벨, 즉시) — 2단 트레일링(2026-08-13 사용자 확정):
-//     소프트: 폭주가 식었고(최근 rateHotWindow 내 폭주 없음) 고점 대비 exitSoftDropPct(1%) 하락 →
-//            "급등인 줄 알았는데 힘이 빠진" 세트를 빨리 끊는다. 폭주 중의 1% 눌림은 잔파동으로 참는다.
-//     하드: 고점 대비 exitDropPct(3%) 하락 → 속도 무관 무조건 이탈. 투매는 속도가 폭발하며
-//           떨어지므로 "식으면"류 조건만으론 폭락 중 이탈을 못 낸다 — 그 구멍을 막는 안전선.
-//    추적 중에는 새 급등을 내지 않는다(세트 유지).
+// v1(4청크 정배열)의 실패 진단: 폭 조건이 없어 4초짜리 미세 발작을 급등으로 판정했다(수집 데이터
+// 1호가 왕복 평균 −1.94%, 세트 수명 중앙값 20초). v2는 급등을 "초 단위 이벤트"가 아니라
+// **분 단위 상태**로 판정하고, 모든 문턱을 그 종목의 변동성(σ) 단위로 잰다.
 //
-// 틱속도 폭주는 두 경로의 OR — 서로의 사각을 메운다:
-//  (A) 기준선 배수 — 최근 shortWindowSec초 틱속도 ≥ 롤링 기준선(baselineSec초)의 tickRateMultiple배.
-//      워밍업(minBaselineSec) 필요. 계단식 점프(1→30틱/초로 뛰어 유지)를 잡는다.
-//  (B) 속도 정배열 — 직전 완결 speedAscendSeconds초의 초당 틱수가 엄격 증가(점진 가속).
-//      기준선 불필요 → 워밍업 전(리스트 진입 직후)에도 눈 역할. 엄격 증가 5개는 마지막 초가
-//      첫 초보다 최소 +4틱이라 절대 하한이 내장돼 있다(조용한 종목 잔파동 통과 불가).
+// 급등 지점 = 3조건 AND의 최초 동시 성립 틱:
+//  · 폭   — 최근 sigmaWindowSec(60초) 수익률 ≥ surgeSigmaK(4)×σ. σ = 60초-수익률의 롤링 표준편차
+//           (sigmaLookbackSec=20분 창, 미달 시 무발화). minSigma 하한 — 무변동 종목의 0×배수 오발화 방지.
+//  · 구조 — 현재가가 최근 highLookbackSec(5분) 신고가 돌파.
+//  · 참여 — 틱속도 ≥ 기준선 tickRateMultiple(3)배 AND 체결강도 ≥ minStrn(100, null이면 fail-open).
+// 성립 시 앵커(60초 전 가격)·σ를 신호에 실어 기록한다 — MFE 분석의 기준선.
 //
-// 오탐 필터링보다 빠른 발화 + 충실한 기록이 우선(v1은 기록 전용) — 문턱은 기록을 보고 조정한다.
-// 플랫폼 무관 순수 TS — 외부 import 없음. LadderDetector와 병렬로 붙는다(교체 아님).
+// 이탈 지점 = 급등 후 추적 모드에서 3경로 OR (먼저 닿는 것, 사유 기록):
+//  · breakout_fail — 돌파했던 5분 신고가 선 아래로 복귀(가짜 돌파 — 즉시).
+//  · soft — 참여 식음(최근 rateHotWindow 내 폭주 없음) + 트레일링 고점 대비 exitSoftSigmaK(1.5)×σ 하락.
+//  · hard — 고점 대비 exitHardSigmaK(3)×σ 하락, 참여 무관(투매 안전선).
+// 이탈 문턱에는 스프레드×spreadFloorMult(2) 하한 — σ < 스프레드면 호가 왕복이 하락으로 찍힌다.
+//
+// 조기경보(호가 예열 트리거)는 확정의 완화판: 폭 alertSigmaK(2)σ + 참여. σ 워밍업 전에는
+// v1 속도 정배열(직전 완결 5초 틱수 엄격 증가)이 경보를 대신한다 — **경보 전용**(확정에는 불가:
+// 폭 조건이 없는 경로라 v1 실패의 재발 통로).
+//
+// 급등과 이탈은 항상 세트 — 단독 하락은 감지하지 않는다. 추적 중 새 급등 억제.
+// 플랫폼 무관 순수 TS — 외부 import 없음. 틱 구동(v1의 청크 의존 제거).
+
+export interface SurgeTickInput {
+  /** 체결강도(KIS STRN, 100=균형). null/미제공이면 참여 게이트 fail-open. */
+  strength?: number | null;
+  /** 현재 스프레드(소수, (ask1−bid1)/mid). 미제공이면 이탈 스프레드 하한 생략. */
+  spreadPct?: number | null;
+}
 
 export interface SurgeDetectorOptions {
-  /** 조기경보·급등 확정 공용 틱속도 배수 문턱(기준선 대비). 기본 3. */
+  /** 급등 폭 문턱(σ 배수). 기본 4. */
+  surgeSigmaK?: number;
+  /** 조기경보 폭 문턱(σ 배수). 기본 2. */
+  alertSigmaK?: number;
+  /** 수익률 측정 창(초). 기본 60. */
+  sigmaWindowSec?: number;
+  /** σ 롤링 창(초) — 이만큼 수익률 표본이 차기 전엔 확정 무발화. 기본 1200(20분). */
+  sigmaLookbackSec?: number;
+  /** σ 하한(소수) — 무변동 종목의 0×배수 오발화 방지. 기본 0.001(0.1%). */
+  minSigma?: number;
+  /** 신고가 창(초). 기본 300(5분). */
+  highLookbackSec?: number;
+  /** 참여(매수 주도) 체결강도 하한. 기본 100. null 입력이면 fail-open. */
+  minStrn?: number;
+  /** 참여(틱속도) 배수 — v1 유지. 기본 3. */
   tickRateMultiple?: number;
   /** 틱속도 롤링 기준선 길이(초). 기본 300. */
   baselineSec?: number;
-  /** 기준선 워밍업(초) — (A) 경로는 이만큼 차기 전엔 판정하지 않는다. 기본 60. */
+  /** 틱속도 기준선 워밍업(초). 기본 60. */
   minBaselineSec?: number;
-  /** 조기경보 틱속도 측정 창(초). 기본 2. */
+  /** 틱속도 측정 창(초). 기본 2. */
   shortWindowSec?: number;
-  /** 기준선 하한(틱/초) — 죽어 있던 종목의 0×배수 오발화 방지. 기본 0.5. */
+  /** 틱속도 기준선 하한(틱/초). 기본 0.5. */
   minBaselineRate?: number;
-  /** 조기경보에 필요한 연속 업틱 수. 기본 3. */
-  alertRunTicks?: number;
-  /** 급등 확정(정배열)에 필요한 연속 청크 수. 기본 4. */
-  confirmChunks?: number;
-  /** 급등 확정 시 "틱속도 폭주가 최근 성립했어야 하는" 창(초). 기본 10. */
+  /** 참여 신선도 창(초) — 이 안에 참여 성립이 있어야 확정, 소프트 이탈은 이게 식었을 때. 기본 10. */
   rateHotWindowSec?: number;
-  /** 급등 확정 재발화 쿨다운(초) — 이탈로 추적이 끝난 뒤부터 적용. 기본 60. */
-  signalCooldownSec?: number;
+  /** 속도 정배열(경보 전용) 판정 초 수. 기본 5. */
+  speedAscendSeconds?: number;
+  /** 소프트 이탈 낙폭(σ 배수) — 참여 식음 시. 기본 1.5. */
+  exitSoftSigmaK?: number;
+  /** 하드 이탈 낙폭(σ 배수) — 참여 무관. 기본 3. */
+  exitHardSigmaK?: number;
+  /** 이탈 문턱의 스프레드 하한 배수. 기본 2. */
+  spreadFloorMult?: number;
   /** 조기경보 재발화 쿨다운(초). 기본 10. */
   alertCooldownSec?: number;
-  /** 속도 정배열 판정 초 수 — 직전 완결 N초 틱수가 엄격 증가면 폭주(기준선·워밍업 불필요). 기본 5. */
-  speedAscendSeconds?: number;
-  /**
-   * 하드 이탈 낙폭(소수) — 트레일링 고점 대비 이만큼 내려오면 폭주 여부와 무관하게 EXIT. 기본 0.03(3%).
-   * 트레일링 스탑과 같은 정의 — 기록되는 왕복 변동율이 곧 "확정 매수→트레일링 청산" 전략의 성적이 된다.
-   */
-  exitDropPct?: number;
-  /**
-   * 소프트 이탈 낙폭(소수) — **폭주가 식은 상태**(최근 rateHotWindow 내 폭주 없음)에서 고점 대비
-   * 이만큼 내려오면 EXIT. 기본 0.01(1%). 힘 빠진 급등을 3% 되돌림까지 기다리지 않고 끊는다.
-   */
-  exitSoftDropPct?: number;
+  /** 이탈 후 재급등 확정 쿨다운(초). 기본 60. */
+  signalCooldownSec?: number;
 }
 
-/** 1단계 조기경보 — 호가 예열 트리거(기록 안 함). 급등 방향(업틱)만 있다 — 하락은 세트로만 다룬다. */
+/** 조기경보 — 호가 예열 트리거(기록 안 함). */
 export interface SurgeAlert {
   kind: 'alert';
   at: number;
@@ -67,115 +81,155 @@ export interface SurgeAlert {
   baselineRate: number;
 }
 
-/**
- * 확정 신호 — surge(급등 = 진입시점) / exit(하락 = 이탈시점). 기록 대상.
- * exit는 반드시 직전 surge와 세트다(추적 모드에서만 발화) — 단독 하락 신호는 존재하지 않는다.
- */
+export type SurgeExitReason = 'breakout_fail' | 'soft' | 'hard';
+
+/** 확정 신호 — surge(급등=진입시점) / exit(하락=이탈시점). exit는 반드시 직전 surge와 세트. */
 export interface SurgeSignal {
   kind: 'surge' | 'exit';
   at: number;
-  /** surge: 확정 시점 청크 평균가 / exit: 이탈 확정 틱가(참고) — 기록용 체결가는 호출부의 최신 틱가. */
+  /** 확정 시점 체결가. */
   price: number;
-  /** surge: 정배열 런 길이 / exit: 0. */
-  runLength: number;
+  /** surge: 앵커(60초 전 가격 — 급등 출발점). exit: null. */
+  anchorPrice: number | null;
+  /** surge: 확정 시점 σ(60초-수익률 표준편차, 소수). exit: 진입 시점에 고정한 σ. */
+  sigma: number;
+  /** surge: 돌파한 5분 신고가 선. exit: null. */
+  breakoutLevel: number | null;
+  /** exit: 추적 중 트레일링 고점(MFE 기준). surge: null. */
+  trailingHigh: number | null;
+  /** exit 전용 사유. surge: null. */
+  exitReason: SurgeExitReason | null;
   shortRate: number;
   baselineRate: number;
-  /** exit 전용 — 추적 중 트레일링 고점(이탈 기준가). surge에선 null. */
-  trailingHigh: number | null;
-  /** exit 전용 — soft(폭주 식음+1%) / hard(3%, 속도 무관). surge에선 null. */
-  exitReason: 'soft' | 'hard' | null;
 }
 
 export interface SurgeSnapshot {
+  /** σ 표본이 롤링 창만큼 찼는가(확정 가능 상태). */
   warmedUp: boolean;
-  baselineRate: number | null;
+  /** 현재 σ(소수) — 워밍업 미달이면 null. */
+  sigma: number | null;
+  /** 최근 60초 수익률(소수) — 표본 부족이면 null. */
+  ret60: number | null;
   shortRate: number;
-  risingChunks: number;
-  /** 급등 확정 후 이탈 대기 중인가(추적 모드). */
   tracking: boolean;
   trailingHigh: number | null;
 }
 
 const DEFAULTS: Required<SurgeDetectorOptions> = {
+  surgeSigmaK: 4,
+  alertSigmaK: 2,
+  sigmaWindowSec: 60,
+  sigmaLookbackSec: 1200,
+  minSigma: 0.001,
+  highLookbackSec: 300,
+  minStrn: 100,
   tickRateMultiple: 3,
   baselineSec: 300,
   minBaselineSec: 60,
   shortWindowSec: 2,
   minBaselineRate: 0.5,
-  alertRunTicks: 3,
-  confirmChunks: 4,
   rateHotWindowSec: 10,
-  signalCooldownSec: 60,
-  alertCooldownSec: 10,
   speedAscendSeconds: 5,
-  exitDropPct: 0.03,
-  exitSoftDropPct: 0.01,
+  exitSoftSigmaK: 1.5,
+  exitHardSigmaK: 3,
+  spreadFloorMult: 2,
+  alertCooldownSec: 10,
+  signalCooldownSec: 60,
 };
 
 export class SurgeDetector {
   private readonly opts: Required<SurgeDetectorOptions>;
 
-  /** 초 단위 틱 카운트 링(길이 baselineSec) — 인덱스 = 초 % 길이. */
-  private readonly ring: number[];
-  private ringSum = 0;
-  /** 링에 반영된 마지막 "초"(epoch초). null이면 첫 틱 대기. */
-  private lastSec: number | null = null;
-  /** 채워진 초 수(관측 시작부터, 최대 baselineSec) — 조용한 초도 데이터다(0으로 채움). */
-  private filledSec = 0;
+  // ---- 초 단위 링들 (조용한 초는 직전 값/0으로 채운다 — 침묵도 데이터) ----
+  /** 초당 틱수 링(길이 baselineSec) — 참여(틱속도) 판정. */
+  private readonly tickRing: number[];
+  private tickRingSum = 0;
+  /** 초당 마감가 링(길이 sigmaWindowSec+1) — 60초 전 가격 조회(수익률·앵커). */
+  private readonly priceRing: number[];
+  /** 초당 고가 링(길이 highLookbackSec) — 5분 신고가 판정. */
+  private readonly highRing: number[];
+  /** 60초-수익률 링(길이 sigmaLookbackSec) — σ 계산(합·제곱합 롤링). */
+  private readonly retRing: number[];
+  private retCount = 0;
+  private retSum = 0;
+  private retSumSq = 0;
+  /** 지난 완결 5분 고가의 캐시(초 경계마다 재계산) — 틱마다 O(300) 스캔 방지. */
+  private high5mCache = 0;
 
+  private lastSec: number | null = null;
+  private filledSec = 0;
+  /** 진행 중인 현재 초의 상태(경계에서 링으로 밀어 넣는다). */
+  private curSecHigh = 0;
   private lastPrice: number | null = null;
   private upRun = 0;
+  private lastStrn: number | null = null;
+  private lastSpread: number | null = null;
 
-  private prevChunkAvg: number | null = null;
-  private risingRun = 0;
-
-  /** 틱속도 폭주가 마지막으로 성립한 시각. */
+  /** 참여(틱속도 배수)가 마지막으로 성립한 시각. */
   private rateHotAt: number | null = null;
 
-  /** 이탈 추적 모드 — 급등 확정 시 켜지고 EXIT 발화로 꺼진다. 추적 중엔 새 급등을 내지 않는다. */
+  // ---- 추적(이탈 대기) 상태 ----
   private tracking = false;
   private trailingHigh: number | null = null;
+  private entrySigma = 0;
+  private entryBreakoutLevel = 0;
 
   private alertCooldownUntil = 0;
   private surgeCooldownUntil = 0;
 
   constructor(options: SurgeDetectorOptions = {}) {
     this.opts = { ...DEFAULTS, ...options };
-    this.ring = new Array<number>(
-      Math.max(this.opts.baselineSec, this.opts.minBaselineSec, this.opts.speedAscendSeconds + 1, 5),
-    ).fill(0);
+    this.tickRing = new Array<number>(Math.max(this.opts.baselineSec, this.opts.speedAscendSeconds + 1, 5)).fill(0);
+    this.priceRing = new Array<number>(this.opts.sigmaWindowSec + 1).fill(0);
+    this.highRing = new Array<number>(this.opts.highLookbackSec).fill(0);
+    this.retRing = new Array<number>(this.opts.sigmaLookbackSec).fill(0);
   }
 
-  /**
-   * 체결 틱 1개 — 틱속도 링·업틱 런·이탈 추적을 갱신한다.
-   * 추적 중이면 이탈(EXIT) 판정이 최우선(폭주 조건 없음), 아니면 조기경보 판정.
-   */
-  onTick(price: number, tsMs: number): SurgeAlert | SurgeSignal | null {
+  /** 체결 틱 1개 — 모든 판정이 여기서 돈다(청크 불요). 경보/급등/이탈 중 하나를 돌려줄 수 있다. */
+  onTick(price: number, tsMs: number, input?: SurgeTickInput): SurgeAlert | SurgeSignal | null {
     if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(tsMs)) return null;
-    this.recordTickSecond(Math.floor(tsMs / 1000));
+    this.advanceTo(Math.floor(tsMs / 1000), price);
 
+    // 현재 초 상태 갱신.
+    this.tickRing[this.idx(this.tickRing, this.lastSec!)] += 1;
+    this.tickRingSum += 1;
+    if (price > this.curSecHigh) this.curSecHigh = price;
     if (this.lastPrice !== null) {
       if (price > this.lastPrice) this.upRun += 1;
       else if (price < this.lastPrice) this.upRun = 0;
-      // 동가 체결은 런을 끊지도 잇지도 않는다.
     }
     this.lastPrice = price;
+    if (input?.strength !== undefined && input.strength !== null && Number.isFinite(input.strength)) {
+      this.lastStrn = input.strength;
+    }
+    if (input?.spreadPct !== undefined && input.spreadPct !== null && Number.isFinite(input.spreadPct)) {
+      this.lastSpread = input.spreadPct;
+    }
 
-    // 틱속도 폭주 — (A) 기준선 배수(워밍업 후) OR (B) 속도 정배열(워밍업 무관).
-    const baselineRate = this.warmedUp ? this.baselineRate() : 0;
+    // 참여 — 틱속도 배수(기준선 워밍업 후) AND 체결강도(fail-open).
     const shortRate = this.shortRate();
-    const multipleHot =
-      this.warmedUp && shortRate >= this.opts.tickRateMultiple * Math.max(baselineRate, this.opts.minBaselineRate);
-    const hot = multipleHot || this.speedAscending();
-    if (hot) this.rateHotAt = tsMs;
+    const baselineRate = this.tickBaselineWarmed ? this.baselineRate() : 0;
+    const rateHot =
+      this.tickBaselineWarmed &&
+      shortRate >= this.opts.tickRateMultiple * Math.max(baselineRate, this.opts.minBaselineRate);
+    const strnOk = this.opts.minStrn <= 0 || this.lastStrn === null || this.lastStrn >= this.opts.minStrn;
+    const participating = rateHot && strnOk;
+    if (participating) this.rateHotAt = tsMs;
+    const participatingRecently =
+      this.rateHotAt !== null && tsMs - this.rateHotAt <= this.opts.rateHotWindowSec * 1000;
 
-    // 이탈 추적 — 2단 트레일링. 하드(3%, 속도 무관)가 투매를, 소프트(폭주 식음+1%)가 힘 빠진 급등을 끊는다.
+    // ---- 이탈(추적 모드) — 폭·구조 조건과 무관하게 최우선 판정 ----
     if (this.tracking) {
       if (this.trailingHigh === null || price > this.trailingHigh) this.trailingHigh = price;
-      const stillHot = this.rateHotAt !== null && tsMs - this.rateHotAt <= this.opts.rateHotWindowSec * 1000;
-      const hardExit = price <= this.trailingHigh * (1 - this.opts.exitDropPct);
-      const softExit = !stillHot && price <= this.trailingHigh * (1 - this.opts.exitSoftDropPct);
-      if (hardExit || softExit) {
+      const spreadFloor = this.lastSpread !== null ? this.lastSpread * this.opts.spreadFloorMult : 0;
+      const softDrop = Math.max(this.entrySigma * this.opts.exitSoftSigmaK, spreadFloor);
+      const hardDrop = Math.max(this.entrySigma * this.opts.exitHardSigmaK, spreadFloor);
+      const drop = 1 - price / this.trailingHigh;
+      let reason: SurgeExitReason | null = null;
+      if (price < this.entryBreakoutLevel) reason = 'breakout_fail';
+      else if (drop >= hardDrop) reason = 'hard';
+      else if (!participatingRecently && drop >= softDrop) reason = 'soft';
+      if (reason !== null) {
         const high = this.trailingHigh;
         this.tracking = false;
         this.trailingHigh = null;
@@ -184,159 +238,233 @@ export class SurgeDetector {
           kind: 'exit',
           at: tsMs,
           price,
-          runLength: 0,
+          anchorPrice: null,
+          sigma: this.entrySigma,
+          breakoutLevel: null,
+          trailingHigh: high,
+          exitReason: reason,
           shortRate,
           baselineRate,
-          trailingHigh: high,
-          exitReason: hardExit ? 'hard' : 'soft',
         };
       }
-      return null; // 추적 중엔 조기경보도 내지 않는다 — 호가는 이미 에피소드가 잡고 있다.
+      return null; // 추적 중엔 경보·재확정 없음(세트 유지 — 호가는 이미 에피소드가 잡고 있다).
     }
 
-    if (!hot) return null;
-    if (this.upRun < this.opts.alertRunTicks) return null;
-    if (tsMs < this.alertCooldownUntil) return null;
+    // ---- 폭·구조 (σ 워밍업 후에만) ----
+    const sigma = this.sigmaWarmed ? Math.max(this.sigma(), this.opts.minSigma) : null;
+    const anchor = this.priceAgo(this.opts.sigmaWindowSec);
+    const ret60 = anchor !== null && anchor > 0 ? price / anchor - 1 : null;
 
-    this.alertCooldownUntil = tsMs + this.opts.alertCooldownSec * 1000;
-    return { kind: 'alert', at: tsMs, price, shortRate, baselineRate };
-  }
-
-  /**
-   * 리샘플 청크(1초) 마감가 1개 — 정배열 런을 갱신하고, 급등 확정 조건이면 SURGE를 돌려준다.
-   * 틱속도 폭주는 순간값이 아니라 "최근 rateHotWindow 안 성립"으로 본다(짧은 기둥 유실 방지).
-   * 추적 중(이탈 대기)에는 새 급등을 내지 않는다.
-   */
-  onChunkClose(avg: number, tsMs: number): SurgeSignal | null {
-    if (!Number.isFinite(avg) || avg <= 0) return null;
-    if (this.prevChunkAvg !== null) {
-      if (avg > this.prevChunkAvg) this.risingRun += 1;
-      else this.risingRun = 0;
+    // ---- 급등 확정 — 3조건 AND ----
+    if (
+      sigma !== null &&
+      ret60 !== null &&
+      ret60 >= this.opts.surgeSigmaK * sigma &&
+      price > this.high5mCache &&
+      participating &&
+      tsMs >= this.surgeCooldownUntil
+    ) {
+      this.tracking = true;
+      this.trailingHigh = price;
+      this.entrySigma = sigma;
+      this.entryBreakoutLevel = this.high5mCache;
+      return {
+        kind: 'surge',
+        at: tsMs,
+        price,
+        anchorPrice: anchor,
+        sigma,
+        breakoutLevel: this.high5mCache,
+        trailingHigh: null,
+        exitReason: null,
+        shortRate,
+        baselineRate,
+      };
     }
-    this.prevChunkAvg = avg;
 
-    if (this.tracking) return null;
-    const rateHot = this.rateHotAt !== null && tsMs - this.rateHotAt <= this.opts.rateHotWindowSec * 1000;
-    if (!rateHot) return null;
-    if (this.risingRun < this.opts.confirmChunks || tsMs < this.surgeCooldownUntil) return null;
-
-    const runLength = this.risingRun;
-    this.risingRun = 0;
-    // 급등 확정 = 진입시점 → 이탈 추적 시작. 추적 기준 고점은 확정 시점 최신 틱가(없으면 청크 평균).
-    this.tracking = true;
-    this.trailingHigh = this.lastPrice ?? avg;
-    return {
-      kind: 'surge',
-      at: tsMs,
-      price: avg,
-      runLength,
-      shortRate: this.shortRate(),
-      baselineRate: this.warmedUp ? this.baselineRate() : 0,
-      trailingHigh: null,
-      exitReason: null,
-    };
+    // ---- 조기경보 — 확정의 완화판(호가 예열). σ 워밍업 전엔 속도 정배열이 대신한다. ----
+    const widthAlert = sigma !== null && ret60 !== null && ret60 >= this.opts.alertSigmaK * sigma;
+    const preWarmupAlert = sigma === null && this.speedAscending() && this.upRun >= 3 && strnOk;
+    if ((widthAlert && participating) || preWarmupAlert) {
+      if (tsMs >= this.alertCooldownUntil) {
+        this.alertCooldownUntil = tsMs + this.opts.alertCooldownSec * 1000;
+        return { kind: 'alert', at: tsMs, price, shortRate, baselineRate };
+      }
+    }
+    return null;
   }
 
-  /** 세션 전환 등으로 기준선이 낡았을 때 — 처음부터 다시 워밍업한다(추적도 해제). */
+  /** 세션 전환 등으로 기준선이 낡았을 때 — 전부 처음부터 다시 관측한다(추적도 해제). */
   reset(): void {
-    this.ring.fill(0);
-    this.ringSum = 0;
+    this.tickRing.fill(0);
+    this.tickRingSum = 0;
+    this.priceRing.fill(0);
+    this.highRing.fill(0);
+    this.retRing.fill(0);
+    this.retCount = 0;
+    this.retSum = 0;
+    this.retSumSq = 0;
+    this.high5mCache = 0;
     this.lastSec = null;
     this.filledSec = 0;
+    this.curSecHigh = 0;
     this.lastPrice = null;
     this.upRun = 0;
-    this.prevChunkAvg = null;
-    this.risingRun = 0;
+    this.lastStrn = null;
+    this.lastSpread = null;
     this.rateHotAt = null;
     this.tracking = false;
     this.trailingHigh = null;
   }
 
+  /** σ 표본이 롤링 창만큼 찼는가 — 급등 확정 가능 상태. */
   get warmedUp(): boolean {
-    return this.filledSec >= this.opts.minBaselineSec;
+    return this.sigmaWarmed;
   }
 
   getSnapshot(): SurgeSnapshot {
+    const sigma = this.sigmaWarmed ? Math.max(this.sigma(), this.opts.minSigma) : null;
+    const anchor = this.priceAgo(this.opts.sigmaWindowSec);
     return {
-      warmedUp: this.warmedUp,
-      baselineRate: this.warmedUp ? this.baselineRate() : null,
+      warmedUp: this.sigmaWarmed,
+      sigma,
+      ret60: anchor !== null && anchor > 0 && this.lastPrice !== null ? this.lastPrice / anchor - 1 : null,
       shortRate: this.shortRate(),
-      risingChunks: this.risingRun,
       tracking: this.tracking,
       trailingHigh: this.trailingHigh,
     };
   }
 
-  // ---- 틱속도 링 ----
+  // ---- 초 경계 전진 — 모든 초 단위 링을 한 곳에서 민다 ----
 
-  private recordTickSecond(sec: number): void {
+  /**
+   * lastSec → sec까지 초 경계를 전진시킨다. 건너뛴 조용한 초는 "가격 유지·틱 0"으로 채운다.
+   * 각 완결 초마다: 마감가·고가를 링에 넣고, 60초 수익률 표본을 σ 롤링 합에 반영하고, 5분 고가 캐시 갱신.
+   */
+  private advanceTo(sec: number, price: number): void {
     if (this.lastSec === null) {
       this.lastSec = sec;
       this.filledSec = 1;
-      this.ring[sec % this.ring.length] += 1;
-      this.ringSum += 1;
+      this.curSecHigh = price;
       return;
     }
-    if (sec < this.lastSec) {
-      // 시계 역행(재연결 등) — 현재 초에 합산만 한다.
-      this.ring[this.lastSec % this.ring.length] += 1;
-      this.ringSum += 1;
-      return;
+    if (sec <= this.lastSec) return; // 같은 초 또는 시계 역행 — 현재 초에 계속 누적.
+
+    const advance = sec - this.lastSec;
+    const loop = Math.min(advance, this.opts.sigmaLookbackSec + this.opts.sigmaWindowSec + 1);
+    for (let i = 0; i < loop; i += 1) {
+      const closingSec = this.lastSec + i;
+      const closePrice = this.lastPrice ?? price;
+      const closeHigh = i === 0 ? Math.max(this.curSecHigh, closePrice) : closePrice;
+
+      // 가격·고가 링.
+      this.priceRing[this.idx(this.priceRing, closingSec)] = closePrice;
+      this.highRing[this.idx(this.highRing, closingSec)] = closeHigh;
+
+      // 60초 수익률 표본 — 60초 전 마감가가 있어야 한다.
+      const done = this.filledSec + i + 1; // closingSec까지 완결된 초 수(근사 — 캡 이내에서 정확).
+      if (done > this.opts.sigmaWindowSec) {
+        const ago = this.priceRing[this.idx(this.priceRing, closingSec - this.opts.sigmaWindowSec)];
+        if (ago > 0) this.pushReturn(closePrice / ago - 1);
+      }
     }
-    // 건너뛴 조용한 초는 0으로 채운다 — 침묵도 기준선 데이터다.
-    const advance = Math.min(sec - this.lastSec, this.ring.length);
-    for (let i = 1; i <= advance; i += 1) {
-      const idx = (this.lastSec + i) % this.ring.length;
-      this.ringSum -= this.ring[idx];
-      this.ring[idx] = 0;
+
+    // 다음 틱수 링 구간을 0으로 리셋(전진 구간만).
+    const tickLoop = Math.min(advance, this.tickRing.length);
+    for (let i = 1; i <= tickLoop; i += 1) {
+      const idx = this.idx(this.tickRing, this.lastSec + i);
+      this.tickRingSum -= this.tickRing[idx];
+      this.tickRing[idx] = 0;
     }
-    this.filledSec = Math.min(this.filledSec + (sec - this.lastSec), this.ring.length);
+
+    this.filledSec = Math.min(this.filledSec + advance, Number.MAX_SAFE_INTEGER);
     this.lastSec = sec;
-    this.ring[sec % this.ring.length] += 1;
-    this.ringSum += 1;
+    this.curSecHigh = price;
+    // 5분 고가 캐시 — 초 경계에서만 O(창 크기) 재계산(틱 경로는 캐시 비교만).
+    this.high5mCache = this.recomputeHigh5m();
   }
 
-  /** 기준선 틱/초 — 최근 shortWindow를 뺀 링 전체 평균(폭주 구간이 자기 기준선을 끌어올리지 않게). */
+  private pushReturn(r: number): void {
+    const idx = this.retCount % this.retRing.length;
+    if (this.retCount >= this.retRing.length) {
+      const old = this.retRing[idx];
+      this.retSum -= old;
+      this.retSumSq -= old * old;
+    }
+    this.retRing[idx] = r;
+    this.retSum += r;
+    this.retSumSq += r * r;
+    this.retCount += 1;
+  }
+
+  private recomputeHigh5m(): number {
+    const n = Math.min(this.filledSec, this.highRing.length);
+    let max = 0;
+    for (let i = 1; i <= n; i += 1) {
+      const v = this.highRing[this.idx(this.highRing, this.lastSec! - i)];
+      if (v > max) max = v;
+    }
+    return max;
+  }
+
+  private get sigmaWarmed(): boolean {
+    return this.retCount >= this.retRing.length;
+  }
+
+  private sigma(): number {
+    const n = Math.min(this.retCount, this.retRing.length);
+    if (n < 2) return 0;
+    const mean = this.retSum / n;
+    return Math.sqrt(Math.max(0, this.retSumSq / n - mean * mean));
+  }
+
+  /** seconds초 전의 초 마감가 — 관측이 모자라면 null. */
+  private priceAgo(seconds: number): number | null {
+    if (this.lastSec === null || this.filledSec <= seconds) return null;
+    const v = this.priceRing[this.idx(this.priceRing, this.lastSec - seconds)];
+    return v > 0 ? v : null;
+  }
+
+  private get tickBaselineWarmed(): boolean {
+    return this.filledSec >= this.opts.minBaselineSec;
+  }
+
   private baselineRate(): number {
     if (this.lastSec === null) return 0;
-    const short = Math.min(this.opts.shortWindowSec, this.filledSec);
-    const shortSum = this.sumRecentSeconds(short);
-    const denom = Math.max(this.filledSec - short, 1);
-    return Math.max(this.ringSum - shortSum, 0) / denom;
+    const usable = Math.min(this.filledSec, this.tickRing.length);
+    const short = Math.min(this.opts.shortWindowSec, usable);
+    const shortSum = this.sumRecentTickSeconds(short);
+    const denom = Math.max(usable - short, 1);
+    return Math.max(this.tickRingSum - shortSum, 0) / denom;
   }
 
-  /** 최근 shortWindowSec초 틱/초. */
   private shortRate(): number {
     if (this.lastSec === null) return 0;
     const short = Math.min(this.opts.shortWindowSec, Math.max(this.filledSec, 1));
-    return this.sumRecentSeconds(short) / short;
+    return this.sumRecentTickSeconds(short) / short;
   }
 
-  private sumRecentSeconds(seconds: number): number {
+  private sumRecentTickSeconds(seconds: number): number {
     if (this.lastSec === null || seconds <= 0) return 0;
     let sum = 0;
-    for (let i = 0; i < seconds; i += 1) {
-      const idx = (this.lastSec - i) % this.ring.length;
-      sum += this.ring[(idx + this.ring.length) % this.ring.length];
-    }
+    for (let i = 0; i < seconds; i += 1) sum += this.tickRing[this.idx(this.tickRing, this.lastSec - i)];
     return sum;
   }
 
-  /**
-   * 속도 정배열 — 직전 **완결** speedAscendSeconds초의 초당 틱수가 엄격 증가인가.
-   * 진행 중인 현재 초는 아직 덜 세어졌으므로 제외한다(부분 카운트가 배열을 헛되이 끊지 않게).
-   * 관측이 N+1초 미만이면 false — 링에 없는 초를 0으로 잘못 읽는 것을 막는다.
-   */
+  /** 속도 정배열(경보 전용) — 직전 완결 N초의 틱수가 엄격 증가. 현재 초는 제외(부분 카운트). */
   private speedAscending(): boolean {
     const n = this.opts.speedAscendSeconds;
     if (this.lastSec === null || this.filledSec < n + 1) return false;
     let prev = -1;
     for (let i = n; i >= 1; i -= 1) {
-      const idx = (((this.lastSec - i) % this.ring.length) + this.ring.length) % this.ring.length;
-      const count = this.ring[idx];
+      const count = this.tickRing[this.idx(this.tickRing, this.lastSec - i)];
       if (count <= prev) return false;
       prev = count;
     }
     return true;
+  }
+
+  private idx(ring: readonly unknown[], sec: number): number {
+    return ((sec % ring.length) + ring.length) % ring.length;
   }
 }

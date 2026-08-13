@@ -1,286 +1,205 @@
 import { describe, expect, it } from 'vitest';
-import { SurgeDetector, type SurgeAlert, type SurgeSignal } from './index';
+import { SurgeDetector, type SurgeAlert, type SurgeSignal, type SurgeDetectorOptions } from './index';
 
-/** t0(epoch ms)부터 초당 1틱, 가격 고정 — 기준선 워밍업용. 마지막 틱 시각(ms)을 돌려준다. */
-function feedBaseline(d: SurgeDetector, t0: number, seconds: number, price = 100): number {
-  let last = t0;
-  for (let i = 0; i < seconds; i += 1) {
-    last = t0 + i * 1000;
-    d.onTick(price, last);
-  }
-  return last;
+// 실기본값(σ창 60초·룩백 20분)은 테스트가 너무 길어진다 — 비율은 유지하고 창만 줄인다.
+const OPTS: SurgeDetectorOptions = {
+  sigmaWindowSec: 10, // 수익률 창
+  sigmaLookbackSec: 60, // σ 롤링 창(워밍업)
+  highLookbackSec: 30, // 신고가 창
+  minBaselineSec: 20,
+  baselineSec: 60,
+  minSigma: 0.001, // σ 하한 0.1% → 4σ = 0.4%
+  minStrn: 100,
+};
+
+type Ev = SurgeAlert | SurgeSignal;
+const surges = (a: Ev[]) => a.filter((e): e is SurgeSignal => e.kind === 'surge');
+const exits = (a: Ev[]) => a.filter((e): e is SurgeSignal => e.kind === 'exit');
+const alerts = (a: Ev[]) => a.filter((e): e is SurgeAlert => e.kind === 'alert');
+
+/** t0초부터 초당 1틱 고정가 — σ·기준선 워밍업. 마지막 초를 돌려준다. */
+function feedFlat(d: SurgeDetector, fromSec: number, seconds: number, price = 100): number {
+  for (let i = 0; i < seconds; i += 1) d.onTick(price, (fromSec + i) * 1000, { strength: 120 });
+  return fromSec + seconds - 1;
 }
 
-/** 같은 1초 안에 n틱을 step씩 변화시키며 밀어 넣는다. 발화한 이벤트(경보·신호)를 돌려준다. */
-function feedBurst(
-  d: SurgeDetector,
-  t0: number,
-  n: number,
-  startPrice: number,
-  step: number,
-): (SurgeAlert | SurgeSignal)[] {
-  const out: (SurgeAlert | SurgeSignal)[] = [];
+/** 1초 안에 n틱을 등차 상승시키며 폭주 — 발화 이벤트들을 돌려준다. */
+function feedBurst(d: SurgeDetector, atSec: number, n: number, from: number, to: number): Ev[] {
+  const out: Ev[] = [];
   for (let i = 0; i < n; i += 1) {
-    const res = d.onTick(startPrice + step * (i + 1), t0 + i * 50);
+    const price = from + ((to - from) * (i + 1)) / n;
+    const res = d.onTick(price, atSec * 1000 + i * 90, { strength: 120 });
     if (res) out.push(res);
   }
   return out;
 }
 
-const alerts = (events: (SurgeAlert | SurgeSignal)[]) => events.filter((e) => e.kind === 'alert');
+/** 워밍업 완료(σ 표본 가득)된 감지기 — 기준가 100, 마지막 초를 함께 돌려준다. */
+function warmedDetector(): { d: SurgeDetector; sec: number } {
+  const d = new SurgeDetector(OPTS);
+  const sec = feedFlat(d, 0, 90);
+  expect(d.warmedUp).toBe(true);
+  return { d, sec };
+}
 
-describe('SurgeDetector — 조기경보(1단계)', () => {
-  it('기준선 워밍업(60초) 미달이면 폭주해도 무발화', () => {
-    const d = new SurgeDetector();
-    const last = feedBaseline(d, 0, 30);
-    expect(alerts(feedBurst(d, last + 1000, 12, 100, 0.01))).toHaveLength(0);
-    expect(d.warmedUp).toBe(false);
-  });
-
-  it('기준선 1틱/초 대비 틱 폭주 + 연속 업틱이면 경보', () => {
-    const d = new SurgeDetector();
-    const last = feedBaseline(d, 0, 100);
-    const fired = alerts(feedBurst(d, last + 1000, 12, 100, 0.01));
-    expect(fired.length).toBeGreaterThanOrEqual(1);
-    expect(fired[0].shortRate).toBeGreaterThanOrEqual(fired[0].baselineRate * 3);
-  });
-
-  it('다운틱 폭주는 경보를 내지 않는다 — 하락은 급등 세트(추적)로만 다룬다', () => {
-    const d = new SurgeDetector();
-    const last = feedBaseline(d, 0, 100);
-    expect(alerts(feedBurst(d, last + 1000, 12, 100, -0.01))).toHaveLength(0);
-  });
-
-  it('틱 폭주라도 방향이 지그재그면 경보 없음', () => {
-    const d = new SurgeDetector();
-    const last = feedBaseline(d, 0, 100);
-    const fired: (SurgeAlert | SurgeSignal)[] = [];
-    for (let i = 0; i < 12; i += 1) {
-      const res = d.onTick(i % 2 === 0 ? 100.01 : 99.99, last + 1000 + i * 50);
-      if (res) fired.push(res);
-    }
-    expect(fired).toHaveLength(0);
-  });
-
-  it('경보는 쿨다운(10초) 안에 재발화하지 않는다', () => {
-    const d = new SurgeDetector();
-    const last = feedBaseline(d, 0, 100);
-    expect(alerts(feedBurst(d, last + 1000, 12, 100, 0.01))).toHaveLength(1);
-    expect(alerts(feedBurst(d, last + 4000, 12, 100.2, 0.01))).toHaveLength(0); // 쿨다운 중.
-    expect(alerts(feedBurst(d, last + 12_000, 12, 100.4, 0.01))).toHaveLength(1); // 해제.
-  });
-});
-
-describe('SurgeDetector — 급등 확정(2단계, 청크 정배열)', () => {
-  /** 워밍업 + 폭주(rate hot)까지 만든 감지기와 폭주 종료 시각을 돌려준다. */
-  function hotDetector(): { d: SurgeDetector; at: number } {
-    const d = new SurgeDetector();
-    const last = feedBaseline(d, 0, 100);
-    feedBurst(d, last + 1000, 12, 100, 0.01);
-    return { d, at: last + 1000 + 12 * 50 };
-  }
-
-  it('연속 상승 청크 4개 + 최근 틱속도 성립 → surge(진입시점)', () => {
-    const { d, at } = hotDetector();
-    const signals: SurgeSignal[] = [];
-    for (let i = 0; i < 5; i += 1) {
-      const res = d.onChunkClose(100.1 + i * 0.1, at + (i + 1) * 1000);
-      if (res) signals.push(res);
-    }
-    expect(signals).toHaveLength(1);
-    expect(signals[0].kind).toBe('surge');
-    expect(signals[0].runLength).toBeGreaterThanOrEqual(4);
-    expect(d.getSnapshot().tracking).toBe(true); // 확정 즉시 이탈 추적 시작.
-  });
-
-  it('연속 하락 청크는 아무 신호도 내지 않는다 — 단독 하락 감지는 없다', () => {
-    const { d, at } = hotDetector();
-    const signals: SurgeSignal[] = [];
-    for (let i = 0; i < 6; i += 1) {
-      const res = d.onChunkClose(100.5 - i * 0.1, at + (i + 1) * 1000);
-      if (res) signals.push(res);
-    }
-    expect(signals).toHaveLength(0);
-  });
-
-  it('청크가 지그재그면 런이 끊겨 확정 없음', () => {
-    const { d, at } = hotDetector();
-    const prices = [100.1, 100.2, 100.15, 100.25, 100.2, 100.3, 100.25];
-    const signals = prices
-      .map((p, i) => d.onChunkClose(p, at + (i + 1) * 1000))
-      .filter((s): s is SurgeSignal => s !== null);
-    expect(signals).toHaveLength(0);
-  });
-
-  it('틱속도 성립이 rateHotWindow(10초)보다 오래됐으면 정배열이어도 확정 없음', () => {
-    const { d, at } = hotDetector();
-    const late = at + 20_000;
-    const signals: SurgeSignal[] = [];
-    for (let i = 0; i < 5; i += 1) {
-      const res = d.onChunkClose(100.1 + i * 0.1, late + i * 1000);
-      if (res) signals.push(res);
-    }
-    expect(signals).toHaveLength(0);
-  });
-
-  it('워밍업 미달이면 정배열이어도 무발화', () => {
-    const d = new SurgeDetector();
-    feedBaseline(d, 0, 20);
-    const signals: SurgeSignal[] = [];
-    for (let i = 0; i < 6; i += 1) {
-      const res = d.onChunkClose(100 + i * 0.1, 21_000 + i * 1000);
-      if (res) signals.push(res);
-    }
-    expect(signals).toHaveLength(0);
-  });
-});
-
-describe('SurgeDetector — 이탈 확정(3단계, 트레일링 하락)', () => {
-  /** 워밍업 → 폭주 → surge 확정까지 진행된 감지기. 확정 직전 고점은 ~100.6. */
-  function surgedDetector(): { d: SurgeDetector; at: number } {
-    const d = new SurgeDetector();
-    const last = feedBaseline(d, 0, 100);
-    feedBurst(d, last + 1000, 12, 100, 0.01);
-    let at = last + 1000 + 12 * 50;
-    for (let i = 0; i < 5; i += 1) {
-      at = last + 2000 + i * 1000;
-      d.onChunkClose(100.1 + i * 0.1, at);
-    }
+describe('SurgeDetector v2 — 급등 확정(3조건 AND)', () => {
+  it('폭(4σ)+신고가+참여가 동시에 성립하면 surge — 앵커·σ·돌파선이 실린다', () => {
+    const { d, sec } = warmedDetector();
+    const fired = surges(feedBurst(d, sec + 1, 10, 100, 100.5)); // +0.5% ≥ 4σ(0.4%)
+    expect(fired).toHaveLength(1);
+    expect(fired[0].anchorPrice).toBeCloseTo(100, 5);
+    expect(fired[0].sigma).toBeCloseTo(0.001, 5); // minSigma 하한.
+    expect(fired[0].breakoutLevel).toBeCloseTo(100, 5);
     expect(d.getSnapshot().tracking).toBe(true);
-    return { d, at };
-  }
+  });
 
-  it('폭주가 식은 뒤에는 고점 대비 1%만 하락해도 soft 이탈 — 힘 빠진 급등을 빨리 끊는다', () => {
-    const { d, at } = surgedDetector();
-    // 폭주 열기(10초)가 완전히 식은 뒤, 드문드문(5초 간격) 틱으로 스르르 하락.
-    const t0 = at + 30_000;
-    const events: (SurgeAlert | SurgeSignal)[] = [];
-    const prices = [100.4, 100.0, 99.2]; // 트레일링 고점 100.4 대비 −1%(99.396) 아래는 99.2뿐.
-    prices.forEach((p, i) => {
-      const res = d.onTick(p, t0 + i * 5000);
+  it('폭이 4σ 미만이면(미세 발작) 확정 없음 — v1 실패의 재발 방지', () => {
+    const { d, sec } = warmedDetector();
+    const events = feedBurst(d, sec + 1, 10, 100, 100.2); // +0.2% < 0.4%
+    expect(surges(events)).toHaveLength(0);
+  });
+
+  it('참여(틱속도 폭주) 없이 천천히 오르면 확정 없음', () => {
+    const { d, sec } = warmedDetector();
+    const events: Ev[] = [];
+    for (let i = 0; i < 8; i += 1) {
+      const res = d.onTick(100 + (i + 1) * 0.08, (sec + 1 + i) * 1000, { strength: 120 }); // 1틱/초, +0.64%까지.
       if (res) events.push(res);
-    });
-    expect(events).toHaveLength(1);
-    expect(events[0].kind).toBe('exit');
-    expect((events[0] as SurgeSignal).exitReason).toBe('soft');
-    expect((events[0] as SurgeSignal).trailingHigh).toBe(100.4);
-    expect(d.getSnapshot().tracking).toBe(false);
-  });
-
-  it('폭주가 살아 있는 동안 1% 눌림은 참고, 3%가 무너지면 속도 무관 hard 이탈(투매)', () => {
-    const { d, at } = surgedDetector();
-    // 확정 직후 — 폭주 열기(rateHotWindow 10초)가 아직 살아 있는 구간.
-    // 고점 100.12 기준 soft선 99.12, hard선 97.12.
-    expect(d.onTick(99.0, at + 1000)).toBeNull(); // −1.1% — 뜨거우므로 soft 억제(잔파동 관용).
-    const res = d.onTick(97.0, at + 2000); // −3.1% — 뜨거워도 무조건 이탈.
-    expect(res?.kind).toBe('exit');
-    expect((res as SurgeSignal).exitReason).toBe('hard');
-  });
-
-  it('추적 중 신고점이 나오면 이탈 기준도 따라 올라간다(트레일링)', () => {
-    const { d, at } = surgedDetector();
-    const t0 = at + 15_000; // 폭주 식음 — soft선(−1%) 활성.
-    d.onTick(105, t0); // 신고점 — 기준 고점 100.12 → 105, soft선 103.95.
-    expect(d.onTick(104.2, t0 + 5000)).toBeNull(); // 105 대비 −0.76% — 아직.
-    const res = d.onTick(103.9, t0 + 10_000); // 105 대비 −1.05% — soft 이탈.
-    expect(res?.kind).toBe('exit');
-    expect((res as SurgeSignal).trailingHigh).toBe(105);
-  });
-
-  it('추적 중에는 재정배열이 와도 새 surge를 내지 않는다(세트 유지)', () => {
-    const { d, at } = surgedDetector();
-    feedBurst(d, at + 2000, 12, 100.7, 0.01); // 다시 폭주.
-    const signals: SurgeSignal[] = [];
-    for (let i = 0; i < 6; i += 1) {
-      const res = d.onChunkClose(100.8 + i * 0.1, at + 3000 + i * 1000);
-      if (res) signals.push(res);
     }
-    expect(signals).toHaveLength(0);
-    expect(d.getSnapshot().tracking).toBe(true);
+    expect(surges(events)).toHaveLength(0);
   });
 
-  it('exit 후 쿨다운(60초)이 지나고 다시 폭주+정배열이면 새 surge — 새 세트 시작', () => {
-    const { d, at } = surgedDetector();
-    const exitRes = d.onTick(97.0, at + 15_000); // 고점 100.6 대비 −3.5% — 이탈.
-    expect(exitRes?.kind).toBe('exit');
-    // 쿨다운 내 재급등 시도 — 막힌다.
-    feedBurst(d, at + 20_000, 12, 97, 0.01);
-    let blocked = 0;
-    for (let i = 0; i < 6; i += 1) {
-      if (d.onChunkClose(97.1 + i * 0.1, at + 21_000 + i * 1000)) blocked += 1;
+  it('체결강도 미달(매수 주도 아님)이면 확정 없음 — null이면 fail-open', () => {
+    const { d, sec } = warmedDetector();
+    const blocked: Ev[] = [];
+    for (let i = 0; i < 10; i += 1) {
+      const res = d.onTick(100 + ((i + 1) * 0.5) / 10, (sec + 1) * 1000 + i * 90, { strength: 80 });
+      if (res) blocked.push(res);
     }
-    expect(blocked).toBe(0);
-    // 쿨다운 해제 후 — 새 세트.
-    const t2 = at + 90_000;
-    feedBurst(d, t2, 12, 98, 0.01);
-    const signals: SurgeSignal[] = [];
-    for (let i = 0; i < 6; i += 1) {
-      const res = d.onChunkClose(98.1 + i * 0.1, t2 + 1000 + i * 1000);
-      if (res) signals.push(res);
+    expect(surges(blocked)).toHaveLength(0);
+
+    const { d: d2, sec: sec2 } = warmedDetector();
+    const open: Ev[] = [];
+    for (let i = 0; i < 10; i += 1) {
+      const res = d2.onTick(100 + ((i + 1) * 0.5) / 10, (sec2 + 1) * 1000 + i * 90, { strength: null });
+      if (res) open.push(res);
     }
-    expect(signals).toHaveLength(1);
-    expect(signals[0].kind).toBe('surge');
+    expect(surges(open)).toHaveLength(1); // 판정 불가 → fail-open(기존 게이트 관례).
+  });
+
+  it('직전 30초 고가를 못 넘으면(신고가 아님) 막히고, 넘는 순간 발화', () => {
+    const d = new SurgeDetector(OPTS);
+    feedFlat(d, 0, 75);
+    d.onTick(100.6, 75_000, { strength: 120 }); // 스파이크 고점 — 신고가 선.
+    feedFlat(d, 76, 15); // 100으로 복귀 유지(스파이크가 신고가 창 30초 안에 남는다).
+    const belowHigh = feedBurst(d, 91, 10, 100, 100.5); // 폭은 충분하나 100.6 미돌파.
+    expect(surges(belowHigh)).toHaveLength(0);
+    const breakout = feedBurst(d, 92, 10, 100.5, 100.75); // 100.6 돌파.
+    expect(surges(breakout)).toHaveLength(1);
+    expect(surges(breakout)[0].breakoutLevel).toBeCloseTo(100.6, 5);
+  });
+
+  it('σ 워밍업(룩백 60초) 미달이면 확정 없음', () => {
+    const d = new SurgeDetector(OPTS);
+    feedFlat(d, 0, 40); // 수익률 표본 ~30 < 60.
+    expect(d.warmedUp).toBe(false);
+    expect(surges(feedBurst(d, 41, 10, 100, 100.6))).toHaveLength(0);
   });
 });
 
-describe('SurgeDetector — 속도 정배열 경로(B, 워밍업 불필요)', () => {
-  /** 초당 틱수를 1,2,3,4,5개로 가속시키며 밀어 넣는다(t0초부터 5초). step 부호가 가격 방향. */
-  function feedAccelerating(d: SurgeDetector, t0: number, startPrice: number, step: number): void {
-    let price = startPrice;
-    for (let sec = 0; sec < 5; sec += 1) {
-      for (let j = 0; j <= sec; j += 1) {
-        price += step;
-        d.onTick(price, t0 + sec * 1000 + j * 100);
-      }
-    }
+describe('SurgeDetector v2 — 이탈(3경로)', () => {
+  /** 급등 확정(고점 ~100.5, 돌파선 100, σ=0.001)까지 만든 감지기. */
+  function surgedDetector(): { d: SurgeDetector; sec: number } {
+    const { d, sec } = warmedDetector();
+    const fired = surges(feedBurst(d, sec + 1, 10, 100, 100.5));
+    expect(fired).toHaveLength(1);
+    return { d, sec: sec + 1 };
   }
 
-  it('워밍업 전이라도 틱수 정배열(1<2<3<4<5) + 연속 업틱이면 경보', () => {
-    const d = new SurgeDetector();
-    feedAccelerating(d, 0, 100, 0.01);
-    const fired: (SurgeAlert | SurgeSignal)[] = [];
-    for (let j = 0; j < 4; j += 1) {
-      const res = d.onTick(100.2 + j * 0.01, 5000 + j * 100);
-      if (res) fired.push(res);
-    }
-    expect(d.warmedUp).toBe(false);
-    expect(alerts(fired).length).toBeGreaterThanOrEqual(1);
+  it('돌파했던 신고가 선 아래로 복귀하면 즉시 breakout_fail — 가짜 돌파', () => {
+    const { d, sec } = surgedDetector();
+    const res = d.onTick(99.95, (sec + 3) * 1000, { strength: 120 }); // 돌파선 100 아래.
+    expect(res?.kind).toBe('exit');
+    expect((res as SurgeSignal).exitReason).toBe('breakout_fail');
+    expect((res as SurgeSignal).trailingHigh).toBeCloseTo(100.5, 5);
   });
 
-  it('워밍업 전이라도 속도 정배열 + 청크 정배열이면 surge 확정', () => {
-    const d = new SurgeDetector();
-    feedAccelerating(d, 0, 100, 0.01);
-    for (let j = 0; j < 4; j += 1) d.onTick(100.2 + j * 0.01, 5000 + j * 100);
-    const signals: SurgeSignal[] = [];
-    for (let i = 0; i < 5; i += 1) {
-      const res = d.onChunkClose(100.3 + i * 0.1, 6000 + i * 1000);
-      if (res) signals.push(res);
-    }
-    expect(signals).toHaveLength(1);
-    expect(signals[0].kind).toBe('surge');
+  it('참여가 아직 뜨거워도 고점 대비 3σ 하락이면 hard(투매)', () => {
+    const { d, sec } = surgedDetector();
+    // 확정 직후(참여 신선) — 고점 100.5, hard선 = −0.3% = 100.1985. 돌파선(100) 위에서.
+    expect(d.onTick(100.35, sec * 1000 + 950, { strength: 120 })).toBeNull(); // −0.15% — hard 미달, soft는 뜨거워서 억제.
+    const res = d.onTick(100.15, sec * 1000 + 980, { strength: 120 });
+    expect((res as SurgeSignal)?.exitReason).toBe('hard');
   });
 
-  it('틱수가 늘지 않는 균일 속도(계단 없음)는 워밍업 전 무발화 — 정배열 경로의 의도된 한계', () => {
-    const d = new SurgeDetector();
-    const fired: (SurgeAlert | SurgeSignal)[] = [];
-    for (let sec = 0; sec < 10; sec += 1) {
-      for (let j = 0; j < 3; j += 1) {
-        const res = d.onTick(100 + sec * 0.03 + j * 0.01, sec * 1000 + j * 300);
-        if (res) fired.push(res);
-      }
-    }
-    expect(fired).toHaveLength(0);
+  it('참여가 식은 뒤에는 1.5σ 하락만으로 soft — 힘 빠진 급등', () => {
+    const { d, sec } = surgedDetector();
+    // 12초간 1틱/초로 식힌다(참여 신선도 10초 창 소멸) — 고점 유지 수준의 가격.
+    for (let i = 0; i < 12; i += 1) d.onTick(100.48, (sec + 2 + i) * 1000, { strength: 120 });
+    // 고점 100.5, soft선 = −0.15% = 100.349. hard(−0.3%)엔 못 미치는 하락.
+    const res = d.onTick(100.3, (sec + 15) * 1000, { strength: 120 });
+    expect((res as SurgeSignal)?.exitReason).toBe('soft');
+  });
+
+  it('스프레드 하한 — 스프레드×2가 σ 문턱보다 크면 그 아래 하락은 이탈이 아니다(호가 소음)', () => {
+    const { d, sec } = surgedDetector();
+    for (let i = 0; i < 12; i += 1) d.onTick(100.48, (sec + 2 + i) * 1000, { strength: 120 });
+    // 스프레드 0.5% → soft 문턱 = max(0.15%, 1%) = 1%. −0.2% 하락은 이탈 아님.
+    expect(d.onTick(100.3, (sec + 15) * 1000, { strength: 120, spreadPct: 0.005 })).toBeNull();
+    // 돌파선 상실은 스프레드와 무관하게 이탈.
+    const res = d.onTick(99.9, (sec + 16) * 1000, { strength: 120, spreadPct: 0.005 });
+    expect((res as SurgeSignal)?.exitReason).toBe('breakout_fail');
+  });
+
+  it('추적 중 재폭주해도 새 surge 없음(세트 유지), 이탈 후 쿨다운 지나야 새 세트', () => {
+    const { d, sec } = surgedDetector();
+    expect(surges(feedBurst(d, sec + 2, 10, 100.5, 101.2))).toHaveLength(0); // 추적 중 — 억제.
+    const exit = d.onTick(99.9, (sec + 5) * 1000, { strength: 120 }); // breakout_fail로 종결.
+    expect(exit?.kind).toBe('exit');
+    // 쿨다운(60초) 안 — 재확정 억제.
+    expect(surges(feedBurst(d, sec + 10, 10, 99.9, 100.6))).toHaveLength(0);
+    // 쿨다운 후 — 조건 다시 갖추면 새 세트. (99.9~ 유지로 σ·신고가 재정렬)
+    feedFlat(d, sec + 12, 70, 99.9);
+    const again = surges(feedBurst(d, sec + 82, 10, 99.9, 100.5)); // +0.6% & 신고가(직전 30초 고가 99.9 돌파).
+    expect(again).toHaveLength(1);
   });
 });
 
-describe('SurgeDetector — 스냅샷·리셋', () => {
-  it('reset 후 워밍업을 처음부터 다시 하고 추적도 해제된다', () => {
-    const d = new SurgeDetector();
-    feedBaseline(d, 0, 100);
-    expect(d.warmedUp).toBe(true);
+describe('SurgeDetector v2 — 조기경보', () => {
+  it('2σ 도달 + 참여면 경보(확정 전 호가 예열) — 4σ 미만이라 확정은 없음', () => {
+    const { d, sec } = warmedDetector();
+    const events = feedBurst(d, sec + 1, 10, 100, 100.28); // +0.28% ∈ [2σ=0.2%, 4σ=0.4%)
+    expect(alerts(events).length).toBeGreaterThanOrEqual(1);
+    expect(surges(events)).toHaveLength(0);
+  });
+
+  it('σ 워밍업 전에는 속도 정배열이 경보를 대신한다(확정은 불가)', () => {
+    const d = new SurgeDetector(OPTS);
+    // 초당 틱수 1→2→3→4→5 가속 + 업틱.
+    let price = 100;
+    const events: Ev[] = [];
+    for (let s = 0; s < 5; s += 1) {
+      for (let j = 0; j <= s; j += 1) {
+        price += 0.01;
+        const res = d.onTick(price, s * 1000 + j * 100, { strength: 120 });
+        if (res) events.push(res);
+      }
+    }
+    for (let j = 0; j < 4; j += 1) {
+      const res = d.onTick(price + 0.01 * (j + 1), 5000 + j * 100, { strength: 120 });
+      if (res) events.push(res);
+    }
+    expect(alerts(events).length).toBeGreaterThanOrEqual(1);
+    expect(surges(events)).toHaveLength(0);
+  });
+});
+
+describe('SurgeDetector v2 — 리셋', () => {
+  it('reset 후 워밍업·추적이 초기화된다', () => {
+    const { d } = warmedDetector();
     d.reset();
     expect(d.warmedUp).toBe(false);
-    expect(d.getSnapshot().baselineRate).toBeNull();
     expect(d.getSnapshot().tracking).toBe(false);
+    expect(d.getSnapshot().sigma).toBeNull();
   });
 });

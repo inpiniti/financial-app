@@ -12,11 +12,13 @@ function makeSignal(kind: 'surge' | 'exit', at: number): SurgeSignal {
     kind,
     at,
     price: 100,
-    runLength: 4,
-    shortRate: 6,
-    baselineRate: 1,
+    anchorPrice: kind === 'surge' ? 99.5 : null,
+    sigma: 0.002,
+    breakoutLevel: kind === 'surge' ? 99.9 : null,
     trailingHigh: kind === 'exit' ? 101 : null,
     exitReason: kind === 'exit' ? 'hard' : null,
+    shortRate: 6,
+    baselineRate: 1,
   };
 }
 
@@ -107,6 +109,8 @@ describe('SurgeRecorder — 에피소드 상태기계', () => {
     expect(ep.status).toBe('open');
     expect(ep.surgeAsk1).toBe(100.1);
     expect(ep.surgeAsk2).toBe(100.2);
+    expect(ep.anchorPrice).toBe(99.5); // v2 — 급등 출발가.
+    expect(ep.surgeSigma).toBe(0.002);
     expect(ep.logged).toBe(true);
     expect(ep.id).toBe('db-1');
     expect(h.calls).toContain('open:AAPL');
@@ -125,6 +129,8 @@ describe('SurgeRecorder — 에피소드 상태기계', () => {
     const [ep] = h.recorder.recentEpisodes;
     expect(ep.status).toBe('closed');
     expect(ep.plungeBid1).toBe(97);
+    expect(ep.peakPrice).toBe(101); // v2 — 트레일링 고점(MFE).
+    expect(ep.exitReason).toBe('hard');
     expect(ep.priceChangePct).toBeCloseTo(-2.9, 1);
     expect(ep.l1ChangePct).toBeCloseTo(-3, 1); // 100에 사서 97에 판 값.
     expect(h.calls).toContain('close:db-1');

@@ -1,5 +1,7 @@
 # 급등주 찾기 — 프론트 훅 동작 설계
 
+> ⚠️ **[v2 훅 문서](./2026-08-13_surge-stock-finder-v2-frontend-hooks.md)로 대체됐다** (2026-08-13 — 감지 v2 재설계에 맞춘 뷰·표시 갱신). 대원칙(훅은 창문, 구독 관례)은 그대로 유효하며 v2 문서 §1에 요약돼 있다.
+
 > 작성일 2026-08-13 · 분류: **소형** (UI 구독 훅 — 감지·기록 로직은 범위 밖)
 > 기준: `features/scalper/ui/managerProvider.tsx` (`useScalperManager`), `features/scalper/ui/AutoPilotScreen.tsx:179-184` (구독 관례), `features/scalper/autopilotManager.ts:355-378` (subscribe 3종)
 > 상위 기획: [2026-08-13_surge-stock-finder-plan.md](./2026-08-13_surge-stock-finder-plan.md) · DB: [2026-08-13_surge-stock-finder-db-schema.md](./2026-08-13_surge-stock-finder-db-schema.md)
