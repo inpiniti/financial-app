@@ -668,13 +668,13 @@ describe('AutoPilot — 매도 관리 그리드 인계(D5·GRID_EXIT)', () => {
 
     // 옛 매도 취소(OCO).
     expect(broker.canceled).toContain(firstSell.odno);
-    // 새 중앙값 90(방금 매수 레벨) — step $10 고정: 매도 10주@100, 매수 15주@80. 여전히 관리 중.
+    // 새 중앙값 90(방금 매수 레벨) — %를 재계산: 매도 10주@99, 매수 15주@81. 여전히 관리 중.
     const view = h.pilot.getView();
     expect(view.state).toBe('HOLDING');
     expect(view.grid).toMatchObject({
       centerPrice: 90,
-      buyPrice: 80,
-      sellPrice: 100,
+      buyPrice: 81,
+      sellPrice: 99,
       holdingQty: 15,
       nextSellQty: 10,
       nextBuyQty: 15,
@@ -682,8 +682,8 @@ describe('AutoPilot — 매도 관리 그리드 인계(D5·GRID_EXIT)', () => {
     expect(h.trades).toHaveLength(0); // 아직 청산 아님.
     // 새 매도/매수 다리가 다시 걸렸다.
     expect(broker.placed.filter((p) => p.side === 'sell')).toHaveLength(2);
-    expect(broker.placed.filter((p) => p.side === 'sell').at(-1)).toMatchObject({ qty: 10, price: 100 });
-    expect(broker.placed.filter((p) => p.side === 'buy').at(-1)).toMatchObject({ qty: 15, price: 80 });
+    expect(broker.placed.filter((p) => p.side === 'sell').at(-1)).toMatchObject({ qty: 10, price: 99 });
+    expect(broker.placed.filter((p) => p.side === 'buy').at(-1)).toMatchObject({ qty: 15, price: 81 });
   });
 });
 
@@ -1101,20 +1101,21 @@ describe('AutoPilot — 그리드 격리·현금 소진 매도 전용', () => {
     expect(ba.placed.filter((p) => p.side === 'sell')).toHaveLength(2);
     expect(h.events.some((e) => e.includes('매수는 생략'))).toBe(true);
 
-    // 매도(한 칸 위, 10주@100) 체결 → 한 칸 익절(stepSold) — 진입 lot(5주)이 남아 관리 지속.
-    ba.fill(ba.placed.filter((p) => p.side === 'sell').at(-1)!.odno, 100);
+    // 매도(한 칸 위, 10주@99) 체결 → 한 칸 익절(stepSold) — 진입 lot(5주)이 남아 관리 지속.
+    ba.fill(ba.placed.filter((p) => p.side === 'sell').at(-1)!.odno, 99);
     await h.pilot.pollCycle();
     await flush();
     expect(h.trades).toHaveLength(1);
-    expect(h.trades[0]).toMatchObject({ ticker: 'A', qty: 10, entryPrice: 90, exitPrice: 100 });
+    expect(h.trades[0]).toMatchObject({ ticker: 'A', qty: 10, entryPrice: 90, exitPrice: 99 });
     expect(h.pilot.getView().activeTickers).toEqual(['A']);
 
-    // 남은 진입 lot 매도(5주@110) 체결 → 전량 정리·사이클 완주(매도 전용 상태에서도).
-    ba.fill(ba.placed.filter((p) => p.side === 'sell').at(-1)!.odno, 110);
+    // 남은 진입 lot 매도(5주@108.9 — 중앙 99×1.1) 체결 → 전량 정리·사이클 완주.
+    // 진입 lot의 costPrice는 실제 매수가 100이다(중앙값 유추가 아니라 lot에 저장된 값).
+    ba.fill(ba.placed.filter((p) => p.side === 'sell').at(-1)!.odno, 108.9);
     await h.pilot.pollCycle();
     await flush();
     expect(h.trades).toHaveLength(2);
-    expect(h.trades[1]).toMatchObject({ ticker: 'A', qty: 5, entryPrice: 100, exitPrice: 110 });
+    expect(h.trades[1]).toMatchObject({ ticker: 'A', qty: 5, entryPrice: 100, exitPrice: 108.9 });
     expect(h.pilot.getView().activeTickers).toEqual([]);
   });
 

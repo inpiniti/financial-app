@@ -19,8 +19,8 @@ export interface AppSettings {
    */
   buyCancelAfterSec: number;
   /**
-   * 매도 관리 그리드 폭 — **% 단위**. 기본 3(=3%). 진입 시점에 칸 간격 step=평단×이 %(달러)로 굳고,
-   * 이후 사다리 다리는 중앙값(마지막 체결 레벨)±step에 걸린다. managerProvider가 /100 해서
+   * 매도 관리 그리드 폭 — **% 단위**. 기본 3(=3%). 사다리 다리는 매번 중앙값(마지막 체결 레벨)
+   * ×(1±이 %)에 걸린다 — 주가를 따라 칸이 넓어지고 좁아진다. managerProvider가 /100 해서
    * core/grid의 width(소수)로 넘긴다. (사다리 그리드 재설계 — 2026-08-13.
    * 옛 gridBuyMultiplier(배수 물타기)는 이때 제거 — 저장소에 남은 옛 키는 무시된다.)
    */

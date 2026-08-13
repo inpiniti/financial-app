@@ -131,7 +131,7 @@ describe('core/grid — 사다리 그리드: arm·수량 규칙', () => {
     expect(port.canceled[0].odno).toBe(port.legBySide('buy')!.odno);
   });
 
-  it('매수(−step) 체결 → 매도 취소, 매수가가 새 중앙값 — 매도=방금 산 수량, 매수=+1단위', async () => {
+  it('매수(−w) 체결 → 매도 취소, 매수가가 새 중앙값 — 매도=방금 산 수량, 매수=+1단위', async () => {
     const port = new FakeGridPort({ qty: 10, avgPrice: 100 });
     port.positionQueue = [{ qty: 10, avgPrice: 100 }, { qty: 30, avgPrice: 93.33 }];
     const grid = new Grid({ port, clock: fakeClock(), config: baseConfig });
@@ -145,56 +145,57 @@ describe('core/grid — 사다리 그리드: arm·수량 규칙', () => {
     expect(grid.state).toBe('ARMED');
     // 옛 매도 취소 1회.
     expect(port.canceled.map((c) => c.odno)).toContain(firstSellOdno);
-    // 새 중앙값 90(방금 매수 레벨) — step은 진입 시점 $10 고정: 매도 20주 @100, 매수 30주 @80.
-    expect(port.lastLeg('sell')).toMatchObject({ qty: 20, price: 100 });
-    expect(port.lastLeg('buy')).toMatchObject({ qty: 30, price: 80 });
-    expect(grid.view).toMatchObject({ centerPrice: 90, buyPrice: 80, sellPrice: 100, holdingQty: 30 });
+    // 새 중앙값 90(방금 매수 레벨) — %를 재계산: 매도 20주 @99(90×1.1), 매수 30주 @81(90×0.9).
+    expect(port.lastLeg('sell')).toMatchObject({ qty: 20, price: 99 });
+    expect(port.lastLeg('buy')).toMatchObject({ qty: 30, price: 81 });
+    expect(grid.view).toMatchObject({ centerPrice: 90, buyPrice: 81, sellPrice: 99, holdingQty: 30 });
   });
 
-  it('왕복 대칭 — 매수 후 한 칸 위 매도가 체결되면 stepSold로 익절하고 원래 상태로 복귀한다', async () => {
-    // 사용자 예시: 100 진입 → 90에 2단위 매수 → 100에 2단위 매도 → (110 매도 1단위 / 90 매수 2단위)로 복귀.
+  it('왕복 — 매수 후 한 칸 위 매도가 체결되면 그 lot의 실제 매수가 기준으로 stepSold 익절한다', async () => {
+    // 100 진입(1단위) → 90에 2단위 매수 → 99(90×1.1)에 2단위 매도 → 진입 lot만 남는다.
+    // % 간격이라 레벨이 조금씩 어긋나므로(100→99), 익절 기록은 lot에 저장된 매수가로 남는다.
     const port = new FakeGridPort({ qty: 1, avgPrice: 100 });
     const grid = new Grid({ port, clock: fakeClock(), config: baseConfig });
     await grid.arm();
     expect(port.legBySide('sell')).toMatchObject({ qty: 1, price: 110 });
     expect(port.legBySide('buy')).toMatchObject({ qty: 2, price: 90 });
 
-    // 90 매수 2주 체결 → 중앙 90: 매도 2주 @100, 매수 3주 @80.
+    // 90 매수 2주 체결 → 중앙 90: 매도 2주 @99, 매수 3주 @81.
     port.fill(port.legBySide('buy')!.odno, 90);
     expect((await grid.poll()).kind).toBe('rebracket');
-    expect(port.lastLeg('sell')).toMatchObject({ qty: 2, price: 100 });
-    expect(port.lastLeg('buy')).toMatchObject({ qty: 3, price: 80 });
+    expect(port.lastLeg('sell')).toMatchObject({ qty: 2, price: 99 });
+    expect(port.lastLeg('buy')).toMatchObject({ qty: 3, price: 81 });
 
-    // 100 매도 2주 체결 → 한 칸 익절(2주 × $10) — 중앙 100 복귀: 매도 1주 @110, 매수 2주 @90.
-    port.fill(port.lastLeg('sell')!.odno, 100);
+    // 99 매도 2주 체결 → 한 칸 익절(90에 산 lot) — 중앙 99: 매도 1주 @108.9, 매수 2주 @89.1.
+    port.fill(port.lastLeg('sell')!.odno, 99);
     const result = await grid.poll();
-    expect(result).toMatchObject({ kind: 'stepSold', qty: 2, costPrice: 90, exitPrice: 100 });
+    expect(result).toMatchObject({ kind: 'stepSold', qty: 2, costPrice: 90, exitPrice: 99 });
     expect(grid.state).toBe('ARMED');
-    expect(port.lastLeg('sell')).toMatchObject({ qty: 1, price: 110 });
-    expect(port.lastLeg('buy')).toMatchObject({ qty: 2, price: 90 });
-    expect(grid.view).toMatchObject({ centerPrice: 100, holdingQty: 1 });
+    expect(port.lastLeg('sell')).toMatchObject({ qty: 1, price: 108.9 });
+    expect(port.lastLeg('buy')).toMatchObject({ qty: 2, price: 89.1 });
+    expect(grid.view).toMatchObject({ centerPrice: 99, holdingQty: 1 });
 
-    // 110 매도 1주(진입 lot) 체결 → 전량 정리 SOLD.
-    port.fill(port.lastLeg('sell')!.odno, 110);
+    // 108.9 매도 1주(진입 lot) 체결 → 전량 정리 SOLD — costPrice는 진입가 100(중앙값 유추가 아니다).
+    port.fill(port.lastLeg('sell')!.odno, 108.9);
     const final = await grid.poll();
-    expect(final).toEqual({ kind: 'sold', qty: 1, costPrice: 100, exitPrice: 110 });
+    expect(final).toEqual({ kind: 'sold', qty: 1, costPrice: 100, exitPrice: 108.9 });
     expect(grid.state).toBe('SOLD');
   });
 
-  it('두 칸 하락 — 매수 수량이 1단위씩만 는다(산술급수): 1, 2, 3, …', async () => {
+  it('두 칸 하락 — 매수 수량이 1단위씩만 늘고(산술급수), 칸은 %라 주가 따라 좁아진다', async () => {
     const port = new FakeGridPort({ qty: 5, avgPrice: 100 });
     const grid = new Grid({ port, clock: fakeClock(), config: baseConfig });
     await grid.arm();
 
-    // 90 매수 10주(2단위) 체결 → 중앙 90: 매수 15주(3단위) @80.
+    // 90 매수 10주(2단위) 체결 → 중앙 90: 매수 15주(3단위) @81.
     port.fill(port.legBySide('buy')!.odno, 90);
     await grid.poll();
-    expect(port.lastLeg('buy')).toMatchObject({ qty: 15, price: 80 });
-    // 80 매수 15주 체결 → 중앙 80: 매도 15주 @90, 매수 20주(4단위) @70.
-    port.fill(port.lastLeg('buy')!.odno, 80);
+    expect(port.lastLeg('buy')).toMatchObject({ qty: 15, price: 81 });
+    // 81 매수 15주 체결 → 중앙 81: 매도 15주 @89.1, 매수 20주(4단위) @72.9.
+    port.fill(port.lastLeg('buy')!.odno, 81);
     await grid.poll();
-    expect(port.lastLeg('sell')).toMatchObject({ qty: 15, price: 90 });
-    expect(port.lastLeg('buy')).toMatchObject({ qty: 20, price: 70 });
+    expect(port.lastLeg('sell')).toMatchObject({ qty: 15, price: 89.1 });
+    expect(port.lastLeg('buy')).toMatchObject({ qty: 20, price: 72.9 });
     expect(grid.view.holdingQty).toBe(30); // 5+10+15 — 잔고 폴백(내부 계산).
   });
 
@@ -220,10 +221,10 @@ describe('core/grid — 사다리 그리드: arm·수량 규칙', () => {
     expect(port.legBySide('buy')).toMatchObject({ qty: 5, price: 90 });
     expect(port.legBySide('sell')).toMatchObject({ qty: 10, price: 110 });
 
-    // 축소된 5주가 체결되면 lot=5 — 매도도 5주(정확히 그 매수만 되돌린다).
+    // 축소된 5주가 체결되면 lot=5 — 매도도 5주(정확히 그 매수만 되돌린다), 가격은 90×1.1=99.
     port.fill(port.legBySide('buy')!.odno, 90);
     await grid.poll();
-    expect(port.lastLeg('sell')).toMatchObject({ qty: 5, price: 100 });
+    expect(port.lastLeg('sell')).toMatchObject({ qty: 5, price: 99 });
   });
 
   it('⑥ 현금이 0이면 매수 다리를 생략하고 매도(익절) 다리만 발주한다', async () => {
@@ -286,12 +287,12 @@ describe('core/grid — 최신 현금 콜백(fetchAvailableCash)·다리별 격�
     expect(port.legBySide('buy')).toMatchObject({ qty: 20, price: 90 });
     expect(grid.view.buyLegStatus).toBe('full');
 
-    // 매수 체결 → 중앙 90, buyPrice 80 — 이번엔 현금 $300 → floor(300/80)=3주(< 목표 30주).
+    // 매수 체결 → 중앙 90, buyPrice 81 — 이번엔 현금 $300 → floor(300/81)=3주(< 목표 30주).
     port.fill(port.legBySide('buy')!.odno, 90);
     const result = await grid.poll();
     expect(result.kind).toBe('rebracket');
-    expect(asked).toEqual([90, 80]); // 발주 직전 buyPrice로 매번 재조회.
-    expect(port.lastLeg('buy')).toMatchObject({ qty: 3, price: 80 });
+    expect(asked).toEqual([90, 81]); // 발주 직전 buyPrice로 매번 재조회.
+    expect(port.lastLeg('buy')).toMatchObject({ qty: 3, price: 81 });
     expect(grid.view.buyLegStatus).toBe('reduced');
   });
 
@@ -442,19 +443,19 @@ describe('core/grid — 세션 전환·일괄 취소 방어(재발주)', () => {
   });
 
   it('사다리 중간의 매도 추론 소멸 — 잔고가 매도분만큼 줄었으면 stepSold(부분 매도)로 판정한다', async () => {
-    // 진입 5주@100 → 90에 10주 매수 체결(보유 15) → 매도 다리 10주@100.
+    // 진입 5주@100 → 90에 10주 매수 체결(보유 15) → 매도 다리 10주@99.
     const port = new FakeGridPort({ qty: 5, avgPrice: 100 });
     const grid = new Grid({ port, clock: fakeClock(), config: baseConfig });
     await grid.arm();
     port.fill(port.legBySide('buy')!.odno, 90);
     await grid.poll();
-    expect(port.lastLeg('sell')).toMatchObject({ qty: 10, price: 100 });
+    expect(port.lastLeg('sell')).toMatchObject({ qty: 10, price: 99 });
 
     // 매도 10주가 추론 소멸 — 잔고가 15→5로 줄었다 = 진짜 체결.
     port.vanish(port.lastLeg('sell')!.odno);
     port.positionQueue = [{ qty: 5, avgPrice: 100 }];
     const result = await grid.poll();
-    expect(result).toMatchObject({ kind: 'stepSold', qty: 10, costPrice: 90, exitPrice: 100 });
+    expect(result).toMatchObject({ kind: 'stepSold', qty: 10, costPrice: 90, exitPrice: 99 });
     expect(grid.state).toBe('ARMED'); // 진입 lot이 남아 사다리는 계속.
   });
 

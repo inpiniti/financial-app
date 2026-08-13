@@ -320,10 +320,10 @@ export default function SettingsScreen() {
               className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
             />
             <Text className="mb-1 text-xs leading-5 text-[#8b95a1]">
-              진입가 기준으로 칸 간격이 정해지고, 마지막 체결가(중앙값) 위아래 한 칸에 매도·매수 지정가를 걸어요.
+              마지막 체결가(중앙값) 위아래 이 %에 매도·매수 지정가를 걸어요. 체결될 때마다 그 가격 기준으로 다시 계산해요.
               {gridPreview && (
                 <Text className="text-[#4e5968]">
-                  {' '}$100에 진입하면 매수 ${gridPreview.buy} · 매도 ${gridPreview.sell}에 걸려요.
+                  {' '}중앙값이 $100이면 매수 ${gridPreview.buy} · 매도 ${gridPreview.sell}에 걸려요.
                 </Text>
               )}
             </Text>

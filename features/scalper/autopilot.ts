@@ -66,7 +66,7 @@ export const GRID_EXIT = true;
 
 /** 그리드 설정 — 폭(w)만. 설정 탭(매매 파라미터)에서 조절한다. 수량 규칙은 사다리(코어)가 정한다. */
 export interface GridExitConfig {
-  /** 폭 w(기본 0.03). 진입 시점에 step=평단×w(달러)로 굳고, 다리 가격은 중앙값±step이다. */
+  /** 폭 w(기본 0.03). 다리 가격은 매번 중앙값(마지막 체결가)×(1±w)로 재계산한다. */
   width: number;
 }
 

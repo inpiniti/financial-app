@@ -4,14 +4,14 @@
 // **산술급수 사다리**로 바꿨다. 상태는 (중앙값, 매수 lot 스택) 둘로 완전히 결정된다.
 //
 //  · 중앙값 = **마지막 체결 레벨**(평단가 아님). 매수 체결 → 한 칸 아래로, 매도 체결 → 한 칸 위로.
-//  · 칸 간격 step = **진입 시점 평단 × width를 달러로 고정**(사용자 확정 2026-08-13) —
-//    매번 %를 새 중앙값에 곱하면(90×1.1=99) 레벨이 어긋나는데, 고정 간격은 오르내려도
-//    같은 가격 레벨로 복귀한다(80/90/100/110 격자).
+//  · 칸 간격 = **중앙값 × width를 매번 재계산**(% 방식 — 사용자 확정 2026-08-13 저녁, 달러 고정에서 변경).
+//    주가가 내려가면 칸도 좁아져 가격 대비 간격이 일정하다. 레벨이 격자로 복귀하지 않고 조금씩
+//    어긋나므로(90×1.1=99), lot의 매수가는 중앙값으로 유추하지 않고 **lot에 직접 저장**한다.
 //  · 수량 단위 = **진입 수량(unit)**. lot 스택으로 관리한다:
 //      매수 체결 q주 → push(q). 다음 주문: 매도 = top(방금 산 q), 매수 = top + unit.
 //      매도 체결     → pop().  다음 주문: 매도 = 새 top(직전 lot), 매수 = 방금 판 수량.
 //      (pop 후 스택이 비면 = 진입 lot까지 팔았다 → SOLD, 오토파일럿 SCANNING 복귀.)
-//    한 왕복(매수→한 칸 위 매도)마다 그 lot×step이 익절로 확정되고, n칸 하락 시 보유량은
+//    한 왕복(매수→한 칸 위 매도)마다 그 lot 매수가×w만큼이 익절로 확정되고, n칸 하락 시 보유량은
 //    unit×n(n+1)/2 — 배수 물타기의 2^n과 달리 선형으로만 는다.
 //  · 한쪽 체결 → 반대편 실제 취소(OCO) 후 새 중앙값 기준으로 두 다리 재발주.
 //
@@ -67,8 +67,8 @@ export type GridState = 'IDLE' | 'ARMED' | 'SOLD' | 'FAULT';
 
 export interface GridConfig {
   /**
-   * 폭 w — 기본 0.03. **진입 시점**에 step = 평단×w(달러)로 한 번 굳힌다.
-   * 이후 모든 다리는 중앙값 ± step(고정 간격 격자).
+   * 폭 w — 기본 0.03. 다리 가격은 매번 중앙값×(1±w)로 재계산한다(% 간격 —
+   * 주가를 따라 칸이 넓어지고 좁아진다).
    */
   width: number;
   /**
@@ -160,15 +160,14 @@ export class Grid {
   private _state: GridState = 'IDLE';
   /** 마지막 체결 레벨(사다리의 현재 칸). arm 시 평단으로 시작한다. */
   private centerPrice = 0;
-  /** 칸 간격(달러) — arm 시 평단×width로 굳는다. */
-  private stepUsd = 0;
   /** 1단위 수량 = 진입 수량. */
   private unitQty = 0;
   /**
    * 매수 lot 스택 — [진입, 1차 물타기, 2차 물타기, …]. 매도는 항상 top부터 판다(LIFO).
    * 현금 축소로 목표보다 적게 산 lot도 실제 산 수량 그대로 쌓여, 매도가 정확히 그만큼 되돌린다.
+   * price = 그 lot의 실제 매수 레벨 — % 간격은 레벨이 어긋나므로 손익 기록에 이 값을 쓴다.
    */
-  private lots: number[] = [];
+  private lots: Array<{ qty: number; price: number }> = [];
   private holdingQty = 0;
   private buyPrice = 0;
   private sellPrice = 0;
@@ -210,7 +209,7 @@ export class Grid {
   }
 
   get view(): GridView {
-    const top = this.lots.at(-1) ?? 0;
+    const top = this.lots.at(-1)?.qty ?? 0;
     return {
       state: this._state,
       gridActive: this._state === 'ARMED',
@@ -227,7 +226,7 @@ export class Grid {
 
   /**
    * 그리드 인계 — 포지션을 잔고에서 읽어(재시도) 사다리를 초기화하고 두 주문을 발주한다.
-   * 진입 수량이 곧 1단위(unit), 평단이 첫 중앙값, step = 평단×width(달러 고정).
+   * 진입 수량이 곧 1단위(unit), 평단이 첫 중앙값. 다리 가격은 매번 중앙값×(1±w)다.
    * fallback: 잔고가 끝내 안 잡히면 직전 체결가·체결수량으로 사다리를 세운다(D1).
    */
   async arm(fallback?: GridPosition): Promise<void> {
@@ -240,8 +239,7 @@ export class Grid {
     this.holdingQty = position.qty;
     this.unitQty = position.qty;
     this.centerPrice = roundGridPrice(position.avgPrice);
-    this.stepUsd = position.avgPrice * this.width;
-    this.lots = [position.qty];
+    this.lots = [{ qty: position.qty, price: this.centerPrice }];
     const error = await this.tryPlaceLegs();
     if (error !== null) this.enterFault(`매도 발주 실패 — ${error}`);
   }
@@ -271,7 +269,7 @@ export class Grid {
 
     // ── 거래소/KIS 일괄 취소 방어(세션 전환·장 마감) ──
     // "목록 부재→전량체결" 추론(filledPrice=null)은 취소로 사라진 주문과 구분이 안 된다.
-    // ① 두 다리가 같은 폴에서 동시에 추론 체결로 사라졌다 — ±step 양끝이 한 폴 안에 다 체결될 수는
+    // ① 두 다리가 같은 폴에서 동시에 추론 체결로 사라졌다 — ±w 양끝이 한 폴 안에 다 체결될 수는
     //    없으므로 일괄 취소로 판정하고 같은 사다리 상태로 재발주한다.
     const sellFill = this.sellLeg ? byOdno.get(this.sellLeg.odno) : undefined;
     const buyFill = this.buyLeg ? byOdno.get(this.buyLeg.odno) : undefined;
@@ -304,13 +302,13 @@ export class Grid {
       this.sellCancelSuspect = false;
     }
 
-    // 매도(+step) 우선 판정 — 익절이 물타기보다 우선한다.
+    // 매도(+w) 우선 판정 — 익절이 물타기보다 우선한다.
     const sellFilled = this.sellLeg && isFilled(byOdno.get(this.sellLeg.odno), this.sellLeg.qty);
     if (this.sellLeg && sellFilled) {
       return this.onSellFilled(filledPriceOf(byOdno.get(this.sellLeg.odno)));
     }
 
-    // 매수(−step) 체결 → OCO로 매도 취소 → 한 칸 아래로 리브래킷.
+    // 매수(−w) 체결 → OCO로 매도 취소 → 한 칸 아래로 리브래킷.
     const buyFilled = this.buyLeg && isFilled(byOdno.get(this.buyLeg.odno), this.buyLeg.qty);
     if (this.buyLeg && buyFilled) {
       return this.onBuyFilled();
@@ -335,12 +333,12 @@ export class Grid {
   /**
    * 매도 체결 — 사다리 한 칸 위로. 방금 판 lot을 pop하고 중앙값을 매도가로 올린다.
    * pop 후 스택이 비면(진입 lot까지 팔았다) SOLD 종료, 남았으면 새 두 다리를 건다.
-   * costPrice = 그 lot을 샀던 레벨(= 옛 중앙값) — 한 칸 익절 손익은 qty×step이다.
+   * costPrice = 그 lot에 저장된 실제 매수 레벨 — % 간격이라 중앙값으로는 유추할 수 없다.
    */
   private async onSellFilled(filledPrice: number | null): Promise<GridPollResult> {
     const leg = this.sellLeg!;
     const exitPrice = filledPrice ?? leg.price;
-    const costPrice = this.centerPrice; // 이 lot을 산 레벨(마지막 매수 = 현재 중앙값).
+    const costPrice = this.lots.at(-1)?.price ?? this.centerPrice;
     if (this.buyLeg) {
       const ok = await this.cancelLeg(this.buyLeg);
       if (!ok) return { kind: 'fault', reason: this.faultReason! };
@@ -380,7 +378,7 @@ export class Grid {
     }
     this.buyLeg = null;
     this.sellLeg = null;
-    this.lots.push(leg.qty);
+    this.lots.push({ qty: leg.qty, price: leg.price });
     this.holdingQty += leg.qty;
     this.centerPrice = leg.price; // 매수가가 새 중앙값 — 지정가 = 격자 레벨.
 
@@ -460,16 +458,16 @@ export class Grid {
 
   /**
    * 두 다리 발주 — **사다리 상태(중앙값·lot 스택)에서** 가격·수량을 계산한다. 실패를 문자열로 돌려준다.
-   *  매도: min(top lot, 보유수량) 주 @ 중앙값+step — 실패만 FAULT 사유다(익절 다리 없는 방치가 진짜 위험).
-   *  매수: top lot + unit 주 @ 중앙값−step — 현금 부족 시 축소/생략(D2), 거절은 rejected로 매도만 관리.
+   *  매도: min(top lot, 보유수량) 주 @ 중앙값×(1+w) — 실패만 FAULT 사유다(익절 다리 없는 방치가 진짜 위험).
+   *  매수: top lot + unit 주 @ 중앙값×(1−w) — 현금 부족 시 축소/생략(D2), 거절은 rejected로 매도만 관리.
    */
   private async tryPlaceLegs(): Promise<string | null> {
     // KIS 주문가 자릿수 규칙($1이상 2자리·미만 4자리)에 미리 맞춰 둔다 — 뷰·발주가·실제 접수가를
-    // 하나로 일치시키고 부동소수 잡음(100−10=90.0000…001)을 제거한다. kis/order가 다시 절사해도 멱등이다.
-    this.buyPrice = roundGridPrice(this.centerPrice - this.stepUsd);
-    this.sellPrice = roundGridPrice(this.centerPrice + this.stepUsd);
+    // 하나로 일치시키고 부동소수 잡음(100×1.1=110.0000…001)을 제거한다. kis/order가 다시 절사해도 멱등이다.
+    this.buyPrice = roundGridPrice(this.centerPrice * (1 - this.width));
+    this.sellPrice = roundGridPrice(this.centerPrice * (1 + this.width));
 
-    const top = this.lots.at(-1) ?? 0;
+    const top = this.lots.at(-1)?.qty ?? 0;
     const sellQty = Math.min(top, this.holdingQty);
     if (sellQty < 1) return '매도 수량이 0이에요 — 사다리 상태와 잔고가 어긋났어요';
     let buyQty = top + this.unitQty;
