@@ -218,6 +218,14 @@ export interface TickExtras {
   strength?: number;
 }
 
+/** 실시간호가 확장 정보 — 2호가(급등주 찾기 신호 기록용). 페이로드에 담겨 오고 파싱 가능할 때만 채워진다. */
+export interface QuoteExtras {
+  /** 매수호가2(PBID2). */
+  bid2?: number;
+  /** 매도호가2(PASK2). */
+  ask2?: number;
+}
+
 /** WS 단일 연결을 감싸는 시세 피드. 매니저가 티커별 구독을 이 위로 멀티플렉스한다. */
 export interface RealtimeFeed {
   connect(): void;
@@ -230,9 +238,20 @@ export interface RealtimeFeed {
   unsubscribe(trKey: string, trId?: string): void;
   /** 수신 틱(체결가) 라우팅 핸들러 등록 — (symb, price, tsMs, extras?). extras는 게이트용 선택 정보. */
   setTickHandler(handler: (symb: string, price: number, tsMs: number, extras?: TickExtras) => void): void;
-  /** 실시간호가 1호가 라우팅 핸들러 등록 — (symb, bid1, ask1, tsMs, bidVol1?, askVol1?). 잔량은 선택(파싱 가능할 때만). */
+  /**
+   * 실시간호가 1호가 라우팅 핸들러 등록 — (symb, bid1, ask1, tsMs, bidVol1?, askVol1?, extras?).
+   * 잔량·2호가(extras)는 선택(파싱 가능할 때만).
+   */
   setQuoteHandler(
-    handler: (symb: string, bid1: number, ask1: number, tsMs: number, bidVol1?: number, askVol1?: number) => void,
+    handler: (
+      symb: string,
+      bid1: number,
+      ask1: number,
+      tsMs: number,
+      bidVol1?: number,
+      askVol1?: number,
+      extras?: QuoteExtras,
+    ) => void,
   ): void;
   /** 연결 상태 변화 핸들러 등록 — 매니저가 구독해 FeedStatus로 노출한다. */
   setStatusHandler(handler: (status: FeedStatus) => void): void;

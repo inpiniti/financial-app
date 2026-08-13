@@ -7,6 +7,7 @@ import { REALTIME_PRICE_TR_ID } from '../../kis/realtimePrice';
 import type {
   ClockLike,
   FeedStatus,
+  QuoteExtras,
   RealtimeControlMessage,
   RealtimeFeed,
   TickExtras,
@@ -61,8 +62,8 @@ export class ScalperManager {
     this.realtime = deps.realtime;
     // WS 단일 연결 → 보조 소비자(자동 단타·시뮬·상세화면)로 라우팅(체결가·호가 둘 다).
     this.realtime.setTickHandler((symb, price, tsMs, extras) => this.routeTick(symb, price, tsMs, extras));
-    this.realtime.setQuoteHandler((symb, bid1, ask1, tsMs, bidVol1, askVol1) =>
-      this.routeQuote(symb, bid1, ask1, tsMs, bidVol1, askVol1),
+    this.realtime.setQuoteHandler((symb, bid1, ask1, tsMs, bidVol1, askVol1, extras) =>
+      this.routeQuote(symb, bid1, ask1, tsMs, bidVol1, askVol1, extras),
     );
     this.realtime.setStatusHandler((status) => this.handleFeedStatus(status));
     this.realtime.setControlHandler((msg) => this.handleFeedControl(msg));
@@ -155,7 +156,9 @@ export class ScalperManager {
   // 자동관리(AutoPilotManager) 보조 수신기 — WS 핸들러는 이 매니저가 유일 소유하므로,
   // 오토파일럿은 여기 등록해 같은 연결의 틱·호가를 나눠 받는다.
   private auxTick: ((symb: string, price: number, tsMs: number, extras?: TickExtras) => void) | null = null;
-  private auxQuote: ((symb: string, bid1: number, ask1: number, tsMs: number) => void) | null = null;
+  private auxQuote:
+    | ((symb: string, bid1: number, ask1: number, tsMs: number, extras?: QuoteExtras) => void)
+    | null = null;
 
   // ---- 보조 소비자(종목 상세화면) 구독 refcount — 2026-08-07 종목상세화면 plan §4 ----
 
@@ -224,10 +227,10 @@ export class ScalperManager {
     };
   }
 
-  /** 외부(자동관리) 수신기 등록 — null로 해제. */
+  /** 외부(자동관리) 수신기 등록 — null로 해제. 호가는 2호가(extras)까지 흘린다(급등주 찾기 기록용). */
   setAuxRoutes(
     onTick: ((symb: string, price: number, tsMs: number, extras?: TickExtras) => void) | null,
-    onQuote: ((symb: string, bid1: number, ask1: number, tsMs: number) => void) | null,
+    onQuote: ((symb: string, bid1: number, ask1: number, tsMs: number, extras?: QuoteExtras) => void) | null,
   ): void {
     this.auxTick = onTick;
     this.auxQuote = onQuote;
@@ -249,8 +252,9 @@ export class ScalperManager {
     tsMs: number,
     bidVol1?: number,
     askVol1?: number,
+    extras?: QuoteExtras,
   ): void {
-    this.auxQuote?.(symb, bid1, ask1, tsMs);
+    this.auxQuote?.(symb, bid1, ask1, tsMs, extras);
     const detailListeners = this.feedDataListeners.get(symb);
     if (detailListeners) {
       for (const l of detailListeners) l.onQuote?.(bid1, ask1, tsMs, bidVol1, askVol1);

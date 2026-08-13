@@ -12,8 +12,9 @@
 import { TrendDetector, type DetectorResult, type Signal } from '../../core/detector';
 import { LadderDetector } from '../../core/ladder';
 import { Resampler } from '../../core/resample';
+import { SurgeDetector, type SurgeAlert, type SurgeDetectorOptions, type SurgeSignal } from '../../core/surge';
 import { TickRateMeter } from './tickRate';
-import type { ClockLike, TickExtras } from './types';
+import type { ClockLike, QuoteExtras, TickExtras } from './types';
 
 /**
  * 진입 감지기 선택 스위치 — true면 **사다리 옵션이 주입된** 슬롯이 SG 기울기(TrendDetector) 대신
@@ -49,7 +50,16 @@ export interface FeedSlotOptions {
    * 미주입(기존 하네스·테스트)이면 항상 SG — 회귀 안전.
    */
   ladder?: LadderEntryOptions;
+  /**
+   * 급등/급락 감지 옵션(docs/domain/surge-stock-finder) — 주입되면 진입 감지기와 **병렬로**
+   * SurgeDetector가 슬롯 수명 내내 돈다(attach/detach와 무관 — 기록 게이트는 SurgeRecorder가 담당).
+   * 미주입(기존 하네스·테스트)이면 완전히 꺼진다 — 회귀 안전.
+   */
+  surge?: SurgeDetectorOptions;
 }
+
+/** 급등/급락 감지 이벤트 콜백 — setSurgeListener로 등록. price는 그 시점 최신 체결가. */
+export type SlotSurgeListener = (event: SurgeAlert | SurgeSignal, ctx: { ticker: string; price: number }) => void;
 
 /** 변곡점 신호 콜백 — attach 시 등록. */
 export type SlotSignalListener = (signal: Signal, ctx: SlotSignalContext) => void;
@@ -101,6 +111,9 @@ export class FeedSlot {
   private detector: TrendDetector | null = null;
   /** 사다리 감지기 — LADDER_ENTRY && ladderOptions일 때 detector 대신 이쪽이 부착된다(상호 배타). */
   private ladder: LadderDetector | null = null;
+  /** 급등/급락 감지기 — 진입 감지기와 병렬, 슬롯 수명 동안 상시(옵션 주입 시에만 생성). */
+  private readonly surge: SurgeDetector | null;
+  private onSurge: SlotSurgeListener | null = null;
   /** 마지막 사다리 판정 스냅샷(뷰 노출용). */
   private ladderState: { count: number; triggerCount: number; nextBuyLevel: number } | null = null;
   private onSignal: SlotSignalListener | null = null;
@@ -112,6 +125,9 @@ export class FeedSlot {
   private lastSignal: Signal | null = null;
   private bid1: number | null = null;
   private ask1: number | null = null;
+  /** 2호가 — 페이로드에 담겨 올 때만(급등주 찾기 스냅샷용). 발주 로직은 계속 1호가만 쓴다. */
+  private bid2: number | null = null;
+  private ask2: number | null = null;
   private quoteAt: number | null = null;
 
   constructor(options: FeedSlotOptions) {
@@ -129,13 +145,25 @@ export class FeedSlot {
       minStrength: options.minStrength,
     };
     this.ladderOptions = options.ladder;
+    this.surge = options.surge ? new SurgeDetector(options.surge) : null;
   }
 
-  /** WS 체결 틱 1개 수신 — 틱/초·리샘플은 항상, 판정은 부착 시에만. */
+  /** 급등/급락 감지 이벤트 수신자 등록 — null로 해제. surge 옵션 미주입 슬롯에선 호출되지 않는다. */
+  setSurgeListener(listener: SlotSurgeListener | null): void {
+    this.onSurge = listener;
+  }
+
+  /** WS 체결 틱 1개 수신 — 틱/초·리샘플은 항상, 판정은 부착 시에만. 급등/급락 감지는 병렬 상시. */
   pushTick(price: number, tsMs: number, extras?: TickExtras): DetectorResult | null {
     this.price = price;
     this.lastTickAt = this.clock.now();
     this.meter.record(this.lastTickAt);
+
+    // 급등/급락 1단계(틱 레벨 조기경보) — 청크를 기다리지 않는다. 진입 감지와 완전 독립.
+    if (this.surge !== null) {
+      const alert = this.surge.onTick(price, tsMs);
+      if (alert) this.onSurge?.(alert, { ticker: this.ticker, price });
+    }
 
     const closed = this.resampler.addTick({
       price,
@@ -143,6 +171,13 @@ export class FeedSlot {
       volume: extras?.volume,
       strength: extras?.strength,
     });
+
+    // 급등/급락 2단계(청크 정배열/역정배열 확정) — 사다리/SG 분기보다 먼저, 마감된 청크마다 판정.
+    if (closed !== null && this.surge !== null) {
+      const signal = this.surge.onChunkClose(closed, tsMs);
+      if (signal) this.onSurge?.(signal, { ticker: this.ticker, price });
+    }
+
     if (closed === null) return null;
 
     // 사다리 모드 — 마감된 청크 값(틱 평균)으로 홀 카운트를 판정한다(SG 미분 없음, plan §3).
@@ -196,16 +231,19 @@ export class FeedSlot {
   }
 
   /** 실시간호가 수신 — 발주 단가용 캐시(감시·보유 종목만 구독하므로 항상 최신은 아니다). */
-  pushQuote(bid1: number, ask1: number): void {
+  pushQuote(bid1: number, ask1: number, extras?: QuoteExtras): void {
     this.bid1 = Number.isFinite(bid1) && bid1 > 0 ? bid1 : null;
     this.ask1 = Number.isFinite(ask1) && ask1 > 0 ? ask1 : null;
+    // 2호가는 프레임마다 함께 갱신한다 — 없는 프레임이면 null로 되돌린다(낡은 2호가를 새 1호가와 섞지 않게).
+    this.bid2 = extras?.bid2 !== undefined && Number.isFinite(extras.bid2) && extras.bid2 > 0 ? extras.bid2 : null;
+    this.ask2 = extras?.ask2 !== undefined && Number.isFinite(extras.ask2) && extras.ask2 > 0 ? extras.ask2 : null;
     this.quoteAt = this.clock.now();
   }
 
-  /** 마지막 호가(발주 참고용) — 없으면 null. */
-  get quote(): { bid1: number; ask1: number; at: number } | null {
+  /** 마지막 호가(발주 참고용) — 없으면 null. 2호가는 수신됐을 때만(아니면 null). */
+  get quote(): { bid1: number; ask1: number; bid2: number | null; ask2: number | null; at: number } | null {
     if (this.bid1 === null || this.ask1 === null || this.quoteAt === null) return null;
-    return { bid1: this.bid1, ask1: this.ask1, at: this.quoteAt };
+    return { bid1: this.bid1, ask1: this.ask1, bid2: this.bid2, ask2: this.ask2, at: this.quoteAt };
   }
 
   /**

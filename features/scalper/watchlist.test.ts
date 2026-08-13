@@ -64,16 +64,17 @@ describe('parseSignedRate / isOrderable', () => {
 });
 
 describe('computeDesired — 필터·중복 제거·차순위 충원', () => {
-  it('토스 순위 상위에서 +등락 20개만 채용하고 나머지는 버린다', () => {
+  it('토스 순위 상위에서 +등락 30개만 채용하고 나머지는 버린다', () => {
     const rows = (prefix: string, n: number) =>
       Array.from({ length: n }, (_, i) => row(`${prefix}${i + 1}`, '1'));
-    const desired = computeDesired(snapshot({ tossVolume: rows('V', 25) }));
+    const desired = computeDesired(snapshot({ tossVolume: rows('V', 35) }));
 
     expect(desired).toHaveLength(WATCHLIST_MAX_SIZE);
-    expect(WATCHLIST_MAX_SIZE).toBe(20);
-    expect(WATCH_SLOTS_PER_SOURCE).toBe(20);
+    // 20→30 확대(2026-08-13 급등주 찾기) — 감시 폭을 넓혀 리스트 밖 급등 사각을 줄인다.
+    expect(WATCHLIST_MAX_SIZE).toBe(30);
+    expect(WATCH_SLOTS_PER_SOURCE).toBe(30);
     expect(desired[0].ticker).toBe('V1');
-    expect(desired[19].ticker).toBe('V20');
+    expect(desired[29].ticker).toBe('V30');
     expect(desired.every((e) => e.source === 'tossVolume')).toBe(true);
   });
 

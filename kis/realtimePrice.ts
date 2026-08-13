@@ -142,18 +142,28 @@ const QUOTE_INDEX = {
   PASK1: 11,
   VBID1: 12,
   VASK1: 13,
+  // 2호가 — 호가 레벨은 PBIDn/PASKn/VBIDn/VASKn/DBIDn/DASKn 6필드 세트로 반복된다(실시간호가.md).
+  // 1호가 세트(10~15) 바로 뒤 = 16·17. 실데이터가 1호가까지만 온다면(공식 샘플 columns 16개)
+  // 이 인덱스는 범위 밖이므로 **선택 소비**한다(부족하면 undefined — throw하지 않는다).
+  // ⚠ 3호가 이상은 원문 중복 표기로 인덱스 불확정(실시간호가.md 특이사항) — 여기서 멈춘다.
+  PBID2: 16,
+  PASK2: 17,
 } as const;
 
-/** 1호가(VASK1, 인덱스 13)까지 담기려면 최소 14개 필드가 필요하다. */
+/** 1호가(VASK1, 인덱스 13)까지 담기려면 최소 14개 필드가 필요하다. 2호가는 선택(부족하면 생략). */
 export const REALTIME_QUOTE_MIN_FIELD_COUNT = 14;
 
-/** 우리가 소비하는 최소 호가 — 1호가 매수/매도 가격과 잔량. */
+/** 우리가 소비하는 최소 호가 — 1호가 매수/매도 가격과 잔량. 2호가는 페이로드에 담겨 올 때만(급등주 찾기 기록용). */
 export interface OverseasRealtimeQuote {
   SYMB: string;
   PBID1: string;
   PASK1: string;
   VBID1: string;
   VASK1: string;
+  /** 매수호가2 — 필드가 2호가까지 담겨 왔을 때만. */
+  PBID2?: string;
+  /** 매도호가2. */
+  PASK2?: string;
 }
 
 /**
@@ -179,13 +189,19 @@ export function parseOverseasRealtimeQuote(fields: string[]): OverseasRealtimeQu
         '실시간호가.md 필드 순서를 다시 확인하세요.',
     );
   }
-  return {
+  const quote: OverseasRealtimeQuote = {
     SYMB: fields[QUOTE_INDEX.SYMB + offset],
     PBID1: fields[QUOTE_INDEX.PBID1 + offset],
     PASK1: fields[QUOTE_INDEX.PASK1 + offset],
     VBID1: fields[QUOTE_INDEX.VBID1 + offset],
     VASK1: fields[QUOTE_INDEX.VASK1 + offset],
   };
+  // 2호가는 선택 소비 — 실데이터가 1호가까지만 오는 레이아웃(공식 샘플)이면 그냥 생략된다.
+  if (fields.length > QUOTE_INDEX.PASK2 + offset) {
+    quote.PBID2 = fields[QUOTE_INDEX.PBID2 + offset];
+    quote.PASK2 = fields[QUOTE_INDEX.PASK2 + offset];
+  }
+  return quote;
 }
 
 /** 소켓 원문 한 프레임에서 TR_ID와 (26개씩 끊은) 필드 그룹들을 뽑아낸다. PINGPONG 등 비데이터 프레임은 null. */

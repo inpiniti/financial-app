@@ -6,7 +6,7 @@ import {
   type RealtimePriceClientConfig,
   type RealtimePriceClientDeps,
 } from '../../kis/realtimePrice';
-import type { ClockLike, FeedStatus, RealtimeFeed, TickExtras } from './types';
+import type { ClockLike, FeedStatus, QuoteExtras, RealtimeFeed, TickExtras } from './types';
 
 export interface RealtimeFeedConfig {
   approvalKey: string;
@@ -46,7 +46,15 @@ export function createRealtimeFeed(
   const clock = config.clock ?? { now: () => Date.now() };
   let handler: ((symb: string, price: number, tsMs: number, extras?: TickExtras) => void) | null = null;
   let quoteHandler:
-    | ((symb: string, bid1: number, ask1: number, tsMs: number, bidVol1?: number, askVol1?: number) => void)
+    | ((
+        symb: string,
+        bid1: number,
+        ask1: number,
+        tsMs: number,
+        bidVol1?: number,
+        askVol1?: number,
+        extras?: QuoteExtras,
+      ) => void)
     | null = null;
   let statusHandler: ((status: FeedStatus) => void) | null = null;
   let controlHandler: ((msg: RealtimeControlMessage) => void) | null = null;
@@ -76,6 +84,12 @@ export function createRealtimeFeed(
         // 잔량(VBID1/VASK1)은 진단 표시 전용 — 파싱 실패면 undefined로 흘려 신호 로직에 영향을 주지 않는다.
         const bidVol1 = Number(quote.VBID1);
         const askVol1 = Number(quote.VASK1);
+        // 2호가는 페이로드에 담겨 왔고 파싱 가능할 때만 extras로 흘린다(급등주 찾기 기록용 — 없으면 하류 null 기록).
+        const bid2 = Number(quote.PBID2);
+        const ask2 = Number(quote.PASK2);
+        const extras: QuoteExtras = {};
+        if (quote.PBID2 !== undefined && Number.isFinite(bid2) && bid2 > 0) extras.bid2 = bid2;
+        if (quote.PASK2 !== undefined && Number.isFinite(ask2) && ask2 > 0) extras.ask2 = ask2;
         quoteHandler?.(
           symb,
           Number(quote.PBID1),
@@ -83,6 +97,7 @@ export function createRealtimeFeed(
           clock.now(),
           Number.isFinite(bidVol1) ? bidVol1 : undefined,
           Number.isFinite(askVol1) ? askVol1 : undefined,
+          extras,
         );
       },
       onControl: (msg) => {

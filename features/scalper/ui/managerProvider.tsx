@@ -18,6 +18,7 @@ import {
 } from '../../../lib/appSettings';
 import { loadKisSettings } from '../../../lib/kisSettings';
 import { secureTokenStorage } from '../../../lib/secureTokenStorage';
+import { createSurgeLog } from '../../../lib/surgeLog';
 import { inquireOverseasBalance } from '../../../kis/balance';
 import { buyableUsdOf, inquirePsAmount } from '../../../kis/psamount';
 import { fetchTossVolumeRanking } from '../../../lib/tossRanking';
@@ -154,6 +155,11 @@ async function buildManager(): Promise<ManagerBootstrap> {
       triggerCount: ladderCountOf(appSettings.entryLadderCount),
     },
     buyCancelAfterMs: buyCancelAfterToMs(appSettings.buyCancelAfterSec),
+    // 급등/급락 신호 감지·기록(docs/domain/surge-stock-finder) — start~stop 동안 리스트 전 종목에서
+    // 신호를 감지해 surge_events에 남긴다(매매 연동 없음). 빈 객체 = 감지기 기본값(코드 고정, 설정 미노출).
+    surge: {},
+    // Supabase env 미설정이면 null — 감지·표시만 하고 기록은 생략된다.
+    surgeLog: createSurgeLog(),
     // 종목 상세화면(acquireFeed)이 잡고 있는 구독은 리스트 이탈 시에도 해제하지 않는다(교차 해제 방지).
     isFeedHeldExternally: (trKey, trId) => finalManager.holdsFeed(trKey, trId),
     onError: (err) => finalManager.reportFeedError(err),
