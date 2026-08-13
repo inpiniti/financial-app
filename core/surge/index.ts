@@ -1,15 +1,21 @@
 // SurgeDetector — 급등/급락 신호 2단계 감지 (docs/domain/surge-stock-finder plan §2).
 //
 // 판정창은 짧게, 기준선은 길게:
-//  · 1단계 조기경보(틱 레벨, ~1초 지연) — 최근 shortWindowSec초 틱속도가 롤링 기준선(baselineSec초)의
-//    tickRateMultiple배 이상 + 같은 방향 연속 틱 alertRunTicks개. 호가 WS 동적 구독 트리거용(기록 아님).
+//  · 1단계 조기경보(틱 레벨, ~1초 지연) — "틱속도 폭주" + 같은 방향 연속 틱 alertRunTicks개.
+//    호가 WS 동적 구독 트리거용(기록 아님).
 //  · 2단계 확정(1초 청크, 3~5초 지연) — 청크 평균가 confirmChunks개 연속 상승(정배열)=SURGE /
-//    연속 하락(역정배열)=PLUNGE. 단 틱속도 조건이 최근 rateHotWindow 안에 성립했어야 한다
+//    연속 하락(역정배열)=PLUNGE. 단 틱속도 폭주가 최근 rateHotWindow 안에 성립했어야 한다
 //    (기둥이 4초 안에 식어도 확정을 놓치지 않게 순간값이 아니라 "최근 성립 시각"을 본다).
 //
-// 기준선 워밍업(minBaselineSec) 미달이면 아무것도 발화하지 않는다 — 평소 속도를 모르면 배수도 없다.
-// 오탐 필터링보다 빠른 발화 + 충실한 기록이 우선(v1은 기록 전용) — 문턱은 기록을 보고 조정한다.
+// 틱속도 폭주는 두 경로의 OR(2026-08-13 사용자 확정) — 서로의 사각을 메운다:
+//  (A) 기준선 배수 — 최근 shortWindowSec초 틱속도 ≥ 롤링 기준선(baselineSec초)의 tickRateMultiple배.
+//      워밍업(minBaselineSec) 필요. 계단식 점프(1→30틱/초로 뛰어 유지)를 잡는다.
+//  (B) 속도 정배열 — 직전 완결 speedAscendSeconds초의 초당 틱수가 엄격 증가(점진 가속).
+//      기준선 불필요 → 워밍업 전(리스트 진입 직후)에도 눈 역할. 엄격 증가 5개는 마지막 초가
+//      첫 초보다 최소 +4틱이라 절대 하한이 내장돼 있다(조용한 종목 잔파동 통과 불가).
+// 급락도 같은 폭주 조건을 쓴다 — 투매도 틱은 빨라진다. 방향은 가격 런(업틱/다운틱)이 정한다.
 //
+// 오탐 필터링보다 빠른 발화 + 충실한 기록이 우선(v1은 기록 전용) — 문턱은 기록을 보고 조정한다.
 // 플랫폼 무관 순수 TS — 외부 import 없음. LadderDetector와 병렬로 붙는다(교체 아님).
 
 export type SurgeDirection = 'up' | 'down';
@@ -35,6 +41,8 @@ export interface SurgeDetectorOptions {
   signalCooldownSec?: number;
   /** 조기경보 재발화 쿨다운(초, 방향별). 기본 10. */
   alertCooldownSec?: number;
+  /** 속도 정배열 판정 초 수 — 직전 완결 N초 틱수가 엄격 증가면 폭주(기준선·워밍업 불필요). 기본 5. */
+  speedAscendSeconds?: number;
 }
 
 /** 1단계 조기경보 — 호가 예열 트리거(기록 안 함). */
@@ -77,6 +85,7 @@ const DEFAULTS: Required<SurgeDetectorOptions> = {
   rateHotWindowSec: 10,
   signalCooldownSec: 60,
   alertCooldownSec: 10,
+  speedAscendSeconds: 5,
 };
 
 export class SurgeDetector {
@@ -106,7 +115,9 @@ export class SurgeDetector {
 
   constructor(options: SurgeDetectorOptions = {}) {
     this.opts = { ...DEFAULTS, ...options };
-    this.ring = new Array<number>(Math.max(this.opts.baselineSec, this.opts.minBaselineSec, 5)).fill(0);
+    this.ring = new Array<number>(
+      Math.max(this.opts.baselineSec, this.opts.minBaselineSec, this.opts.speedAscendSeconds + 1, 5),
+    ).fill(0);
   }
 
   /**
@@ -129,11 +140,12 @@ export class SurgeDetector {
     }
     this.lastPrice = price;
 
-    if (!this.warmedUp) return null;
-
-    const baselineRate = this.baselineRate();
+    // 틱속도 폭주 — (A) 기준선 배수(워밍업 후) OR (B) 속도 정배열(워밍업 무관).
+    const baselineRate = this.warmedUp ? this.baselineRate() : 0;
     const shortRate = this.shortRate();
-    const hot = shortRate >= this.opts.tickRateMultiple * Math.max(baselineRate, this.opts.minBaselineRate);
+    const multipleHot =
+      this.warmedUp && shortRate >= this.opts.tickRateMultiple * Math.max(baselineRate, this.opts.minBaselineRate);
+    const hot = multipleHot || this.speedAscending();
     if (hot) this.rateHotAt = tsMs;
     if (!hot) return null;
 
@@ -166,11 +178,12 @@ export class SurgeDetector {
     }
     this.prevChunkAvg = avg;
 
-    if (!this.warmedUp) return null;
+    // 워밍업 게이트는 폭주 경로가 이미 품고 있다 — (A)는 워밍업 필요, (B)는 불필요.
+    // rateHotAt은 두 경로 중 하나라도 성립한 시각이므로 여기서는 그 신선도만 본다.
     const rateHot = this.rateHotAt !== null && tsMs - this.rateHotAt <= this.opts.rateHotWindowSec * 1000;
     if (!rateHot) return null;
 
-    const baselineRate = this.baselineRate();
+    const baselineRate = this.warmedUp ? this.baselineRate() : 0;
     const shortRate = this.shortRate();
 
     if (this.risingRun >= this.opts.confirmChunks && tsMs >= this.signalCooldownUntil.surge) {
@@ -270,5 +283,23 @@ export class SurgeDetector {
       sum += this.ring[(idx + this.ring.length) % this.ring.length];
     }
     return sum;
+  }
+
+  /**
+   * 속도 정배열 — 직전 **완결** speedAscendSeconds초의 초당 틱수가 엄격 증가인가.
+   * 진행 중인 현재 초는 아직 덜 세어졌으므로 제외한다(부분 카운트가 배열을 헛되이 끊지 않게).
+   * 관측이 N+1초 미만이면 false — 링에 없는 초를 0으로 잘못 읽는 것을 막는다.
+   */
+  private speedAscending(): boolean {
+    const n = this.opts.speedAscendSeconds;
+    if (this.lastSec === null || this.filledSec < n + 1) return false;
+    let prev = -1;
+    for (let i = n; i >= 1; i -= 1) {
+      const idx = (((this.lastSec - i) % this.ring.length) + this.ring.length) % this.ring.length;
+      const count = this.ring[idx];
+      if (count <= prev) return false;
+      prev = count;
+    }
+    return true;
   }
 }
