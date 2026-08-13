@@ -1,27 +1,32 @@
-// SurgeRecorder — 급등/급락 신호 에피소드 상태기계 + Supabase 기록
+// SurgeRecorder — 급등(진입)·하락(이탈) 세트 에피소드 상태기계 + Supabase 기록
 // (docs/domain/surge-stock-finder — 기획 §2·§3, DB 문서 §1·에피소드 운영 규칙).
 //
 // 흐름: SurgeDetector(FeedSlot 병렬 탑재) → 여기로 경보/확정이 흘러온다.
 //  · 조기경보(alert) → 호가 동적 구독 대상에 올린다(quoteTargets, 상한 LRU) — 확정 시점 호가 스냅샷 준비.
 //  · 급등 확정(surge) → 에피소드 open + DB insert. 같은 종목에 열린 에피소드가 있으면 무시(재급등 무시).
-//  · 급락 확정(plunge) → 열린 에피소드가 있으면 closed로 종결(+DB update), 없으면 단독 급락 행(plunge_only).
-//  · 타임아웃(기본 30분) → expired.
+//  · 이탈 확정(exit, 트레일링 하락 — 조용한 하락 포함) → 열린 에피소드를 closed로 종결(+DB update).
+//    **세트만 기록한다**(2026-08-13 사용자 확정) — 열린 에피소드 없는 이탈 신호는 버린다(단독 하락 무가치).
+//  · 타임아웃(기본 30분) → expired. 트레일링 이탈이 조용한 하락까지 잡으므로 만료는 거래가 죽어
+//    청크·틱이 끊긴 극단 케이스에서만 남는다.
 // 규칙(문서 확정): 기록 실패는 감지를 멈추지 않는다(logged=false 표시만). disable(=Stop) 시 열린
 // 에피소드 전부 expired. enable(=Run) 시 이전 실행이 남긴 DB 고아 open 행을 쓸어 expired 처리.
 //
 // 매매 연동 없음 — 이 파일은 기록·표시만 한다. AutoPilot 진입 게이트를 우회하는 경로를 만들지 않는다.
 
 import type { SurgeAlert, SurgeSignal } from '../../core/surge';
-import type { SurgeCloseInput, SurgeLogClient, SurgeOpenInput, PlungeOnlyInput } from '../../lib/surgeLog';
+import type { SurgeCloseInput, SurgeLogClient, SurgeOpenInput } from '../../lib/surgeLog';
 import type { ClockLike, SchedulerLike } from './types';
 
-/** UI에 보여줄 에피소드 뷰 — DB 행의 메모리 미러(최근 것만). alerting은 화면 전용(DB엔 없음). */
+/**
+ * UI에 보여줄 에피소드 뷰 — DB 행의 메모리 미러(최근 것만). alerting은 화면 전용(DB엔 없음).
+ * plunge* 필드 = 이탈(하락 확정) 시점 값 — DB plunge_* 컬럼과 같은 자리(이름은 스키마를 따른다).
+ */
 export interface SurgeEpisodeView {
   /** 로컬 id — DB 기록에 성공하면 행 id로 갱신된다. */
   readonly id: string;
   readonly ticker: string;
   readonly market: string;
-  readonly status: 'alerting' | 'open' | 'closed' | 'expired' | 'plunge_only';
+  readonly status: 'alerting' | 'open' | 'closed' | 'expired';
   readonly surgeAt?: number;
   readonly surgePrice?: number;
   readonly surgeAsk1?: number | null;
@@ -164,11 +169,14 @@ export class SurgeRecorder {
     });
   }
 
-  /** 2단계 확정 — surge는 에피소드 open, plunge는 종결 또는 단독 급락. price는 확정 시점 체결가. */
+  /**
+   * 확정 신호 — surge(진입)는 에피소드 open, exit(이탈)는 종결. price는 확정 시점 체결가.
+   * 열린 에피소드 없는 exit는 버린다 — 세트만 기록한다(단독 하락은 무가치, 사용자 확정).
+   */
   handleSignal(ticker: string, signal: SurgeSignal, price: number): void {
     if (!this.enabled) return;
     if (signal.kind === 'surge') this.handleSurge(ticker, signal, price);
-    else this.handlePlunge(ticker, signal, price);
+    else this.handleExit(ticker, signal, price);
   }
 
   // ---- 조회 ----
@@ -241,74 +249,47 @@ export class SurgeRecorder {
     });
   }
 
-  private handlePlunge(ticker: string, signal: SurgeSignal, price: number): void {
-    const quote = this.freshQuote(ticker);
+  private handleExit(ticker: string, signal: SurgeSignal, price: number): void {
     const open = this.openByTicker.get(ticker);
+    // 세트만 기록 — 열린 에피소드 없는 이탈은 버린다. (감지기가 추적 모드에서만 exit를 내므로
+    // 정상 흐름에선 항상 열려 있다 — 없다면 stop/재시작으로 에피소드가 먼저 정리된 경우다.)
+    if (!open) return;
 
-    if (open) {
-      // 에피소드 종결 — 변동율은 표시용으로만 계산(DB는 생성 컬럼이 정본).
-      this.openByTicker.delete(ticker);
-      const view = this.episodes.find((e) => e.id === open.localId);
-      const surgePrice = view?.surgePrice;
-      const surgeAsk1 = view?.surgeAsk1 ?? null;
-      const plungeBid1 = quote?.bid1 ?? null;
-      const priceChangePct =
-        surgePrice !== undefined && surgePrice > 0 ? ((price - surgePrice) / surgePrice) * 100 : null;
-      const l1ChangePct =
-        surgeAsk1 !== null && surgeAsk1 > 0 && plungeBid1 !== null
-          ? ((plungeBid1 - surgeAsk1) / surgeAsk1) * 100
-          : null;
-      this.patchEpisode(open.localId, {
-        status: 'closed',
-        plungeAt: signal.at,
+    const quote = this.freshQuote(ticker);
+    // 에피소드 종결 — 변동율은 표시용으로만 계산(DB는 생성 컬럼이 정본).
+    this.openByTicker.delete(ticker);
+    const view = this.episodes.find((e) => e.id === open.localId);
+    const surgePrice = view?.surgePrice;
+    const surgeAsk1 = view?.surgeAsk1 ?? null;
+    const plungeBid1 = quote?.bid1 ?? null;
+    const priceChangePct =
+      surgePrice !== undefined && surgePrice > 0 ? ((price - surgePrice) / surgePrice) * 100 : null;
+    const l1ChangePct =
+      surgeAsk1 !== null && surgeAsk1 > 0 && plungeBid1 !== null
+        ? ((plungeBid1 - surgeAsk1) / surgeAsk1) * 100
+        : null;
+    this.patchEpisode(open.localId, {
+      status: 'closed',
+      plungeAt: signal.at,
+      plungePrice: price,
+      plungeBid1,
+      plungeBid2: quote?.bid2 ?? null,
+      priceChangePct,
+      l1ChangePct,
+    });
+    this.deps.onQuoteTargetsChanged();
+    this.deps.onEvent(
+      `이탈 확정 · ${ticker}${priceChangePct !== null ? ` ${priceChangePct >= 0 ? '+' : ''}${priceChangePct.toFixed(2)}%` : ''}`,
+    );
+    if (open.dbId !== null) {
+      const input: SurgeCloseInput = {
+        plungeAtMs: signal.at,
         plungePrice: price,
         plungeBid1,
         plungeBid2: quote?.bid2 ?? null,
-        priceChangePct,
-        l1ChangePct,
-      });
-      this.deps.onQuoteTargetsChanged();
-      this.deps.onEvent(
-        `급락 종결 · ${ticker}${priceChangePct !== null ? ` ${priceChangePct >= 0 ? '+' : ''}${priceChangePct.toFixed(2)}%` : ''}`,
-      );
-      if (open.dbId !== null) {
-        const input: SurgeCloseInput = {
-          plungeAtMs: signal.at,
-          plungePrice: price,
-          plungeBid1,
-          plungeBid2: quote?.bid2 ?? null,
-        };
-        void this.deps.log?.close(open.dbId, input);
-      }
-      return;
+      };
+      void this.deps.log?.close(open.dbId, input);
     }
-
-    // 단독 급락 — 열린 에피소드 없음. 호가는 예열된 적 없으면 대부분 null(허용 사양).
-    const localId = this.nextId();
-    const market = this.deps.getMarket(ticker);
-    this.pushEpisode({
-      id: localId,
-      ticker,
-      market,
-      status: 'plunge_only',
-      plungeAt: signal.at,
-      plungePrice: price,
-      plungeBid1: quote?.bid1 ?? null,
-      plungeBid2: quote?.bid2 ?? null,
-      logged: false,
-    });
-    this.deps.onEvent(`급락 감지 · ${ticker} $${formatPrice(price)}`);
-    const input: PlungeOnlyInput = {
-      ticker,
-      market,
-      plungeAtMs: signal.at,
-      plungePrice: price,
-      plungeBid1: quote?.bid1 ?? null,
-      plungeBid2: quote?.bid2 ?? null,
-    };
-    void (this.deps.log?.insertPlungeOnly(input) ?? Promise.resolve(null)).then((dbId) => {
-      if (dbId !== null) this.patchEpisode(localId, { id: dbId, logged: true });
-    });
   }
 
   /** 주기 점검 — 에피소드 타임아웃 만료 + 조기경보 예열 TTL 정리. */

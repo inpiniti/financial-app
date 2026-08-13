@@ -15,17 +15,7 @@ export interface SurgeOpenInput {
   surgeAsk2: number | null;
 }
 
-/** 단독 급락(plunge_only) 행 생성 입력. */
-export interface PlungeOnlyInput {
-  ticker: string;
-  market: string;
-  plungeAtMs: number;
-  plungePrice: number;
-  plungeBid1: number | null;
-  plungeBid2: number | null;
-}
-
-/** 에피소드 종결(open→closed) 입력. */
+/** 에피소드 종결(open→closed) 입력 — plunge_* 컬럼 = 이탈(하락 확정) 시점 값. */
 export interface SurgeCloseInput {
   plungeAtMs: number;
   plungePrice: number;
@@ -36,9 +26,7 @@ export interface SurgeCloseInput {
 export interface SurgeLogClient {
   /** 급등 행 생성 — 성공 시 행 id, 실패 시 null(호출부는 미기록 표시만). */
   insertOpen(input: SurgeOpenInput): Promise<string | null>;
-  /** 단독 급락 행 생성 — 성공 시 행 id, 실패 시 null. */
-  insertPlungeOnly(input: PlungeOnlyInput): Promise<string | null>;
-  /** open → closed 종결. 성공 여부만 돌려준다. */
+  /** open → closed 종결(이탈 확정). 성공 여부만 돌려준다. */
   close(id: string, input: SurgeCloseInput): Promise<boolean>;
   /** open → expired (타임아웃·stop 정리). */
   expire(id: string): Promise<boolean>;
@@ -77,28 +65,6 @@ export function createSurgeLog(): SurgeLogClient | null {
             surge_ask1: input.surgeAsk1,
             surge_ask2: input.surgeAsk2,
             status: 'open',
-          })
-          .select('id')
-          .single();
-        if (error) return null;
-        return (data as { id: string } | null)?.id ?? null;
-      } catch {
-        return null;
-      }
-    },
-
-    async insertPlungeOnly(input) {
-      try {
-        const { data, error } = await supabase
-          .from(TABLE)
-          .insert({
-            ticker: input.ticker,
-            market: input.market,
-            plunge_at: toIso(input.plungeAtMs),
-            plunge_price: input.plungePrice,
-            plunge_bid1: input.plungeBid1,
-            plunge_bid2: input.plungeBid2,
-            status: 'plunge_only',
           })
           .select('id')
           .single();

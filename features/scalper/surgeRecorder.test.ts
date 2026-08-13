@@ -3,12 +3,12 @@ import { SurgeRecorder, type SurgeRecorderDeps } from './surgeRecorder';
 import type { SurgeAlert, SurgeSignal } from '../../core/surge';
 import type { SurgeLogClient } from '../../lib/surgeLog';
 
-function makeAlert(at: number, direction: 'up' | 'down' = 'up'): SurgeAlert {
-  return { kind: 'alert', direction, at, price: 100, shortRate: 6, baselineRate: 1 };
+function makeAlert(at: number): SurgeAlert {
+  return { kind: 'alert', at, price: 100, shortRate: 6, baselineRate: 1 };
 }
 
-function makeSignal(kind: 'surge' | 'plunge', at: number): SurgeSignal {
-  return { kind, at, chunkAvg: 100, runLength: 4, shortRate: 6, baselineRate: 1 };
+function makeSignal(kind: 'surge' | 'exit', at: number): SurgeSignal {
+  return { kind, at, price: 100, runLength: 4, shortRate: 6, baselineRate: 1, trailingHigh: kind === 'exit' ? 101 : null };
 }
 
 /** 호출 기록 남기는 가짜 기록 클라이언트 — id는 db-N. */
@@ -18,11 +18,6 @@ function fakeLog() {
   const log: SurgeLogClient = {
     insertOpen: async (input) => {
       calls.push(`open:${input.ticker}`);
-      seq += 1;
-      return `db-${seq}`;
-    },
-    insertPlungeOnly: async (input) => {
-      calls.push(`plungeOnly:${input.ticker}`);
       seq += 1;
       return `db-${seq}`;
     },
@@ -108,7 +103,7 @@ describe('SurgeRecorder — 에피소드 상태기계', () => {
     expect(h.calls).toContain('open:AAPL');
   });
 
-  it('plunge가 열린 에피소드를 closed로 종결하고 변동율을 계산한다', async () => {
+  it('exit(이탈)가 열린 에피소드를 closed로 종결하고 변동율을 계산한다', async () => {
     const h = makeHarness();
     h.recorder.enable();
     h.setQuote({ bid1: 99.9, ask1: 100, bid2: null, ask2: null, at: h.getNow() });
@@ -116,7 +111,7 @@ describe('SurgeRecorder — 에피소드 상태기계', () => {
     await flush();
     h.setNow(h.getNow() + 60_000);
     h.setQuote({ bid1: 97, ask1: 97.2, bid2: 96.9, ask2: null, at: h.getNow() });
-    h.recorder.handleSignal('AAPL', makeSignal('plunge', h.getNow()), 97.1);
+    h.recorder.handleSignal('AAPL', makeSignal('exit', h.getNow()), 97.1);
     await flush();
     const [ep] = h.recorder.recentEpisodes;
     expect(ep.status).toBe('closed');
@@ -137,15 +132,13 @@ describe('SurgeRecorder — 에피소드 상태기계', () => {
     expect(h.calls.filter((c) => c === 'open:AAPL')).toHaveLength(1);
   });
 
-  it('열린 에피소드 없는 급락은 plunge_only 단독 행', async () => {
+  it('열린 에피소드 없는 exit는 버린다 — 세트만 기록한다', async () => {
     const h = makeHarness();
     h.recorder.enable();
-    h.recorder.handleSignal('TSLA', makeSignal('plunge', h.getNow()), 200);
+    h.recorder.handleSignal('TSLA', makeSignal('exit', h.getNow()), 200);
     await flush();
-    const [ep] = h.recorder.recentEpisodes;
-    expect(ep.status).toBe('plunge_only');
-    expect(ep.plungeBid1).toBeNull(); // 호가 예열 이력 없음 — null 허용 사양.
-    expect(h.calls).toContain('plungeOnly:TSLA');
+    expect(h.recorder.recentEpisodes).toHaveLength(0);
+    expect(h.calls.filter((c) => c.startsWith('close') || c.startsWith('open'))).toHaveLength(0);
   });
 
   it('낡은 호가 캐시(10초 초과)는 스냅샷에 쓰지 않는다', async () => {

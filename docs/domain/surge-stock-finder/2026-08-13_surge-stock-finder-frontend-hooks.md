@@ -53,7 +53,7 @@ interface SurgeEpisodeView {
   id: string;                       // Supabase 행 id (기록 실패 시 로컬 임시 id)
   ticker: string;
   market: string;
-  status: 'alerting' | 'open' | 'closed' | 'expired' | 'plunge_only';
+  status: 'alerting' | 'open' | 'closed' | 'expired'; // plunge_only는 이탈 재정의(2026-08-13)로 폐기
   //        ↑ UI 전용 상태: 1단계 조기경보(호가 구독 중, 아직 미확정) — DB에는 없다
   surgeAt?: number;   surgePrice?: number;   surgeAsk1?: number;   surgeAsk2?: number;
   plungeAt?: number;  plungePrice?: number;  plungeBid1?: number;  plungeBid2?: number;
@@ -112,6 +112,6 @@ UI 작업 시 `app-ui-style` 스킬(풀폭 패널 + 촘촘한 리스트) 적용.
 ## 완료 기준
 
 - [x] `AutoPilotManager.subscribeSurge` / `recentSurgeEpisodes` 추가 (2026-08-13, 기존 subscribe 관례와 동형)
-- [x] `useSurgeEvents` 훅(`features/scalper/ui/useSurgeEvents.ts`) + AutoPilotScreen "급등·급락 신호" 패널
+- [x] `useSurgeEvents` 훅(`features/scalper/ui/useSurgeEvents.ts`) + AutoPilotScreen "급등·이탈 기록" 패널
 - [ ] `useSurgeBadgeCount`(하단 메뉴 배지) — **v1에서 보류**: 홈 BottomMenu 개입 범위가 커서 신호 패널만으로 시작, 수집 데이터가 쓸만하다고 판단되면 추가
 - [ ] 실기기 확인: 탭 전환·재마운트 후 부재 중 신호가 목록에 남아 있는지 / 화면이 떠 있지 않은 상태의 신호가 Supabase에 기록되는지 (훅 독립성)

@@ -1,69 +1,79 @@
-// SurgeDetector — 급등/급락 신호 2단계 감지 (docs/domain/surge-stock-finder plan §2).
+// SurgeDetector — 급등(진입시점) + 하락(이탈시점) 세트 감지 (docs/domain/surge-stock-finder plan §2).
 //
-// 판정창은 짧게, 기준선은 길게:
-//  · 1단계 조기경보(틱 레벨, ~1초 지연) — "틱속도 폭주" + 같은 방향 연속 틱 alertRunTicks개.
+// 급등과 하락은 항상 콤보로 다닌다(2026-08-13 사용자 확정) — 단독 하락은 감지하지 않는다.
+//  · 1단계 조기경보(틱 레벨, ~1초 지연) — "틱속도 폭주" + 연속 업틱 alertRunTicks개.
 //    호가 WS 동적 구독 트리거용(기록 아님).
-//  · 2단계 확정(1초 청크, 3~5초 지연) — 청크 평균가 confirmChunks개 연속 상승(정배열)=SURGE /
-//    연속 하락(역정배열)=PLUNGE. 단 틱속도 폭주가 최근 rateHotWindow 안에 성립했어야 한다
-//    (기둥이 4초 안에 식어도 확정을 놓치지 않게 순간값이 아니라 "최근 성립 시각"을 본다).
+//  · 2단계 급등 확정(1초 청크, 3~5초 지연) — 청크 평균가 confirmChunks개 연속 상승(정배열).
+//    단 틱속도 폭주가 최근 rateHotWindow 안에 성립했어야 한다(기둥이 4초 안에 식어도 놓치지 않게
+//    순간값이 아니라 "최근 성립 시각"을 본다). 확정 = 진입시점 → 추적 모드 진입.
+//  · 3단계 이탈 확정(틱 레벨, 즉시) — 급등 후 트레일링 고점 대비 exitDropPct 하락하면 EXIT.
+//    **폭주 조건 없음** — 조용히 식어도(투매 없이 스르르 흘러도) 이탈은 이탈이다. 급락은 같은
+//    기준을 더 빨리 통과할 뿐이라 별도 감지가 필요 없다. 추적 중에는 새 급등을 내지 않는다.
 //
-// 틱속도 폭주는 두 경로의 OR(2026-08-13 사용자 확정) — 서로의 사각을 메운다:
+// 틱속도 폭주는 두 경로의 OR — 서로의 사각을 메운다:
 //  (A) 기준선 배수 — 최근 shortWindowSec초 틱속도 ≥ 롤링 기준선(baselineSec초)의 tickRateMultiple배.
 //      워밍업(minBaselineSec) 필요. 계단식 점프(1→30틱/초로 뛰어 유지)를 잡는다.
 //  (B) 속도 정배열 — 직전 완결 speedAscendSeconds초의 초당 틱수가 엄격 증가(점진 가속).
 //      기준선 불필요 → 워밍업 전(리스트 진입 직후)에도 눈 역할. 엄격 증가 5개는 마지막 초가
 //      첫 초보다 최소 +4틱이라 절대 하한이 내장돼 있다(조용한 종목 잔파동 통과 불가).
-// 급락도 같은 폭주 조건을 쓴다 — 투매도 틱은 빨라진다. 방향은 가격 런(업틱/다운틱)이 정한다.
 //
 // 오탐 필터링보다 빠른 발화 + 충실한 기록이 우선(v1은 기록 전용) — 문턱은 기록을 보고 조정한다.
 // 플랫폼 무관 순수 TS — 외부 import 없음. LadderDetector와 병렬로 붙는다(교체 아님).
 
-export type SurgeDirection = 'up' | 'down';
-
 export interface SurgeDetectorOptions {
-  /** 조기경보·확정 공용 틱속도 배수 문턱(기준선 대비). 기본 3. */
+  /** 조기경보·급등 확정 공용 틱속도 배수 문턱(기준선 대비). 기본 3. */
   tickRateMultiple?: number;
   /** 틱속도 롤링 기준선 길이(초). 기본 300. */
   baselineSec?: number;
-  /** 기준선 워밍업(초) — 이만큼 차기 전엔 무발화. 기본 60. */
+  /** 기준선 워밍업(초) — (A) 경로는 이만큼 차기 전엔 판정하지 않는다. 기본 60. */
   minBaselineSec?: number;
   /** 조기경보 틱속도 측정 창(초). 기본 2. */
   shortWindowSec?: number;
   /** 기준선 하한(틱/초) — 죽어 있던 종목의 0×배수 오발화 방지. 기본 0.5. */
   minBaselineRate?: number;
-  /** 조기경보에 필요한 같은 방향 연속 틱 수. 기본 3. */
+  /** 조기경보에 필요한 연속 업틱 수. 기본 3. */
   alertRunTicks?: number;
-  /** 확정(정배열/역정배열)에 필요한 연속 청크 수. 기본 4. */
+  /** 급등 확정(정배열)에 필요한 연속 청크 수. 기본 4. */
   confirmChunks?: number;
-  /** 확정 시 "틱속도 조건이 최근 성립했어야 하는" 창(초). 기본 10. */
+  /** 급등 확정 시 "틱속도 폭주가 최근 성립했어야 하는" 창(초). 기본 10. */
   rateHotWindowSec?: number;
-  /** 확정 신호 재발화 쿨다운(초, 방향별). 기본 60. */
+  /** 급등 확정 재발화 쿨다운(초) — 이탈로 추적이 끝난 뒤부터 적용. 기본 60. */
   signalCooldownSec?: number;
-  /** 조기경보 재발화 쿨다운(초, 방향별). 기본 10. */
+  /** 조기경보 재발화 쿨다운(초). 기본 10. */
   alertCooldownSec?: number;
   /** 속도 정배열 판정 초 수 — 직전 완결 N초 틱수가 엄격 증가면 폭주(기준선·워밍업 불필요). 기본 5. */
   speedAscendSeconds?: number;
+  /**
+   * 이탈 판정 낙폭(소수) — 급등 후 트레일링 고점 대비 이만큼 내려오면 EXIT. 기본 0.03(3%).
+   * 트레일링 스탑과 같은 정의 — 기록되는 왕복 변동율이 곧 "확정 매수→트레일링 청산" 전략의 성적이 된다.
+   */
+  exitDropPct?: number;
 }
 
-/** 1단계 조기경보 — 호가 예열 트리거(기록 안 함). */
+/** 1단계 조기경보 — 호가 예열 트리거(기록 안 함). 급등 방향(업틱)만 있다 — 하락은 세트로만 다룬다. */
 export interface SurgeAlert {
   kind: 'alert';
-  direction: SurgeDirection;
   at: number;
   price: number;
   shortRate: number;
   baselineRate: number;
 }
 
-/** 2단계 확정 — surge(급등)/plunge(급락). 기록 대상. */
+/**
+ * 확정 신호 — surge(급등 = 진입시점) / exit(하락 = 이탈시점). 기록 대상.
+ * exit는 반드시 직전 surge와 세트다(추적 모드에서만 발화) — 단독 하락 신호는 존재하지 않는다.
+ */
 export interface SurgeSignal {
-  kind: 'surge' | 'plunge';
+  kind: 'surge' | 'exit';
   at: number;
-  /** 확정 시점 청크 평균가(참고) — 기록용 체결가는 호출부가 최신 틱가로 잡는다. */
-  chunkAvg: number;
+  /** surge: 확정 시점 청크 평균가 / exit: 이탈 확정 틱가(참고) — 기록용 체결가는 호출부의 최신 틱가. */
+  price: number;
+  /** surge: 정배열 런 길이 / exit: 0. */
   runLength: number;
   shortRate: number;
   baselineRate: number;
+  /** exit 전용 — 추적 중 트레일링 고점(이탈 기준가). surge에선 null. */
+  trailingHigh: number | null;
 }
 
 export interface SurgeSnapshot {
@@ -71,7 +81,9 @@ export interface SurgeSnapshot {
   baselineRate: number | null;
   shortRate: number;
   risingChunks: number;
-  fallingChunks: number;
+  /** 급등 확정 후 이탈 대기 중인가(추적 모드). */
+  tracking: boolean;
+  trailingHigh: number | null;
 }
 
 const DEFAULTS: Required<SurgeDetectorOptions> = {
@@ -86,6 +98,7 @@ const DEFAULTS: Required<SurgeDetectorOptions> = {
   signalCooldownSec: 60,
   alertCooldownSec: 10,
   speedAscendSeconds: 5,
+  exitDropPct: 0.03,
 };
 
 export class SurgeDetector {
@@ -101,17 +114,19 @@ export class SurgeDetector {
 
   private lastPrice: number | null = null;
   private upRun = 0;
-  private downRun = 0;
 
   private prevChunkAvg: number | null = null;
   private risingRun = 0;
-  private fallingRun = 0;
 
-  /** 틱속도 배수 조건이 마지막으로 성립한 시각(방향 무관 — 속도엔 방향이 없다). */
+  /** 틱속도 폭주가 마지막으로 성립한 시각. */
   private rateHotAt: number | null = null;
 
-  private alertCooldownUntil: Record<SurgeDirection, number> = { up: 0, down: 0 };
-  private signalCooldownUntil: Record<'surge' | 'plunge', number> = { surge: 0, plunge: 0 };
+  /** 이탈 추적 모드 — 급등 확정 시 켜지고 EXIT 발화로 꺼진다. 추적 중엔 새 급등을 내지 않는다. */
+  private tracking = false;
+  private trailingHigh: number | null = null;
+
+  private alertCooldownUntil = 0;
+  private surgeCooldownUntil = 0;
 
   constructor(options: SurgeDetectorOptions = {}) {
     this.opts = { ...DEFAULTS, ...options };
@@ -121,21 +136,16 @@ export class SurgeDetector {
   }
 
   /**
-   * 체결 틱 1개 — 틱속도 링·방향 런을 갱신하고, 조기경보 조건이면 SurgeAlert를 돌려준다.
-   * 리샘플 청크와 무관하게 매 틱 호출한다(1단계는 청크를 기다리지 않는다).
+   * 체결 틱 1개 — 틱속도 링·업틱 런·이탈 추적을 갱신한다.
+   * 추적 중이면 이탈(EXIT) 판정이 최우선(폭주 조건 없음), 아니면 조기경보 판정.
    */
-  onTick(price: number, tsMs: number): SurgeAlert | null {
+  onTick(price: number, tsMs: number): SurgeAlert | SurgeSignal | null {
     if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(tsMs)) return null;
     this.recordTickSecond(Math.floor(tsMs / 1000));
 
     if (this.lastPrice !== null) {
-      if (price > this.lastPrice) {
-        this.upRun += 1;
-        this.downRun = 0;
-      } else if (price < this.lastPrice) {
-        this.downRun += 1;
-        this.upRun = 0;
-      }
+      if (price > this.lastPrice) this.upRun += 1;
+      else if (price < this.lastPrice) this.upRun = 0;
       // 동가 체결은 런을 끊지도 잇지도 않는다.
     }
     this.lastPrice = price;
@@ -147,61 +157,63 @@ export class SurgeDetector {
       this.warmedUp && shortRate >= this.opts.tickRateMultiple * Math.max(baselineRate, this.opts.minBaselineRate);
     const hot = multipleHot || this.speedAscending();
     if (hot) this.rateHotAt = tsMs;
+
+    // 이탈 추적 — 트레일링 고점 갱신, 고점 대비 exitDropPct 하락이면 EXIT(조용한 하락도 이탈이다).
+    if (this.tracking) {
+      if (this.trailingHigh === null || price > this.trailingHigh) this.trailingHigh = price;
+      if (price <= this.trailingHigh * (1 - this.opts.exitDropPct)) {
+        const high = this.trailingHigh;
+        this.tracking = false;
+        this.trailingHigh = null;
+        this.surgeCooldownUntil = tsMs + this.opts.signalCooldownSec * 1000;
+        return { kind: 'exit', at: tsMs, price, runLength: 0, shortRate, baselineRate, trailingHigh: high };
+      }
+      return null; // 추적 중엔 조기경보도 내지 않는다 — 호가는 이미 에피소드가 잡고 있다.
+    }
+
     if (!hot) return null;
+    if (this.upRun < this.opts.alertRunTicks) return null;
+    if (tsMs < this.alertCooldownUntil) return null;
 
-    const direction: SurgeDirection | null =
-      this.upRun >= this.opts.alertRunTicks ? 'up' : this.downRun >= this.opts.alertRunTicks ? 'down' : null;
-    if (direction === null) return null;
-    if (tsMs < this.alertCooldownUntil[direction]) return null;
-
-    this.alertCooldownUntil[direction] = tsMs + this.opts.alertCooldownSec * 1000;
-    return { kind: 'alert', direction, at: tsMs, price, shortRate, baselineRate };
+    this.alertCooldownUntil = tsMs + this.opts.alertCooldownSec * 1000;
+    return { kind: 'alert', at: tsMs, price, shortRate, baselineRate };
   }
 
   /**
-   * 리샘플 청크(1초) 마감가 1개 — 정배열/역정배열 런을 갱신하고, 확정 조건이면 SurgeSignal을 돌려준다.
-   * 틱속도 조건은 순간값이 아니라 "최근 rateHotWindow 안 성립"으로 본다(짧은 기둥 유실 방지).
+   * 리샘플 청크(1초) 마감가 1개 — 정배열 런을 갱신하고, 급등 확정 조건이면 SURGE를 돌려준다.
+   * 틱속도 폭주는 순간값이 아니라 "최근 rateHotWindow 안 성립"으로 본다(짧은 기둥 유실 방지).
+   * 추적 중(이탈 대기)에는 새 급등을 내지 않는다.
    */
   onChunkClose(avg: number, tsMs: number): SurgeSignal | null {
     if (!Number.isFinite(avg) || avg <= 0) return null;
     if (this.prevChunkAvg !== null) {
-      if (avg > this.prevChunkAvg) {
-        this.risingRun += 1;
-        this.fallingRun = 0;
-      } else if (avg < this.prevChunkAvg) {
-        this.fallingRun += 1;
-        this.risingRun = 0;
-      } else {
-        this.risingRun = 0;
-        this.fallingRun = 0;
-      }
+      if (avg > this.prevChunkAvg) this.risingRun += 1;
+      else this.risingRun = 0;
     }
     this.prevChunkAvg = avg;
 
-    // 워밍업 게이트는 폭주 경로가 이미 품고 있다 — (A)는 워밍업 필요, (B)는 불필요.
-    // rateHotAt은 두 경로 중 하나라도 성립한 시각이므로 여기서는 그 신선도만 본다.
+    if (this.tracking) return null;
     const rateHot = this.rateHotAt !== null && tsMs - this.rateHotAt <= this.opts.rateHotWindowSec * 1000;
     if (!rateHot) return null;
+    if (this.risingRun < this.opts.confirmChunks || tsMs < this.surgeCooldownUntil) return null;
 
-    const baselineRate = this.warmedUp ? this.baselineRate() : 0;
-    const shortRate = this.shortRate();
-
-    if (this.risingRun >= this.opts.confirmChunks && tsMs >= this.signalCooldownUntil.surge) {
-      const runLength = this.risingRun;
-      this.risingRun = 0;
-      this.signalCooldownUntil.surge = tsMs + this.opts.signalCooldownSec * 1000;
-      return { kind: 'surge', at: tsMs, chunkAvg: avg, runLength, shortRate, baselineRate };
-    }
-    if (this.fallingRun >= this.opts.confirmChunks && tsMs >= this.signalCooldownUntil.plunge) {
-      const runLength = this.fallingRun;
-      this.fallingRun = 0;
-      this.signalCooldownUntil.plunge = tsMs + this.opts.signalCooldownSec * 1000;
-      return { kind: 'plunge', at: tsMs, chunkAvg: avg, runLength, shortRate, baselineRate };
-    }
-    return null;
+    const runLength = this.risingRun;
+    this.risingRun = 0;
+    // 급등 확정 = 진입시점 → 이탈 추적 시작. 추적 기준 고점은 확정 시점 최신 틱가(없으면 청크 평균).
+    this.tracking = true;
+    this.trailingHigh = this.lastPrice ?? avg;
+    return {
+      kind: 'surge',
+      at: tsMs,
+      price: avg,
+      runLength,
+      shortRate: this.shortRate(),
+      baselineRate: this.warmedUp ? this.baselineRate() : 0,
+      trailingHigh: null,
+    };
   }
 
-  /** 세션 전환 등으로 기준선이 낡았을 때 — 처음부터 다시 워밍업한다. */
+  /** 세션 전환 등으로 기준선이 낡았을 때 — 처음부터 다시 워밍업한다(추적도 해제). */
   reset(): void {
     this.ring.fill(0);
     this.ringSum = 0;
@@ -209,11 +221,11 @@ export class SurgeDetector {
     this.filledSec = 0;
     this.lastPrice = null;
     this.upRun = 0;
-    this.downRun = 0;
     this.prevChunkAvg = null;
     this.risingRun = 0;
-    this.fallingRun = 0;
     this.rateHotAt = null;
+    this.tracking = false;
+    this.trailingHigh = null;
   }
 
   get warmedUp(): boolean {
@@ -226,7 +238,8 @@ export class SurgeDetector {
       baselineRate: this.warmedUp ? this.baselineRate() : null,
       shortRate: this.shortRate(),
       risingChunks: this.risingRun,
-      fallingChunks: this.fallingRun,
+      tracking: this.tracking,
+      trailingHigh: this.trailingHigh,
     };
   }
 

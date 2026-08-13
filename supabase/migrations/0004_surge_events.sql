@@ -3,7 +3,8 @@
 -- 실행 방법: Supabase 대시보드 → SQL Editor 에 붙여넣고 실행한다 (0001과 동일한 경로 — CLI 미연결).
 --
 -- 용도 (2026-08-13): 급등주 찾기 신호 기록 (docs/domain/surge-stock-finder).
---   급등 신호가 행을 열고(open) 같은 종목의 후속 급락 신호가 행을 닫는다(closed).
+--   급등(진입) 신호가 행을 열고(open) 같은 종목의 이탈(트레일링 하락 확정) 신호가 행을 닫는다(closed).
+--   plunge_* 컬럼명은 초안의 흔적 — 담기는 값은 "이탈(하락 확정) 시점"이다. 단독 하락은 기록하지 않는다.
 --   매매 연동 없음 — 감지 품질을 나중에 기록으로 판단하기 위한 관찰 데이터 수집 전용.
 --   변동율 3종은 생성 컬럼 — 앱은 원천값(체결가·호가)만 넣고 계산은 DB가 한다(계산 불일치·위조 차단).
 
@@ -20,11 +21,11 @@ create table if not exists surge_events (
   surge_ask1       numeric,                   -- 급등 시점 매도1호가 (PASK1)
   surge_ask2       numeric,                   -- 급등 시점 매도2호가 (PASK2)
 
-  -- 급락 스냅샷 (에피소드 미종결이면 null)
-  plunge_at        timestamptz,               -- 급락 확정 시각
-  plunge_price     numeric,                   -- 급락 시점 체결가
-  plunge_bid1      numeric,                   -- 급락 시점 매수1호가 (PBID1)
-  plunge_bid2      numeric,                   -- 급락 시점 매수2호가 (PBID2)
+  -- 이탈(하락 확정) 스냅샷 (에피소드 미종결이면 null)
+  plunge_at        timestamptz,               -- 이탈 확정 시각
+  plunge_price     numeric,                   -- 이탈 시점 체결가
+  plunge_bid1      numeric,                   -- 이탈 시점 매수1호가 (PBID1)
+  plunge_bid2      numeric,                   -- 이탈 시점 매수2호가 (PBID2)
 
   -- 변동율 (%) — "급등 시점 매도호가에 사서 급락 시점 매수호가에 판다" 정의.
   price_change_pct numeric generated always as
@@ -37,7 +38,8 @@ create table if not exists surge_events (
     (case when surge_ask2 > 0 and plunge_bid2 is not null
           then (plunge_bid2 - surge_ask2) / surge_ask2 * 100 end) stored,
 
-  -- 에피소드 상태: open(급락 대기) · closed(정상 종결) · expired(타임아웃/재시작 정리) · plunge_only(단독 급락)
+  -- 에피소드 상태: open(이탈 대기) · closed(이탈 확정 종결) · expired(타임아웃/재시작 정리)
+  -- · plunge_only(초안의 단독 급락 — 이탈 재정의로 미사용, enum만 잔류)
   status           text not null default 'open'
                    check (status in ('open', 'closed', 'expired', 'plunge_only')),
   created_at       timestamptz not null default now()

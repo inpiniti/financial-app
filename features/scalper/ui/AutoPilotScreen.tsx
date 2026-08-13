@@ -90,8 +90,8 @@ function isFeedFailureEvent(event: FeedEvent | null): event is FeedEvent {
 }
 
 /**
- * 급등/급락 신호 행의 우측 상태 — 급등(open)은 상승색, 급락(plunge_only)은 하락색, 종결(closed)은
- * 왕복 변동율을 pnlColor로. 감지 중(alerting)·만료(expired)는 회색(docs/domain/surge-stock-finder).
+ * 급등(진입)·이탈 세트 행의 우측 상태 — 급등(open)은 상승색, 종결(closed)은 왕복 변동율을 pnlColor로.
+ * 감지 중(alerting)·만료(expired)는 회색(docs/domain/surge-stock-finder). 단독 하락 행은 없다(세트만 기록).
  */
 function SurgeTrailing({ ep }: { ep: SurgeEpisodeView }) {
   if (ep.status === 'alerting') {
@@ -101,15 +101,13 @@ function SurgeTrailing({ ep }: { ep: SurgeEpisodeView }) {
     return (
       <View className="items-end">
         <Text className="text-sm font-bold text-[#f04452]">급등 {formatPrice(ep.surgePrice ?? null)}</Text>
-        <Text className="mt-0.5 text-xs text-[#8b95a1]">급락 대기</Text>
+        <Text className="mt-0.5 text-xs text-[#8b95a1]">이탈 대기</Text>
       </View>
     );
   }
-  if (ep.status === 'plunge_only') {
-    return <Text className="text-sm font-bold text-[#3182f6]">급락 {formatPrice(ep.plungePrice ?? null)}</Text>;
-  }
   if (ep.status === 'expired') {
-    return <Text className="text-xs font-semibold text-[#8b95a1]">급락 없이 만료</Text>;
+    // 트레일링 이탈이 조용한 하락까지 잡으므로, 만료는 거래가 끊긴 극단 케이스에서만 남는다.
+    return <Text className="text-xs font-semibold text-[#8b95a1]">거래 끊김 — 만료</Text>;
   }
   // closed — 1호가 왕복(매도1호가에 사서 매수1호가에 판) 변동율이 핵심 지표, 없으면 체결가 변동율.
   const pct = ep.l1ChangePct ?? ep.priceChangePct;
@@ -130,13 +128,13 @@ function SurgeTrailing({ ep }: { ep: SurgeEpisodeView }) {
   );
 }
 
-/** 급등/급락 신호 패널 — 관찰 데이터 수집 전용(매매 연동 없음). 미기록(logged=false)은 경고 아이콘. */
+/** 급등(진입)·이탈 세트 패널 — 관찰 데이터 수집 전용(매매 연동 없음). 미기록(logged=false)은 경고 아이콘. */
 function SurgePanel({ episodes }: { episodes: readonly SurgeEpisodeView[] }) {
   return (
-    <Panel title="급등·급락 신호" headerRight={episodes.length > 0 ? `최근 ${episodes.length}건` : undefined}>
+    <Panel title="급등·이탈 기록" headerRight={episodes.length > 0 ? `최근 ${episodes.length}건` : undefined}>
       {episodes.length === 0 ? (
         <View className="px-5 pb-4">
-          <Text className="text-sm text-[#8b95a1]">시작하면 급등·급락 신호가 여기에 쌓여요</Text>
+          <Text className="text-sm text-[#8b95a1]">시작하면 급등 진입과 이탈 시점이 세트로 쌓여요</Text>
         </View>
       ) : (
         episodes.slice(0, 20).map((ep) => (
