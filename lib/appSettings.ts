@@ -19,16 +19,12 @@ export interface AppSettings {
    */
   buyCancelAfterSec: number;
   /**
-   * 매도 관리 그리드 폭 — **% 단위**. 기본 3(=3%). 진입 체결 후 평단 ±이 %에 매수·매도 지정가를 건다
-   * (buyPrice=평단×(1−w), sellPrice=평단×(1+w)). managerProvider가 /100 해서 core/grid의 width(소수)로 넘긴다.
-   * (매도 관리 그리드 Phase B — 2026-08-05)
+   * 매도 관리 그리드 폭 — **% 단위**. 기본 3(=3%). 진입 시점에 칸 간격 step=평단×이 %(달러)로 굳고,
+   * 이후 사다리 다리는 중앙값(마지막 체결 레벨)±step에 걸린다. managerProvider가 /100 해서
+   * core/grid의 width(소수)로 넘긴다. (사다리 그리드 재설계 — 2026-08-13.
+   * 옛 gridBuyMultiplier(배수 물타기)는 이때 제거 — 저장소에 남은 옛 키는 무시된다.)
    */
   gridWidthPct: number;
-  /**
-   * 매도 관리 그리드 매수 배율 — 기본 2(=보유수량의 2배를 더 사서 총 3배). 리브래킷 매수 수량은
-   * floor(보유수량 × 이 배율)로 계산된다(core/grid 몫, 여기서는 값만 전달). (Phase B)
-   */
-  gridBuyMultiplier: number;
   /**
    * 사다리 진입 감지 간격 — **% 단위**. 기본 3(=3%). 감시 시작가(트레일링 고점)에서 이 %씩 떨어질
    * 때마다 홀(가상 매수) 1회를 세고, entryLadderCount번째 홀에서 매수한다(2026-08-07 변곡점 그리드감지 plan).
@@ -60,7 +56,6 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   orderQty: 1,
   buyCancelAfterSec: 0,
   gridWidthPct: 3,
-  gridBuyMultiplier: 2,
   entryLadderIntervalPct: 3,
   entryLadderCount: 4,
   startAmountUsd: 1,
@@ -114,7 +109,6 @@ export async function loadAppSettings(): Promise<AppSettings> {
       orderQty: parsed.orderQty ?? DEFAULT_APP_SETTINGS.orderQty,
       buyCancelAfterSec: parsed.buyCancelAfterSec ?? DEFAULT_APP_SETTINGS.buyCancelAfterSec,
       gridWidthPct: parsed.gridWidthPct ?? DEFAULT_APP_SETTINGS.gridWidthPct,
-      gridBuyMultiplier: parsed.gridBuyMultiplier ?? DEFAULT_APP_SETTINGS.gridBuyMultiplier,
       entryLadderIntervalPct: parsed.entryLadderIntervalPct ?? DEFAULT_APP_SETTINGS.entryLadderIntervalPct,
       entryLadderCount: parsed.entryLadderCount ?? DEFAULT_APP_SETTINGS.entryLadderCount,
       startAmountUsd: parsed.startAmountUsd ?? DEFAULT_APP_SETTINGS.startAmountUsd,

@@ -602,32 +602,33 @@ describe('AutoPilot — 매도 관리 그리드 인계(D5·GRID_EXIT)', () => {
     return broker;
   }
 
-  it('진입 체결 → 그리드가 매수(−10%)·매도(+10%) 두 주문을 건다', async () => {
-    const h = makeHarness(['A', 'B', 'C'], { autoFill: false, gridConfig: { width: 0.1, buyMultiplier: 1 } });
+  it('진입 체결 → 사다리 그리드가 매도(1단위)·매수(2단위) 두 주문을 건다', async () => {
+    const h = makeHarness(['A', 'B', 'C'], { autoFill: false, gridConfig: { width: 0.1 } });
     const broker = await enterAndFill(h, 'A', { qty: 5, avgPrice: 100 });
 
-    // 그리드 두 다리: 매도 5주@110, 매수 5주@90 (진입 buy 1건 + 그리드 buy 1건 = buy 2건).
+    // 사다리 두 다리: 매도 5주(1단위)@110, 매수 10주(2단위)@90 (진입 buy 1건 + 그리드 buy 1건 = buy 2건).
     expect(broker.placed.filter((p) => p.side === 'sell')).toEqual([
       { side: 'sell', pdno: 'A', qty: 5, price: 110, odno: expect.any(String) },
     ]);
     const gridBuy = broker.placed.filter((p) => p.side === 'buy').at(-1);
-    expect(gridBuy).toMatchObject({ pdno: 'A', qty: 5, price: 90 });
+    expect(gridBuy).toMatchObject({ pdno: 'A', qty: 10, price: 90 });
 
     const view = h.pilot.getView();
     expect(view.state).toBe('HOLDING');
     expect(view.grid).toMatchObject({
       ticker: 'A',
-      avgPrice: 100,
+      centerPrice: 100,
       buyPrice: 90,
       sellPrice: 110,
       holdingQty: 5,
-      buyMultiplier: 1,
+      nextSellQty: 5,
+      nextBuyQty: 10,
       gridActive: true,
     });
   });
 
   it('매도(+10%) 체결 → 매수 취소(OCO) → 정산 → SCANNING 복귀', async () => {
-    const h = makeHarness(['A', 'B', 'C'], { autoFill: false, gridConfig: { width: 0.1, buyMultiplier: 1 } });
+    const h = makeHarness(['A', 'B', 'C'], { autoFill: false, gridConfig: { width: 0.1 } });
     const broker = await enterAndFill(h, 'A', { qty: 5, avgPrice: 100 });
 
     const gridSell = broker.placed.find((p) => p.side === 'sell')!;
@@ -652,14 +653,14 @@ describe('AutoPilot — 매도 관리 그리드 인계(D5·GRID_EXIT)', () => {
     expect(h.unpins).toContain('A');
   });
 
-  it('매수(−10%) 체결 → 잔고 재조회로 리브래킷(수량↑·평단↓), 관리 지속', async () => {
-    const h = makeHarness(['A', 'B', 'C'], { autoFill: false, gridConfig: { width: 0.1, buyMultiplier: 1 } });
+  it('매수(한 칸 아래) 체결 → 매수가가 새 중앙값 — 매도=방금 산 수량·매수=+1단위로 재발주, 관리 지속', async () => {
+    const h = makeHarness(['A', 'B', 'C'], { autoFill: false, gridConfig: { width: 0.1 } });
     const broker = await enterAndFill(h, 'A', { qty: 5, avgPrice: 100 });
 
     const firstSell = broker.placed.find((p) => p.side === 'sell')!;
     const gridBuy = broker.placed.filter((p) => p.side === 'buy').at(-1)!;
-    // 매수 다리 체결 → 리브래킷 전에 잔고가 10주·평단 95로 갱신됐다고 가정.
-    broker.position = { qty: 10, avgPrice: 95 };
+    // 매수 다리(10주@90) 체결 — 잔고 심은 평단 표시용으로만 쓰인다(수량은 lot 스택이 진실).
+    broker.position = { qty: 15, avgPrice: 93.33 };
     broker.fill(gridBuy.odno, 90);
     await flush();
     await h.pilot.pollCycle();
@@ -667,13 +668,22 @@ describe('AutoPilot — 매도 관리 그리드 인계(D5·GRID_EXIT)', () => {
 
     // 옛 매도 취소(OCO).
     expect(broker.canceled).toContain(firstSell.odno);
-    // 리브래킷 — 새 평단 95 기준(95×1.1=104.5, 95×0.9=85.5), 여전히 관리 중.
+    // 새 중앙값 90(방금 매수 레벨) — step $10 고정: 매도 10주@100, 매수 15주@80. 여전히 관리 중.
     const view = h.pilot.getView();
     expect(view.state).toBe('HOLDING');
-    expect(view.grid).toMatchObject({ avgPrice: 95, buyPrice: 85.5, sellPrice: 104.5, holdingQty: 10 });
+    expect(view.grid).toMatchObject({
+      centerPrice: 90,
+      buyPrice: 80,
+      sellPrice: 100,
+      holdingQty: 15,
+      nextSellQty: 10,
+      nextBuyQty: 15,
+    });
     expect(h.trades).toHaveLength(0); // 아직 청산 아님.
     // 새 매도/매수 다리가 다시 걸렸다.
     expect(broker.placed.filter((p) => p.side === 'sell')).toHaveLength(2);
+    expect(broker.placed.filter((p) => p.side === 'sell').at(-1)).toMatchObject({ qty: 10, price: 100 });
+    expect(broker.placed.filter((p) => p.side === 'buy').at(-1)).toMatchObject({ qty: 15, price: 80 });
   });
 });
 
@@ -757,7 +767,7 @@ describe('AutoPilot — 다중 그리드', () => {
   it('두 종목이 각자 그리드를 연다 — 게이지가 종목별로 따로 뜬다', async () => {
     const h = makeHarness(['A', 'B'], {
       autoFill: false,
-      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      gridConfig: { width: 0.1 },
       config: CONFIG_MULTI,
     });
     h.pilot.start();
@@ -784,14 +794,14 @@ describe('AutoPilot — 다중 그리드', () => {
     expect([...view.activeTickers].sort()).toEqual(['A', 'B']);
     expect(view.grids.map((g) => g.ticker).sort()).toEqual(['A', 'B']);
     expect(view.grids.find((g) => g.ticker === 'A')).toMatchObject({
-      avgPrice: 100,
+      centerPrice: 100,
       buyPrice: 90,
       sellPrice: 110,
       holdingQty: 5,
       gridActive: true,
     });
     expect(view.grids.find((g) => g.ticker === 'B')).toMatchObject({
-      avgPrice: 50,
+      centerPrice: 50,
       buyPrice: 45,
       sellPrice: 55,
       holdingQty: 4,
@@ -814,16 +824,16 @@ describe('AutoPilot — 다중 그리드', () => {
     expect(buy.qty).not.toBe(qtyForAmount(200, buy.price));
   });
 
-  it('[사고 재현] setGridConfig — 폭·배율을 바꾸면 다음에 여는 그리드부터 그 값으로 발주한다', async () => {
+  it('[사고 재현] setGridConfig — 폭을 바꾸면 다음에 여는 그리드부터 그 값으로 발주한다', async () => {
     // 매니저가 모듈 스코프 싱글턴이라 설정 탭에서 폭을 바꿔도 앱 재시작 전에는 반영되지 않던 버그.
     const h = makeHarness(['A', 'B'], {
       autoFill: false,
-      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      gridConfig: { width: 0.1 },
       config: CONFIG_MULTI,
     });
     h.pilot.start();
 
-    // A는 기본값(±10%·배율 1)으로 인계된다.
+    // A는 기본값(±10%)으로 인계된다.
     await replay(h, 'A', DOWN_UP_DOWN);
     const ba = h.brokers.get('A')!;
     ba.position = { qty: 10, avgPrice: 100 };
@@ -834,10 +844,10 @@ describe('AutoPilot — 다중 그리드', () => {
     expect(h.pilot.getView().grids.find((g) => g.ticker === 'A')).toMatchObject({ buyPrice: 90, sellPrice: 110 });
 
     // 실행 중에 설정을 바꾼다(설정 탭 저장 → managerProvider가 포커스에서 흘려 넣는 경로).
-    h.pilot.setGridConfig({ width: 0.05, buyMultiplier: 0.5 });
-    expect(h.pilot.gridSettings).toEqual({ width: 0.05, buyMultiplier: 0.5 });
+    h.pilot.setGridConfig({ width: 0.05 });
+    expect(h.pilot.gridSettings).toEqual({ width: 0.05 });
 
-    // B는 새 값(±5%·배율 0.5)으로 열린다.
+    // B는 새 값(±5%)으로 열린다.
     await replay(h, 'B', DOWN_UP_DOWN);
     const bb = h.brokers.get('B')!;
     bb.position = { qty: 10, avgPrice: 200 };
@@ -848,14 +858,13 @@ describe('AutoPilot — 다중 그리드', () => {
 
     const view = h.pilot.getView();
     expect(view.grids.find((g) => g.ticker === 'B')).toMatchObject({
-      avgPrice: 200,
-      buyPrice: 190, // 200 × 0.95
-      sellPrice: 210, // 200 × 1.05
-      buyMultiplier: 0.5,
+      centerPrice: 200,
+      buyPrice: 190, // step = 200 × 0.05 = $10
+      sellPrice: 210,
     });
-    // 매수 다리는 floor(10 × 0.5) = 5주(= 총 15주). 배율 1이었다면 10주(총 20주)였다.
+    // 매수 다리는 진입 10주 + 1단위(10주) = 20주.
     const gridBuyB = bb.placed.filter((p) => p.side === 'buy').at(-1)!;
-    expect(gridBuyB).toMatchObject({ qty: 5, price: 190 });
+    expect(gridBuyB).toMatchObject({ qty: 20, price: 190 });
     // ★ 이미 걸린 A의 그리드는 옛 폭 그대로다(주문이 이미 접수돼 있다).
     expect(view.grids.find((g) => g.ticker === 'A')).toMatchObject({ buyPrice: 90, sellPrice: 110 });
   });
@@ -863,7 +872,7 @@ describe('AutoPilot — 다중 그리드', () => {
   it('FAULT로 놓친 물량을 잔고에서 다시 그리드에 태운다(adoptPosition)', async () => {
     const h = makeHarness(['A', 'B'], {
       autoFill: false,
-      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      gridConfig: { width: 0.1 },
       // 계좌에 7주 @ $100이 있다 — 진입 인계도, 그 뒤 재등록도 이 잔고를 읽는다.
       positions: { A: { qty: 7, avgPrice: 100 } },
     });
@@ -897,11 +906,11 @@ describe('AutoPilot — 다중 그리드', () => {
 
     const view = h.pilot.getView();
     expect(view.activeTickers).toEqual(['A']);
-    // 잔고의 수량·평단(7주 @ $100)을 그대로 읽어 ±10% 브래킷을 세운다.
+    // 잔고의 수량·평단(7주 @ $100)을 그대로 읽어 사다리를 세운다(진입 수량=1단위).
     expect(view.grids).toHaveLength(1);
     expect(view.grids[0]).toMatchObject({
       ticker: 'A',
-      avgPrice: 100,
+      centerPrice: 100,
       buyPrice: 90,
       sellPrice: 110,
       holdingQty: 7,
@@ -912,12 +921,12 @@ describe('AutoPilot — 다중 그리드', () => {
     expect(adopted.placed.filter((p) => p.side === 'sell')).toEqual([
       { side: 'sell', pdno: 'A', qty: 7, price: 110, odno: expect.any(String) },
     ]);
-    expect(adopted.placed.filter((p) => p.side === 'buy').at(-1)).toMatchObject({ qty: 7, price: 90 });
+    expect(adopted.placed.filter((p) => p.side === 'buy').at(-1)).toMatchObject({ qty: 14, price: 90 });
     expect(h.events.some((e) => e.includes('그리드 관리 등록'))).toBe(true);
   });
 
   it('잔고가 비어 있으면 등록에 실패하되 전역 FAULT로 번지지 않는다', async () => {
-    const h = makeHarness(['A'], { autoFill: false, gridConfig: { width: 0.1, buyMultiplier: 1 } });
+    const h = makeHarness(['A'], { autoFill: false, gridConfig: { width: 0.1 } });
     h.pilot.start();
     // positions 미주입 → 잔고 조회가 null. 계좌 상태가 달라진 것뿐이라 그 종목만 포기해야 한다.
     expect(await h.pilot.adoptPosition('A')).toContain('실패');
@@ -929,7 +938,7 @@ describe('AutoPilot — 다중 그리드', () => {
   it('입양 포지션도 +폭 매도가 체결되면 정상 정산된다(진입 사이클이 없어도)', async () => {
     const h = makeHarness(['A'], {
       autoFill: false,
-      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      gridConfig: { width: 0.1 },
       positions: { A: { qty: 3, avgPrice: 200 } },
     });
     h.pilot.start();
@@ -955,7 +964,7 @@ describe('AutoPilot — 다중 그리드', () => {
   it('등록 거절 — 이미 관리 중이거나 슬롯이 꽉 찼거나 정지 상태면 문구를 돌려준다', async () => {
     const h = makeHarness(['A', 'B'], {
       autoFill: false,
-      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      gridConfig: { width: 0.1 },
       config: { startAmountUsd: 100, minTickRate: TINY_RATE, maxConcurrentGrids: 1 },
       positions: { A: { qty: 2, avgPrice: 50 }, B: { qty: 5, avgPrice: 20 } },
     });
@@ -1026,7 +1035,7 @@ describe('AutoPilot — 그리드 격리·현금 소진 매도 전용', () => {
   it('그리드 하나가 멈춰도 전역 FAULT로 번지지 않는다 — 다른 종목은 계속 정산까지 간다', async () => {
     const h = makeHarness(['A', 'B'], {
       autoFill: false,
-      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      gridConfig: { width: 0.1 },
       config: CONFIG_MULTI,
     });
     const { ba, bb } = await armTwoGrids(h);
@@ -1064,7 +1073,7 @@ describe('AutoPilot — 그리드 격리·현금 소진 매도 전용', () => {
     const cashSeq = [100_000, 100_000, 0];
     const h = makeHarness(['A'], {
       autoFill: false,
-      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      gridConfig: { width: 0.1 },
       fetchBuyableUsd: async () => cashSeq.shift() ?? 0,
     });
     h.pilot.start();
@@ -1077,8 +1086,8 @@ describe('AutoPilot — 그리드 격리·현금 소진 매도 전용', () => {
     await flush();
     expect(h.pilot.getView().grids[0]).toMatchObject({ buyLegStatus: 'full', gridActive: true });
 
-    // 그리드 매수(−10%) 체결 → 리브래킷. 이번 현금 조회는 $0 → 매수 생략.
-    ba.position = { qty: 10, avgPrice: 95 };
+    // 그리드 매수(한 칸 아래, 10주@90) 체결 → 재발주. 이번 현금 조회는 $0 → 매수 생략.
+    ba.position = { qty: 15, avgPrice: 93.33 };
     ba.fill(ba.placed.filter((p) => p.side === 'buy').at(-1)!.odno, 90);
     await flush();
     await h.pilot.pollCycle();
@@ -1086,22 +1095,31 @@ describe('AutoPilot — 그리드 격리·현금 소진 매도 전용', () => {
 
     const view = h.pilot.getView();
     expect(view.state).not.toBe('FAULT');
-    expect(view.grids[0]).toMatchObject({ buyLegStatus: 'skippedCash', gridActive: true, holdingQty: 10 });
+    expect(view.grids[0]).toMatchObject({ buyLegStatus: 'skippedCash', gridActive: true, holdingQty: 15 });
     // 리브래킷 발주는 매도만 — 매수 발주 건수가 늘지 않았다(진입 1 + 그리드 1 = 2건 유지).
     expect(ba.placed.filter((p) => p.side === 'buy')).toHaveLength(2);
     expect(ba.placed.filter((p) => p.side === 'sell')).toHaveLength(2);
     expect(h.events.some((e) => e.includes('매수는 생략'))).toBe(true);
 
-    // 매도(+10%) 체결 → 정상 정산(매도 전용 상태에서도 사이클 완주).
-    ba.fill(ba.placed.filter((p) => p.side === 'sell').at(-1)!.odno, 104.5);
+    // 매도(한 칸 위, 10주@100) 체결 → 한 칸 익절(stepSold) — 진입 lot(5주)이 남아 관리 지속.
+    ba.fill(ba.placed.filter((p) => p.side === 'sell').at(-1)!.odno, 100);
     await h.pilot.pollCycle();
     await flush();
     expect(h.trades).toHaveLength(1);
+    expect(h.trades[0]).toMatchObject({ ticker: 'A', qty: 10, entryPrice: 90, exitPrice: 100 });
+    expect(h.pilot.getView().activeTickers).toEqual(['A']);
+
+    // 남은 진입 lot 매도(5주@110) 체결 → 전량 정리·사이클 완주(매도 전용 상태에서도).
+    ba.fill(ba.placed.filter((p) => p.side === 'sell').at(-1)!.odno, 110);
+    await h.pilot.pollCycle();
+    await flush();
+    expect(h.trades).toHaveLength(2);
+    expect(h.trades[1]).toMatchObject({ ticker: 'A', qty: 5, entryPrice: 100, exitPrice: 110 });
     expect(h.pilot.getView().activeTickers).toEqual([]);
   });
 
   it('그리드 매수 발주가 거절돼도 전역 FAULT 없이 매도만 관리한다(rejected)', async () => {
-    const h = makeHarness(['A'], { autoFill: false, gridConfig: { width: 0.1, buyMultiplier: 1 } });
+    const h = makeHarness(['A'], { autoFill: false, gridConfig: { width: 0.1 } });
     h.pilot.start();
     await replay(h, 'A', DOWN_UP_DOWN);
     const ba = h.brokers.get('A')!;
@@ -1131,7 +1149,7 @@ describe('AutoPilot — 세션 전환(정규장↔주간거래) 그리드 주문
   it('세션 경계를 넘으면 ARMED 그리드의 두 다리를 취소하고 같은 포지션으로 재발주한다', async () => {
     const h = makeHarness(['A'], {
       autoFill: false,
-      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      gridConfig: { width: 0.1 },
       positions: { A: { qty: 10, avgPrice: 100 } },
     });
     h.pilot.start();
@@ -1150,7 +1168,7 @@ describe('AutoPilot — 세션 전환(정규장↔주간거래) 그리드 주문
     expect(broker.canceled).toHaveLength(2);
     expect(broker.placed).toHaveLength(4);
     expect(broker.placed.filter((p) => p.side === 'sell').at(-1)).toMatchObject({ qty: 10, price: 110 });
-    expect(broker.placed.filter((p) => p.side === 'buy').at(-1)).toMatchObject({ qty: 10, price: 90 });
+    expect(broker.placed.filter((p) => p.side === 'buy').at(-1)).toMatchObject({ qty: 20, price: 90 });
     expect(h.events.some((e) => e.includes('세션 전환'))).toBe(true);
     expect(h.pilot.getView().grids[0]).toMatchObject({ gridActive: true, holdingQty: 10 });
 
@@ -1162,7 +1180,7 @@ describe('AutoPilot — 세션 전환(정규장↔주간거래) 그리드 주문
   it('경계 직전 매도 체결은 재등록으로 덮지 않고 먼저 정산한다', async () => {
     const h = makeHarness(['A'], {
       autoFill: false,
-      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      gridConfig: { width: 0.1 },
       positions: { A: { qty: 10, avgPrice: 100 } },
     });
     h.pilot.start();

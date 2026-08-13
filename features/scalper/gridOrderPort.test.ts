@@ -31,12 +31,12 @@ describe('gridOrderPort — ScalperBroker 글루(정확 지정가)', () => {
     const grid = new Grid({
       port: createGridOrderPort(broker, 'AAPL'),
       clock: { now: () => 0 },
-      config: { width: 0.1, buyMultiplier: 1 },
+      config: { width: 0.1 },
     });
 
     await grid.arm();
 
-    expect(broker.placed.find((p) => p.side === 'buy')).toMatchObject({ pdno: 'AAPL', qty: 10, price: 90 });
+    expect(broker.placed.find((p) => p.side === 'buy')).toMatchObject({ pdno: 'AAPL', qty: 20, price: 90 });
     expect(broker.placed.find((p) => p.side === 'sell')).toMatchObject({ pdno: 'AAPL', qty: 10, price: 110 });
   });
 });

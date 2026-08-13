@@ -1,11 +1,19 @@
-// core/grid — 매도 관리 ±w OCO 지정가 그리드 상태기계 (순수 TS, 실시간/KIS 의존 없음).
+// core/grid — 매도 관리 "사다리" 지정가 그리드 상태기계 (순수 TS, 실시간/KIS 의존 없음).
 //
-// 변곡점 진입으로 포지션(보유수량 N·평단가 P)이 생기면, 그 뒤 관리를 이 그리드가 인계한다.
-//  · 매수 지정가: N×buyMultiplier 주 @ P×(1−w)  (평단 −10%, 현재가 아래 → 정상 지정가 대기)
-//  · 매도 지정가: N 주            @ P×(1+w)      (평단 +10%, 현재가 위   → 정상 지정가 대기)
-//  · 한쪽 체결 → 반대편 실제 취소(OCO):
-//      매도(+w) 체결 → 전량 정리(SOLD) → 오토파일럿 SCANNING 복귀(변곡점 재개)
-//      매수(−w) 체결 → 잔고 재조회(수량↑·평단↓) → 두 주문 재설정(REBRACKET→ARMED)
+// 2026-08-13 재설계: 배율 물타기(수량 ×N — 기하급수라 몇 번이면 풀배팅)를 버리고,
+// **산술급수 사다리**로 바꿨다. 상태는 (중앙값, 매수 lot 스택) 둘로 완전히 결정된다.
+//
+//  · 중앙값 = **마지막 체결 레벨**(평단가 아님). 매수 체결 → 한 칸 아래로, 매도 체결 → 한 칸 위로.
+//  · 칸 간격 step = **진입 시점 평단 × width를 달러로 고정**(사용자 확정 2026-08-13) —
+//    매번 %를 새 중앙값에 곱하면(90×1.1=99) 레벨이 어긋나는데, 고정 간격은 오르내려도
+//    같은 가격 레벨로 복귀한다(80/90/100/110 격자).
+//  · 수량 단위 = **진입 수량(unit)**. lot 스택으로 관리한다:
+//      매수 체결 q주 → push(q). 다음 주문: 매도 = top(방금 산 q), 매수 = top + unit.
+//      매도 체결     → pop().  다음 주문: 매도 = 새 top(직전 lot), 매수 = 방금 판 수량.
+//      (pop 후 스택이 비면 = 진입 lot까지 팔았다 → SOLD, 오토파일럿 SCANNING 복귀.)
+//    한 왕복(매수→한 칸 위 매도)마다 그 lot×step이 익절로 확정되고, n칸 하락 시 보유량은
+//    unit×n(n+1)/2 — 배수 물타기의 2^n과 달리 선형으로만 는다.
+//  · 한쪽 체결 → 반대편 실제 취소(OCO) 후 새 중앙값 기준으로 두 다리 재발주.
 //
 // 주문 발주/취소/체결확인/잔고조회는 전부 포트로 주입받아 vitest로 전 분기를 재생 검증한다
 // (RunCycle의 OrderPort 패턴과 같은 원칙 — 코어는 결정적).
@@ -52,16 +60,17 @@ export interface GridOrderPort {
  * 상태:
  *  IDLE       — 그리드 인계 전(arm 전).
  *  ARMED      — 두 주문(또는 매도 다리만) 발주 완료, 체결 대기.
- *  SOLD       — 매도(+w) 체결 → 전량 정리 완료(종료). 오토파일럿이 SCANNING으로 복귀.
+ *  SOLD       — 마지막 lot(진입 물량)까지 매도 체결 → 전량 정리 완료(종료). 오토파일럿이 SCANNING으로 복귀.
  *  FAULT      — 발주/취소가 오류로 신뢰 불가 → 동결. 신규 발주·취소 없음.
  */
 export type GridState = 'IDLE' | 'ARMED' | 'SOLD' | 'FAULT';
 
 export interface GridConfig {
-  /** 폭 w — 기본 0.10. buyPrice=P×(1−w), sellPrice=P×(1+w). */
+  /**
+   * 폭 w — 기본 0.03. **진입 시점**에 step = 평단×w(달러)로 한 번 굳힌다.
+   * 이후 모든 다리는 중앙값 ± step(고정 간격 격자).
+   */
   width: number;
-  /** 매수 배율 — 기본 1. 매수수량 = floor(N×배율). 매도는 항상 N 전량. */
-  buyMultiplier: number;
   /**
    * 가용 현금(USD) — 매수 다리 축소/생략 판정용(D2). undefined면 판정 없이 전량 매수.
    * 매수 필요금액 > 가용현금이면 살 수 있는 최대로 축소, 0이면 매수 다리 생략(매도만).
@@ -93,15 +102,21 @@ export interface GridDeps {
  */
 export type BuyLegStatus = 'full' | 'reduced' | 'skippedCash' | 'rejected';
 
-/** 게이지 UI(다음 단계)가 읽을 그리드 스냅샷. */
+/** 게이지 UI가 읽을 그리드 스냅샷. */
 export interface GridView {
   state: GridState;
   gridActive: boolean;
-  avgPrice: number;
+  /** 중앙값 — 마지막 체결 레벨(사다리의 현재 칸). 평단가가 아니다. */
+  centerPrice: number;
   buyPrice: number;
   sellPrice: number;
   holdingQty: number;
-  buyMultiplier: number;
+  /** 1단위 수량(진입 수량) — 사다리 한 칸의 증분. */
+  unitQty: number;
+  /** 다음 매도 다리 수량(마지막 매수 lot). */
+  nextSellQty: number;
+  /** 다음 매수 다리 수량(마지막 매수 lot + 1단위) — 현금 축소 전 목표치. */
+  nextBuyQty: number;
   /** 매수 다리 현금 판정 결과 — reduced/skippedCash/rejected면 UI가 사유를 표기한다. */
   buyLegStatus: BuyLegStatus;
 }
@@ -114,15 +129,18 @@ export const REBRACKET_RETRY_MS = 60_000;
 
 /**
  * poll 1회의 결과 — 오토파일럿이 이 값으로 SCANNING 복귀/기록/리브래킷을 판단한다.
- *  rebracket.cause='reissue'      — 매수 체결이 아니라 일괄 취소/세션 전환 재발주다(포지션 불변).
+ *  rebracket.cause='reissue'      — 매수 체결이 아니라 일괄 취소/세션 전환 재발주다(사다리 불변).
  *  rebracketDeferred              — 재발주가 거절돼 REBRACKET_RETRY_MS 후 재시도 대기(ARMED 유지).
+ *  stepSold                       — 사다리 한 칸 익절(부분 매도) — 그리드는 한 칸 위에서 계속 관리.
+ *  sold                           — 진입 lot까지 팔아 전량 정리(종료). costPrice = 그 lot의 매수 레벨.
  */
 export type GridPollResult =
   | { kind: 'idle' }
   | { kind: 'armed' }
   | { kind: 'rebracket'; position: GridPosition; cause?: 'reissue' }
   | { kind: 'rebracketDeferred'; reason: string }
-  | { kind: 'sold'; qty: number; avgPrice: number; exitPrice: number }
+  | { kind: 'stepSold'; qty: number; costPrice: number; exitPrice: number; position: GridPosition }
+  | { kind: 'sold'; qty: number; costPrice: number; exitPrice: number }
   | { kind: 'fault'; reason: string };
 
 interface Leg {
@@ -135,13 +153,22 @@ export class Grid {
   private readonly port: GridOrderPort;
   private readonly clock: ClockLike;
   private readonly width: number;
-  private readonly buyMultiplier: number;
   private readonly availableCashUsd: number | undefined;
   private readonly positionRetries: number;
   private readonly fetchAvailableCash: ((buyPrice: number) => Promise<number | null>) | undefined;
 
   private _state: GridState = 'IDLE';
-  private avgPrice = 0;
+  /** 마지막 체결 레벨(사다리의 현재 칸). arm 시 평단으로 시작한다. */
+  private centerPrice = 0;
+  /** 칸 간격(달러) — arm 시 평단×width로 굳는다. */
+  private stepUsd = 0;
+  /** 1단위 수량 = 진입 수량. */
+  private unitQty = 0;
+  /**
+   * 매수 lot 스택 — [진입, 1차 물타기, 2차 물타기, …]. 매도는 항상 top부터 판다(LIFO).
+   * 현금 축소로 목표보다 적게 산 lot도 실제 산 수량 그대로 쌓여, 매도가 정확히 그만큼 되돌린다.
+   */
+  private lots: number[] = [];
   private holdingQty = 0;
   private buyPrice = 0;
   private sellPrice = 0;
@@ -149,10 +176,12 @@ export class Grid {
   private sellLeg: Leg | null = null;
   private faultReason: string | null = null;
   private _buyLegStatus: BuyLegStatus = 'full';
+  /** SOLD 확정 시의 마지막 결과 — stateResult가 재현한다. */
+  private soldResult: Extract<GridPollResult, { kind: 'sold' }> | null = null;
   /** fetchFills 연속 실패 카운터 — 성공하면 리셋, FILL_FAIL_LIMIT에 닿으면 FAULT. */
   private fillFailStreak = 0;
   /**
-   * 일괄 취소 후 재발주 대기 중인 포지션 — 발주가 거절돼(세션 간극 등) 아직 두 다리를 못 건 상태.
+   * 일괄 취소 후 재발주 대기 중 — 발주가 거절돼(세션 간극 등) 아직 두 다리를 못 건 상태.
    * null이 아니면 ARMED지만 다리가 없다 — poll이 nextRebracketAt마다 재시도한다.
    */
   private pendingRebracket: GridPosition | null = null;
@@ -167,7 +196,6 @@ export class Grid {
     this.port = deps.port;
     this.clock = deps.clock;
     this.width = deps.config.width;
-    this.buyMultiplier = deps.config.buyMultiplier;
     this.availableCashUsd = deps.config.availableCashUsd;
     this.positionRetries = deps.positionRetries ?? 3;
     this.fetchAvailableCash = deps.fetchAvailableCash;
@@ -182,21 +210,25 @@ export class Grid {
   }
 
   get view(): GridView {
+    const top = this.lots.at(-1) ?? 0;
     return {
       state: this._state,
       gridActive: this._state === 'ARMED',
-      avgPrice: this.avgPrice,
+      centerPrice: this.centerPrice,
       buyPrice: this.buyPrice,
       sellPrice: this.sellPrice,
       holdingQty: this.holdingQty,
-      buyMultiplier: this.buyMultiplier,
+      unitQty: this.unitQty,
+      nextSellQty: Math.min(top, this.holdingQty),
+      nextBuyQty: top + this.unitQty,
       buyLegStatus: this._buyLegStatus,
     };
   }
 
   /**
-   * 그리드 인계 — 포지션을 잔고에서 읽어(재시도) 두 주문을 발주한다.
-   * fallback: 잔고가 끝내 안 잡히면 직전 체결가·체결수량으로 브래킷을 세운다(D1).
+   * 그리드 인계 — 포지션을 잔고에서 읽어(재시도) 사다리를 초기화하고 두 주문을 발주한다.
+   * 진입 수량이 곧 1단위(unit), 평단이 첫 중앙값, step = 평단×width(달러 고정).
+   * fallback: 잔고가 끝내 안 잡히면 직전 체결가·체결수량으로 사다리를 세운다(D1).
    */
   async arm(fallback?: GridPosition): Promise<void> {
     if (this._state !== 'IDLE') return;
@@ -205,10 +237,16 @@ export class Grid {
       this.enterFault('포지션을 확인할 수 없어요 — 잔고와 직전 체결을 모두 못 읽었어요');
       return;
     }
-    await this.placeBrackets(position);
+    this.holdingQty = position.qty;
+    this.unitQty = position.qty;
+    this.centerPrice = roundGridPrice(position.avgPrice);
+    this.stepUsd = position.avgPrice * this.width;
+    this.lots = [position.qty];
+    const error = await this.tryPlaceLegs();
+    if (error !== null) this.enterFault(`매도 발주 실패 — ${error}`);
   }
 
-  /** 체결 폴 1회 — OCO 판정(매도 체결→SOLD, 매수 체결→리브래킷) + 일괄 취소 방어. */
+  /** 체결 폴 1회 — OCO 판정(매도 체결→한 칸 위/SOLD, 매수 체결→한 칸 아래) + 일괄 취소 방어. */
   async poll(): Promise<GridPollResult> {
     if (this._state !== 'ARMED') return this.stateResult();
 
@@ -233,8 +271,8 @@ export class Grid {
 
     // ── 거래소/KIS 일괄 취소 방어(세션 전환·장 마감) ──
     // "목록 부재→전량체결" 추론(filledPrice=null)은 취소로 사라진 주문과 구분이 안 된다.
-    // ① 두 다리가 같은 폴에서 동시에 추론 체결로 사라졌다 — ±w 양끝이 한 폴 안에 다 체결될 수는
-    //    없으므로 일괄 취소로 판정하고 같은 포지션으로 재발주한다.
+    // ① 두 다리가 같은 폴에서 동시에 추론 체결로 사라졌다 — ±step 양끝이 한 폴 안에 다 체결될 수는
+    //    없으므로 일괄 취소로 판정하고 같은 사다리 상태로 재발주한다.
     const sellFill = this.sellLeg ? byOdno.get(this.sellLeg.odno) : undefined;
     const buyFill = this.buyLeg ? byOdno.get(this.buyLeg.odno) : undefined;
     const sellInferred =
@@ -243,8 +281,9 @@ export class Grid {
       this.buyLeg !== null && isFilled(buyFill, this.buyLeg.qty) && filledPriceOf(buyFill) === null;
     if (sellInferred && buyInferred) return this.rebracketAfterCancel();
     // ② 매도 다리의 추론 체결은 잔고로 검증한다 — 진짜 체결이면 체결기준 수량(ccld_qty_smtl1)이
-    //    즉시 줄지만, 취소면 전량이 그대로 남는다. 잔고 반영이 한 폴 늦을 수 있어 연속 2폴 일치
-    //    할 때만 취소로 확정한다(진짜 체결을 취소로 오분류해 없는 주식을 재매도하는 사고 방지).
+    //    매도분만큼 즉시 줄지만, 취소면 전량이 그대로 남는다. 잔고 반영이 한 폴 늦을 수 있어 연속
+    //    2폴 일치할 때만 취소로 확정한다(진짜 체결을 취소로 오분류해 없는 주식을 재매도하는 사고 방지).
+    //    ⚠ 사다리 매도는 부분 매도라 "잔고 0"이 아니라 "매도수량만큼 줄었나"로 판정한다.
     if (sellInferred) {
       let pos: GridPosition | null;
       try {
@@ -252,65 +291,36 @@ export class Grid {
       } catch {
         return { kind: 'armed' }; // 일시 오류 — 판정을 다음 폴로 미룬다(주문 상태는 변하지 않는다).
       }
-      if (pos !== null && pos.qty >= this.sellLeg!.qty) {
+      if (pos !== null && pos.qty > this.holdingQty - this.sellLeg!.qty) {
         if (!this.sellCancelSuspect) {
           this.sellCancelSuspect = true;
           return { kind: 'armed' };
         }
         return this.rebracketAfterCancel();
       }
-      // 잔고가 줄었다 — 진짜 체결. 아래 기존 SOLD 판정으로 계속 간다.
+      // 잔고가 매도분만큼 줄었다(또는 소멸) — 진짜 체결. 아래 매도 판정으로 계속 간다.
       this.sellCancelSuspect = false;
     } else {
       this.sellCancelSuspect = false;
     }
 
-    // 매도(+w) 우선 판정 — 정리(SOLD)가 리브래킷보다 우선한다.
+    // 매도(+step) 우선 판정 — 익절이 물타기보다 우선한다.
     const sellFilled = this.sellLeg && isFilled(byOdno.get(this.sellLeg.odno), this.sellLeg.qty);
     if (this.sellLeg && sellFilled) {
-      const exitPrice = filledPriceOf(byOdno.get(this.sellLeg.odno)) ?? this.sellLeg.price;
-      const soldQty = this.sellLeg.qty;
-      const avg = this.avgPrice;
-      if (this.buyLeg) {
-        const ok = await this.cancelLeg(this.buyLeg);
-        if (!ok) return { kind: 'fault', reason: this.faultReason! };
-      }
-      this.buyLeg = null;
-      this.sellLeg = null;
-      this._state = 'SOLD';
-      return { kind: 'sold', qty: soldQty, avgPrice: avg, exitPrice };
+      return this.onSellFilled(filledPriceOf(byOdno.get(this.sellLeg.odno)));
     }
 
-    // 매수(−w) 체결 → OCO로 매도 취소 → 잔고 재조회 → 리브래킷.
+    // 매수(−step) 체결 → OCO로 매도 취소 → 한 칸 아래로 리브래킷.
     const buyFilled = this.buyLeg && isFilled(byOdno.get(this.buyLeg.odno), this.buyLeg.qty);
     if (this.buyLeg && buyFilled) {
-      const buyFillPrice = filledPriceOf(byOdno.get(this.buyLeg.odno)) ?? this.buyLeg.price;
-      const buyQty = this.buyLeg.qty;
-      if (this.sellLeg) {
-        const ok = await this.cancelLeg(this.sellLeg);
-        if (!ok) return { kind: 'fault', reason: this.faultReason! };
-      }
-      const prevQty = this.holdingQty;
-      const prevAvg = this.avgPrice;
-      this.buyLeg = null;
-      this.sellLeg = null;
-      // 잔고 재조회 폴백: 매수분을 옛 포지션에 합산(수량 가중평균).
-      const merged: GridPosition = {
-        qty: prevQty + buyQty,
-        avgPrice: (prevQty * prevAvg + buyQty * buyFillPrice) / (prevQty + buyQty),
-      };
-      const position = await this.resolvePosition(merged);
-      const next = position && position.qty > 0 && position.avgPrice > 0 ? position : merged;
-      const armed = await this.placeBrackets(next);
-      if (!armed) return { kind: 'fault', reason: this.faultReason! };
-      return { kind: 'rebracket', position: next };
+      return this.onBuyFilled();
     }
 
     return { kind: 'armed' };
   }
 
   /**
-   * 세션 전환(정규장↔주간거래) 등으로 두 다리를 지금 취소하고 같은 포지션으로 재발주한다(ARMED에서만).
+   * 세션 전환(정규장↔주간거래) 등으로 두 다리를 지금 취소하고 같은 사다리 상태로 재발주한다(ARMED에서만).
    * 옛 세션 API로 접수된 주문은 세션이 끝나면 KIS가 일괄 취소하므로, 경계를 감지한 오토파일럿이
    * 선제 재발주로 새 세션 API 계열의 주문으로 갈아탄다. 재발주 대기 중이었다면 즉시 재시도한다.
    */
@@ -322,19 +332,81 @@ export class Grid {
 
   // ---- 내부 ----
 
+  /**
+   * 매도 체결 — 사다리 한 칸 위로. 방금 판 lot을 pop하고 중앙값을 매도가로 올린다.
+   * pop 후 스택이 비면(진입 lot까지 팔았다) SOLD 종료, 남았으면 새 두 다리를 건다.
+   * costPrice = 그 lot을 샀던 레벨(= 옛 중앙값) — 한 칸 익절 손익은 qty×step이다.
+   */
+  private async onSellFilled(filledPrice: number | null): Promise<GridPollResult> {
+    const leg = this.sellLeg!;
+    const exitPrice = filledPrice ?? leg.price;
+    const costPrice = this.centerPrice; // 이 lot을 산 레벨(마지막 매수 = 현재 중앙값).
+    if (this.buyLeg) {
+      const ok = await this.cancelLeg(this.buyLeg);
+      if (!ok) return { kind: 'fault', reason: this.faultReason! };
+    }
+    this.buyLeg = null;
+    this.sellLeg = null;
+    this.lots.pop();
+    this.holdingQty = Math.max(0, this.holdingQty - leg.qty);
+    this.centerPrice = leg.price; // 매도가가 새 중앙값(사용자 규칙) — 지정가 = 격자 레벨.
+
+    if (this.lots.length === 0 || this.holdingQty <= 0) {
+      this._state = 'SOLD';
+      this.soldResult = { kind: 'sold', qty: leg.qty, costPrice, exitPrice };
+      return this.soldResult;
+    }
+
+    // 수량의 진실은 lot 스택(내부 계산)이다 — 잔고는 체결 반영이 한 박자 늦어 낡은 수량을
+    // 돌려줄 수 있고, 그걸 믿으면 다음 매도 수량이 틀어진다. 잔고는 평단 표시용으로만 읽는다.
+    const position = await this.displayPosition();
+    const error = await this.tryPlaceLegs();
+    if (error !== null) {
+      this.enterFault(`매도 발주 실패 — ${error}`);
+      return { kind: 'fault', reason: this.faultReason! };
+    }
+    return { kind: 'stepSold', qty: leg.qty, costPrice, exitPrice, position };
+  }
+
+  /**
+   * 매수 체결 — 사다리 한 칸 아래로. 산 수량을 lot으로 push하고 중앙값을 매수가로 내린다.
+   * 다음 다리: 매도 = 방금 산 수량(정확히 이 매수를 되돌린다), 매수 = 방금 산 수량 + 1단위.
+   */
+  private async onBuyFilled(): Promise<GridPollResult> {
+    const leg = this.buyLeg!;
+    if (this.sellLeg) {
+      const ok = await this.cancelLeg(this.sellLeg);
+      if (!ok) return { kind: 'fault', reason: this.faultReason! };
+    }
+    this.buyLeg = null;
+    this.sellLeg = null;
+    this.lots.push(leg.qty);
+    this.holdingQty += leg.qty;
+    this.centerPrice = leg.price; // 매수가가 새 중앙값 — 지정가 = 격자 레벨.
+
+    // 잔고 재조회는 평단 표시용 — 사다리 상태(수량)는 잔고와 무관하게 lot 스택이 진실이다.
+    const position = await this.displayPosition();
+    const error = await this.tryPlaceLegs();
+    if (error !== null) {
+      this.enterFault(`매도 발주 실패 — ${error}`);
+      return { kind: 'fault', reason: this.faultReason! };
+    }
+    return { kind: 'rebracket', position };
+  }
+
   private stateResult(): GridPollResult {
     return this._state === 'FAULT'
       ? { kind: 'fault', reason: this.faultReason ?? '동결됨' }
       : this._state === 'SOLD'
-        ? { kind: 'sold', qty: this.holdingQty, avgPrice: this.avgPrice, exitPrice: this.sellPrice }
+        ? (this.soldResult ?? { kind: 'sold', qty: 0, costPrice: this.centerPrice, exitPrice: this.sellPrice })
         : { kind: 'idle' };
   }
 
   /**
    * 일괄 취소(세션 전환·장 마감) 후 재발주 — 살아 있을지 모르는 다리를 방어적으로 취소하고
-   * (이미 KIS가 취소한 주문의 거절은 정상이라 무시), 같은 포지션(잔고 재조회, 폴백=현재 값)으로
-   * 두 다리를 다시 건다. 발주가 거절되면(주문 API가 닫힌 세션 간극 등) FAULT 대신
-   * REBRACKET_RETRY_MS 후 재시도한다 — 새 세션이 열리면 자연히 접수된다.
+   * (이미 KIS가 취소한 주문의 거절은 정상이라 무시), 같은 사다리 상태로 두 다리를 다시 건다.
+   * 발주가 거절되면(주문 API가 닫힌 세션 간극 등) FAULT 대신 REBRACKET_RETRY_MS 후
+   * 재시도한다 — 새 세션이 열리면 자연히 접수된다.
    */
   private async rebracketAfterCancel(): Promise<GridPollResult> {
     this.sellCancelSuspect = false;
@@ -348,21 +420,29 @@ export class Grid {
     }
     this.buyLeg = null;
     this.sellLeg = null;
-    const fallback: GridPosition = { qty: this.holdingQty, avgPrice: this.avgPrice };
-    this.pendingRebracket = (await this.resolvePosition(fallback)) ?? fallback;
+    this.pendingRebracket = await this.displayPosition();
     return this.tryPendingRebracket();
   }
 
   /** 대기 중인 재발주 1회 시도 — 성공하면 rebracket(cause=reissue), 거절이면 재시도 예약. */
   private async tryPendingRebracket(): Promise<GridPollResult> {
     const position = this.pendingRebracket!;
-    const error = await this.tryPlaceBrackets(position);
+    const error = await this.tryPlaceLegs();
     if (error === null) {
       this.pendingRebracket = null;
       return { kind: 'rebracket', position, cause: 'reissue' };
     }
     this.nextRebracketAt = this.clock.now() + REBRACKET_RETRY_MS;
     return { kind: 'rebracketDeferred', reason: error };
+  }
+
+  /**
+   * 이벤트·뷰 표시용 포지션 — 수량은 항상 내부 계산(lot 스택 합)이고, 평단만 잔고에서 빌린다.
+   * 잔고의 수량을 믿지 않는 이유: 체결 반영이 한 박자 늦어 낡은 값이 오면 사다리 수량이 틀어진다.
+   */
+  private async displayPosition(): Promise<GridPosition> {
+    const balance = await this.resolvePosition();
+    return { qty: this.holdingQty, avgPrice: balance?.avgPrice ?? this.centerPrice };
   }
 
   private async resolvePosition(fallback?: GridPosition): Promise<GridPosition | null> {
@@ -379,30 +459,20 @@ export class Grid {
   }
 
   /**
-   * 두 다리 발주 — 현금 부족 시 매수 축소/생략(D2).
-   * 매도 다리(익절) 실패만 FAULT다 — 익절 다리 없는 포지션 방치가 진짜 위험이라서.
-   * 매수 다리 실패는 rejected로 표기하고 매도만 ARMED로 계속 간다(현금 부족 거절이 대부분).
+   * 두 다리 발주 — **사다리 상태(중앙값·lot 스택)에서** 가격·수량을 계산한다. 실패를 문자열로 돌려준다.
+   *  매도: min(top lot, 보유수량) 주 @ 중앙값+step — 실패만 FAULT 사유다(익절 다리 없는 방치가 진짜 위험).
+   *  매수: top lot + unit 주 @ 중앙값−step — 현금 부족 시 축소/생략(D2), 거절은 rejected로 매도만 관리.
    */
-  private async placeBrackets(position: GridPosition): Promise<boolean> {
-    const error = await this.tryPlaceBrackets(position);
-    if (error !== null) {
-      this.enterFault(`매도 발주 실패 — ${error}`);
-      return false;
-    }
-    return true;
-  }
-
-  /** placeBrackets의 비-FAULT 본체 — 매도 발주 실패를 문자열로 돌려준다(재시도 경로가 쓴다). */
-  private async tryPlaceBrackets(position: GridPosition): Promise<string | null> {
-    this.avgPrice = position.avgPrice;
-    this.holdingQty = position.qty;
+  private async tryPlaceLegs(): Promise<string | null> {
     // KIS 주문가 자릿수 규칙($1이상 2자리·미만 4자리)에 미리 맞춰 둔다 — 뷰·발주가·실제 접수가를
-    // 하나로 일치시키고 부동소수 잡음(100×1.1=110.0000…001)을 제거한다. kis/order가 다시 절사해도 멱등이다.
-    this.buyPrice = roundGridPrice(position.avgPrice * (1 - this.width));
-    this.sellPrice = roundGridPrice(position.avgPrice * (1 + this.width));
+    // 하나로 일치시키고 부동소수 잡음(100−10=90.0000…001)을 제거한다. kis/order가 다시 절사해도 멱등이다.
+    this.buyPrice = roundGridPrice(this.centerPrice - this.stepUsd);
+    this.sellPrice = roundGridPrice(this.centerPrice + this.stepUsd);
 
-    const sellQty = position.qty;
-    let buyQty = Math.floor(position.qty * this.buyMultiplier);
+    const top = this.lots.at(-1) ?? 0;
+    const sellQty = Math.min(top, this.holdingQty);
+    if (sellQty < 1) return '매도 수량이 0이에요 — 사다리 상태와 잔고가 어긋났어요';
+    let buyQty = top + this.unitQty;
     this._buyLegStatus = 'full';
     // 최신 현금 조회(리브래킷마다) — 실패하면 생성 시 캡처값으로 폴백.
     let cash = this.availableCashUsd;
@@ -429,9 +499,9 @@ export class Grid {
     } catch (err) {
       return summarize(err);
     }
-    // 매수 다리는 수량이 1주 이상일 때만.
+    // 매수 다리는 수량이 1주 이상이고 가격이 양수일 때만(사다리가 0 밑으로 내려가면 매수 없음).
     this.buyLeg = null;
-    if (buyQty >= 1) {
+    if (buyQty >= 1 && this.buyPrice > 0) {
       try {
         const buy = await this.port.placeOrder('buy', buyQty, this.buyPrice);
         this.buyLeg = { odno: buy.odno, qty: buyQty, price: this.buyPrice };
@@ -463,7 +533,7 @@ export class Grid {
 
 /**
  * 그리드 목표가를 KIS 자릿수 규칙으로 반올림한다($1이상 2자리·미만 4자리). formatOverseasOrderPrice와 같은 스케일.
- * 부동소수 잔재(100×1.1=110.0000…01)가 다리 가격에 남지 않게 한다.
+ * 부동소수 잔재(100−10=90.0000…01)가 다리 가격에 남지 않게 한다.
  */
 export function roundGridPrice(price: number): number {
   const scale = price >= 1 ? 100 : 10_000;
