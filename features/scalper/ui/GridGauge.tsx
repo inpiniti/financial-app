@@ -1,6 +1,5 @@
 // 매도 관리 그리드 게이지 — 진입 후 관리 중(view.grid non-null)일 때 AutoPilotScreen이 Panel로 보여준다.
-// 가로 게이지: 중앙=중앙값(마지막 체결 레벨), 왼쪽 끝=매수가(중앙−step), 오른쪽 끝=매도가(중앙+step).
-// 현재가는 ▼ 화살표 + 말풍선. 사다리 그리드(2026-08-13)라 좌우 라벨에 다음 주문 수량도 같이 보여준다.
+// 가로 게이지: 중앙=평단가, 왼쪽 끝=매수가(평단−w%), 오른쪽 끝=매도가(평단+w%). 현재가는 ▼ 화살표 + 말풍선.
 // app-ui-style: 이모지 금지(Ionicons도 필요 없는 단순 도형이라 SVG 직접), 손익이 아니라 매수/매도 방향 색이라
 // pnlColor() 대신 스킬이 지정한 고정 색(매도=#f04452·매수=#3182f6·평단/현재가=#191f28)을 그대로 쓴다.
 import { useState } from 'react';
@@ -108,27 +107,26 @@ export function GridGauge({ grid, name }: GridGaugeProps) {
         )}
       </View>
 
-      {/* 하단 가격 라벨 — 매수(좌)·중앙값(중앙)·매도(우), 좌우엔 다음 주문 수량 병기.
-          매수 다리가 없으면(생략·거절) 회색으로 죽인다. */}
+      {/* 하단 가격 라벨 — 매수가(좌)·평단가(중앙)·매도가(우). 매수 다리가 없으면(생략·거절) 회색으로 죽인다. */}
       <View className="mt-1 flex-row items-start justify-between">
         <View>
           <Text
             className="text-[11px] font-semibold"
             style={{ color: buyLegAbsent ? MUTED_COLOR : BUY_COLOR }}
           >
-            매수 {grid.nextBuyQty}주
+            매수가
           </Text>
           <Text className="text-xs font-bold" style={{ color: buyLegAbsent ? MUTED_COLOR : NEUTRAL_COLOR }}>
             {formatPrice(grid.buyPrice)}
           </Text>
         </View>
         <View className="items-center">
-          <Text className="text-[11px] font-semibold text-[#191f28]">중앙값</Text>
-          <Text className="text-xs font-bold text-[#191f28]">{formatPrice(grid.centerPrice)}</Text>
+          <Text className="text-[11px] font-semibold text-[#191f28]">평단가</Text>
+          <Text className="text-xs font-bold text-[#191f28]">{formatPrice(grid.avgPrice)}</Text>
         </View>
         <View className="items-end">
           <Text className="text-[11px] font-semibold" style={{ color: SELL_COLOR }}>
-            매도 {grid.nextSellQty}주
+            매도가
           </Text>
           <Text className="text-xs font-bold text-[#191f28]">{formatPrice(grid.sellPrice)}</Text>
         </View>

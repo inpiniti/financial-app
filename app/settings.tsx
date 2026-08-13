@@ -13,8 +13,10 @@ import { Panel } from '../components/Panel';
 import { DEFAULT_APP_SETTINGS, loadAppSettings, saveAppSettings, snapToStep } from '../lib/appSettings';
 import { MAX_GRIDS_LIMIT } from '../features/scalper/autopilot';
 
-/** 그리드 폭 상한(%) — 오타 방어. 중앙값 ±50%를 넘는 칸은 사실상 관리가 아니다. */
+/** 그리드 폭 상한(%) — 오타 방어. 평단 ±50%를 넘는 브래킷은 사실상 관리가 아니다. */
 const GRID_WIDTH_MAX_PCT = 50;
+/** 매수 배율 상한 — 1이면 보유수량만큼 더 사서 총 2배가 된다. 5면 한 번에 6배라 그 위는 막는다. */
+const GRID_BUY_MULTIPLIER_MAX = 5;
 /** 사다리 진입 간격 상한(%) — 오타 방어. 간격 10% × 횟수면 이미 대폭락에서만 진입한다. */
 const LADDER_INTERVAL_MAX_PCT = 10;
 /** 사다리 홀 횟수 상한 — 간격과 곱해 누적 낙폭이 되므로 10이면 충분히 보수적 끝단이다. */
@@ -73,8 +75,9 @@ export default function SettingsScreen() {
   const savedOrderQtyRef = useRef(DEFAULT_APP_SETTINGS.orderQty);
   // 청크·버퍼·모멘텀 문턱·BUY 게이트·수수료율 설정은 2026-08-08 제거 — 코드 기본값 고정 동작.
   const [buyCancelAfterSec, setBuyCancelAfterSec] = useState(DEFAULT_APP_SETTINGS.buyCancelAfterSec);
-  // 매도 관리 그리드 폭 — 텍스트 입력 + 저장 시 검증 패턴. (매수 배율은 사다리 재설계로 제거 — 2026-08-13)
+  // 매도 관리 그리드 폭·매수 배율 — 텍스트 입력 + 저장 시 검증 패턴.
   const [gridWidthPct, setGridWidthPct] = useState(String(DEFAULT_APP_SETTINGS.gridWidthPct));
+  const [gridBuyMultiplier, setGridBuyMultiplier] = useState(String(DEFAULT_APP_SETTINGS.gridBuyMultiplier));
   // 사다리 진입 감지(2026-08-07 plan) — 간격 %·홀 횟수.
   const [entryLadderIntervalPct, setEntryLadderIntervalPct] = useState(
     String(DEFAULT_APP_SETTINGS.entryLadderIntervalPct),
@@ -93,6 +96,7 @@ export default function SettingsScreen() {
       savedOrderQtyRef.current = appSettings.orderQty;
       setBuyCancelAfterSec(appSettings.buyCancelAfterSec);
       setGridWidthPct(String(appSettings.gridWidthPct));
+      setGridBuyMultiplier(String(appSettings.gridBuyMultiplier));
       setEntryLadderIntervalPct(String(appSettings.entryLadderIntervalPct));
       setEntryLadderCount(String(appSettings.entryLadderCount));
       setStartAmountUsd(appSettings.startAmountUsd > 0 ? String(appSettings.startAmountUsd) : '');
@@ -136,6 +140,16 @@ export default function SettingsScreen() {
       return;
     }
 
+    const parsedGridBuyMultiplier = Number(gridBuyMultiplier);
+    if (
+      !Number.isFinite(parsedGridBuyMultiplier) ||
+      parsedGridBuyMultiplier <= 0 ||
+      parsedGridBuyMultiplier > GRID_BUY_MULTIPLIER_MAX
+    ) {
+      Alert.alert('알림', `매수 배율은 0보다 크고 ${GRID_BUY_MULTIPLIER_MAX} 이하인 숫자로 입력해 주세요.`);
+      return;
+    }
+
     const parsedLadderIntervalPct = Number(entryLadderIntervalPct);
     if (
       !Number.isFinite(parsedLadderIntervalPct) ||
@@ -165,6 +179,7 @@ export default function SettingsScreen() {
         orderQty: savedOrderQtyRef.current,
         buyCancelAfterSec,
         gridWidthPct: parsedGridWidthPct,
+        gridBuyMultiplier: parsedGridBuyMultiplier,
         entryLadderIntervalPct: parsedLadderIntervalPct,
         entryLadderCount: parsedLadderCount,
         startAmountUsd: parsedStartAmountUsd,
@@ -190,15 +205,19 @@ export default function SettingsScreen() {
   })();
 
   /**
-   * 그리드 폭의 즉시 미리보기 — 입력값이 실제 칸 간격·발주가로 어떻게 번역되는지 그 자리에서 보여준다.
+   * 그리드 폭·배율의 즉시 미리보기 — 입력값이 실제 발주가·수량으로 어떻게 번역되는지 그 자리에서 보여준다.
+   * ("매수 배율 1"이 왜 수량 2배가 되는지가 숫자로 보이지 않아 오해가 잦았다.)
    * 입력이 유효 범위를 벗어나면 null — 저장 시 Alert로 막히므로 여기서는 미리보기만 숨긴다.
    */
   const gridPreview = (() => {
     const w = Number(gridWidthPct);
+    const m = Number(gridBuyMultiplier);
     if (!Number.isFinite(w) || w <= 0 || w > GRID_WIDTH_MAX_PCT) return null;
+    if (!Number.isFinite(m) || m <= 0 || m > GRID_BUY_MULTIPLIER_MAX) return null;
     return {
-      buy: (100 - w).toFixed(2),
-      sell: (100 + w).toFixed(2),
+      buy: (100 * (1 - w / 100)).toFixed(2),
+      sell: (100 * (1 + w / 100)).toFixed(2),
+      addQty: Math.floor(10 * m),
     };
   })();
 
@@ -319,23 +338,39 @@ export default function SettingsScreen() {
               placeholderTextColor="#8b95a1"
               className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
             />
-            <Text className="mb-1 text-xs leading-5 text-[#8b95a1]">
-              마지막 체결가(중앙값) 위아래 이 %에 매도·매수 지정가를 걸어요. 체결될 때마다 그 가격 기준으로 다시 계산해요.
+            <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
+              평단 ±이 %에 매도·매수 지정가를 걸어요.
               {gridPreview && (
                 <Text className="text-[#4e5968]">
-                  {' '}중앙값이 $100이면 매수 ${gridPreview.buy} · 매도 ${gridPreview.sell}에 걸려요.
+                  {' '}평단 $100이면 매수 ${gridPreview.buy} · 매도 ${gridPreview.sell}에 걸려요.
+                </Text>
+              )}
+            </Text>
+
+            <Text className="mb-1 text-xs text-[#8b95a1]">매수 배율 — 최대 {GRID_BUY_MULTIPLIER_MAX}</Text>
+            <TextInput
+              value={gridBuyMultiplier}
+              onChangeText={setGridBuyMultiplier}
+              keyboardType="decimal-pad"
+              placeholder={`기본 ${DEFAULT_APP_SETTINGS.gridBuyMultiplier}`}
+              placeholderTextColor="#8b95a1"
+              className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
+            />
+            <Text className="mb-1 text-xs leading-5 text-[#8b95a1]">
+              물타기 매수는 보유수량 × 이 배율만큼 발주해요.
+              {gridPreview && (
+                <Text className="text-[#4e5968]">
+                  {' '}10주를 갖고 있으면 {gridPreview.addQty}주를 더 사서 총 {10 + gridPreview.addQty}주가 돼요.
                 </Text>
               )}
             </Text>
             <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
-              수량은 사다리 방식이에요. 한 칸 내려가 매수될 때마다 진입 수량만큼 한 단위씩 늘려 사고(1, 2, 3, …배),
-              한 칸 올라가면 마지막에 산 만큼만 팔아서 그 매수를 그대로 되돌려요. 배수로 불리는 물타기보다
-              수량이 훨씬 완만하게 늘어요.
+              배율을 1로 두면 물타기마다 수량이 2배가 돼요. 0.5로 낮추면 1.5배씩 늘어나요.
             </Text>
 
             <View className="rounded-2xl bg-[#f2f4f6] px-4 py-3">
               <Text className="text-xs leading-5 text-[#4e5968]">
-                폭은 <Text className="font-semibold text-[#191f28]">다음에 새로 여는 그리드부터</Text> 적용돼요.
+                폭·배율은 <Text className="font-semibold text-[#191f28]">다음에 새로 여는 그리드부터</Text> 적용돼요.
                 지금 돌고 있는 그리드는 이미 주문이 접수돼 있어서 그대로 관리돼요.
               </Text>
             </View>

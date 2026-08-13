@@ -64,10 +64,12 @@ export const DEFAULT_MIN_TICK_RATE = 1;
  */
 export const GRID_EXIT = true;
 
-/** 그리드 설정 — 폭(w)만. 설정 탭(매매 파라미터)에서 조절한다. 수량 규칙은 사다리(코어)가 정한다. */
+/** 그리드 설정 — 폭(w)·매수배율(buyMultiplier). 설정 탭(매매 파라미터)에서 조절한다. */
 export interface GridExitConfig {
-  /** 폭 w(기본 0.03). 다리 가격은 매번 중앙값(마지막 체결가)×(1±w)로 재계산한다. */
+  /** 폭 w(기본 0.10). buyPrice=P×(1−w), sellPrice=P×(1+w). */
   width: number;
+  /** 매수 배율(기본 1). 매수수량 = floor(N×배율), 매도는 항상 N 전량. */
+  buyMultiplier: number;
 }
 
 export type AutoPilotState = 'IDLE' | 'SCANNING' | 'ENTERING' | 'HOLDING' | 'EXITING' | 'PAUSED' | 'FAULT';
@@ -129,20 +131,18 @@ export interface AutoPilotView {
 /** 게이지 UI가 소비할 그리드 뷰(관리 중 종목 1개). */
 export interface AutoPilotGridView {
   ticker: string;
-  /** 중앙값 — 마지막 체결 레벨(사다리의 현재 칸). 평단가가 아니다. */
-  centerPrice: number;
-  /** 매수 지정가(중앙값−step). */
+  /** 평단가 P(그리드가 관리하는 평균 — 리브래킷하면 낮아진다). */
+  avgPrice: number;
+  /** 매수 지정가 P×(1−w). */
   buyPrice: number;
-  /** 매도 지정가(중앙값+step). */
+  /** 매도 지정가 P×(1+w). */
   sellPrice: number;
   /** 최근 틱 현재가 — 게이지 화살표 위치용. 아직 없으면 null. */
   currentPrice: number | null;
   /** 보유수량 N. */
   holdingQty: number;
-  /** 다음 매도 다리 수량(마지막 매수 lot). */
-  nextSellQty: number;
-  /** 다음 매수 다리 수량(마지막 매수 lot + 1단위). */
-  nextBuyQty: number;
+  /** 매수 배율. */
+  buyMultiplier: number;
   /** 그리드가 두 주문을 실제로 걸고 관리 중인가(ARMED). */
   gridActive: boolean;
   /** 매수 다리 현금 판정 — reduced/skippedCash/rejected면 게이지가 사유를 표기한다. */
@@ -160,7 +160,7 @@ export interface AutoPilotDeps {
   /** 티커별 주문 게이트웨이(실서비스 createKisBroker, 테스트 가짜 심). */
   makeBroker: (ticker: string) => ScalperBroker;
   /**
-   * 매도 관리 그리드 설정(폭). **주입되면** 진입 체결 후 관리를 사다리 그리드가 인계한다(D5·GRID_EXIT).
+   * 매도 관리 그리드 설정(폭·매수배율). **주입되면** 진입 체결 후 관리를 ±w OCO 그리드가 인계한다(D5·GRID_EXIT).
    * 미주입이면(기존 하네스) 기존 변곡점 청산 경로로 동작한다 — 하위호환·회귀 안전.
    */
   gridConfig?: GridExitConfig;
@@ -315,9 +315,9 @@ export class AutoPilot {
   private dailyDate: string | null = null;
   private watchedTickers: string[] = [];
   /**
-   * 매도 관리 그리드 설정(폭). deps에서 **초기값만** 받고 이후 setGridConfig로 갈아끼운다 —
+   * 매도 관리 그리드 설정(폭·매수배율). deps에서 **초기값만** 받고 이후 setGridConfig로 갈아끼운다 —
    * 설정 탭에서 폭을 바꿔도 매니저 싱글턴이 캐시돼 옛 값으로 돌던 버그를 여기서 막는다.
-   * ⚠ 이미 걸려 있는 Grid는 생성자에서 폭을 캡처하므로 **다음에 새로 여는 그리드부터** 적용된다
+   * ⚠ 이미 걸려 있는 Grid는 생성자에서 폭·배율을 캡처하므로 **다음에 새로 여는 그리드부터** 적용된다
    *   (돌고 있는 그리드의 폭을 바꾸려면 접수된 두 주문을 취소·재발주해야 한다 — 하지 않는다).
    */
   private gridConfig: GridExitConfig | undefined;
@@ -442,13 +442,12 @@ export class AutoPilot {
       const v = active.grid.view;
       out.push({
         ticker: active.ticker,
-        centerPrice: v.centerPrice,
+        avgPrice: v.avgPrice,
         buyPrice: v.buyPrice,
         sellPrice: v.sellPrice,
         currentPrice: active.slot?.getView().price ?? null,
         holdingQty: v.holdingQty,
-        nextSellQty: v.nextSellQty,
-        nextBuyQty: v.nextBuyQty,
+        buyMultiplier: v.buyMultiplier,
         gridActive: v.gridActive,
         buyLegStatus: v.buyLegStatus,
         faultText: active.gridFaulted ? (active.grid.faultText ?? '그리드가 멈췄어요') : null,
@@ -463,18 +462,26 @@ export class AutoPilot {
   }
 
   /**
-   * 그리드 폭 교체 — 설정 탭 저장 후 매니저가 부른다. **실행 중에도 안전하다.**
+   * 그리드 폭·매수배율 교체 — 설정 탭 저장 후 매니저가 부른다. **실행 중에도 안전하다.**
    * 이미 걸린 그리드는 자기 폭을 그대로 유지하고(주문이 이미 접수돼 있다), 다음 진입부터 새 값이 쓰인다.
    * 현재 값과 같으면 아무것도 하지 않는다(불필요한 이벤트·리렌더 방지).
    */
   setGridConfig(config: GridExitConfig | undefined): void {
     const prev = this.gridConfig;
-    if (prev === config || (prev !== undefined && config !== undefined && prev.width === config.width)) {
+    if (
+      prev === config ||
+      (prev !== undefined &&
+        config !== undefined &&
+        prev.width === config.width &&
+        prev.buyMultiplier === config.buyMultiplier)
+    ) {
       return;
     }
     this.gridConfig = config;
     if (config) {
-      this.event(`그리드 설정 적용 · 폭 ±${(config.width * 100).toFixed(1)}% (다음 그리드부터)`);
+      this.event(
+        `그리드 설정 적용 · 폭 ±${(config.width * 100).toFixed(1)}% · 매수 배율 ${config.buyMultiplier}배 (다음 그리드부터)`,
+      );
     }
     this.emit();
   }
@@ -1059,7 +1066,7 @@ export class AutoPilot {
    *    같은 현금을 각자 "전부 내 것"으로 보고 물타기 매수를 걸어, 셋 다 걸리면 계좌가 즉시 잠긴다.
    */
   private async armGrid(active: ActiveCycle, opts: { interlockOnFailure: boolean }): Promise<boolean> {
-    // ★ 여기서 읽는 값이 이 그리드의 폭으로 고정된다(Grid 생성자가 캡처) — 설정 변경은 다음 그리드부터.
+    // ★ 여기서 읽는 값이 이 그리드의 폭·배율로 고정된다(Grid 생성자가 캡처) — 설정 변경은 다음 그리드부터.
     const cfg = this.gridConfig!;
     active.arming = true;
     try {
@@ -1078,7 +1085,7 @@ export class AutoPilot {
       const grid = new Grid({
         port: createGridOrderPort(active.broker, active.ticker),
         clock: this.deps.clock,
-        config: { width: cfg.width },
+        config: { width: cfg.width, buyMultiplier: cfg.buyMultiplier },
         // 조회 실패(null/throw)는 그리드가 판정 생략으로 처리한다(주문 거절은 rejected 격리가 받는다).
         fetchAvailableCash: async (buyPrice) => {
           const cash = await this.deps.fetchBuyableUsd?.(active.ticker, buyPrice);
@@ -1096,7 +1103,7 @@ export class AutoPilot {
       active.gridArmed = true;
       const v = grid.view;
       this.event(
-        `${active.ticker} 그리드 관리 ${active.adopted ? '등록' : '인계'} · ${v.holdingQty}주 · 중앙 $${v.centerPrice.toFixed(2)} · 매수 ${v.nextBuyQty}주 @ $${v.buyPrice} · 매도 ${v.nextSellQty}주 @ $${v.sellPrice} (칸 ±${Math.round(cfg.width * 100)}%)`,
+        `${active.ticker} 그리드 관리 ${active.adopted ? '등록' : '인계'} · ${v.holdingQty}주 · 평단 $${v.avgPrice.toFixed(2)} · 매수 $${v.buyPrice}(−${Math.round(cfg.width * 100)}%) · 매도 $${v.sellPrice}(+${Math.round(cfg.width * 100)}%)`,
       );
       this.emit();
       return true;
@@ -1198,17 +1205,14 @@ export class AutoPilot {
       case 'sold':
         this.settleGrid(active, result);
         break;
-      case 'stepSold':
-        this.recordStepSold(active, result);
-        break;
       case 'rebracket': {
         const v = active.grid!.view;
         const head =
           result.cause === 'reissue'
             ? `${active.ticker} 그리드 주문 재등록`
-            : `${active.ticker} 그리드 한 칸 매수`;
+            : `${active.ticker} 그리드 리브래킷`;
         this.event(
-          `${head} · 중앙 $${v.centerPrice.toFixed(2)} · ${result.position.qty}주${
+          `${head} · 평단 $${result.position.avgPrice.toFixed(2)} · ${result.position.qty}주${
             v.buyLegStatus === 'reduced'
               ? ' · 현금에 맞춰 매수 수량을 줄였어요'
               : v.buyLegStatus === 'skippedCash'
@@ -1244,59 +1248,32 @@ export class AutoPilot {
   }
 
   /**
-   * 그리드 매도 체결 1건을 TradeRecord로 합성한다 — 그 lot을 산 레벨(costPrice)→매도가 손익.
-   * 사다리 한 칸 익절(stepSold)과 마지막 lot 정산(sold)이 같은 모양을 쓴다.
+   * 그리드 매도(+w) 체결 정산 — 관리 평단→매도가 손익으로 TradeRecord를 합성해 기존 settle 경로로 넘긴다.
+   * (RunCycle은 HOLDING에 파킹돼 있었을 뿐 — 실제 매도는 그리드가 냈으므로 cycle.stop()을 부르지 않는다.)
    */
-  private gridSaleRecord(
-    active: ActiveCycle,
-    sale: { qty: number; costPrice: number; exitPrice: number },
-  ): TradeRecord {
+  private settleGrid(active: ActiveCycle, result: Extract<GridPollResult, { kind: 'sold' }>): void {
     const pos = active.cycle?.position ?? null;
-    const { qty, costPrice, exitPrice } = sale;
-    const grossPnl = (exitPrice - costPrice) * qty;
+    const entryPrice = result.avgPrice;
+    const exitPrice = result.exitPrice;
+    const qty = result.qty;
+    const grossPnl = (exitPrice - entryPrice) * qty;
     const feeRate = this.deps.feeRate ?? 0;
-    const fees = feeRate * (costPrice * qty + exitPrice * qty);
+    const fees = feeRate * (entryPrice * qty + exitPrice * qty);
     const now = this.deps.clock.now();
-    return {
+    const record: TradeRecord = {
       ticker: active.ticker,
       qty,
-      entryPrice: costPrice,
+      entryPrice,
       entryTs: pos?.entryTs ?? now,
       exitPrice,
       exitTs: now,
       pnl: grossPnl - fees,
       grossPnl,
       fees,
-      entrySnapshot: pos?.entrySnapshot ?? { price: costPrice, slope: 0, accel: 0, ts: now },
+      entrySnapshot: pos?.entrySnapshot ?? { price: entryPrice, slope: 0, accel: 0, ts: now },
       exitSnapshot: null,
       exitReason: 'SELL_SIGNAL',
     };
-  }
-
-  /**
-   * 사다리 한 칸 익절(stepSold) — 그리드는 한 칸 위에서 계속 관리 중이다(사이클 유지).
-   * 손익만 기록·누적하고 정리는 하지 않는다. 매도로 현금이 돌아왔으니 현금 쿨다운은 푼다.
-   */
-  private recordStepSold(active: ActiveCycle, result: Extract<GridPollResult, { kind: 'stepSold' }>): void {
-    const record = this.gridSaleRecord(active, result);
-    this.deps.onTrade?.(record);
-    this.rolloverDailyIfNeeded();
-    this.cumPnl += record.pnl;
-    this.cashCooldownUntil = 0;
-    void this.persist();
-    this.event(
-      `${active.ticker} 그리드 한 칸 익절 · ${result.qty}주 · $${result.costPrice.toFixed(2)}→$${result.exitPrice.toFixed(2)} · 손익 $${record.pnl.toFixed(2)} · 잔여 ${result.position.qty}주`,
-    );
-    this.emit();
-  }
-
-  /**
-   * 그리드 전량 정리(sold — 진입 lot까지 매도) — 마지막 lot 손익으로 TradeRecord를 합성해
-   * 기존 settle 경로로 넘긴다. (RunCycle은 HOLDING에 파킹돼 있었을 뿐 — 실제 매도는 그리드가
-   * 냈으므로 cycle.stop()을 부르지 않는다.)
-   */
-  private settleGrid(active: ActiveCycle, result: Extract<GridPollResult, { kind: 'sold' }>): void {
-    const record = this.gridSaleRecord(active, result);
     active.pendingSettle = record;
     this.deps.onTrade?.(record);
     this.settle(active);
