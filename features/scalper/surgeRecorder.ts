@@ -278,8 +278,10 @@ export class SurgeRecorder {
       l1ChangePct,
     });
     this.deps.onQuoteTargetsChanged();
+    // 이탈 경로 표기 — 둔화(soft: 폭주 식음+1%) / 급락(hard: 3%, 속도 무관). 기록 리뷰 때 경로별 성적 비교용.
+    const reason = signal.exitReason === 'soft' ? '둔화' : '급락';
     this.deps.onEvent(
-      `이탈 확정 · ${ticker}${priceChangePct !== null ? ` ${priceChangePct >= 0 ? '+' : ''}${priceChangePct.toFixed(2)}%` : ''}`,
+      `이탈 확정(${reason}) · ${ticker}${priceChangePct !== null ? ` ${priceChangePct >= 0 ? '+' : ''}${priceChangePct.toFixed(2)}%` : ''}`,
     );
     if (open.dbId !== null) {
       const input: SurgeCloseInput = {

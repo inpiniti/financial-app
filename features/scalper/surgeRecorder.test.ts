@@ -8,7 +8,16 @@ function makeAlert(at: number): SurgeAlert {
 }
 
 function makeSignal(kind: 'surge' | 'exit', at: number): SurgeSignal {
-  return { kind, at, price: 100, runLength: 4, shortRate: 6, baselineRate: 1, trailingHigh: kind === 'exit' ? 101 : null };
+  return {
+    kind,
+    at,
+    price: 100,
+    runLength: 4,
+    shortRate: 6,
+    baselineRate: 1,
+    trailingHigh: kind === 'exit' ? 101 : null,
+    exitReason: kind === 'exit' ? 'hard' : null,
+  };
 }
 
 /** 호출 기록 남기는 가짜 기록 클라이언트 — id는 db-N. */

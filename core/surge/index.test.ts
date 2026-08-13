@@ -150,28 +150,39 @@ describe('SurgeDetector — 이탈 확정(3단계, 트레일링 하락)', () => 
     return { d, at };
   }
 
-  it('급등 후 조용히 식어도(폭주 없음) 고점 대비 3% 하락이면 exit', () => {
+  it('폭주가 식은 뒤에는 고점 대비 1%만 하락해도 soft 이탈 — 힘 빠진 급등을 빨리 끊는다', () => {
     const { d, at } = surgedDetector();
     // 폭주 열기(10초)가 완전히 식은 뒤, 드문드문(5초 간격) 틱으로 스르르 하락.
     const t0 = at + 30_000;
     const events: (SurgeAlert | SurgeSignal)[] = [];
-    const prices = [100.4, 100.0, 99.2, 98.5, 97.0]; // 트레일링 고점 100.4 대비 −3%(97.39) 아래로.
+    const prices = [100.4, 100.0, 99.2]; // 트레일링 고점 100.4 대비 −1%(99.396) 아래는 99.2뿐.
     prices.forEach((p, i) => {
       const res = d.onTick(p, t0 + i * 5000);
       if (res) events.push(res);
     });
     expect(events).toHaveLength(1);
     expect(events[0].kind).toBe('exit');
-    expect((events[0] as SurgeSignal).trailingHigh).not.toBeNull();
+    expect((events[0] as SurgeSignal).exitReason).toBe('soft');
+    expect((events[0] as SurgeSignal).trailingHigh).toBe(100.4);
     expect(d.getSnapshot().tracking).toBe(false);
+  });
+
+  it('폭주가 살아 있는 동안 1% 눌림은 참고, 3%가 무너지면 속도 무관 hard 이탈(투매)', () => {
+    const { d, at } = surgedDetector();
+    // 확정 직후 — 폭주 열기(rateHotWindow 10초)가 아직 살아 있는 구간.
+    // 고점 100.12 기준 soft선 99.12, hard선 97.12.
+    expect(d.onTick(99.0, at + 1000)).toBeNull(); // −1.1% — 뜨거우므로 soft 억제(잔파동 관용).
+    const res = d.onTick(97.0, at + 2000); // −3.1% — 뜨거워도 무조건 이탈.
+    expect(res?.kind).toBe('exit');
+    expect((res as SurgeSignal).exitReason).toBe('hard');
   });
 
   it('추적 중 신고점이 나오면 이탈 기준도 따라 올라간다(트레일링)', () => {
     const { d, at } = surgedDetector();
-    const t0 = at + 15_000;
-    d.onTick(105, t0); // 신고점 — 기준 고점 100.6 → 105.
-    expect(d.onTick(102.2, t0 + 5000)).toBeNull(); // 100.6 대비면 이탈이지만 105 대비 −2.7% — 아직.
-    const res = d.onTick(101.8, t0 + 10_000); // 105 대비 −3.05% — 이탈.
+    const t0 = at + 15_000; // 폭주 식음 — soft선(−1%) 활성.
+    d.onTick(105, t0); // 신고점 — 기준 고점 100.12 → 105, soft선 103.95.
+    expect(d.onTick(104.2, t0 + 5000)).toBeNull(); // 105 대비 −0.76% — 아직.
+    const res = d.onTick(103.9, t0 + 10_000); // 105 대비 −1.05% — soft 이탈.
     expect(res?.kind).toBe('exit');
     expect((res as SurgeSignal).trailingHigh).toBe(105);
   });

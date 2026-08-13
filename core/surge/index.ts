@@ -6,9 +6,12 @@
 //  · 2단계 급등 확정(1초 청크, 3~5초 지연) — 청크 평균가 confirmChunks개 연속 상승(정배열).
 //    단 틱속도 폭주가 최근 rateHotWindow 안에 성립했어야 한다(기둥이 4초 안에 식어도 놓치지 않게
 //    순간값이 아니라 "최근 성립 시각"을 본다). 확정 = 진입시점 → 추적 모드 진입.
-//  · 3단계 이탈 확정(틱 레벨, 즉시) — 급등 후 트레일링 고점 대비 exitDropPct 하락하면 EXIT.
-//    **폭주 조건 없음** — 조용히 식어도(투매 없이 스르르 흘러도) 이탈은 이탈이다. 급락은 같은
-//    기준을 더 빨리 통과할 뿐이라 별도 감지가 필요 없다. 추적 중에는 새 급등을 내지 않는다.
+//  · 3단계 이탈 확정(틱 레벨, 즉시) — 2단 트레일링(2026-08-13 사용자 확정):
+//     소프트: 폭주가 식었고(최근 rateHotWindow 내 폭주 없음) 고점 대비 exitSoftDropPct(1%) 하락 →
+//            "급등인 줄 알았는데 힘이 빠진" 세트를 빨리 끊는다. 폭주 중의 1% 눌림은 잔파동으로 참는다.
+//     하드: 고점 대비 exitDropPct(3%) 하락 → 속도 무관 무조건 이탈. 투매는 속도가 폭발하며
+//           떨어지므로 "식으면"류 조건만으론 폭락 중 이탈을 못 낸다 — 그 구멍을 막는 안전선.
+//    추적 중에는 새 급등을 내지 않는다(세트 유지).
 //
 // 틱속도 폭주는 두 경로의 OR — 서로의 사각을 메운다:
 //  (A) 기준선 배수 — 최근 shortWindowSec초 틱속도 ≥ 롤링 기준선(baselineSec초)의 tickRateMultiple배.
@@ -44,10 +47,15 @@ export interface SurgeDetectorOptions {
   /** 속도 정배열 판정 초 수 — 직전 완결 N초 틱수가 엄격 증가면 폭주(기준선·워밍업 불필요). 기본 5. */
   speedAscendSeconds?: number;
   /**
-   * 이탈 판정 낙폭(소수) — 급등 후 트레일링 고점 대비 이만큼 내려오면 EXIT. 기본 0.03(3%).
+   * 하드 이탈 낙폭(소수) — 트레일링 고점 대비 이만큼 내려오면 폭주 여부와 무관하게 EXIT. 기본 0.03(3%).
    * 트레일링 스탑과 같은 정의 — 기록되는 왕복 변동율이 곧 "확정 매수→트레일링 청산" 전략의 성적이 된다.
    */
   exitDropPct?: number;
+  /**
+   * 소프트 이탈 낙폭(소수) — **폭주가 식은 상태**(최근 rateHotWindow 내 폭주 없음)에서 고점 대비
+   * 이만큼 내려오면 EXIT. 기본 0.01(1%). 힘 빠진 급등을 3% 되돌림까지 기다리지 않고 끊는다.
+   */
+  exitSoftDropPct?: number;
 }
 
 /** 1단계 조기경보 — 호가 예열 트리거(기록 안 함). 급등 방향(업틱)만 있다 — 하락은 세트로만 다룬다. */
@@ -74,6 +82,8 @@ export interface SurgeSignal {
   baselineRate: number;
   /** exit 전용 — 추적 중 트레일링 고점(이탈 기준가). surge에선 null. */
   trailingHigh: number | null;
+  /** exit 전용 — soft(폭주 식음+1%) / hard(3%, 속도 무관). surge에선 null. */
+  exitReason: 'soft' | 'hard' | null;
 }
 
 export interface SurgeSnapshot {
@@ -99,6 +109,7 @@ const DEFAULTS: Required<SurgeDetectorOptions> = {
   alertCooldownSec: 10,
   speedAscendSeconds: 5,
   exitDropPct: 0.03,
+  exitSoftDropPct: 0.01,
 };
 
 export class SurgeDetector {
@@ -158,15 +169,27 @@ export class SurgeDetector {
     const hot = multipleHot || this.speedAscending();
     if (hot) this.rateHotAt = tsMs;
 
-    // 이탈 추적 — 트레일링 고점 갱신, 고점 대비 exitDropPct 하락이면 EXIT(조용한 하락도 이탈이다).
+    // 이탈 추적 — 2단 트레일링. 하드(3%, 속도 무관)가 투매를, 소프트(폭주 식음+1%)가 힘 빠진 급등을 끊는다.
     if (this.tracking) {
       if (this.trailingHigh === null || price > this.trailingHigh) this.trailingHigh = price;
-      if (price <= this.trailingHigh * (1 - this.opts.exitDropPct)) {
+      const stillHot = this.rateHotAt !== null && tsMs - this.rateHotAt <= this.opts.rateHotWindowSec * 1000;
+      const hardExit = price <= this.trailingHigh * (1 - this.opts.exitDropPct);
+      const softExit = !stillHot && price <= this.trailingHigh * (1 - this.opts.exitSoftDropPct);
+      if (hardExit || softExit) {
         const high = this.trailingHigh;
         this.tracking = false;
         this.trailingHigh = null;
         this.surgeCooldownUntil = tsMs + this.opts.signalCooldownSec * 1000;
-        return { kind: 'exit', at: tsMs, price, runLength: 0, shortRate, baselineRate, trailingHigh: high };
+        return {
+          kind: 'exit',
+          at: tsMs,
+          price,
+          runLength: 0,
+          shortRate,
+          baselineRate,
+          trailingHigh: high,
+          exitReason: hardExit ? 'hard' : 'soft',
+        };
       }
       return null; // 추적 중엔 조기경보도 내지 않는다 — 호가는 이미 에피소드가 잡고 있다.
     }
@@ -210,6 +233,7 @@ export class SurgeDetector {
       shortRate: this.shortRate(),
       baselineRate: this.warmedUp ? this.baselineRate() : 0,
       trailingHigh: null,
+      exitReason: null,
     };
   }
 
