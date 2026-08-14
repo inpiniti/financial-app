@@ -17,8 +17,6 @@ import { useUsdKrwRate } from '../../../lib/useUsdKrwRate';
 import type { AutoPilotEvent, AutoPilotState, AutoPilotView } from '../autopilot';
 import type { AutoPilotManager, AutoPilotSlotRow } from '../autopilotManager';
 import type { FeedEvent, ScalperManager } from '../scalperManager';
-import type { SurgeEpisodeView } from '../surgeRecorder';
-import { useSurgeEvents } from './useSurgeEvents';
 import type { FeedStatus } from '../types';
 import { isDaytimeSessionOpen } from '../daySession';
 import { WATCH_SOURCE_LABEL } from '../watchlist';
@@ -87,84 +85,6 @@ function FeedBadge({ status }: { status: FeedStatus }) {
 /** 피드 진단 이벤트 중 화면에 띄울 실패류('연결 오류 · …', '구독 실패 · …')인지 — 성공 ACK는 조용히 지나간다. */
 function isFeedFailureEvent(event: FeedEvent | null): event is FeedEvent {
   return event !== null && (event.text.startsWith('연결 오류') || event.text.startsWith('구독 실패'));
-}
-
-/** v2 이탈 사유 한글 라벨 — 화면에서 추론하지 않고 감지기가 판정한 사유만 표기(훅 문서 v2 §5). */
-const EXIT_REASON_LABEL: Record<NonNullable<SurgeEpisodeView['exitReason']>, string> = {
-  breakout_fail: '돌파 실패',
-  soft: '둔화',
-  hard: '급락',
-};
-
-/**
- * 급등(진입)·이탈 세트 행의 우측 상태 — 급등(open)은 상승색, 종결(closed)은 왕복 변동율을 pnlColor로.
- * 감지 중(alerting)·만료(expired)는 회색. 이탈 사유·고점은 행에서 바로 보인다(훅 문서 v2 §3).
- */
-function SurgeTrailing({ ep }: { ep: SurgeEpisodeView }) {
-  if (ep.status === 'alerting') {
-    return <Text className="text-xs font-semibold text-[#8b95a1]">감지 중</Text>;
-  }
-  if (ep.status === 'open') {
-    return (
-      <View className="items-end">
-        <Text className="text-sm font-bold text-[#f04452]">급등 {formatPrice(ep.surgePrice ?? null)}</Text>
-        <Text className="mt-0.5 text-xs text-[#8b95a1]">
-          {ep.anchorPrice != null ? `출발 ${formatPrice(ep.anchorPrice)} · ` : ''}이탈 대기
-        </Text>
-      </View>
-    );
-  }
-  if (ep.status === 'expired') {
-    // 3경로 이탈이 웬만한 하락을 다 잡으므로, 만료는 거래가 끊긴 극단 케이스에서만 남는다.
-    return <Text className="text-xs font-semibold text-[#8b95a1]">거래 끊김 — 만료</Text>;
-  }
-  // closed — 1호가 왕복(매도1호가에 사서 매수1호가에 판) 변동율이 핵심 지표, 없으면 체결가 변동율.
-  const pct = ep.l1ChangePct ?? ep.priceChangePct;
-  const reason = ep.exitReason ? EXIT_REASON_LABEL[ep.exitReason] : null;
-  return (
-    <View className="items-end">
-      {pct != null ? (
-        <Text className="text-sm font-bold" style={{ color: pnlColor(pct) }}>
-          {pct >= 0 ? '+' : ''}
-          {pct.toFixed(2)}%
-        </Text>
-      ) : (
-        <Text className="text-xs font-semibold text-[#8b95a1]">호가 없음</Text>
-      )}
-      <Text className="mt-0.5 text-xs text-[#8b95a1]">
-        {reason ? `${reason} · ` : ''}
-        {ep.peakPrice != null ? `고점 ${formatPrice(ep.peakPrice)}` : ep.l1ChangePct != null ? '1호가 왕복' : '체결가 기준'}
-      </Text>
-    </View>
-  );
-}
-
-/** 급등(진입)·이탈 세트 패널 — 관찰 데이터 수집 전용(매매 연동 없음). 미기록(logged=false)은 경고 아이콘. */
-function SurgePanel({ episodes }: { episodes: readonly SurgeEpisodeView[] }) {
-  return (
-    <Panel title="급등·이탈 기록" headerRight={episodes.length > 0 ? `최근 ${episodes.length}건` : undefined}>
-      {episodes.length === 0 ? (
-        <View className="px-5 pb-4">
-          <Text className="text-sm text-[#8b95a1]">시작하면 급등 진입과 이탈 시점이 세트로 쌓여요</Text>
-        </View>
-      ) : (
-        episodes.slice(0, 20).map((ep) => (
-          <View key={ep.id} className="flex-row items-center px-5 py-2">
-            <Text className="mr-2 text-xs text-[#8b95a1]">{formatHHMM(ep.plungeAt ?? ep.surgeAt ?? 0)}</Text>
-            <View className="flex-1 flex-row items-center" style={{ gap: 4 }}>
-              <Text className="text-sm font-semibold text-[#191f28]">{ep.ticker}</Text>
-              {!ep.logged && ep.status !== 'alerting' && (
-                // 기록 실패(네트워크·env 미설정) — 감지는 계속되지만 이 행은 DB에 없다.
-                <Ionicons name="cloud-offline-outline" size={12} color="#ff9500" />
-              )}
-            </View>
-            <SurgeTrailing ep={ep} />
-          </View>
-        ))
-      )}
-      <View style={{ height: 8 }} />
-    </Panel>
-  );
 }
 
 /** 리스트 행의 우측 상태 표시 — 보유 > 감시 > 핀(정리 대기) 순으로 하나만. */
@@ -255,8 +175,6 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
   const [feedEvent, setFeedEvent] = useState<FeedEvent | null>(() => manager.lastFeedEvent);
   // 오늘 성과 원화 병기용 환율(잔고 기준·30분 캐시) — 못 구하면 null이라 USD만 보여준다.
   const usdKrw = useUsdKrwRate();
-  // 급등/급락 신호 에피소드(기록 전용) — 매니저 구독, 탭 전환 후 재마운트 시 스냅샷 재수화.
-  const surgeEpisodes = useSurgeEvents(autopilot);
 
   useEffect(() => autopilot.subscribeView(setView), [autopilot]);
   useEffect(() => autopilot.subscribeList(setRows), [autopilot]);
@@ -474,8 +392,6 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
           <>
             {/* 리스트 패널 마감 여백 + 패널 간 갭. */}
             <View className="bg-white" style={{ height: 8, marginBottom: 8 }} />
-            {/* 급등/급락 신호(관찰 기록) — 감지 품질을 데이터로 판단하기 위한 수집 전용 패널. */}
-            <SurgePanel episodes={surgeEpisodes} />
             {/* 완료된 사이클(오늘 거래 기록)이 먼저 — 운영 이벤트 로그(기록)보다 자주 본다. */}
             <TradeHistoryPanel trades={trades} usdKrw={usdKrw} />
             <Panel title="기록" headerRight={events.length > 0 ? `최근 ${events.length}건` : undefined}>

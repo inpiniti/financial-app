@@ -1,8 +1,7 @@
 // 종목 상세화면 "호가" 탭 — 옛 QuoteSheet(수동 카드)·WatchQuoteSheet(자동 리스트)를 통합한 유일한 호가 뷰.
 // 데이터는 useQuoteFeed(상세화면이 직접 acquireFeed한 실시간 구독)에서 받는다 — 카드/슬롯 여부와 무관하게 동작.
-// KIS 해외 실시간 호가는 1호가만 제공 — 10단 호가창이 아니라 1호가·스프레드·수신 진단 중심 UI.
+// 1호가·잔량은 체결가(HDFSCNT0) 페이로드에서 온다(별도 호가 TR 구독 없음) — 1호가·스프레드·수신 진단 중심 UI.
 import { Text, View } from 'react-native';
-import { REALTIME_QUOTE_TR_ID } from '../../../kis/realtimePrice';
 import type { ScalperManager } from '../../scalper/scalperManager';
 import { formatHHMM, formatPrice } from '../../scalper/ui/format';
 import type { QuoteFeedState } from '../useQuoteFeed';
@@ -84,7 +83,6 @@ export function QuotePanel({ manager, state, trKey }: QuotePanelProps) {
       <View className="px-5 pb-4 pt-4">
         <SectionLabel>구독 상태</SectionLabel>
         <SubscriptionLine label="체결가" trKey={trKey} manager={manager} />
-        <SubscriptionLine label="호가" trKey={trKey} trId={REALTIME_QUOTE_TR_ID} manager={manager} />
       </View>
 
       <View className="px-5 pb-4 pt-4" style={{ borderTopWidth: 1, borderTopColor: '#f2f4f6' }}>

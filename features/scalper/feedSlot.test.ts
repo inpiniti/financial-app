@@ -90,12 +90,7 @@ describe('FeedSlot — 상시 수신(틱/초·리샘플) + detector 탈부착', 
     const { slot } = makeSlot();
     expect(slot.quote).toBeNull();
     slot.pushQuote(99.5, 100.5);
-    expect(slot.quote).toEqual({ bid1: 99.5, ask1: 100.5, bid2: null, ask2: null, at: 1000 });
-    // 2호가는 extras로 함께 올 때만 채워지고, 없는 프레임이면 null로 되돌아간다.
-    slot.pushQuote(99.5, 100.5, { bid2: 99.4, ask2: 100.6 });
-    expect(slot.quote).toEqual({ bid1: 99.5, ask1: 100.5, bid2: 99.4, ask2: 100.6, at: 1000 });
-    slot.pushQuote(99.5, 100.5);
-    expect(slot.quote).toEqual({ bid1: 99.5, ask1: 100.5, bid2: null, ask2: null, at: 1000 });
+    expect(slot.quote).toEqual({ bid1: 99.5, ask1: 100.5, at: 1000 });
     slot.pushQuote(Number.NaN, 0);
     expect(slot.quote).toBeNull();
   });

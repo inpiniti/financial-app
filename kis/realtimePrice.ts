@@ -13,8 +13,6 @@ import { WS_QUOTE_DOMAIN } from './domain';
 import type { ClockLike, WebSocketCtor, WebSocketLike } from './types';
 
 export const REALTIME_PRICE_TR_ID = 'HDFSCNT0';
-/** 해외주식 실시간호가 [실시간-021] — 미국 실시간 무료 10호가. docs/koreainvestment/실시간호가.md. */
-export const REALTIME_QUOTE_TR_ID = 'HDFSASP0';
 
 /** 문서 Body 표의 인덱스(0~25) 그대로 — 순서를 바꾸면 안 된다. */
 const FIELD_ORDER = [
@@ -103,105 +101,17 @@ export function buildFreeQuoteTrKey(market: RealtimeMarketCode, symbol: string):
 }
 
 /**
- * 실시간호가(HDFSASP0) tr_key 조립 — **D 접두**(체결가와 동일한 키 문자열, tr_id로만 구분).
- * 문서 표는 "R거래소명종목코드"라고 적혀 있으나 실계좌 실측(2026-07-31)에서 R 키는
- * "SUBSCRIBE ERROR : mci send failed"로 거절됐고, KIS 공식 샘플
- * (examples_llm/overseas_stock/asking_price/asking_price.py)의 예시가 asking_price("1", "DNASAAPL")로
- * D 접두를 사용한다 — 공식 샘플을 정본으로 삼는다. (R은 유료·주간거래 계열로 추정.)
- */
-export function buildQuoteTrKey(market: RealtimeMarketCode, symbol: string): string {
-  return `D${market}${symbol}`;
-}
-
-/**
- * 주간거래(미국, 10:00~16:00 KST) 전용 시장구분 — docs/koreainvestment/실시간지연체결가.txt/실시간호가.txt
+ * 주간거래(미국, 10:00~16:00 KST) 전용 시장구분 — docs/koreainvestment/실시간지연체결가.txt
  * 원문: "미국 주간거래 실시간 조회 시 R+시장구분(3자리)+종목코드, 예) RBAQAAPL". D(무료시세) 옵션 자체가
- * 없다 — 유료시세 신청 여부와 무관하게 주간거래는 R 고정(KIS 공식 GitHub 예제 asking_price("1","RBAQAAPL")
- * 도 동일). RealtimeMarketCode(D 전용 빌더가 쓰는 시장구분)와 값 공간이 겹치지 않게 별도 타입으로 분리해,
- * 실수로 buildQuoteTrKey(D 접두)에 BAY/BAQ/BAA를 넣어 구독이 조용히 실패하는 걸 원천 차단한다.
+ * 없다 — 유료시세 신청 여부와 무관하게 주간거래는 R 고정(KIS 공식 GitHub 예제도 동일).
+ * RealtimeMarketCode(D 전용 빌더가 쓰는 시장구분)와 값 공간이 겹치지 않게 별도 타입으로 분리해,
+ * 실수로 buildFreeQuoteTrKey(D 접두)에 BAY/BAQ/BAA를 넣어 구독이 조용히 실패하는 걸 원천 차단한다.
  */
 export type DaytimeMarketCode = 'BAY' | 'BAQ' | 'BAA';
 
-/** R+시장구분(3자리)+종목코드 조립 — 주간거래 체결가·호가 구독 공용(둘 다 같은 tr_key, tr_id로만 구분). */
+/** R+시장구분(3자리)+종목코드 조립 — 주간거래 체결가 구독용. */
 export function buildDaytimeQuoteTrKey(market: DaytimeMarketCode, symbol: string): string {
   return `R${market}${symbol}`;
-}
-
-/**
- * 실시간호가(HDFSASP0) 필드 인덱스 — **KIS 공식 샘플(asking_price.py)의 columns 순서를 정본**으로 한다:
- *   symb, zdiv, xymd, xhms, kymd, khms, bvol, avol, bdvl, advl, pbid1, pask1, vbid1, vask1, dbid1, dask1 (16개)
- * ⚠ 포탈 문서 표는 맨 앞에 RSYM이 있고 3호가 그룹 중복 표기까지 있어 실데이터와 다르다(실시간호가.md 특이사항).
- *   과거 RSYM 포함 인덱스(PBID1=11)로는 PBID1 자리에서 advl(잔량대비)을 읽는 오파싱이 났다.
- * | 0 SYMB | 1 ZDIV | 2 XYMD | 3 XHMS | 4 KYMD | 5 KHMS |
- * | 6 BVOL | 7 AVOL | 8 BDVL | 9 ADVL |
- * | 10 PBID1 | 11 PASK1 | 12 VBID1 | 13 VASK1 | 14 DBID1 | 15 DASK1 |
- */
-const QUOTE_INDEX = {
-  SYMB: 0,
-  PBID1: 10,
-  PASK1: 11,
-  VBID1: 12,
-  VASK1: 13,
-  // 2호가 — 호가 레벨은 PBIDn/PASKn/VBIDn/VASKn/DBIDn/DASKn 6필드 세트로 반복된다(실시간호가.md).
-  // 1호가 세트(10~15) 바로 뒤 = 16·17. 실데이터가 1호가까지만 온다면(공식 샘플 columns 16개)
-  // 이 인덱스는 범위 밖이므로 **선택 소비**한다(부족하면 undefined — throw하지 않는다).
-  // ⚠ 3호가 이상은 원문 중복 표기로 인덱스 불확정(실시간호가.md 특이사항) — 여기서 멈춘다.
-  PBID2: 16,
-  PASK2: 17,
-} as const;
-
-/** 1호가(VASK1, 인덱스 13)까지 담기려면 최소 14개 필드가 필요하다. 2호가는 선택(부족하면 생략). */
-export const REALTIME_QUOTE_MIN_FIELD_COUNT = 14;
-
-/** 우리가 소비하는 최소 호가 — 1호가 매수/매도 가격과 잔량. 2호가는 페이로드에 담겨 올 때만(급등주 찾기 기록용). */
-export interface OverseasRealtimeQuote {
-  SYMB: string;
-  PBID1: string;
-  PASK1: string;
-  VBID1: string;
-  VASK1: string;
-  /** 매수호가2 — 필드가 2호가까지 담겨 왔을 때만. */
-  PBID2?: string;
-  /** 매도호가2. */
-  PASK2?: string;
-}
-
-/**
- * RSYM 형태("D"/"R" + 시장구분 3자리 + 종목코드, 예: DNASAAPL)인지 판별한다.
- * 공식 샘플 columns에는 RSYM이 없지만 포탈 문서 표에는 맨 앞에 RSYM이 있다 — 두 스펙이 충돌하므로
- * 실데이터가 어느 쪽이든 파싱되도록 첫 필드를 보고 오프셋을 자동 결정한다(실계좌 실측 2026-07-31:
- * D키 구독 성공인데 수신 0건 — RSYM 포함 레이아웃에서 SYMB 자리에 RSYM을 읽어 라우팅이 전량 탈락한 정황).
- */
-function looksLikeRsym(field: string): boolean {
-  return /^[DR](NYS|NAS|AMS|TSE|HKS|SHS|SZS|HSX|HNX|BAQ|BAY|BAA).+/.test(field);
-}
-
-/**
- * ^ 구분 호가 필드 배열 → 1호가 객체. 필드가 1호가까지 담기지 않을 만큼 적으면 throw한다.
- * 첫 필드가 RSYM이면(포탈 문서 레이아웃) 전체 인덱스를 +1 시프트해 읽는다 — 공식 샘플 레이아웃(RSYM 없음)과
- * 둘 다 지원(관용 파서). 전체 필드 개수는 원문 중복 표기로 불확정이므로 총개수는 검사하지 않는다.
- */
-export function parseOverseasRealtimeQuote(fields: string[]): OverseasRealtimeQuote {
-  const offset = fields.length > 0 && looksLikeRsym(fields[0]) ? 1 : 0;
-  if (fields.length < REALTIME_QUOTE_MIN_FIELD_COUNT + offset) {
-    throw new Error(
-      `[kis/realtimePrice] 호가 필드 개수가 1호가 최소치(${REALTIME_QUOTE_MIN_FIELD_COUNT + offset})보다 적습니다: ${fields.length}개 수신. ` +
-        '실시간호가.md 필드 순서를 다시 확인하세요.',
-    );
-  }
-  const quote: OverseasRealtimeQuote = {
-    SYMB: fields[QUOTE_INDEX.SYMB + offset],
-    PBID1: fields[QUOTE_INDEX.PBID1 + offset],
-    PASK1: fields[QUOTE_INDEX.PASK1 + offset],
-    VBID1: fields[QUOTE_INDEX.VBID1 + offset],
-    VASK1: fields[QUOTE_INDEX.VASK1 + offset],
-  };
-  // 2호가는 선택 소비 — 실데이터가 1호가까지만 오는 레이아웃(공식 샘플)이면 그냥 생략된다.
-  if (fields.length > QUOTE_INDEX.PASK2 + offset) {
-    quote.PBID2 = fields[QUOTE_INDEX.PBID2 + offset];
-    quote.PASK2 = fields[QUOTE_INDEX.PASK2 + offset];
-  }
-  return quote;
 }
 
 /** 소켓 원문 한 프레임에서 TR_ID와 (26개씩 끊은) 필드 그룹들을 뽑아낸다. PINGPONG 등 비데이터 프레임은 null. */
@@ -219,31 +129,6 @@ export function parseRawFrame(raw: string): { trId: string; fieldGroups: string[
     fieldGroups.push(rawFields.slice(i, i + REALTIME_PRICE_FIELD_COUNT));
   }
   return { trId, fieldGroups };
-}
-
-/**
- * 실시간호가(HDFSASP0) 프레임에서 TR_ID와 호가 레코드 그룹들을 뽑는다.
- * 체결가(고정 26필드)와 달리 호가는 원문 중복 표기로 레코드당 필드 수가 불확정이므로,
- * envelope의 데이터 건수(<count>)로 나눠 레코드를 자른다. 건수를 못 읽으면 전체를 1건으로 본다.
- */
-export function parseRawQuoteFrame(raw: string): { trId: string; quoteGroups: string[][] } | null {
-  if (raw.indexOf('|') < 0) return null;
-  const parts = raw.split('|');
-  if (parts.length < 4) return null;
-  const trId = parts[1];
-  const count = Number(parts[2]);
-  const rawFields = parts.slice(3).join('|').split('^');
-  const records = Number.isInteger(count) && count > 0 ? count : 1;
-  const groupSize = Math.floor(rawFields.length / records);
-  // 레코드당 필드 수가 1호가 최소치도 안 되면(비정상 건수) 전체를 1건으로 처리한다.
-  if (groupSize < REALTIME_QUOTE_MIN_FIELD_COUNT) {
-    return { trId, quoteGroups: [rawFields] };
-  }
-  const quoteGroups: string[][] = [];
-  for (let i = 0; i + groupSize <= rawFields.length; i += groupSize) {
-    quoteGroups.push(rawFields.slice(i, i + groupSize));
-  }
-  return { trId, quoteGroups };
 }
 
 function isPingPongFrame(raw: string): boolean {
@@ -280,8 +165,6 @@ export interface RealtimePriceClientConfig {
   /** 원본 필드 배열 노출 모드 — 9단계 실계좌 리허설 필드맵 대조용. */
   rawFieldDebug?: boolean;
   onTick(tick: OverseasRealtimeTick, trKey: string): void;
-  /** 실시간호가(HDFSASP0) 1호가 수신 — (quote, symb). 구독하지 않으면 호가 프레임은 무시된다. */
-  onQuote?(quote: OverseasRealtimeQuote, symb: string): void;
   onRawFields?(fields: string[], trKey: string): void;
   /** PINGPONG 이외의 JSON 프레임(구독 등록/해제 ACK 등) — 성공/실패 판단은 호출부에서. */
   onControl?(msg: RealtimeControlMessage): void;
@@ -316,7 +199,7 @@ export class OverseasRealtimePriceClient {
   private readonly reconnectOpts: Required<RealtimeReconnectOptions>;
 
   private socket: WebSocketLike | null = null;
-  /** trKey → tr_id. 하나의 소켓에 체결가(HDFSCNT0)·호가(HDFSASP0) 구독을 함께 담아 재연결 시 모두 복원한다. */
+  /** (trId|trKey) → 구독 — 재연결 시 모두 복원한다. */
   private readonly subscriptions = new Map<string, { trKey: string; trId: string }>();
   private reconnectAttempt = 0;
   private reconnectTimer: unknown = null;
@@ -355,12 +238,9 @@ export class OverseasRealtimePriceClient {
   }
 
   /**
-   * 구독 등록. trId는 기본 HDFSCNT0(체결가) — 하위호환. 호가는 REALTIME_QUOTE_TR_ID를 넘긴다.
-   * 예) subscribe(buildFreeQuoteTrKey('NAS','AAPL')) / subscribe(buildQuoteTrKey('NAS','AAPL'), REALTIME_QUOTE_TR_ID)
-   *
-   * ⚠ 체결가(HDFSCNT0)와 호가(HDFSASP0)는 **같은 tr_key 문자열**(예: DNASAAPL)을 쓰고 tr_id로만 구분된다
-   * (공식 샘플 검증). 따라서 내부 저장은 반드시 (trId, trKey) 복합 키 — trKey 단독 키면 한쪽이 덮어써져
-   * 재연결 복원·해제가 반대쪽 구독을 죽인다.
+   * 구독 등록. trId는 기본 HDFSCNT0(체결가) — 현재 쓰는 TR은 체결가뿐이다
+   * (실시간호가 HDFSASP0 구독은 2026-08-14 제거 — 1호가는 체결가 페이로드의 PBID/PASK로 받는다).
+   * 예) subscribe(buildFreeQuoteTrKey('NAS','AAPL'))
    */
   subscribe(trKey: string, trId: string = REALTIME_PRICE_TR_ID): void {
     this.subscriptions.set(`${trId}|${trKey}`, { trKey, trId });
@@ -443,21 +323,7 @@ export class OverseasRealtimePriceClient {
       this.handleControlFrame(raw);
       return;
     }
-    // 데이터 프레임 — envelope의 TR_ID로 체결가/호가를 라우팅한다.
-    const trId = raw.split('|')[1];
-    if (trId === REALTIME_QUOTE_TR_ID) {
-      const frame = parseRawQuoteFrame(raw);
-      if (!frame) return;
-      for (const fields of frame.quoteGroups) {
-        if (this.config.rawFieldDebug) {
-          this.config.onRawFields?.(fields, fields[QUOTE_INDEX.SYMB] ?? '');
-        }
-        const quote = parseOverseasRealtimeQuote(fields);
-        this.config.onQuote?.(quote, quote.SYMB);
-      }
-      return;
-    }
-
+    // 데이터 프레임 — 체결가(HDFSCNT0)만 소비한다(다른 TR은 무시).
     const frame = parseRawFrame(raw);
     if (!frame || frame.trId !== REALTIME_PRICE_TR_ID) return;
 

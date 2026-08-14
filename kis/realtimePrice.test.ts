@@ -2,14 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildDaytimeQuoteTrKey,
   buildFreeQuoteTrKey,
-  buildQuoteTrKey,
   OverseasRealtimePriceClient,
-  parseOverseasRealtimeQuote,
   parseOverseasRealtimeTick,
   parseRawFrame,
-  parseRawQuoteFrame,
   REALTIME_PRICE_TR_ID,
-  REALTIME_QUOTE_TR_ID,
 } from './realtimePrice';
 import type { WebSocketLike } from './types';
 
@@ -101,51 +97,6 @@ describe('buildFreeQuoteTrKey', () => {
   });
 });
 
-// ---- 실시간호가(HDFSASP0) ----
-
-// KIS 공식 샘플(asking_price.py) columns 순서 그대로 — RSYM 없음(실측 검증 2026-07-31).
-// 헤더 10개(인덱스 0~9) + 1호가(10~15).
-function makeQuoteFields(): string[] {
-  const header = [
-    'AAPL', // 0 SYMB
-    '2', // 1 ZDIV
-    '20260729', // 2 XYMD
-    '093000', // 3 XHMS
-    '20260730', // 4 KYMD
-    '223000', // 5 KHMS
-    '5000', // 6 BVOL
-    '6000', // 7 AVOL
-    '10', // 8 BDVL
-    '20', // 9 ADVL
-  ];
-  const level1 = ['203.40', '203.60', '100', '120', '1', '2']; // 10~15 PBID1/PASK1/VBID1/VASK1/DBID1/DASK1
-  const level2 = ['203.30', '203.70', '90', '110', '1', '2']; // 17~22
-  const level3 = ['203.20', '203.80', '80', '100', '1', '2']; // 23~28
-  const level3Dup = ['203.20', '203.80', '80', '100', '1', '2']; // 29~34 (원문 중복 표기 재현)
-  return [...header, ...level1, ...level2, ...level3, ...level3Dup];
-}
-
-describe('parseOverseasRealtimeQuote (① HDFSASP0 1호가 추출)', () => {
-  it('공식 샘플 인덱스로 PBID1(10)/PASK1(11)/VBID1(12)/VASK1(13)를 정확히 뽑는다 (3호가 중복 표기 무관)', () => {
-    const quote = parseOverseasRealtimeQuote(makeQuoteFields());
-    expect(quote.SYMB).toBe('AAPL');
-    expect(quote.PBID1).toBe('203.40');
-    expect(quote.PASK1).toBe('203.60');
-    expect(quote.VBID1).toBe('100');
-    expect(quote.VASK1).toBe('120');
-  });
-
-  it('1호가까지 담기지 않을 만큼 필드가 적으면 throw한다', () => {
-    expect(() => parseOverseasRealtimeQuote(makeQuoteFields().slice(0, 10))).toThrow(/필드 개수/);
-  });
-});
-
-describe('buildQuoteTrKey', () => {
-  it('D+시장구분+종목코드 형태로 조립한다 (공식 샘플 asking_price("1","DNASAAPL") 근거 — R 키는 실계좌에서 mci send failed 거절)', () => {
-    expect(buildQuoteTrKey('NAS', 'AAPL')).toBe('DNASAAPL');
-  });
-});
-
 describe('buildDaytimeQuoteTrKey', () => {
   it('R+시장구분+종목코드 형태로 조립한다 (문서 예시: RBAQAAPL, 나스닥-주간)', () => {
     expect(buildDaytimeQuoteTrKey('BAQ', 'AAPL')).toBe('RBAQAAPL');
@@ -154,17 +105,6 @@ describe('buildDaytimeQuoteTrKey', () => {
   it('뉴욕-주간(BAY)·아멕스-주간(BAA)도 동일 규칙으로 조립한다', () => {
     expect(buildDaytimeQuoteTrKey('BAY', 'TSLA')).toBe('RBAYTSLA');
     expect(buildDaytimeQuoteTrKey('BAA', 'F')).toBe('RBAAF');
-  });
-});
-
-describe('parseRawQuoteFrame', () => {
-  it('envelope(<flag>|HDFSASP0|<count>|<^필드…>)에서 TR_ID와 호가 레코드를 뽑는다', () => {
-    const fields = makeQuoteFields();
-    const raw = `0|${REALTIME_QUOTE_TR_ID}|001|${fields.join('^')}`;
-    const frame = parseRawQuoteFrame(raw);
-    expect(frame?.trId).toBe(REALTIME_QUOTE_TR_ID);
-    expect(frame?.quoteGroups).toHaveLength(1);
-    expect(frame?.quoteGroups[0]).toEqual(fields);
   });
 });
 
@@ -254,12 +194,11 @@ describe('OverseasRealtimePriceClient', () => {
     expect(onTick.mock.calls[0][1]).toBe('AAPL');
   });
 
-  it('② 한 소켓에서 HDFSCNT0→onTick, HDFSASP0→onQuote로 각각 라우팅한다', () => {
+  it('② 다른 TR_ID 데이터 프레임은 무시한다(체결가 HDFSCNT0만 소비)', () => {
     FakeWebSocket.reset();
     const onTick = vi.fn();
-    const onQuote = vi.fn();
     const client = new OverseasRealtimePriceClient(
-      { approvalKey: 'approval-key', onTick, onQuote },
+      { approvalKey: 'approval-key', onTick },
       { WebSocketImpl: FakeWebSocket },
     );
     client.connect();
@@ -267,34 +206,10 @@ describe('OverseasRealtimePriceClient', () => {
     socket.triggerOpen();
 
     socket.triggerMessage(`0|${REALTIME_PRICE_TR_ID}|001|${DOC_ORDER_FIELDS.join('^')}`);
-    socket.triggerMessage(`0|${REALTIME_QUOTE_TR_ID}|001|${makeQuoteFields().join('^')}`);
+    socket.triggerMessage(`0|HDFSASP0|001|AAPL^2^20260729^093000`);
 
     expect(onTick).toHaveBeenCalledTimes(1);
     expect(onTick.mock.calls[0][0].SYMB).toBe('AAPL');
-    expect(onQuote).toHaveBeenCalledTimes(1);
-    expect(onQuote.mock.calls[0][0].PASK1).toBe('203.60');
-    expect(onQuote.mock.calls[0][0].PBID1).toBe('203.40');
-    expect(onQuote.mock.calls[0][1]).toBe('AAPL'); // symb
-  });
-
-  it('③ 두 TR(HDFSCNT0·HDFSASP0)을 구독하면 지정한 tr_id로 등록 프레임을 보낸다', () => {
-    FakeWebSocket.reset();
-    const client = new OverseasRealtimePriceClient(
-      { approvalKey: 'approval-key', onTick: vi.fn(), onQuote: vi.fn() },
-      { WebSocketImpl: FakeWebSocket },
-    );
-    client.connect();
-    const socket = FakeWebSocket.instances[0];
-    socket.triggerOpen();
-
-    client.subscribe('DNASAAPL'); // 기본 HDFSCNT0 (하위호환)
-    client.subscribe('RNASAAPL', REALTIME_QUOTE_TR_ID);
-
-    const frames = socket.sent.map((s) => JSON.parse(s));
-    const cnt = frames.find((f) => f.body.input.tr_key === 'DNASAAPL');
-    const asp = frames.find((f) => f.body.input.tr_key === 'RNASAAPL');
-    expect(cnt.body.input.tr_id).toBe(REALTIME_PRICE_TR_ID);
-    expect(asp.body.input.tr_id).toBe(REALTIME_QUOTE_TR_ID);
   });
 
   it('RAW_FIELD_DEBUG(rawFieldDebug) 모드에서는 onRawFields로 원본 필드 배열도 노출한다', () => {
@@ -375,36 +290,6 @@ describe('OverseasRealtimePriceClient', () => {
     expect(resubFrame.header.tr_type).toBe('1');
 
     expect(onStatusChange).toHaveBeenCalledWith('reconnecting');
-  });
-
-  it('③ 재연결 시 두 TR 구독(체결가·호가)을 모두 복원한다', () => {
-    FakeWebSocket.reset();
-    const scheduled: Array<() => void> = [];
-    const client = new OverseasRealtimePriceClient(
-      { approvalKey: 'approval-key', onTick: vi.fn(), onQuote: vi.fn() },
-      {
-        WebSocketImpl: FakeWebSocket,
-        setTimeoutImpl: (fn) => (scheduled.push(fn), scheduled.length),
-        clearTimeoutImpl: () => {},
-      },
-    );
-    client.connect();
-    FakeWebSocket.instances[0].triggerOpen();
-    client.subscribe('DNASAAPL');
-    client.subscribe('RNASAAPL', REALTIME_QUOTE_TR_ID);
-
-    FakeWebSocket.instances[0].triggerAbnormalClose();
-    scheduled[0](); // 재연결
-    const socket2 = FakeWebSocket.instances[1];
-    socket2.triggerOpen();
-
-    const restored = socket2.sent.map((s) => JSON.parse(s));
-    const cnt = restored.find((f) => f.body.input.tr_key === 'DNASAAPL');
-    const asp = restored.find((f) => f.body.input.tr_key === 'RNASAAPL');
-    expect(cnt.body.input.tr_id).toBe(REALTIME_PRICE_TR_ID);
-    expect(cnt.header.tr_type).toBe('1');
-    expect(asp.body.input.tr_id).toBe(REALTIME_QUOTE_TR_ID);
-    expect(asp.header.tr_type).toBe('1');
   });
 
   it('구독 성공 ACK(JSON 제어 프레임)을 onControl로 전달한다', () => {
@@ -531,23 +416,5 @@ describe('OverseasRealtimePriceClient — 단일 세션 보장 (ALREADY IN USE a
     expect(scheduled.length).toBe(scheduledBefore); // 추가 재연결 예약 없음
     expect(statuses).toEqual(statusesBefore); // 'closed' 상태 발행 없음
     expect(FakeWebSocket.instances).toHaveLength(2);
-  });
-});
-
-describe('parseOverseasRealtimeQuote — RSYM 유무 관용 파싱 (포탈 문서 vs 공식 샘플 레이아웃 충돌 대응)', () => {
-  it('첫 필드가 RSYM(DNAS…)인 포탈 문서 레이아웃이면 인덱스를 +1 시프트해 같은 값을 뽑는다', () => {
-    const withRsym = ['DNASAAPL', ...makeQuoteFields()];
-    const quote = parseOverseasRealtimeQuote(withRsym);
-    expect(quote.SYMB).toBe('AAPL');
-    expect(quote.PBID1).toBe('203.40');
-    expect(quote.PASK1).toBe('203.60');
-    expect(quote.VBID1).toBe('100');
-    expect(quote.VASK1).toBe('120');
-  });
-
-  it('R 접두 RSYM(RNAS…)도 동일하게 시프트한다', () => {
-    const withRsym = ['RNASWETO', ...makeQuoteFields()];
-    const quote = parseOverseasRealtimeQuote(withRsym);
-    expect(quote.PBID1).toBe('203.40');
   });
 });

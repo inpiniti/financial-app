@@ -174,7 +174,7 @@ export class OrderPortAdapter implements OrderPort {
   }
 
   /**
-   * 최신 1호가 캐시 갱신 — 러너가 실시간호가(HDFSASP0) 수신 때마다 호출한다.
+   * 최신 1호가 캐시 갱신 — 러너가 1호가(체결가 페이로드의 PBID/PASK) 수신 때마다 호출한다.
    * bid/ask는 유효(유한·양수)할 때만 반영하고, 수신시각(at)은 신선도 판정에 쓴다.
    */
   setQuote(bid1: number, ask1: number, at: number): void {

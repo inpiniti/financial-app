@@ -5,7 +5,7 @@ import { FakeBroker, FakeStore, fakeClock, flush, noopScheduler } from './fakes'
 import type { FeedStatus, RealtimeControlMessage, RealtimeFeed } from './types';
 import type { RankingSnapshot } from './watchlist';
 
-// 체결가(HDFSCNT0)·호가(HDFSASP0)가 같은 trKey(DNAS…)를 쓰므로 (trId|trKey) 쌍으로 추적하는 가짜 피드.
+// (trId|trKey) 쌍으로 구독을 추적하는 가짜 피드 — 현재 쓰는 TR은 체결가(HDFSCNT0)뿐이다.
 class PairFeed implements RealtimeFeed {
   connected = false;
   readonly pairs = new Set<string>();
@@ -45,9 +45,6 @@ class PairFeed implements RealtimeFeed {
   tickPairs(): string[] {
     return [...this.pairs].filter((p) => p.startsWith('HDFSCNT0|'));
   }
-  quotePairs(): string[] {
-    return [...this.pairs].filter((p) => p.startsWith('HDFSASP0|'));
-  }
 }
 
 const TWELVE = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'];
@@ -80,8 +77,8 @@ function makeManager(opts: { holdings?: string[]; entryLadder?: { interval: numb
   return { manager, feed, store, clock, fetchSnapshot, keepAwake, scheduler };
 }
 
-describe('AutoPilotManager — 배선(구독 예산·라우팅·상호 배타)', () => {
-  it('start → 리스트 12종 슬롯 + 체결가 12건, 감시 top3만 호가 구독(합계 15건)', async () => {
+describe('AutoPilotManager — 배선(구독·라우팅·상호 배타)', () => {
+  it('start → 리스트 12종 슬롯 + 체결가 12건, 호가 TR 구독은 없다(1호가는 체결가 틱에 실려 온다)', async () => {
     const { manager, feed } = makeManager();
     manager.start();
     await vi.waitFor(() => expect(manager.watchlist.size).toBe(12));
@@ -89,15 +86,16 @@ describe('AutoPilotManager — 배선(구독 예산·라우팅·상호 배타)',
 
     expect(feed.connected).toBe(true);
     expect(feed.tickPairs()).toHaveLength(12); // 체결가(D) — 전 종목.
+    expect(feed.pairs.size).toBe(12); // 다른 TR(HDFSASP0 등) 구독 없음.
     expect(manager.pilot.getView().state).toBe('SCANNING');
     expect(manager.getRows()).toHaveLength(12);
 
-    // 최소 속도 자격을 만들려면 틱이 필요 — 3종목에 틱을 흘리고 재선정하면 호가(R) 구독이 붙는다.
+    // 감시가 붙어도 추가 구독은 생기지 않는다.
     for (const t of ['A', 'B', 'C']) {
       for (let i = 0; i < 10; i += 1) manager.routeTick(t, 10, i * 10);
     }
     manager.pilot.reselect();
-    expect(feed.quotePairs()).toHaveLength(3); // 호가(R) — 감시 top3만.
+    expect(feed.pairs.size).toBe(12);
   });
 
   it('3거래소 병합 리스트 — 채용 거래소(NYS/AMS)로 체결가 trKey를 조립한다(excd 없으면 NAS)', async () => {

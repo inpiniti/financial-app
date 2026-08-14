@@ -218,40 +218,21 @@ export interface TickExtras {
   strength?: number;
 }
 
-/** 실시간호가 확장 정보 — 2호가(급등주 찾기 신호 기록용). 페이로드에 담겨 오고 파싱 가능할 때만 채워진다. */
-export interface QuoteExtras {
-  /** 매수호가2(PBID2). */
-  bid2?: number;
-  /** 매도호가2(PASK2). */
-  ask2?: number;
-}
-
 /** WS 단일 연결을 감싸는 시세 피드. 매니저가 티커별 구독을 이 위로 멀티플렉스한다. */
 export interface RealtimeFeed {
   connect(): void;
   close(): void;
-  /**
-   * trKey 구독/해제. trId 기본 체결가(HDFSCNT0) — 호가는 REALTIME_QUOTE_TR_ID를 넘긴다.
-   * ⚠ 체결가·호가가 같은 trKey 문자열(DNAS…)을 쓰므로 해제도 trId를 함께 넘겨야 반대쪽이 안 죽는다.
-   */
+  /** trKey 구독/해제. trId 기본 체결가(HDFSCNT0) — 현재 쓰는 TR은 체결가뿐이다. */
   subscribe(trKey: string, trId?: string): void;
   unsubscribe(trKey: string, trId?: string): void;
   /** 수신 틱(체결가) 라우팅 핸들러 등록 — (symb, price, tsMs, extras?). extras는 게이트용 선택 정보. */
   setTickHandler(handler: (symb: string, price: number, tsMs: number, extras?: TickExtras) => void): void;
   /**
-   * 실시간호가 1호가 라우팅 핸들러 등록 — (symb, bid1, ask1, tsMs, bidVol1?, askVol1?, extras?).
-   * 잔량·2호가(extras)는 선택(파싱 가능할 때만).
+   * 1호가 라우팅 핸들러 등록 — (symb, bid1, ask1, tsMs, bidVol1?, askVol1?).
+   * 체결가 페이로드(PBID/PASK/VBID/VASK)에서 뽑아 흘린다(별도 호가 TR 구독 없음). 잔량은 선택.
    */
   setQuoteHandler(
-    handler: (
-      symb: string,
-      bid1: number,
-      ask1: number,
-      tsMs: number,
-      bidVol1?: number,
-      askVol1?: number,
-      extras?: QuoteExtras,
-    ) => void,
+    handler: (symb: string, bid1: number, ask1: number, tsMs: number, bidVol1?: number, askVol1?: number) => void,
   ): void;
   /** 연결 상태 변화 핸들러 등록 — 매니저가 구독해 FeedStatus로 노출한다. */
   setStatusHandler(handler: (status: FeedStatus) => void): void;

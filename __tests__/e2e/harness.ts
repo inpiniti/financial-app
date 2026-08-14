@@ -55,31 +55,6 @@ export function priceFrame(symb: string, price: number, fields: TickFieldMap = {
   return encodeFrame([encodeTickFields({ SYMB: symb, LAST: String(price), ...fields })]);
 }
 
-// ---- 합성 실시간호가(HDFSASP0) 프레임 — KIS 공식 샘플(asking_price.py) columns 순서(RSYM 없음, 실측 검증 2026-07-31) ----
-
-/** 호가 1건 프레임 — 헤더 10필드(0~9) + 1호가 6필드(10~15). symb·bid1·ask1만 지정. */
-export function quoteFrame(symb: string, bid1: number, ask1: number): string {
-  const fields = [
-    symb, // 0 SYMB
-    '2', // 1 ZDIV
-    '20260729', // 2 XYMD
-    '090000', // 3 XHMS
-    '20260729', // 4 KYMD
-    '220000', // 5 KHMS
-    '5000', // 6 BVOL
-    '6000', // 7 AVOL
-    '10', // 8 BDVL
-    '20', // 9 ADVL
-    String(bid1), // 10 PBID1
-    String(ask1), // 11 PASK1
-    '100', // 12 VBID1
-    '120', // 13 VASK1
-    '1', // 14 DBID1
-    '2', // 15 DASK1
-  ];
-  return `0|HDFSASP0|001|${fields.join('^')}`;
-}
-
 // ---- WebSocket 경계의 가짜 ----
 
 /** real OverseasRealtimePriceClient가 그대로 사용하는 WebSocket 생성자 가짜. */

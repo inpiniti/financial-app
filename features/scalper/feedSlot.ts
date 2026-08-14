@@ -12,9 +12,8 @@
 import { TrendDetector, type DetectorResult, type Signal } from '../../core/detector';
 import { LadderDetector } from '../../core/ladder';
 import { Resampler } from '../../core/resample';
-import { SurgeDetector, type SurgeAlert, type SurgeDetectorOptions, type SurgeSignal } from '../../core/surge';
 import { TickRateMeter } from './tickRate';
-import type { ClockLike, QuoteExtras, TickExtras } from './types';
+import type { ClockLike, TickExtras } from './types';
 
 /**
  * 진입 감지기 선택 스위치 — true면 **사다리 옵션이 주입된** 슬롯이 SG 기울기(TrendDetector) 대신
@@ -50,16 +49,7 @@ export interface FeedSlotOptions {
    * 미주입(기존 하네스·테스트)이면 항상 SG — 회귀 안전.
    */
   ladder?: LadderEntryOptions;
-  /**
-   * 급등/급락 감지 옵션(docs/domain/surge-stock-finder) — 주입되면 진입 감지기와 **병렬로**
-   * SurgeDetector가 슬롯 수명 내내 돈다(attach/detach와 무관 — 기록 게이트는 SurgeRecorder가 담당).
-   * 미주입(기존 하네스·테스트)이면 완전히 꺼진다 — 회귀 안전.
-   */
-  surge?: SurgeDetectorOptions;
 }
-
-/** 급등/급락 감지 이벤트 콜백 — setSurgeListener로 등록. price는 그 시점 최신 체결가. */
-export type SlotSurgeListener = (event: SurgeAlert | SurgeSignal, ctx: { ticker: string; price: number }) => void;
 
 /** 변곡점 신호 콜백 — attach 시 등록. */
 export type SlotSignalListener = (signal: Signal, ctx: SlotSignalContext) => void;
@@ -111,9 +101,6 @@ export class FeedSlot {
   private detector: TrendDetector | null = null;
   /** 사다리 감지기 — LADDER_ENTRY && ladderOptions일 때 detector 대신 이쪽이 부착된다(상호 배타). */
   private ladder: LadderDetector | null = null;
-  /** 급등/급락 감지기 — 진입 감지기와 병렬, 슬롯 수명 동안 상시(옵션 주입 시에만 생성). */
-  private readonly surge: SurgeDetector | null;
-  private onSurge: SlotSurgeListener | null = null;
   /** 마지막 사다리 판정 스냅샷(뷰 노출용). */
   private ladderState: { count: number; triggerCount: number; nextBuyLevel: number } | null = null;
   private onSignal: SlotSignalListener | null = null;
@@ -125,9 +112,6 @@ export class FeedSlot {
   private lastSignal: Signal | null = null;
   private bid1: number | null = null;
   private ask1: number | null = null;
-  /** 2호가 — 페이로드에 담겨 올 때만(급등주 찾기 스냅샷용). 발주 로직은 계속 1호가만 쓴다. */
-  private bid2: number | null = null;
-  private ask2: number | null = null;
   private quoteAt: number | null = null;
 
   constructor(options: FeedSlotOptions) {
@@ -145,29 +129,13 @@ export class FeedSlot {
       minStrength: options.minStrength,
     };
     this.ladderOptions = options.ladder;
-    this.surge = options.surge ? new SurgeDetector(options.surge) : null;
   }
 
-  /** 급등/급락 감지 이벤트 수신자 등록 — null로 해제. surge 옵션 미주입 슬롯에선 호출되지 않는다. */
-  setSurgeListener(listener: SlotSurgeListener | null): void {
-    this.onSurge = listener;
-  }
-
-  /** WS 체결 틱 1개 수신 — 틱/초·리샘플은 항상, 판정은 부착 시에만. 급등/급락 감지는 병렬 상시. */
+  /** WS 체결 틱 1개 수신 — 틱/초·리샘플은 항상, 판정은 부착 시에만. */
   pushTick(price: number, tsMs: number, extras?: TickExtras): DetectorResult | null {
     this.price = price;
     this.lastTickAt = this.clock.now();
     this.meter.record(this.lastTickAt);
-
-    // 급등/이탈 감지(v2 — 틱 구동, 청크 불요) — 진입 감지와 완전 독립. 체결강도·스프레드를 함께 넘긴다
-    // (참여 게이트·이탈 스프레드 하한용 — 없으면 fail-open/하한 생략).
-    if (this.surge !== null) {
-      const event = this.surge.onTick(price, tsMs, {
-        strength: extras?.strength ?? null,
-        spreadPct: this.spreadPct(),
-      });
-      if (event) this.onSurge?.(event, { ticker: this.ticker, price });
-    }
 
     const closed = this.resampler.addTick({
       price,
@@ -227,29 +195,17 @@ export class FeedSlot {
     return res;
   }
 
-  /** 실시간호가 수신 — 발주 단가용 캐시(감시·보유 종목만 구독하므로 항상 최신은 아니다). */
-  pushQuote(bid1: number, ask1: number, extras?: QuoteExtras): void {
+  /** 1호가 수신(체결가 틱에 실려 오는 PBID/PASK) — 발주 단가용 캐시. */
+  pushQuote(bid1: number, ask1: number): void {
     this.bid1 = Number.isFinite(bid1) && bid1 > 0 ? bid1 : null;
     this.ask1 = Number.isFinite(ask1) && ask1 > 0 ? ask1 : null;
-    // 2호가는 프레임마다 함께 갱신한다 — 없는 프레임이면 null로 되돌린다(낡은 2호가를 새 1호가와 섞지 않게).
-    this.bid2 = extras?.bid2 !== undefined && Number.isFinite(extras.bid2) && extras.bid2 > 0 ? extras.bid2 : null;
-    this.ask2 = extras?.ask2 !== undefined && Number.isFinite(extras.ask2) && extras.ask2 > 0 ? extras.ask2 : null;
     this.quoteAt = this.clock.now();
   }
 
-  /** 마지막 호가(발주 참고용) — 없으면 null. 2호가는 수신됐을 때만(아니면 null). */
-  get quote(): { bid1: number; ask1: number; bid2: number | null; ask2: number | null; at: number } | null {
+  /** 마지막 호가(발주 참고용) — 없으면 null. */
+  get quote(): { bid1: number; ask1: number; at: number } | null {
     if (this.bid1 === null || this.ask1 === null || this.quoteAt === null) return null;
-    return { bid1: this.bid1, ask1: this.ask1, bid2: this.bid2, ask2: this.ask2, at: this.quoteAt };
-  }
-
-  /** 신선한(10초 이내) 호가 기준 스프레드(소수) — 급등 이탈 문턱의 하한용. 없으면 null. */
-  private spreadPct(): number | null {
-    if (this.bid1 === null || this.ask1 === null || this.quoteAt === null) return null;
-    if (this.clock.now() - this.quoteAt > 10_000) return null;
-    const mid = (this.bid1 + this.ask1) / 2;
-    if (mid <= 0 || this.ask1 <= this.bid1) return null;
-    return (this.ask1 - this.bid1) / mid;
+    return { bid1: this.bid1, ask1: this.ask1, at: this.quoteAt };
   }
 
   /**

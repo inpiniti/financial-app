@@ -1,6 +1,7 @@
 // 종목 상세화면 실시간 시세 구독 훅 — 2026-08-07 종목상세화면 plan §4.
-// 화면 focus 시 체결가(HDFSCNT0)+호가(HDFSASP0)를 refcount로 획득(acquireFeed)하고 blur/unmount 시
-// 해제(releaseFeed)한다. 같은 종목을 자동 단타가 이미 구독 중이어도 안전하다(매니저가 판단).
+// 화면 focus 시 체결가(HDFSCNT0)를 refcount로 획득(acquireFeed)하고 blur/unmount 시
+// 해제(releaseFeed)한다. 1호가·잔량은 체결가 페이로드(PBID/PASK/VBID/VASK)에서 함께 온다 —
+// 별도 호가(HDFSASP0) 구독은 2026-08-14 제거. 같은 종목을 자동 단타가 이미 구독 중이어도 안전하다.
 // 수신 값은 ref에 쌓고 1초 주기로만 상태에 반영한다 — 매 틱 리렌더 금지(시트들과 동일 원칙).
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
@@ -8,7 +9,6 @@ import {
   buildFreeQuoteTrKey,
   buildDaytimeQuoteTrKey,
   REALTIME_PRICE_TR_ID,
-  REALTIME_QUOTE_TR_ID,
 } from '../../kis/realtimePrice';
 import { isDaytimeSessionOpen } from '../scalper/daySession';
 import type { ScalperManager } from '../scalper/scalperManager';
@@ -68,7 +68,6 @@ export function useQuoteFeed(
       setState(EMPTY);
 
       manager.acquireFeed(trKey, REALTIME_PRICE_TR_ID);
-      manager.acquireFeed(trKey, REALTIME_QUOTE_TR_ID);
 
       const unsubData = manager.subscribeFeedData(ticker, {
         onTick: (price, tsMs) => {
@@ -99,7 +98,6 @@ export function useQuoteFeed(
         clearInterval(timer);
         unsubData();
         manager.releaseFeed(trKey, REALTIME_PRICE_TR_ID);
-        manager.releaseFeed(trKey, REALTIME_QUOTE_TR_ID);
       };
     }, [manager, ticker, trKey]),
   );

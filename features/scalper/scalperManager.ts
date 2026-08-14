@@ -7,7 +7,6 @@ import { REALTIME_PRICE_TR_ID } from '../../kis/realtimePrice';
 import type {
   ClockLike,
   FeedStatus,
-  QuoteExtras,
   RealtimeControlMessage,
   RealtimeFeed,
   TickExtras,
@@ -60,10 +59,10 @@ export class ScalperManager {
   constructor(deps: ScalperManagerDeps) {
     this.clock = deps.clock;
     this.realtime = deps.realtime;
-    // WS 단일 연결 → 보조 소비자(자동 단타·시뮬·상세화면)로 라우팅(체결가·호가 둘 다).
+    // WS 단일 연결 → 보조 소비자(자동 단타·시뮬·상세화면)로 라우팅(틱·1호가 — 둘 다 체결가 프레임에서 온다).
     this.realtime.setTickHandler((symb, price, tsMs, extras) => this.routeTick(symb, price, tsMs, extras));
-    this.realtime.setQuoteHandler((symb, bid1, ask1, tsMs, bidVol1, askVol1, extras) =>
-      this.routeQuote(symb, bid1, ask1, tsMs, bidVol1, askVol1, extras),
+    this.realtime.setQuoteHandler((symb, bid1, ask1, tsMs, bidVol1, askVol1) =>
+      this.routeQuote(symb, bid1, ask1, tsMs, bidVol1, askVol1),
     );
     this.realtime.setStatusHandler((status) => this.handleFeedStatus(status));
     this.realtime.setControlHandler((msg) => this.handleFeedControl(msg));
@@ -97,10 +96,7 @@ export class ScalperManager {
     };
   }
 
-  /**
-   * trKey별 마지막 구독 ACK. ⚠ 체결가·호가가 같은 trKey 문자열(DNAS…)을 쓰므로 trId까지 넣어 구분한다
-   * (기본 HDFSCNT0=체결가, 호가는 'HDFSASP0' 전달). 아직 ACK를 못 받았으면(응답 없음) null.
-   */
+  /** trKey별 마지막 구독 ACK — (trId|trKey) 복합 키 조회. 아직 ACK를 못 받았으면(응답 없음) null. */
   getSubscriptionStatus(trKey: string, trId = 'HDFSCNT0'): FeedSubscriptionStatus | null {
     return this.subscriptionStatus.get(`${trId}|${trKey}`) ?? null;
   }
@@ -138,7 +134,6 @@ export class ScalperManager {
       : `구독 실패 · ${msg.msg1 ?? msg.msgCd ?? '알 수 없음'}`;
     this.setFeedEvent(text);
     if (msg.trKey) {
-      // 체결가(HDFSCNT0)·호가(HDFSASP0)가 같은 trKey를 쓰므로 (trId|trKey) 복합 키로 보존.
       this.subscriptionStatus.set(`${msg.trId}|${msg.trKey}`, {
         success,
         message: msg.msg1 ?? msg.msgCd ?? '',
@@ -156,9 +151,7 @@ export class ScalperManager {
   // 자동관리(AutoPilotManager) 보조 수신기 — WS 핸들러는 이 매니저가 유일 소유하므로,
   // 오토파일럿은 여기 등록해 같은 연결의 틱·호가를 나눠 받는다.
   private auxTick: ((symb: string, price: number, tsMs: number, extras?: TickExtras) => void) | null = null;
-  private auxQuote:
-    | ((symb: string, bid1: number, ask1: number, tsMs: number, extras?: QuoteExtras) => void)
-    | null = null;
+  private auxQuote: ((symb: string, bid1: number, ask1: number, tsMs: number) => void) | null = null;
 
   // ---- 보조 소비자(종목 상세화면) 구독 refcount — 2026-08-07 종목상세화면 plan §4 ----
 
@@ -227,10 +220,10 @@ export class ScalperManager {
     };
   }
 
-  /** 외부(자동관리) 수신기 등록 — null로 해제. 호가는 2호가(extras)까지 흘린다(급등주 찾기 기록용). */
+  /** 외부(자동관리) 수신기 등록 — null로 해제. */
   setAuxRoutes(
     onTick: ((symb: string, price: number, tsMs: number, extras?: TickExtras) => void) | null,
-    onQuote: ((symb: string, bid1: number, ask1: number, tsMs: number, extras?: QuoteExtras) => void) | null,
+    onQuote: ((symb: string, bid1: number, ask1: number, tsMs: number) => void) | null,
   ): void {
     this.auxTick = onTick;
     this.auxQuote = onQuote;
@@ -244,7 +237,7 @@ export class ScalperManager {
     }
   }
 
-  /** 실시간호가(1호가)를 보조 소비자로 라우팅 — 자동 단타 어댑터가 공격적 지정가에 쓴다. */
+  /** 1호가(체결가 페이로드에서 추출)를 보조 소비자로 라우팅 — 자동 단타 어댑터가 공격적 지정가에 쓴다. */
   private routeQuote(
     symb: string,
     bid1: number,
@@ -252,9 +245,8 @@ export class ScalperManager {
     tsMs: number,
     bidVol1?: number,
     askVol1?: number,
-    extras?: QuoteExtras,
   ): void {
-    this.auxQuote?.(symb, bid1, ask1, tsMs, extras);
+    this.auxQuote?.(symb, bid1, ask1, tsMs);
     const detailListeners = this.feedDataListeners.get(symb);
     if (detailListeners) {
       for (const l of detailListeners) l.onQuote?.(bid1, ask1, tsMs, bidVol1, askVol1);

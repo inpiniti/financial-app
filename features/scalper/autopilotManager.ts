@@ -1,10 +1,9 @@
 // AutoPilotManager — 자동관리 모드 배선 (plan §3-5단계).
 //
-// watchlist(순위 폴링) → FeedSlot(WS 수신) → AutoPilot(감시·사이클)을 조립하고,
-// WS 구독 예산을 지킨다(plan §4-11): 체결가는 리스트 전 종목, 호가는 **감시 top3 ∪ 진입 중 ∪ 보유**.
-// 감지기는 리스트 전 종목에 붙지만(2026-08-10) 호가는 이 소수만 예열한다 — 전 종목 호가면
-// 리스트 30개 기준 KIS 한도(41건)를 넘는다. 예산: 체결가 30 + 호가(감시 3 + 진입·보유 + 급등
-// 에피소드 3, SurgeRecorder LRU 상한) ≤ 40 — 상세화면 몫까지 한도 안(2026-08-13 급등주 찾기).
+// watchlist(순위 폴링) → FeedSlot(WS 수신) → AutoPilot(감시·사이클)을 조립한다.
+// WS 구독은 체결가(HDFSCNT0)뿐이다 — 호가(1호가)는 체결가 틱에 실려 오는 PBID/PASK로 받는다
+// (2026-08-14 호가(HDFSASP0) 구독 제거). 예산: 체결가 리스트 전 종목(≤30) + 보유 홀드 —
+// KIS 한도(41건) 안이고 상세화면 몫도 남는다.
 //
 // WS 핸들러는 ScalperManager(피드 허브)가 유일 소유하므로, 이 매니저는 setAuxRoutes로 등록된
 // routeTick/routeQuote를 통해 같은 연결의 수신을 나눠 받는다.
@@ -19,15 +18,11 @@ import {
 } from './autopilot';
 import { isDaytimeSessionOpen } from './daySession';
 import { FeedSlot, type FeedSlotView, type LadderEntryOptions } from './feedSlot';
-import { SurgeRecorder, type SurgeEpisodeView, type SurgeListener } from './surgeRecorder';
 import { ScalperWatchlist, type RankingSnapshot, type WatchEntry, type WatchMarket } from './watchlist';
-import type { SurgeDetectorOptions } from '../../core/surge';
-import type { SurgeLogClient } from '../../lib/surgeLog';
 import {
   buildDaytimeQuoteTrKey,
   buildFreeQuoteTrKey,
   REALTIME_PRICE_TR_ID,
-  REALTIME_QUOTE_TR_ID,
   type DaytimeMarketCode,
 } from '../../kis/realtimePrice';
 import type { OverseasExchangeCode } from '../../kis/trId';
@@ -36,7 +31,6 @@ import type {
   InstanceFault,
   KeepAwakeControl,
   KeyValueStore,
-  QuoteExtras,
   RealtimeFeed,
   ScalperBroker,
   SchedulerLike,
@@ -54,13 +48,6 @@ const MARKET_TO_EXCHANGE: Record<WatchMarket, OverseasExchangeCode> = { NAS: 'NA
 const MARKET_TO_DAYTIME: Record<WatchMarket, DaytimeMarketCode> = { NAS: 'BAQ', NYS: 'BAY', AMS: 'BAA' };
 /** 세션 전환(정규장↔주간거래) 감지 주기 — 전환 시 구독 trKey를 새 세션 키로 회전한다. */
 const SESSION_KEY_CHECK_MS = 30_000;
-/** KIS WS 등록 한도 — (tr_id, tr_key) 조합 기준 41건. 초과 등록은 "MAX SUBSCRIBE OVER"로 거절된다. */
-const MAX_WS_SUBS = 41;
-/**
- * 종목상세 화면 몫 예약(체결가+호가 2건) + 세션 회전의 순간 중복(+1) 여유 — 오토파일럿이 한도를
- * 다 쓰면 상세화면 진입·세션 전환 재구독이 "구독 실패 · MAX"로 거절된다(리스트 30 확대 후 실사고).
- */
-const WS_SUBS_RESERVE = 3;
 
 const defaultScheduler: SchedulerLike = {
   setInterval: (fn, ms) => setInterval(fn, ms),
@@ -97,14 +84,6 @@ export interface AutoPilotManagerDeps {
    * 미주입(기존 하네스·테스트)이면 기존 SG 감지 그대로다.
    */
   entryLadder?: LadderEntryOptions;
-  /**
-   * 급등/급락 신호 감지·기록 옵션(docs/domain/surge-stock-finder) — 주입되면 리스트 전 슬롯에
-   * SurgeDetector가 병렬로 붙고, start~stop 동안 신호를 감지해 surge_events에 기록한다.
-   * 빈 객체({})면 감지기 기본값으로 켜진다. 미주입(기존 하네스·테스트)이면 완전히 꺼진다.
-   */
-  surge?: SurgeDetectorOptions;
-  /** 급등/급락 신호 기록 클라이언트 — null/미주입이면(env 미설정) 감지·표시만 하고 기록은 생략. */
-  surgeLog?: SurgeLogClient | null;
   /** 거래 수수료율(소수·편도, 0=끔) — AutoPilot으로 그대로 흘려보낸다. */
   feeRate?: number;
   pollIntervalMs?: number;
@@ -137,8 +116,6 @@ const EVENT_LIMIT = 50;
 export class AutoPilotManager {
   readonly pilot: AutoPilot;
   readonly watchlist: ScalperWatchlist;
-  /** 급등/급락 신호 에피소드·기록 — deps.surge 주입 시에만 start/stop과 함께 켜고 끈다. */
-  readonly surgeRecorder: SurgeRecorder;
 
   private readonly deps: AutoPilotManagerDeps;
   /** 새 슬롯에 주입할 사다리 감지 옵션 — deps에서 초기값만 받고 setEntryLadder로 갈아끼운다. */
@@ -149,8 +126,6 @@ export class AutoPilotManager {
    * 해제 시점에 채용 거래소 기록이 달라져 있어도 실제 구독했던 키 그대로 취소해 고아 구독을 막는다.
    */
   private readonly tickTrKeys = new Map<string, string>();
-  /** 호가(R) 구독 중인 티커 → 실제 구독 trKey — 감시 top3(또는 보유 1)만 유지한다. tickTrKeys와 동일한 이유로 Map. */
-  private readonly quoteSubs = new Map<string, string>();
   /**
    * 체결가(D) 구독 유지 홀드(티커별 참조 카운트) — **트레이딩 중인 종목은 리스트 탈락과 무관하게
    * WS 구독을 유지한다**. 잡는 쪽: 보유·진입 중 사이클(pilot view의 activeTickers를 여기서 diff).
@@ -180,13 +155,6 @@ export class AutoPilotManager {
   private sessionTimer: unknown = null;
   /** 직전 세션 판정(주간거래 여부) — 바뀐 순간에만 구독 키를 회전한다. */
   private lastDaytime: boolean;
-  /**
-   * 마지막 파일럿 뷰 — 에피소드 호가 구독 변화(SurgeRecorder 콜백)가 파일럿 뷰 변화 없이도
-   * reconcileQuoteSubs를 다시 돌 수 있게 보관한다.
-   */
-  private lastView: AutoPilotView;
-  /** 직전 reconcile에서 예산 부족으로 보류한 호가 수 — 변화가 있을 때만 이벤트를 낸다(스팸 방지). */
-  private lastQuoteTrimmed = 0;
 
   constructor(deps: AutoPilotManagerDeps) {
     this.deps = deps;
@@ -254,36 +222,21 @@ export class AutoPilotManager {
       onFault: (fault: InstanceFault) => this.pushEvent({ at: fault.at, text: fault.text }),
     });
 
-    this.lastView = this.pilot.getView();
     this.pilot.subscribe((view) => {
-      this.lastView = view;
       this.reconcileTickHolds(view);
-      this.reconcileQuoteSubs(view);
       this.refreshKeepAwake(view);
       for (const l of this.viewListeners) l(view);
       this.emitList();
-    });
-
-    // 급등/급락 신호 기록 — 감지기(FeedSlot 병렬)가 쏜 경보/확정을 에피소드로 묶어 surge_events에 남긴다.
-    this.surgeRecorder = new SurgeRecorder({
-      clock: deps.clock,
-      scheduler,
-      log: deps.surgeLog ?? null,
-      getQuote: (ticker) => this.slots.get(ticker)?.quote ?? null,
-      getMarket: (ticker) => this.marketOf(ticker),
-      onQuoteTargetsChanged: () => this.reconcileQuoteSubs(this.lastView),
-      onEvent: (text) => this.pushEvent({ at: this.deps.clock.now(), text }),
     });
   }
 
   // ---- 모드 수명주기 ----
 
-  /** 자동관리 시작. 급등/급락 신호 기록도 함께 켠다(기획 (a)안 — start에 묶는다). */
+  /** 자동관리 시작. */
   start(): void {
     this.deps.realtime.connect();
     this.watchlist.start();
     this.pilot.start();
-    if (this.deps.surge) this.surgeRecorder.enable();
     void this.checkHoldings();
     // 세션 전환(정규장↔주간거래) 감시 — 전환 시 살아 있는 구독의 trKey를 새 세션 키로 회전한다.
     if (this.sessionTimer === null) {
@@ -294,8 +247,6 @@ export class AutoPilotManager {
   stop(): void {
     this.pilot.stop();
     this.watchlist.stop();
-    // 열린 에피소드는 여기서 전부 만료된다 — 정지 중 공백 구간과 이어붙이지 않는다(DB 문서 운영 규칙).
-    this.surgeRecorder.disable();
   }
 
   /** 앱 재시작 복원 — 금액 상태 로드(+보유 감지는 start 시점에 다시 한다). */
@@ -369,7 +320,6 @@ export class AutoPilotManager {
     }
     this.pilot.dispose();
     this.watchlist.stop();
-    this.surgeRecorder.disable();
     this.tickHolds.clear(); // 홀드 가드보다 먼저 비워야 아래 dropSlot이 실제로 구독을 정리한다.
     this.prevActive.clear();
     for (const ticker of [...this.slots.keys()]) this.dropSlot(ticker);
@@ -381,18 +331,17 @@ export class AutoPilotManager {
     this.slots.get(symb)?.pushTick(price, tsMs, extras);
   };
 
-  routeQuote = (symb: string, bid1: number, ask1: number, _tsMs: number, extras?: QuoteExtras): void => {
-    this.slots.get(symb)?.pushQuote(bid1, ask1, extras);
+  routeQuote = (symb: string, bid1: number, ask1: number, _tsMs: number): void => {
+    this.slots.get(symb)?.pushQuote(bid1, ask1);
   };
 
   /**
    * 이 매니저가 현재 (trKey, trId)를 구독 중인가 — ScalperManager.acquireFeed/releaseFeed가
    * 실제 subscribe/unsubscribe 여부를 판단할 때 프로브로 조회한다(교차 해제 방지).
+   * 구독은 체결가(HDFSCNT0)뿐이므로 다른 trId는 항상 false다.
    */
   usesTrKey(trKey: string, trId: string): boolean {
-    if (trId === REALTIME_QUOTE_TR_ID) {
-      return [...this.quoteSubs.values()].includes(trKey);
-    }
+    if (trId !== REALTIME_PRICE_TR_ID) return false;
     return [...this.tickTrKeys.values()].includes(trKey);
   }
 
@@ -422,16 +371,6 @@ export class AutoPilotManager {
   /** 최근 이벤트(최신순, 최대 50) — 타임라인 초기 렌더용. */
   get recentEvents(): readonly AutoPilotEvent[] {
     return [...this.events];
-  }
-
-  /** 급등/급락 신호 에피소드 구독 — 기존 subscribeView/Events/List와 같은 관례(해제 함수 반환). */
-  subscribeSurge(listener: SurgeListener): () => void {
-    return this.surgeRecorder.subscribe(listener);
-  }
-
-  /** 최근 급등/급락 에피소드(최신순) — 신호 패널 초기 렌더용. */
-  get recentSurgeEpisodes(): readonly SurgeEpisodeView[] {
-    return this.surgeRecorder.recentEpisodes;
   }
 
   /** 리스트 카드용 행 — watchlist 엔트리 + 해당 슬롯의 실시간 뷰. 틱/초 빠른 순으로 정렬. */
@@ -490,15 +429,6 @@ export class AutoPilotManager {
         this.deps.realtime.unsubscribe(oldKey);
       }
     }
-    for (const [ticker, oldKey] of [...this.quoteSubs]) {
-      const newKey = this.marketTrKeyOf(ticker);
-      if (newKey === oldKey) continue;
-      this.quoteSubs.set(ticker, newKey);
-      this.deps.realtime.subscribe(newKey, REALTIME_QUOTE_TR_ID);
-      if (!this.deps.isFeedHeldExternally?.(oldKey, REALTIME_QUOTE_TR_ID)) {
-        this.deps.realtime.unsubscribe(oldKey, REALTIME_QUOTE_TR_ID);
-      }
-    }
   }
 
   private addSlot(ticker: string): void {
@@ -513,12 +443,6 @@ export class AutoPilotManager {
       minVolumeSpikeRatio: this.deps.minVolumeSpikeRatio,
       minStrength: this.deps.minStrength,
       ladder: this.entryLadder,
-      surge: this.deps.surge,
-    });
-    // 급등/급락 감지(병렬) → 레코더 — 경보는 호가 예열, 확정은 에피소드 기록. 진입 감지와 무관.
-    slot.setSurgeListener((event, ctx) => {
-      if (event.kind === 'alert') this.surgeRecorder.handleAlert(ctx.ticker, event);
-      else this.surgeRecorder.handleSignal(ctx.ticker, event, ctx.price);
     });
     this.slots.set(ticker, slot);
     const trKey = this.marketTrKeyOf(ticker); // 체결가 — 전 종목(정규장 D 또는 주간거래 R).
@@ -539,69 +463,6 @@ export class AutoPilotManager {
     // 상세화면이 같은 키를 잡고 있으면 실제 해제는 건너뛴다 — 그쪽 releaseFeed가 마지막에 정리한다.
     if (tickTrKey && !this.deps.isFeedHeldExternally?.(tickTrKey, REALTIME_PRICE_TR_ID)) {
       this.deps.realtime.unsubscribe(tickTrKey);
-    }
-    const quoteTrKey = this.quoteSubs.get(ticker);
-    if (quoteTrKey) {
-      this.quoteSubs.delete(ticker);
-      if (!this.deps.isFeedHeldExternally?.(quoteTrKey, REALTIME_QUOTE_TR_ID)) {
-        this.deps.realtime.unsubscribe(quoteTrKey, REALTIME_QUOTE_TR_ID);
-      }
-    }
-  }
-
-  /**
-   * 호가(HDFSASP0) 구독을 **감시 top3 ∪ 진입 중 ∪ 보유 전 종목**에 맞춘다(plan §4-11).
-   * 감지기는 리스트 전 종목에 붙지만(2026-08-10) 호가는 이 소수만 예열한다 — 전 종목 호가까지
-   * 구독하면 리스트 30개 기준 체결가 30 + 호가 30으로 KIS 한도(41건)를 훌쩍 넘는다.
-   * 감시 밖 종목에서 신호가 뜨면 pendingBuys 등록 → view.entering → 여기서 즉시 호가를 구독하고,
-   * 프리플라이트(REST 왕복) 동안 첫 호가가 도착한다(발주는 어차피 그 뒤).
-   * 예산: 체결가 리스트 전 종목 + 호가 최대 (3 + 진입 중 + maxGrids)건.
-   */
-  private reconcileQuoteSubs(view: AutoPilotView): void {
-    // 호가 예산을 **코드가 직접 센다** — 리스트 30 확대 후 핀 유예·보유 홀드·에피소드 호가가 겹치면
-    // 계산상 예산이 실제로는 41건을 넘어 "구독 실패 · MAX SUBSCRIBE OVER"가 났다(실사고).
-    // 허용량 = 한도 − 예약(상세화면+회전 여유) − 체결가 구독 수. 우선순위(중요한 것부터):
-    //   진입 중·보유(발주 단가에 필수) → 감시 top3(예열) → 급등 에피소드·경보(기록용).
-    const quoteBudget = Math.max(0, MAX_WS_SUBS - WS_SUBS_RESERVE - this.tickTrKeys.size);
-    const ordered: string[] = [
-      ...view.entering,
-      ...view.activeTickers,
-      ...view.watched,
-      ...this.surgeRecorder.quoteTargets(),
-    ];
-    const allowed = new Set<string>();
-    for (const ticker of ordered) {
-      if (allowed.size >= quoteBudget) break;
-      if (this.slots.has(ticker)) allowed.add(ticker);
-    }
-    const wanted = new Set(ordered);
-    const trimmed = [...wanted].filter((t) => this.slots.has(t) && !allowed.has(t)).length;
-    if (trimmed !== this.lastQuoteTrimmed) {
-      // 조용한 잘라내기 금지 — 예산 부족으로 호가를 보류하면 타임라인에 남긴다(0으로 회복될 때도 한 번).
-      if (trimmed > 0) {
-        this.pushEvent({
-          at: this.deps.clock.now(),
-          text: `호가 구독 예산 초과 — ${trimmed}건 보류 (한도 ${MAX_WS_SUBS}건, 체결가 ${this.tickTrKeys.size}건)`,
-        });
-      }
-      this.lastQuoteTrimmed = trimmed;
-    }
-
-    for (const [ticker, trKey] of [...this.quoteSubs]) {
-      if (!allowed.has(ticker)) {
-        this.quoteSubs.delete(ticker);
-        // 상세화면이 이 호가를 보고 있으면 해제를 건너뛴다 — 그쪽 releaseFeed가 마지막에 정리한다.
-        if (!this.deps.isFeedHeldExternally?.(trKey, REALTIME_QUOTE_TR_ID)) {
-          this.deps.realtime.unsubscribe(trKey, REALTIME_QUOTE_TR_ID);
-        }
-      }
-    }
-    for (const ticker of allowed) {
-      if (!this.quoteSubs.has(ticker)) {
-        const trKey = this.marketTrKeyOf(ticker);
-        this.quoteSubs.set(ticker, trKey);
-        this.deps.realtime.subscribe(trKey, REALTIME_QUOTE_TR_ID);
-      }
     }
   }
 
