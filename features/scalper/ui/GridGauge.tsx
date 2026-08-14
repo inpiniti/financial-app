@@ -6,6 +6,8 @@
 import { useState } from 'react';
 import { Text, View, type LayoutChangeEvent } from 'react-native';
 import Svg, { Line } from 'react-native-svg';
+import { formatKrw, formatUsd } from '../../../lib/format';
+import { useUsdKrwRate } from '../../../lib/useUsdKrwRate';
 import type { AutoPilotGridView } from '../autopilot';
 import { formatPrice } from './format';
 import { normalizeGridPosition } from './gridGaugeMath';
@@ -39,6 +41,12 @@ export function GridGauge({ grid, name }: GridGaugeProps) {
   const [trackWidth, setTrackWidth] = useState(0);
   const onTrackLayout = (e: LayoutChangeEvent) => setTrackWidth(e.nativeEvent.layout.width);
 
+  // 보유금액 = 보유수량 × 현재가(최근 틱). 틱이 아직 없으면 표시 불가(—).
+  // 환율은 잔고 기준 공용 캐시(30분) — 못 구하면 원화 병기 없이 USD만 보여준다.
+  const usdKrw = useUsdKrwRate();
+  const holdingValueUsd = grid.currentPrice === null ? null : grid.currentPrice * grid.holdingQty;
+  const holdingValueKrw = holdingValueUsd !== null && usdKrw !== null ? holdingValueUsd * usdKrw : null;
+
   const buyLegAbsent = grid.buyLegStatus === 'skippedCash' || grid.buyLegStatus === 'rejected';
   const buyLegNotice = BUY_LEG_NOTICE[grid.buyLegStatus];
 
@@ -54,20 +62,26 @@ export function GridGauge({ grid, name }: GridGaugeProps) {
 
   return (
     <View className="px-5 pb-5 pt-1">
-      {/* 헤더: 종목명 · 종목코드 · 보유수량 3열 */}
+      {/* 헤더: 종목명(아래 종목코드·보유수량) · 보유금액(달러, 아래 원화 병기) 2열.
+          보유금액 = 보유수량 × 현재가 — 환율을 못 구했거나 틱이 없으면 원화 줄은 생략한다. */}
       <View className="mb-5 flex-row items-center">
         <View className="flex-1">
           <Text className="text-base font-bold text-[#191f28]" numberOfLines={1}>
             {name ?? grid.ticker}
           </Text>
-        </View>
-        <View className="mr-4 items-end">
-          <Text className="text-xs text-[#8b95a1]">종목코드</Text>
-          <Text className="text-sm font-semibold text-[#4e5968]">{grid.ticker}</Text>
+          <Text className="text-xs text-[#8b95a1]">
+            {name !== undefined ? `${grid.ticker} · ` : ''}
+            {grid.holdingQty}주
+          </Text>
         </View>
         <View className="items-end">
-          <Text className="text-xs text-[#8b95a1]">보유수량</Text>
-          <Text className="text-sm font-semibold text-[#4e5968]">{grid.holdingQty}주</Text>
+          <Text className="text-xs text-[#8b95a1]">보유금액</Text>
+          <Text className="text-sm font-semibold text-[#4e5968]">
+            {holdingValueUsd === null ? '—' : formatUsd(holdingValueUsd, 2)}
+          </Text>
+          {holdingValueKrw !== null && (
+            <Text className="text-xs text-[#8b95a1]">{formatKrw(holdingValueKrw)}</Text>
+          )}
         </View>
       </View>
 
