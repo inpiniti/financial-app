@@ -1,4 +1,4 @@
-// 홈 순위 섹션 — 토스 거래량 실시간 순위(기본) + KIS 순위 7종(kis/ranking.ts).
+// 홈 순위 섹션 — 토스 실시간 순위 2종(거래량 기본·거래대금) + KIS 순위 7종(kis/ranking.ts).
 // 행 탭 시 종목 상세화면으로 이동한다.
 //
 // 토스 순위(lib/tossRanking.ts)는 KIS 키가 없어도 보이는 공개 API라 세션 게이트를 걸지 않는다 —
@@ -30,17 +30,30 @@ import {
   type RankingExchangeCode,
   type RankingKind,
 } from '../../kis/ranking';
-import { fetchTossVolumeRanking } from '../../lib/tossRanking';
+import { fetchTossRanking, type TossRankingKind } from '../../lib/tossRanking';
 import { toStockMarketCode } from '../stock/marketCodes';
 import { EmptyState, ErrorNotice, SetupNotice, SkeletonList } from './components';
 import { useKisSession } from './useKisSession';
 
-/** 토스 순위는 KIS 순위와 원천이 달라 UI에서만 한 종류로 합쳐 다룬다. */
+/** 토스 순위는 KIS 순위와 원천이 달라 UI에서만 종류로 합쳐 다룬다 — 거래량·거래대금 2종(2026-08-14 확장). */
 const TOSS_KIND = 'tossVolume';
-type UiRankingKind = typeof TOSS_KIND | RankingKind;
+const TOSS_AMOUNT_KIND = 'tossAmount';
+type TossUiKind = typeof TOSS_KIND | typeof TOSS_AMOUNT_KIND;
+type UiRankingKind = TossUiKind | RankingKind;
+
+/** UI 종류 → lib/tossRanking.ts 순위 종류. 화면 조회라 관리종목 필터는 걸지 않는다(토스 앱 화면과 동일). */
+const TOSS_FETCH_KIND: Record<TossUiKind, TossRankingKind> = {
+  [TOSS_KIND]: 'volume',
+  [TOSS_AMOUNT_KIND]: 'amount',
+};
+
+function isTossKind(kind: UiRankingKind): kind is TossUiKind {
+  return kind === TOSS_KIND || kind === TOSS_AMOUNT_KIND;
+}
 
 const KIND_ORDER: UiRankingKind[] = [
   TOSS_KIND, // 기본값 — 사용자가 가장 먼저 보는 순위(2026-08-11).
+  TOSS_AMOUNT_KIND,
   'tradeVolume',
   'volumeSurge',
   'priceFluct',
@@ -52,6 +65,7 @@ const KIND_ORDER: UiRankingKind[] = [
 
 const KIND_LABEL: Record<UiRankingKind, string> = {
   [TOSS_KIND]: '토스거래량실시간순위',
+  [TOSS_AMOUNT_KIND]: '토스거래대금실시간순위',
   ...RANKING_KIND_LABEL,
 };
 
@@ -127,10 +141,11 @@ export function Ranking() {
   // 토스 순위 — KIS 세션 없이 바로 조회한다(공개 API). 세션에 의존하지 않아야
   // 세션 로딩 완료로 콜백이 새로 만들어질 때 같은 조회를 두 번 하지 않는다.
   const fetchToss = useCallback(async () => {
+    if (!isTossKind(kind)) return;
     setLoadingData(true);
     setDataError(null);
     try {
-      const tossRows = await fetchTossVolumeRanking();
+      const tossRows = await fetchTossRanking(TOSS_FETCH_KIND[kind]);
       // 응답에 등락률 필드가 없어 기준가 대비로 계산된 값이 온다 — 색은 KIS의 sign 관례로 맞춘다.
       setRows(
         tossRows.map((r) => ({
@@ -148,10 +163,10 @@ export function Ranking() {
       setLoadingData(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [kind]);
 
   const fetchKisRanking = useCallback(async () => {
-    if (kind === TOSS_KIND) return;
+    if (isTossKind(kind)) return;
     if (session.kind !== 'ready') return;
     setLoadingData(true);
     setDataError(null);
@@ -199,16 +214,16 @@ export function Ranking() {
 
   // 원천이 둘이라 효과도 둘 — 토스 쪽이 세션 변화(로딩→준비)에 딸려 다시 돌지 않게 분리한다.
   useEffect(() => {
-    if (kind === TOSS_KIND) void fetchToss();
+    if (isTossKind(kind)) void fetchToss();
   }, [kind, fetchToss]);
 
   useEffect(() => {
-    if (kind !== TOSS_KIND && session.kind === 'ready') void fetchKisRanking();
+    if (!isTossKind(kind) && session.kind === 'ready') void fetchKisRanking();
   }, [kind, session, fetchKisRanking]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
-    if (kind === TOSS_KIND) {
+    if (isTossKind(kind)) {
       void fetchToss();
       return;
     }
@@ -224,7 +239,7 @@ export function Ranking() {
     });
   }, []);
 
-  const isToss = kind === TOSS_KIND;
+  const isToss = isTossKind(kind);
   // 토스 순위는 기간·방향 선택이 없다(항상 실시간). 시간창 라벨은 KIS 순위에서만 쓴다.
   const timeUnit = isToss ? 'none' : RANKING_TIME_UNIT[kind];
   // 토스 순위는 KIS 키 없이도 보인다 — 세션 안내는 KIS 순위를 골랐을 때만.

@@ -20,7 +20,7 @@ import { loadKisSettings } from '../../../lib/kisSettings';
 import { secureTokenStorage } from '../../../lib/secureTokenStorage';
 import { inquireOverseasBalance } from '../../../kis/balance';
 import { buyableUsdOf, inquirePsAmount } from '../../../kis/psamount';
-import { fetchTossVolumeRanking } from '../../../lib/tossRanking';
+import { fetchTossRankings, type TossRankingRow } from '../../../lib/tossRanking';
 import type { OverseasExchangeCode } from '../../../kis/trId';
 import { AutoPilotManager } from '../autopilotManager';
 import { createKisBroker } from '../createKisBroker';
@@ -77,20 +77,22 @@ async function buildManager(): Promise<ManagerBootstrap> {
     return token.accessToken;
   };
 
-  // 리스트 원천 — 토스 거래량 실시간 순위(2026-08-11 사용자 요청으로 KIS 순위 4종을 대체).
+  // 리스트 원천 — 토스 실시간 순위 2종(거래대금·거래량, 2026-08-14 사용자 요청으로 거래량 1종에서 확장).
+  // 감지 후보 조회라 **관리종목 제외 필터**를 건다(화면 순위 조회는 필터 없음 — lib/tossRanking.ts 주석).
   // ETF·ETN은 lib/tossRanking.ts가 종목구분(group)으로 이미 걸러낸 상태로 온다.
   // KIS 토큰이 필요 없다(비공식 공개 API) — 실패하면 throw해서 ScalperWatchlist가 직전 리스트를 유지한다.
   const fetchSnapshot = async (): Promise<RankingSnapshot> => {
-    const rows = await fetchTossVolumeRanking();
-    const tossVolume: WatchCandidateRow[] = rows.map((r) => ({
-      symb: r.symbol,
-      // 등락률은 소수 문자열로 넘긴다 — 부호는 sign 없이 rate 원문 그대로 읽힌다(parseSignedRate).
-      rate: r.ratePct.toFixed(2),
-      last: String(r.price),
-      excd: r.market,
-      name: r.name,
-    }));
-    return { tossVolume };
+    const rankings = await fetchTossRankings(['amount', 'volume'], { excludeManagement: true });
+    const toRows = (rows: TossRankingRow[]): WatchCandidateRow[] =>
+      rows.map((r) => ({
+        symb: r.symbol,
+        // 등락률은 소수 문자열로 넘긴다 — 부호는 sign 없이 rate 원문 그대로 읽힌다(parseSignedRate).
+        rate: r.ratePct.toFixed(2),
+        last: String(r.price),
+        excd: r.market,
+        name: r.name,
+      }));
+    return { tossAmount: toRows(rankings.amount), tossVolume: toRows(rankings.volume) };
   };
 
   // 재시작 보유 감지(plan §2-6) — 잔고에 수량이 남은 종목 티커 목록.

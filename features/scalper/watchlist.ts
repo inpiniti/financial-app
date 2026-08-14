@@ -1,9 +1,10 @@
 // 단타 리스트 관리자 — plan §2-3 (docs/development/2026-07-31_단타-자동관리-plan.md).
 // 원천 확장(3종→4종, 상승률 추가): docs/development/2026-08-03_단타-리스트-상승률확장-plan.md.
 //
-// 원천 교체(2026-08-11 사용자 요청): KIS 순위 4종 → **토스 거래량 실시간 순위**(lib/tossRanking.ts) 1종.
-// 토스 순위 상위 100종(ETF·ETN 제외)을 3분 간격으로 폴링해
-// "등락률 +, 주문가능, 진입금액 이하" 상위 30티커를 상시 유지한다(모자라면 차순위로 충원, 2026-08-13 20→30).
+// 원천 교체(2026-08-11 사용자 요청): KIS 순위 4종 → 토스 실시간 순위(lib/tossRanking.ts).
+// 원천 확장(2026-08-14 사용자 요청): 거래량 1종 → **거래대금+거래량 2종, 각 15개**(관리종목 제외 필터).
+// 토스 순위(ETF·ETN 제외)를 3분 간격으로 폴링해
+// "등락률 +, 주문가능, 진입금액 이하" 상위 총 30티커를 상시 유지한다(모자라면 차순위로 충원).
 //  · 현재가 > 진입금액이면 어차피 1주도 못 사서(qtyForAmount=0) 감시·WS 구독이 낭비다 —
 //    리스트 구성 단계에서 걸러내고 차순위로 충원한다(maxPriceUsd).
 //  · 중복 티커는 1개만 올리고 차순위로 충원(원천이 여러 개면 배열 순서가 곧 우선권).
@@ -17,22 +18,22 @@
 import type { SchedulerLike } from './types';
 
 /**
- * 리스트 원천 — 토스 거래량 실시간 순위 1종(2026-08-11 사용자 요청).
- * 배열 구조(여러 원천 + 우선권)는 그대로 남겨둔다 — 나중에 원천을 다시 늘릴 때 이 자리에 붙인다.
+ * 리스트 원천 — 토스 실시간 순위 2종: 거래대금·거래량(2026-08-14 사용자 요청, 거래대금 우선권).
+ * 두 순위에 겹치는 티커는 앞 원천(거래대금)에 채용되고 뒤 원천은 차순위로 충원한다.
  */
-export const WATCH_SOURCES = ['tossVolume'] as const;
+export const WATCH_SOURCES = ['tossAmount', 'tossVolume'] as const;
 export type WatchSource = (typeof WATCH_SOURCES)[number];
 
 export const WATCH_SOURCE_LABEL: Record<WatchSource, string> = {
+  tossAmount: '토스거래대금',
   tossVolume: '토스거래량',
 };
 
 /**
- * 원천별 채용 슬롯 수 — 원천이 1종이라 곧 리스트 크기 · 폴링 주기 3분(plan §4-10).
- * 20→30 확대(2026-08-13, 급등주 찾기): 감시 폭을 넓혀 "리스트 밖에서 튀는 종목" 사각을 줄인다.
+ * 원천별 채용 슬롯 수 — 2종 × 15 = 총 30(2026-08-14, 1종 30개에서 재배분 — 총 크기는 유지).
  * 구독 예산(KIS 41건): 체결가 30 + 호가(감시 3 + 진입·보유 + 급등 에피소드 3) + 상세화면 ≤ 41.
  */
-export const WATCH_SLOTS_PER_SOURCE = 30;
+export const WATCH_SLOTS_PER_SOURCE = 15;
 /** 평시 리스트 최대 크기(원천 수 × 슬롯 수 = 30) — 핀 유예 중에는 이보다 커질 수 있다. */
 export const WATCHLIST_MAX_SIZE = WATCH_SOURCES.length * WATCH_SLOTS_PER_SOURCE;
 export const WATCHLIST_POLL_INTERVAL_MS = 180_000;
@@ -87,7 +88,7 @@ export interface WatchlistDiff {
 }
 
 export interface WatchlistDeps {
-  /** 원천 1회 폴링 — 실서비스는 lib/tossRanking.ts(순위+종목정보 2콜), 테스트는 가짜 스냅샷. */
+  /** 원천 1회 폴링 — 실서비스는 lib/tossRanking.ts(순위 2종+종목정보, 총 3콜), 테스트는 가짜 스냅샷. */
   fetchSnapshot: () => Promise<RankingSnapshot>;
   scheduler: SchedulerLike;
   pollIntervalMs?: number;

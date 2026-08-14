@@ -19,7 +19,7 @@ function row(symb: string, rate: string, extra: Partial<WatchCandidateRow> = {})
 }
 
 function snapshot(partial: Partial<RankingSnapshot>): RankingSnapshot {
-  return { tossVolume: [], ...partial };
+  return { tossAmount: [], tossVolume: [], ...partial };
 }
 
 /** 수동 트리거 스케줄러 — setInterval 콜백을 잡아두고 tick()으로 강제 실행. */
@@ -64,18 +64,23 @@ describe('parseSignedRate / isOrderable', () => {
 });
 
 describe('computeDesired — 필터·중복 제거·차순위 충원', () => {
-  it('토스 순위 상위에서 +등락 30개만 채용하고 나머지는 버린다', () => {
+  it('원천별 상위 15개씩, 겹치는 티커는 앞 원천(거래대금)이 가져가고 뒤 원천은 차순위 충원한다', () => {
     const rows = (prefix: string, n: number) =>
       Array.from({ length: n }, (_, i) => row(`${prefix}${i + 1}`, '1'));
-    const desired = computeDesired(snapshot({ tossVolume: rows('V', 35) }));
+    // 거래대금 20종 + 거래량 20종(앞 5종은 거래대금 상위와 중복).
+    const amount = rows('A', 20);
+    const volume = [...rows('A', 5), ...rows('V', 15)];
+    const desired = computeDesired(snapshot({ tossAmount: amount, tossVolume: volume }));
 
-    expect(desired).toHaveLength(WATCHLIST_MAX_SIZE);
-    // 20→30 확대(2026-08-13 급등주 찾기) — 감시 폭을 넓혀 리스트 밖 급등 사각을 줄인다.
+    // 2종 × 15 = 총 30(2026-08-14 거래대금+거래량 확장 — 총 크기는 30 유지).
     expect(WATCHLIST_MAX_SIZE).toBe(30);
-    expect(WATCH_SLOTS_PER_SOURCE).toBe(30);
-    expect(desired[0].ticker).toBe('V1');
-    expect(desired[29].ticker).toBe('V30');
-    expect(desired.every((e) => e.source === 'tossVolume')).toBe(true);
+    expect(WATCH_SLOTS_PER_SOURCE).toBe(15);
+    expect(desired).toHaveLength(30);
+    const amountSide = desired.filter((e) => e.source === 'tossAmount').map((e) => e.ticker);
+    const volumeSide = desired.filter((e) => e.source === 'tossVolume').map((e) => e.ticker);
+    expect(amountSide).toEqual(Array.from({ length: 15 }, (_, i) => `A${i + 1}`));
+    // A1~A5는 거래대금에 이미 채용 — 거래량은 V1~V15로 채운다.
+    expect(volumeSide).toEqual(Array.from({ length: 15 }, (_, i) => `V${i + 1}`));
   });
 
   it('순위가 비면(조회 실패 등) 리스트도 비운다', () => {

@@ -1,14 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  buildTossRankingBody,
+  fetchTossRankings,
   fetchTossVolumeRanking,
   isTradableGroup,
   joinRankingRows,
   parseRankingProducts,
   parseStockInfos,
+  TOSS_FILTER_EXCLUDE_MANAGEMENT,
   TOSS_RANKING_URL,
   TOSS_STOCK_INFO_URL,
-  TOSS_VOLUME_RANKING_BODY,
 } from './tossRanking';
 
 /** 순위 응답 1건 — docs/toss/순위.txt 형태 그대로(필요 필드만). */
@@ -129,7 +131,7 @@ describe('fetchTossVolumeRanking', () => {
     expect(rows.map((r) => r.symbol)).toEqual(['NVDA']);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     const [, rankInit] = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(JSON.parse(rankInit.body)).toEqual(TOSS_VOLUME_RANKING_BODY);
+    expect(JSON.parse(rankInit.body)).toEqual(buildTossRankingBody('volume'));
     const [infoUrl] = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[1];
     expect(infoUrl).toBe(`${TOSS_STOCK_INFO_URL}?codes=C1,C2`);
   });
@@ -137,5 +139,63 @@ describe('fetchTossVolumeRanking', () => {
   it('순위가 비면 던진다 — 워치리스트가 직전 리스트를 유지하도록', async () => {
     const fetchImpl = vi.fn(async () => ({ json: async () => ({ result: { products: [] } }) })) as unknown as typeof fetch;
     await expect(fetchTossVolumeRanking({ fetchImpl })).rejects.toThrow('토스 순위');
+  });
+});
+
+describe('buildTossRankingBody', () => {
+  it('종류별 id — 거래량 biggest_market_volume, 거래대금 biggest_total_amount, 필터는 기본 빈 배열', () => {
+    expect(buildTossRankingBody('volume')).toEqual({
+      id: 'biggest_market_volume',
+      filters: [],
+      duration: 'realtime',
+      tag: 'us',
+    });
+    expect(buildTossRankingBody('amount').id).toBe('biggest_total_amount');
+  });
+
+  it('excludeManagement면 관리종목 제외 필터만 싣는다 — $1·시총 필터는 넣지 않는다(2026-08-14 사용자 결정)', () => {
+    expect(buildTossRankingBody('amount', true).filters).toEqual([TOSS_FILTER_EXCLUDE_MANAGEMENT]);
+  });
+});
+
+describe('fetchTossRankings — 2종 병렬 + 종목정보 합집합 1콜', () => {
+  it('순위 2콜 + 종목정보 1콜(코드 중복 제거)로 종류별 행을 돌려준다', async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: { body?: string }) => {
+      if (url === TOSS_RANKING_URL) {
+        const body = JSON.parse(init!.body!) as { id: string };
+        // 거래대금엔 C2·C3, 거래량엔 C2(중복)·C1(ETF) — 종목정보 코드는 합집합으로 한 번만.
+        const products =
+          body.id === 'biggest_total_amount'
+            ? [product(1, 'C2', '엔비디아', 219, 200), product(2, 'C3', '니오', 4.7, 4.8)]
+            : [product(1, 'C2', '엔비디아', 219, 200), product(2, 'C1', 'KORU', 1, 1)];
+        return { json: async () => ({ result: { products } }) };
+      }
+      return {
+        json: async () => ({
+          result: [info('C1', 'KORU', 'AMX', 'EF'), info('C2', 'NVDA', 'NSQ', 'ST'), info('C3', 'NIO', 'NYS', 'DR')],
+        }),
+      };
+    }) as unknown as typeof fetch;
+
+    const rankings = await fetchTossRankings(['amount', 'volume'], { fetchImpl, excludeManagement: true });
+
+    expect(rankings.amount.map((r) => r.symbol)).toEqual(['NVDA', 'NIO']);
+    expect(rankings.volume.map((r) => r.symbol)).toEqual(['NVDA']); // ETF 제외.
+    expect(fetchImpl).toHaveBeenCalledTimes(3); // 순위 2 + 종목정보 1.
+    const calls = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(JSON.parse(calls[0][1].body).filters).toEqual([TOSS_FILTER_EXCLUDE_MANAGEMENT]);
+    expect(calls[2][0]).toBe(`${TOSS_STOCK_INFO_URL}?codes=C2,C3,C1`);
+  });
+
+  it('한 종류라도 비면 던진다 — 워치리스트가 직전 리스트를 유지하도록', async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: { body?: string }) => {
+      if (url === TOSS_RANKING_URL) {
+        const body = JSON.parse(init!.body!) as { id: string };
+        const products = body.id === 'biggest_total_amount' ? [product(1, 'C2', '엔비디아', 219, 200)] : [];
+        return { json: async () => ({ result: { products } }) };
+      }
+      return { json: async () => ({ result: [] }) };
+    }) as unknown as typeof fetch;
+    await expect(fetchTossRankings(['amount', 'volume'], { fetchImpl })).rejects.toThrow('토스 순위');
   });
 });

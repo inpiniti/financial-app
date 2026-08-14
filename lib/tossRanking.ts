@@ -1,4 +1,4 @@
-// 토스증권 미국 거래량 실시간 순위 — 비공식 API(페이로드 원문: docs/toss/순위.txt).
+// 토스증권 미국 실시간 순위(거래량·거래대금) — 비공식 API(페이로드 원문: docs/toss/순위.txt).
 // 로그인·쿠키 없이 최소 헤더로만 호출한다(curl 실호출 확인 — tossSearch.ts·tossCommunity.ts와 같은 관례).
 //
 // 순위 응답에는 **티커가 없다**(productCode·한글명뿐). 그래서 2단계로 조회한다:
@@ -22,18 +22,31 @@ export interface TossRankingDeps {
 export const TOSS_RANKING_URL = 'https://wts-cert-api.tossinvest.com/api/v2/dashboard/wts/overview/ranking';
 export const TOSS_STOCK_INFO_URL = 'https://wts-info-api.tossinvest.com/api/v2/stock-infos';
 
+/** 순위 종류 — 거래량(biggest_market_volume)·거래대금(biggest_total_amount). 둘 다 실시간(us). */
+export type TossRankingKind = 'volume' | 'amount';
+
+export const TOSS_RANKING_ID: Record<TossRankingKind, string> = {
+  volume: 'biggest_market_volume',
+  amount: 'biggest_total_amount',
+};
+
 /**
- * 순위 요청 본문 — 미국 거래량 실시간 순위.
- * ⚠ filters는 **빈 배열**이다(2026-08-11 사용자 확정). docs/토스/순위.txt에 적힌
- *   MARKET_CAP_GREATER_THAN_50M·STOCKS_PRICE_GREATER_THAN_ONE_DOLLAR를 넣으면 시총 5천만달러·
- *   주가 $1 미만이 잘려 앱에서 보이는 순위와 다른 목록이 온다. 필터를 넣지 않는 쪽이 화면과 같다.
+ * 관리종목(투자위험·경고 지정 계열) 제외 필터 — **감지리스트(자동 트레이딩 후보) 조회에만 건다**(2026-08-14).
+ * 손절 없는 그리드의 최악 케이스(안 돌아오는 종목)를 후보 단계에서 줄이는 목적.
+ * MARKET_CAP_GREATER_THAN_50M·STOCKS_PRICE_GREATER_THAN_ONE_DOLLAR는 사용자 결정으로 넣지 않는다 —
+ * $1 미만·소형주도 감지 대상이고, 필터 없는 쪽이 토스 앱 화면과 같다(2026-08-11 확정은 화면 조회에 유지).
  */
-export const TOSS_VOLUME_RANKING_BODY = {
-  id: 'biggest_market_volume',
-  filters: [] as string[],
-  duration: 'realtime',
-  tag: 'us',
-} as const;
+export const TOSS_FILTER_EXCLUDE_MANAGEMENT = 'KRX_MANAGEMENT_STOCK';
+
+/** 순위 요청 본문 — kind별 id, excludeManagement면 관리종목 제외 필터를 싣는다. */
+export function buildTossRankingBody(kind: TossRankingKind, excludeManagement = false) {
+  return {
+    id: TOSS_RANKING_ID[kind],
+    filters: excludeManagement ? [TOSS_FILTER_EXCLUDE_MANAGEMENT] : ([] as string[]),
+    duration: 'realtime',
+    tag: 'us',
+  };
+}
 
 /** 거래 가능한 종목구분 — 주권·주식예탁증권(ADR)만. ETF(EF)·ETN(EN)·ELW(EW)는 뺀다. */
 export const TOSS_TRADABLE_GROUPS = ['ST', 'DR'] as const;
@@ -167,15 +180,44 @@ export async function fetchStockInfos(codes: readonly string[], deps: TossRankin
   return merged;
 }
 
+export interface TossRankingOptions extends TossRankingDeps {
+  /** true면 관리종목 제외 필터(KRX_MANAGEMENT_STOCK)를 싣는다 — 감지리스트 전용(화면 조회는 필터 없음). */
+  excludeManagement?: boolean;
+}
+
 /**
- * 토스 거래량 실시간 순위(미국) — ETF·ETN을 뺀 주식만 순위 순서대로 돌려준다.
- * 실패는 throw — 호출부(조회 화면·워치리스트)가 직전 상태 유지/에러 표시로 처리한다.
+ * 토스 실시간 순위 여러 종을 한 번에(미국) — ETF·ETN을 뺀 주식만 순위 순서대로 돌려준다.
+ * 순위 POST는 병렬, 종목정보(stock-infos)는 코드 합집합으로 1회만 조회한다(2종이어도 총 3콜).
+ * 어느 한 종이라도 비면 throw — 호출부(조회 화면·워치리스트)가 직전 상태 유지/에러 표시로 처리한다.
  */
-export async function fetchTossVolumeRanking(deps: TossRankingDeps = {}): Promise<TossRankingRow[]> {
-  const fetchImpl = deps.fetchImpl ?? fetch;
-  const products = parseRankingProducts(await postJson(TOSS_RANKING_URL, TOSS_VOLUME_RANKING_BODY, fetchImpl));
-  if (products.length === 0) throw new Error('토스 순위 응답이 비어 있어요');
-  const codes = products.map((p) => p.productCode?.trim()).filter((c): c is string => !!c);
+export async function fetchTossRankings<K extends TossRankingKind>(
+  kinds: readonly K[],
+  opts: TossRankingOptions = {},
+): Promise<Record<K, TossRankingRow[]>> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const productsByKind = await Promise.all(
+    kinds.map((kind) =>
+      postJson(TOSS_RANKING_URL, buildTossRankingBody(kind, opts.excludeManagement), fetchImpl).then(parseRankingProducts),
+    ),
+  );
+  if (productsByKind.some((products) => products.length === 0)) throw new Error('토스 순위 응답이 비어 있어요');
+  const codes = [
+    ...new Set(productsByKind.flat().map((p) => p.productCode?.trim()).filter((c): c is string => !!c)),
+  ];
   const infos = await fetchStockInfos(codes, { fetchImpl });
-  return joinRankingRows(products, infos);
+  const out = {} as Record<K, TossRankingRow[]>;
+  kinds.forEach((kind, i) => {
+    out[kind] = joinRankingRows(productsByKind[i], infos);
+  });
+  return out;
+}
+
+/** 순위 1종만 조회 — 홈 순위 화면용(필터 없이 토스 앱 화면과 같은 목록). */
+export async function fetchTossRanking(kind: TossRankingKind, opts: TossRankingOptions = {}): Promise<TossRankingRow[]> {
+  return (await fetchTossRankings([kind], opts))[kind];
+}
+
+/** 하위호환 별칭 — 거래량 실시간 순위(필터 없음). */
+export async function fetchTossVolumeRanking(deps: TossRankingDeps = {}): Promise<TossRankingRow[]> {
+  return fetchTossRanking('volume', deps);
 }
