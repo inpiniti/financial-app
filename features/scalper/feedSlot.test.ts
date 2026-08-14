@@ -86,6 +86,25 @@ describe('FeedSlot — 상시 수신(틱/초·리샘플) + detector 탈부착', 
     expect(slot.tickRate()).toBe(0);
   });
 
+  it('기울기/초 — 상시 기록되고 뷰에 현재값·시계열 5칸이 실린다', () => {
+    const clock = fakeClock(0);
+    const slot = new FeedSlot({ ticker: 'AAPL', clock });
+    // 1초 간격 균일 상승 100→101 (+1%/10초) — detector 미부착이어도 기록된다.
+    for (let i = 0; i <= 10; i += 1) {
+      slot.pushTick(100 + i * 0.1, i * 1000);
+      clock.advance(1000);
+    }
+    const view = slot.getView();
+    expect(view.slopeRate).toBeCloseTo(0.1, 1); // 초당 약 +0.1%
+    expect(view.tickRateSeries).toHaveLength(5);
+    expect(view.slopeRateSeries).toHaveLength(5);
+    expect(view.slopeRateSeries[4]).toBe(view.slopeRate);
+
+    clock.advance(30_000); // 무틱 30초 — 판정 불가는 null(0 아님).
+    expect(slot.getView().slopeRate).toBeNull();
+    expect(slot.getView().tickRate).toBe(0);
+  });
+
   it('호가 캐시 — 유효값만 저장하고 quote 게터로 노출한다', () => {
     const { slot } = makeSlot();
     expect(slot.quote).toBeNull();

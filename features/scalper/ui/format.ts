@@ -79,6 +79,26 @@ export function formatSigned(value: number | null, digits = 4): string {
   return `${sign}${value.toFixed(digits)}`;
 }
 
+/**
+ * 기울기/초(%/초) — 부호 필수·소수 1자리, 판정 불가(null)는 '—'(0=횡보와 구분).
+ * 도메인 문서 §5 표기 규칙 (docs/domain/기울기/2026-08-14_기울기-초-개념과-설계.md).
+ */
+export function formatSlopeRate(value: number | null): string {
+  if (value === null) return '—';
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${value.toFixed(1)}`;
+}
+
+/** 틱/초 시계열 나열 — "0.8 1.2 2.0 1.5 1.8". */
+export function formatTickRateSeries(series: readonly number[]): string {
+  return series.map((v) => v.toFixed(1)).join(' ');
+}
+
+/** 기울기/초 시계열 나열 — "+0.1 -0.2 — +0.2 +0.3". */
+export function formatSlopeRateSeries(series: readonly (number | null)[]): string {
+  return series.map(formatSlopeRate).join(' ');
+}
+
 /** hh:mm(24시간, epoch ms 입력) — 시세 피드 진단 이벤트 시각 표시용. */
 export function formatHHMM(ts: number): string {
   const d = new Date(ts);

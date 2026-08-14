@@ -13,6 +13,7 @@ import { TrendDetector, type DetectorResult, type Signal } from '../../core/dete
 import { LadderDetector } from '../../core/ladder';
 import { Resampler } from '../../core/resample';
 import { TickRateMeter } from './tickRate';
+import { SlopeMeter } from './slopeRate';
 import type { ClockLike, TickExtras } from './types';
 
 /**
@@ -37,6 +38,8 @@ export interface FeedSlotOptions {
   bufferSize?: number;
   /** 틱/초 윈도우(ms, 기본 10초 — plan §4-13). */
   tickRateWindowMs?: number;
+  /** 기울기/초 윈도우(ms, 기본 10초 — 틱/초와 같은 시야). */
+  slopeWindowMs?: number;
   /** detector 옵션 — 부착 시 새 detector에 그대로 주입. */
   minBuyMomentum?: number;
   minSellMomentum?: number;
@@ -66,6 +69,15 @@ export interface FeedSlotView {
   readonly ticker: string;
   /** 현재 시점 틱/초(10초 윈도우 순간값). */
   readonly tickRate: number;
+  /** 틱/초 시계열 — [4초전, 3초전, 2초전, 1초전, 현재]. */
+  readonly tickRateSeries: number[];
+  /**
+   * 현재 시점 기울기/초(%/초, 10초 윈도우 양끝점) — 판정 불가는 null(0=횡보와 다름).
+   * ⚠ 아래 slope(SG %/청크, 감시 중에만)와 다른 값 — 도메인 문서 §2 용어 구분.
+   */
+  readonly slopeRate: number | null;
+  /** 기울기/초 시계열 — [4초전, 3초전, 2초전, 1초전, 현재]. */
+  readonly slopeRateSeries: (number | null)[];
   readonly price: number | null;
   readonly warmedUp: boolean;
   /** detector 부착 여부(= 변곡점 감시 중). */
@@ -84,6 +96,7 @@ export class FeedSlot {
   readonly ticker: string;
   private readonly clock: ClockLike;
   private readonly meter: TickRateMeter;
+  private readonly slopeMeter: SlopeMeter;
   private readonly resampler: Resampler;
   private readonly detectorOptions: {
     minBuyMomentum?: number;
@@ -118,6 +131,7 @@ export class FeedSlot {
     this.ticker = options.ticker;
     this.clock = options.clock;
     this.meter = new TickRateMeter(options.tickRateWindowMs);
+    this.slopeMeter = new SlopeMeter(options.slopeWindowMs);
     this.resampler = new Resampler({
       chunkSeconds: options.chunkSeconds,
       bufferSize: options.bufferSize,
@@ -136,6 +150,7 @@ export class FeedSlot {
     this.price = price;
     this.lastTickAt = this.clock.now();
     this.meter.record(this.lastTickAt);
+    this.slopeMeter.record(this.lastTickAt, price);
 
     const closed = this.resampler.addTick({
       price,
@@ -279,10 +294,19 @@ export class FeedSlot {
     return this.resampler.warmedUp;
   }
 
+  /** 현재 시점 기울기/초(%/초) — 판정 불가는 null. */
+  slopeRate(nowMs?: number): number | null {
+    return this.slopeMeter.rate(nowMs ?? this.clock.now());
+  }
+
   getView(): FeedSlotView {
+    const now = this.clock.now();
     return {
       ticker: this.ticker,
-      tickRate: this.tickRate(),
+      tickRate: this.tickRate(now),
+      tickRateSeries: this.meter.series(now),
+      slopeRate: this.slopeMeter.rate(now),
+      slopeRateSeries: this.slopeMeter.series(now),
       price: this.price,
       warmedUp: this.resampler.warmedUp,
       watched: this.watched,

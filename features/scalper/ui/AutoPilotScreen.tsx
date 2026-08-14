@@ -22,7 +22,7 @@ import { isDaytimeSessionOpen } from '../daySession';
 import { WATCH_SOURCE_LABEL } from '../watchlist';
 import { AdoptSheet } from './AdoptSheet';
 import { refreshLiveSettings } from './managerProvider';
-import { formatHHMM, formatPrice } from './format';
+import { formatHHMM, formatPrice, formatSlopeRateSeries, formatTickRateSeries } from './format';
 import { GridGauge } from './GridGauge';
 
 const STATE_BADGE: Record<AutoPilotState, { label: string; bg: string; fg: string }> = {
@@ -145,7 +145,21 @@ function SlotRow({
       <ListRow
         leading={<TickerAvatar ticker={ticker} />}
         title={name || ticker}
-        subtitle={`${name ? `${ticker} · ` : ''}${WATCH_SOURCE_LABEL[item.entry.source]} · ${item.view.tickRate.toFixed(1)}틱/초`}
+        // 속도·기울기/초는 "4초전→현재" 5칸 시계열로 아래 두 줄에 — 현재값 1개보다 흐름이 보인다(2026-08-14).
+        // 라벨은 "기울기/초"(단독 "기울기" 금지 — SG %/청크와 혼동, 도메인 문서 §2).
+        subtitle={
+          <View className="mt-0.5">
+            <Text className="text-sm text-[#8b95a1]" numberOfLines={1}>
+              {`${name ? `${ticker} · ` : ''}${WATCH_SOURCE_LABEL[item.entry.source]}`}
+            </Text>
+            <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
+              {`속도 ${formatTickRateSeries(item.view.tickRateSeries)}`}
+            </Text>
+            <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
+              {`기울기/초 ${formatSlopeRateSeries(item.view.slopeRateSeries)}`}
+            </Text>
+          </View>
+        }
         trailing={
           <View className="items-end">
             <Text className="text-base font-bold text-[#191f28]">{formatPrice(item.view.price)}</Text>

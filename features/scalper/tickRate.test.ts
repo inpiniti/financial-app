@@ -53,6 +53,24 @@ describe('TickRateMeter — 순간 틱/초 (10초 슬라이딩 윈도우)', () =
     expect(m.rate(50_000)).toBeCloseTo(999.9, 5);
   });
 
+  it('series — 4초전~현재 5칸, 과거 시점 값이 이력 보존으로 정확하다', () => {
+    const m = new TickRateMeter();
+    for (let i = 0; i < 100; i += 1) m.record(i * 100); // 0~9.9초 100ms 간격 100틱.
+    // 각 시점 t의 (t−10s, t] 구간 카운트 ÷ 10.
+    expect(m.series(12_000)).toEqual([8.1, 9.1, 9.9, 8.9, 7.9]);
+    // rate(현재) 호출의 프루닝이 과거 시점 이력을 파괴하지 않는다.
+    expect(m.rate(12_000)).toBeCloseTo(7.9, 5);
+    expect(m.series(12_000)).toEqual([8.1, 9.1, 9.9, 8.9, 7.9]);
+  });
+
+  it('series — 이력 보존 한계(historyMs=4초)보다 먼 과거는 프루닝으로 과소 집계될 수 있다', () => {
+    const m = new TickRateMeter(10_000, 0); // 이력 보존 없음.
+    for (let i = 0; i < 100; i += 1) m.record(i * 100);
+    const s = m.series(12_000);
+    expect(s[4]).toBeCloseTo(7.9, 5); // 현재 시점은 항상 정확.
+    expect(s[0]).toBeLessThan(8.1); // 4초전은 이미 잘려 나간 틱만큼 낮게 나온다.
+  });
+
   it('잘못된 windowMs는 생성자에서 거부한다', () => {
     expect(() => new TickRateMeter(0)).toThrow(/windowMs/);
     expect(() => new TickRateMeter(-1)).toThrow(/windowMs/);
