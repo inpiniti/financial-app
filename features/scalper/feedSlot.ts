@@ -36,9 +36,9 @@ export interface FeedSlotOptions {
   chunkSeconds?: number;
   /** SG 버퍼 크기(홀수, 기본 31). */
   bufferSize?: number;
-  /** 틱/초 윈도우(ms, 기본 15초 — 2026-08-14 표시 단위 "/15초"와 시야 일치). */
+  /** 틱/초 윈도우(ms, 기본 5초 = FEED_RATE_WINDOW_MS — 시계열 간격과 동일해 겹침 0). */
   tickRateWindowMs?: number;
-  /** 기울기/초 윈도우(ms, 기본 15초 — 틱/초와 같은 시야). */
+  /** 기울기/초 윈도우(ms, 기본 5초 — 틱/초와 같은 시야). */
   slopeWindowMs?: number;
   /** detector 옵션 — 부착 시 새 detector에 그대로 주입. */
   minBuyMomentum?: number;
@@ -58,12 +58,18 @@ export interface FeedSlotOptions {
 export type SlotSignalListener = (signal: Signal, ctx: SlotSignalContext) => void;
 
 /**
- * 속도·기울기 측정 윈도우(공유) — 표기 단위 "N/15초"·"%/15초"와 시야를 맞춘 15초
- * (2026-08-14 관찰 피드백: 5초 표기에서 15초로. 환산 뻥튀기 대신 실제 15초 관찰값을 보여준다).
+ * 속도·기울기 측정 윈도우(공유) — 5초. 시계열 간격(FEED_SERIES_STEP_MS)과 같게 잡아
+ * 5칸이 서로 겹치지 않는 독립 5초 봉이 된다(2026-08-14 확정 — 15초 윈도우 × 1초 간격은
+ * 이웃 칸이 14초를 공유해 5칸이 죄다 비슷하게 보였다). 표기도 "/5초"라 실제 관찰값 그대로.
  * 미터 클래스 기본값(10초)은 순수 로직·기존 테스트 보존을 위해 그대로 두고, 배선에서만 덮어쓴다.
  * 내부 단위는 여전히 틱/초·%/초 정본 — 최소 속도(minTickRate) 비교도 틱/초 그대로다.
  */
-export const FEED_RATE_WINDOW_MS = 15_000;
+export const FEED_RATE_WINDOW_MS = 5_000;
+/** 시계열 칸 간격 — 윈도우와 동일(겹침 0). 5칸 × 5초 = 최근 25초. */
+export const FEED_SERIES_STEP_MS = 5_000;
+export const FEED_SERIES_POINTS = 5;
+/** 과거 칸 계산에 필요한 이력 보존 — (칸수−1) × 간격. */
+const FEED_SERIES_HISTORY_MS = (FEED_SERIES_POINTS - 1) * FEED_SERIES_STEP_MS;
 
 export interface SlotSignalContext {
   readonly ticker: string;
@@ -75,16 +81,16 @@ export interface SlotSignalContext {
 
 export interface FeedSlotView {
   readonly ticker: string;
-  /** 현재 시점 틱/초(15초 윈도우 순간값 — FEED_RATE_WINDOW_MS). */
+  /** 현재 시점 틱/초(5초 윈도우 순간값 — FEED_RATE_WINDOW_MS). */
   readonly tickRate: number;
-  /** 틱/초 시계열 — [4초전, 3초전, 2초전, 1초전, 현재]. */
+  /** 틱/초 시계열 — 겹침 없는 5초 봉 5칸 [20초전, 15초전, 10초전, 5초전, 현재]. */
   readonly tickRateSeries: number[];
   /**
-   * 현재 시점 기울기/초(%/초, 15초 윈도우 양끝점) — 판정 불가는 null(0=횡보와 다름).
+   * 현재 시점 기울기/초(%/초, 5초 윈도우 양끝점) — 판정 불가는 null(0=횡보와 다름).
    * ⚠ 아래 slope(SG %/청크, 감시 중에만)와 다른 값 — 도메인 문서 §2 용어 구분.
    */
   readonly slopeRate: number | null;
-  /** 기울기/초 시계열 — [4초전, 3초전, 2초전, 1초전, 현재]. */
+  /** 기울기/초 시계열 — 겹침 없는 5초 봉 5칸 [20초전, 15초전, 10초전, 5초전, 현재]. */
   readonly slopeRateSeries: (number | null)[];
   readonly price: number | null;
   readonly warmedUp: boolean;
@@ -138,8 +144,12 @@ export class FeedSlot {
   constructor(options: FeedSlotOptions) {
     this.ticker = options.ticker;
     this.clock = options.clock;
-    this.meter = new TickRateMeter(options.tickRateWindowMs ?? FEED_RATE_WINDOW_MS);
-    this.slopeMeter = new SlopeMeter(options.slopeWindowMs ?? FEED_RATE_WINDOW_MS);
+    this.meter = new TickRateMeter(options.tickRateWindowMs ?? FEED_RATE_WINDOW_MS, FEED_SERIES_HISTORY_MS);
+    this.slopeMeter = new SlopeMeter(
+      options.slopeWindowMs ?? FEED_RATE_WINDOW_MS,
+      undefined,
+      FEED_SERIES_HISTORY_MS,
+    );
     this.resampler = new Resampler({
       chunkSeconds: options.chunkSeconds,
       bufferSize: options.bufferSize,
@@ -312,9 +322,9 @@ export class FeedSlot {
     return {
       ticker: this.ticker,
       tickRate: this.tickRate(now),
-      tickRateSeries: this.meter.series(now),
+      tickRateSeries: this.meter.series(now, FEED_SERIES_POINTS, FEED_SERIES_STEP_MS),
       slopeRate: this.slopeMeter.rate(now),
-      slopeRateSeries: this.slopeMeter.series(now),
+      slopeRateSeries: this.slopeMeter.series(now, FEED_SERIES_POINTS, FEED_SERIES_STEP_MS),
       price: this.price,
       warmedUp: this.resampler.warmedUp,
       watched: this.watched,
