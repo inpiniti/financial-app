@@ -21,6 +21,7 @@ import type { FeedStatus } from '../types';
 import { isDaytimeSessionOpen } from '../daySession';
 import { WATCH_SOURCE_LABEL } from '../watchlist';
 import { AdoptSheet } from './AdoptSheet';
+import { refreshLiveSettings } from './managerProvider';
 import { formatHHMM, formatPrice } from './format';
 import { GridGauge } from './GridGauge';
 
@@ -194,8 +195,16 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
     return () => clearInterval(timer);
   }, [autopilot, engaged]);
 
-  const handleRun = useCallback(() => {
-    if (!view.config) {
+  const handleRun = useCallback(async () => {
+    // 정지 → 시작 사이에는 화면 포커스 이벤트가 없어 포커스마다 도는 설정 재적용 경로가 돌지 않는다.
+    // 매매 중에 저장한 진입금액·최소 속도·동시 그리드는 setConfig의 IDLE 게이트에 막혀 있던 상태라,
+    // 여기서(이제 IDLE) 한 번 더 흘려 넣지 않으면 옛값 그대로 시작된다(2026-08-14 제보).
+    try {
+      await refreshLiveSettings(autopilot);
+    } catch {
+      // 설정 로드 실패 — 마지막으로 적용된 값으로 시작한다.
+    }
+    if (!autopilot.pilot.getView().config) {
       Alert.alert('알림', '진입금액을 먼저 정해 주세요. 상단바 설정 > 트레이딩 설정에서 바꿀 수 있어요.');
       return;
     }
@@ -204,7 +213,7 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
     } catch (e) {
       Alert.alert('알림', e instanceof Error ? e.message : String(e));
     }
-  }, [autopilot, view.config]);
+  }, [autopilot]);
 
   const handleStop = useCallback(() => autopilot.stop(), [autopilot]);
   const handleResume = useCallback(() => autopilot.pilot.resume(), [autopilot]);

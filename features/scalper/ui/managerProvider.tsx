@@ -243,20 +243,24 @@ function getOrCreateManager(): Promise<ManagerBootstrap> {
  *   그리드 폭·배율만 이 경로가 있었고 진입 감지(간격·홀 횟수)·매수 미체결 취소는 빠져 있어,
  *   사용자가 저장할 때마다 앱을 껐다 켜야 했다(2026-08-11 제보). 셋 다 여기서 갈아끼운다.
  *   (청크·버퍼·문턱은 설정에서 제거된 코드 고정값이라 대상이 아니다.)
+ *
+ * 호출 시점은 둘이다 — ① 트레이딩 화면 포커스마다(useScalperManager), ② "자동 트레이딩 시작하기"
+ * 직전(AutoPilotScreen.handleRun). ②가 없으면 매매 중 저장 → 화면 이동 없이 정지 → 시작 흐름에서
+ * 진입금액·최소 속도·동시 그리드가 IDLE 게이트(setConfig)에 막힌 옛값 그대로 시작된다(2026-08-14 제보).
  */
-async function refreshLiveSettings(boot: ManagerBootstrap): Promise<void> {
+export async function refreshLiveSettings(autopilot: AutoPilotManager): Promise<void> {
   const appSettings = await loadAppSettings();
-  boot.autopilot.setGridConfig({
+  autopilot.setGridConfig({
     buyWidth: appSettings.gridBuyWidthPct / 100,
     sellWidth: appSettings.gridSellWidthPct / 100,
     buyMultiplier: appSettings.gridBuyMultiplier,
   });
-  boot.autopilot.setEntryLadder({
+  autopilot.setEntryLadder({
     interval: ladderIntervalToRatio(appSettings.entryLadderIntervalPct),
     triggerCount: ladderCountOf(appSettings.entryLadderCount),
   });
-  boot.autopilot.setBuyCancelAfterMs(buyCancelAfterToMs(appSettings.buyCancelAfterSec));
-  await syncTradingConfig(boot.autopilot, appSettings);
+  autopilot.setBuyCancelAfterMs(buyCancelAfterToMs(appSettings.buyCancelAfterSec));
+  await syncTradingConfig(autopilot, appSettings);
 }
 
 /**
@@ -272,7 +276,7 @@ export function useScalperManager(): ManagerBootstrapState {
       if (cached) {
         const boot = cached;
         setState({ kind: 'ready', ...boot });
-        void refreshLiveSettings(boot).catch(() => {
+        void refreshLiveSettings(boot.autopilot).catch(() => {
           // 설정 로드 실패 — 기존 값을 그대로 쓴다(매매를 막을 이유는 없다).
         });
         return;
