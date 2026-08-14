@@ -145,19 +145,19 @@ function SlotRow({
       <ListRow
         leading={<TickerAvatar ticker={ticker} />}
         title={name || ticker}
-        // 속도·기울기는 겹침 없는 5초 봉 5칸(최근 25초) 시계열로 아래 두 줄에(2026-08-14).
-        // 라벨은 단위 포함 "속도/5초"·"기울기/5초"(단독 "기울기" 금지 — SG %/청크와 혼동, 도메인 문서 §2).
-        // 표기는 5초당(포맷터가 ×5) — 측정 윈도우·칸 간격도 5초라 각 칸이 실제 그 5초 봉 관찰값이다.
+        // 속도·기울기는 겹침 없는 10초 봉 5칸(최근 50초) 시계열로 아래 두 줄에(2026-08-14).
+        // 라벨은 단위 포함 "속도/10초"·"기울기/10초"(단독 "기울기" 금지 — SG %/청크와 혼동, 도메인 문서 §2).
+        // 기울기 v2 = 직전 봉 평균 대비 현재 봉 평균의 %변화(양끝점 아님 — 봉 안 노이즈 상쇄).
         subtitle={
           <View className="mt-0.5">
             <Text className="text-sm text-[#8b95a1]" numberOfLines={1}>
               {`${name ? `${ticker} · ` : ''}${WATCH_SOURCE_LABEL[item.entry.source]}`}
             </Text>
             <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
-              {`속도/5초 ${formatTickRateSeries(item.view.tickRateSeries)}`}
+              {`속도/10초 ${formatTickRateSeries(item.view.tickRateSeries)}`}
             </Text>
             <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
-              {`기울기/5초 ${formatSlopeRateSeries(item.view.slopeRateSeries)}`}
+              {`기울기/10초 ${formatSlopeRateSeries(item.view.slopeRateSeries)}`}
             </Text>
           </View>
         }

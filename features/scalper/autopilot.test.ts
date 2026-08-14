@@ -99,7 +99,7 @@ function makeHarness(
   return { pilot, slots, brokers, clock, store, trades, pins, unpins, events };
 }
 
-/** 같은 clock 시각대에 n틱 버스트 — 틱/초를 n/5로 만든다(5초 윈도우, 청크 마감 없음, ts 고정). */
+/** 같은 clock 시각대에 n틱 버스트 — 틱/초를 n/10으로 만든다(10초 윈도우, 청크 마감 없음, ts 고정). */
 function burst(h: Harness, ticker: string, n: number): void {
   for (let i = 0; i < n; i += 1) h.slots.get(ticker)!.pushTick(10, i * 10);
 }
@@ -180,8 +180,8 @@ describe('AutoPilot — 감시 선정(최소 속도 자격 필터·히스테리�
     const h = makeHarness(['A', 'B', 'C'], {
       config: { startAmountUsd: 100, minTickRate: 1 },
     });
-    burst(h, 'A', 15); // 3.0틱/초 — 자격
-    burst(h, 'B', 4); // 0.8틱/초 — 미달
+    burst(h, 'A', 15); // 1.5틱/초 — 자격
+    burst(h, 'B', 5); // 0.5틱/초 — 미달
     h.pilot.start();
     expect(h.pilot.getView().watched).toEqual(['A']); // 감시 목록은 1개
     expect(h.slots.get('B')!.watched).toBe(true); // 하지만 감지기는 붙어 있다
@@ -202,9 +202,9 @@ describe('AutoPilot — 감시 선정(최소 속도 자격 필터·히스테리�
     h.pilot.start();
     expect(h.pilot.getView().watched).toEqual(['A']);
 
-    h.clock.advance(4_000); // A 틱이 윈도우 끝자락 — 아직 자격(20틱이 5초 창 안).
+    h.clock.advance(9_000); // A 틱이 윈도우 끝자락 — 아직 자격(20틱이 10초 창 안).
     burst(h, 'B', 30); // B가 새 자격자.
-    h.clock.advance(2_000); // A 틱 전부 윈도우(5초) 밖 → 0틱/초.
+    h.clock.advance(2_000); // A 틱 전부 윈도우(10초) 밖 → 0틱/초.
     h.pilot.reselect();
     expect(h.pilot.getView().watched).toEqual(['B']);
     expect(h.slots.get('A')!.watched).toBe(true); // 감시 이탈 ≠ 감지 중단

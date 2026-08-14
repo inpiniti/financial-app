@@ -15,12 +15,7 @@ export {
 } from './tradeStore';
 export type { StoredTrade } from './tradeStore';
 export { TickRateMeter, DEFAULT_TICK_RATE_WINDOW_MS, DEFAULT_TICK_RATE_HISTORY_MS } from './tickRate';
-export {
-  SlopeMeter,
-  DEFAULT_SLOPE_WINDOW_MS,
-  DEFAULT_SLOPE_MIN_SPAN_MS,
-  DEFAULT_SLOPE_HISTORY_MS,
-} from './slopeRate';
+export { SlopeMeter, DEFAULT_SLOPE_WINDOW_MS, DEFAULT_SLOPE_HISTORY_MS } from './slopeRate';
 export {
   ScalperWatchlist,
   computeDesired,

@@ -80,30 +80,29 @@ export function formatSigned(value: number | null, digits = 4): string {
 }
 
 /**
- * 속도·기울기 표기 단위 — 측정 정본은 틱/초·%/초지만 표기는 5초당으로 환산한다(×5).
- * 측정 윈도우·시계열 간격(feedSlot.FEED_RATE_WINDOW_MS/STEP)도 5초라, 표기값 = 실제
- * "그 5초 봉" 관찰값이고 시계열 5칸은 겹침 없는 최근 25초다(2026-08-14 확정 —
- * 초당은 소수 1자리에서 0.0으로 뭉개졌고, 15초 윈도우 × 1초 간격은 칸끼리 다 비슷해 보였다).
+ * 속도 표기 단위 — 측정 정본은 틱/초지만 표기는 10초 봉당 틱 수로 환산한다(×10).
+ * 측정 윈도우·시계열 간격(feedSlot.FEED_RATE_WINDOW_MS/STEP)도 10초라, 표기값 = 실제
+ * "그 10초 봉" 관찰값이고 시계열 5칸은 겹침 없는 최근 50초다(2026-08-14 확정).
+ * 기울기(v2)는 이미 봉 평균 대비 %라 환산이 필요 없다.
  */
-export const RATE_DISPLAY_UNIT_SECONDS = 5;
+export const RATE_DISPLAY_UNIT_SECONDS = 10;
 
 /**
- * 기울기 표기 — 입력은 정본 %/초, 출력은 %/5초(×5). 부호 필수·소수 1자리,
- * 판정 불가(null)는 '—'(0=횡보와 구분). 도메인 문서 §5 표기 규칙.
+ * 기울기 표기(v2) — 입력이 이미 "직전 봉 평균 대비 %"라 그대로 표기. 부호 필수·소수 1자리,
+ * 판정 불가(null)는 '—'(0=평균 동일과 구분). 도메인 문서 §5 표기 규칙.
  */
 export function formatSlopeRate(value: number | null): string {
   if (value === null) return '—';
-  const scaled = value * RATE_DISPLAY_UNIT_SECONDS;
-  const sign = scaled > 0 ? '+' : '';
-  return `${sign}${scaled.toFixed(1)}`;
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${value.toFixed(1)}`;
 }
 
-/** 속도 시계열 나열 — 입력은 정본 틱/초, 출력은 틱/5초(×5, 정수) "4 6 10 8 9". */
+/** 속도 시계열 나열 — 입력은 정본 틱/초, 출력은 틱/10초(×10, 정수) "8 12 20 15 18". */
 export function formatTickRateSeries(series: readonly number[]): string {
   return series.map((v) => (v * RATE_DISPLAY_UNIT_SECONDS).toFixed(0)).join(' ');
 }
 
-/** 기울기 시계열 나열(%/5초 표기) — "+0.1 -0.2 — +0.2 +0.3". */
+/** 기울기 시계열 나열(직전 봉 대비 %) — "+0.1 -0.2 — +0.2 +0.3". */
 export function formatSlopeRateSeries(series: readonly (number | null)[]): string {
   return series.map(formatSlopeRate).join(' ');
 }
