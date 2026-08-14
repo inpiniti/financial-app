@@ -80,13 +80,20 @@ export function formatSigned(value: number | null, digits = 4): string {
 }
 
 /**
- * 기울기/초(%/초) — 부호 필수·소수 1자리, 판정 불가(null)는 '—'(0=횡보와 구분).
- * 도메인 문서 §5 표기 규칙 (docs/domain/기울기/2026-08-14_기울기-초-개념과-설계.md).
+ * 기울기 표기 단위 — 측정 정본은 %/초지만, 초당 환산값은 소수 1자리에서 거의 다 0.0으로 뭉개져
+ * 5초당(%×5)으로 표기한다(2026-08-14 관찰 피드백 — 분당은 너무 길다는 판단). 라벨은 "기울기/5초".
+ */
+export const SLOPE_DISPLAY_UNIT_SECONDS = 5;
+
+/**
+ * 기울기 표기 — 입력은 정본 %/초, 출력은 %/5초(×5). 부호 필수·소수 1자리,
+ * 판정 불가(null)는 '—'(0=횡보와 구분). 도메인 문서 §5 표기 규칙.
  */
 export function formatSlopeRate(value: number | null): string {
   if (value === null) return '—';
-  const sign = value > 0 ? '+' : '';
-  return `${sign}${value.toFixed(1)}`;
+  const scaled = value * SLOPE_DISPLAY_UNIT_SECONDS;
+  const sign = scaled > 0 ? '+' : '';
+  return `${sign}${scaled.toFixed(1)}`;
 }
 
 /** 틱/초 시계열 나열 — "0.8 1.2 2.0 1.5 1.8". */
@@ -94,7 +101,7 @@ export function formatTickRateSeries(series: readonly number[]): string {
   return series.map((v) => v.toFixed(1)).join(' ');
 }
 
-/** 기울기/초 시계열 나열 — "+0.1 -0.2 — +0.2 +0.3". */
+/** 기울기 시계열 나열(%/5초 표기) — "+0.1 -0.2 — +0.2 +0.3". */
 export function formatSlopeRateSeries(series: readonly (number | null)[]): string {
   return series.map(formatSlopeRate).join(' ');
 }
