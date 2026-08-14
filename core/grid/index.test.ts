@@ -388,6 +388,123 @@ describe('core/grid — 최신 현금 콜백(fetchAvailableCash)·다리별 격�
   });
 });
 
+describe('core/grid — 급락 방어(지연 매수 다리 + min(평단, 현재가) 앵커)', () => {
+  const DELAY = 5_000;
+
+  it('buyLegDelayMs>0 — arm은 매도만 즉시 걸고(pending), 지연이 지나면 poll이 매수를 건다', async () => {
+    const clock = fakeClock();
+    const port = new FakeGridPort({ qty: 10, avgPrice: 100 });
+    let current: number | null = 100;
+    const grid = new Grid({
+      port,
+      clock,
+      config: baseConfig,
+      buyLegDelayMs: DELAY,
+      getCurrentPrice: () => current,
+    });
+    await grid.arm();
+
+    // 매도만 걸렸다 — 매수는 지연 대기(pending).
+    expect(port.legBySide('sell')).toMatchObject({ qty: 10, price: 110 });
+    expect(port.legBySide('buy')).toBeUndefined();
+    expect(grid.view.buyLegStatus).toBe('pending');
+
+    // 지연 전 폴 — 발주 없이 armed.
+    expect((await grid.poll()).kind).toBe('armed');
+    expect(port.legBySide('buy')).toBeUndefined();
+
+    // 지연 경과 — 현재가(100)가 평단 이상이라 평단 앵커 그대로(100×0.9=90).
+    clock.advance(DELAY);
+    current = 100;
+    expect((await grid.poll()).kind).toBe('armed');
+    expect(port.legBySide('buy')).toMatchObject({ qty: 10, price: 90 });
+    expect(grid.view.buyLegStatus).toBe('full');
+    expect(grid.view.buyPrice).toBe(90);
+  });
+
+  it('지연 중 폭락 — 현재가가 평단 아래면 min 앵커로 매수를 현재가 −매수폭에 건다', async () => {
+    const clock = fakeClock();
+    const port = new FakeGridPort({ qty: 10, avgPrice: 100 });
+    // 장대음봉 −50% 재현: 지연이 끝났을 때 현재가 50.
+    const grid = new Grid({
+      port,
+      clock,
+      config: baseConfig,
+      buyLegDelayMs: DELAY,
+      getCurrentPrice: () => 50,
+    });
+    await grid.arm();
+
+    clock.advance(DELAY);
+    await grid.poll();
+    // 평단 앵커였다면 90(시장가 50보다 위 → 접수 즉시 체결) — min 앵커는 50×0.9=45.
+    expect(port.legBySide('buy')).toMatchObject({ qty: 10, price: 45 });
+    expect(grid.view).toMatchObject({ buyPrice: 45, sellPrice: 110, avgPrice: 100 });
+  });
+
+  it('getCurrentPrice 미주입·null이면 평단 앵커로 폴백한다', async () => {
+    const clock = fakeClock();
+    const port = new FakeGridPort({ qty: 10, avgPrice: 100 });
+    const grid = new Grid({ port, clock, config: baseConfig, buyLegDelayMs: DELAY });
+    await grid.arm();
+    clock.advance(DELAY);
+    await grid.poll();
+    expect(port.legBySide('buy')).toMatchObject({ qty: 10, price: 90 });
+  });
+
+  it('지연 대기 중 매도 체결 — 매수 발주 없이 정상 SOLD, 예약도 사라진다', async () => {
+    const clock = fakeClock();
+    const port = new FakeGridPort({ qty: 10, avgPrice: 100 });
+    const grid = new Grid({ port, clock, config: baseConfig, buyLegDelayMs: DELAY, getCurrentPrice: () => 100 });
+    await grid.arm();
+
+    port.fill(port.legBySide('sell')!.odno, 110);
+    const result = await grid.poll();
+    expect(result).toMatchObject({ kind: 'sold', qty: 10, exitPrice: 110 });
+    expect(grid.state).toBe('SOLD');
+
+    // 지연 시각이 지나도 매수가 걸리지 않는다 — 포지션이 없다.
+    clock.advance(DELAY);
+    await grid.poll();
+    expect(port.legBySide('buy')).toBeUndefined();
+    expect(port.placed).toHaveLength(1); // 매도 1건뿐.
+  });
+
+  it('물타기 리브래킷도 매수 다리를 다시 지연하고, 발주 시점 현재가로 다시 앵커를 잡는다', async () => {
+    const clock = fakeClock();
+    const port = new FakeGridPort({ qty: 10, avgPrice: 100 });
+    port.positionQueue = [{ qty: 10, avgPrice: 100 }, { qty: 20, avgPrice: 95 }];
+    let current = 100;
+    const grid = new Grid({
+      port,
+      clock,
+      config: baseConfig,
+      buyLegDelayMs: DELAY,
+      getCurrentPrice: () => current,
+    });
+    await grid.arm();
+    clock.advance(DELAY);
+    await grid.poll(); // 첫 매수 다리 @90.
+
+    // 매수 체결 → 리브래킷: 매도는 즉시(104.5), 매수는 다시 pending.
+    port.fill(port.legBySide('buy')!.odno, 90);
+    current = 85; // 체결 직후에도 하락이 이어진다(급락 지속).
+    const result = await grid.poll();
+    expect(result).toMatchObject({ kind: 'rebracket', position: { qty: 20, avgPrice: 95 } });
+    expect(grid.view.buyLegStatus).toBe('pending');
+    expect(port.placed.filter((p) => p.side === 'sell')).toHaveLength(2);
+    expect(port.placed.filter((p) => p.side === 'buy')).toHaveLength(1); // 아직 재발주 전.
+
+    // 지연 경과 시점의 현재가 80 → min(95, 80)×0.9=72.
+    clock.advance(DELAY);
+    current = 80;
+    await grid.poll();
+    const lastBuy = port.placed.filter((p) => p.side === 'buy').at(-1);
+    expect(lastBuy).toMatchObject({ qty: 20, price: 72 });
+    expect(grid.view.buyLegStatus).toBe('full');
+  });
+});
+
 describe('core/grid — 세션 전환·일괄 취소 방어(재발주)', () => {
   it('두 다리가 동시에 추론 체결로 사라지면 SOLD가 아니라 일괄 취소로 보고 같은 포지션으로 재발주한다', async () => {
     const port = new FakeGridPort({ qty: 10, avgPrice: 100 });

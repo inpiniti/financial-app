@@ -24,6 +24,7 @@ const BUY_LEG_NOTICE: Record<string, string | undefined> = {
   reduced: '현금에 맞춰 매수 수량을 줄였어요',
   skippedCash: '현금이 부족해서 매수 주문은 생략했어요 — 매도 주문만 걸려 있어요',
   rejected: '매수 주문이 거절돼 매도 주문만 걸려 있어요',
+  pending: '매수 주문은 잠시 후 현재가 기준으로 걸려요',
 };
 
 const GAUGE_HEIGHT = 28;

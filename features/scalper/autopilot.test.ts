@@ -8,6 +8,7 @@ import {
   DEFAULT_MAX_GRIDS,
   DEFAULT_MIN_TICK_RATE,
   etDateOf,
+  GRID_BUY_LEG_DELAY_MS,
   MAX_GRIDS_LIMIT,
   maxGridsOf,
   qtyForAmount,
@@ -54,6 +55,8 @@ function makeHarness(
     config?: AutoPilotConfig | null;
     fetchBuyableUsd?: AutoPilotDeps['fetchBuyableUsd'];
     gridConfig?: AutoPilotDeps['gridConfig'];
+    /** 그리드 매수 다리 지연(ms). 기본 0 — 기존 시나리오는 즉시 발주를 전제한다. */
+    gridBuyLegDelayMs?: number;
     /** 티커별 잔고 심 — makeBroker가 브로커를 만들 때마다 심어 준다(입양 테스트용). */
     positions?: Record<string, { qty: number; avgPrice: number }>;
   } = {},
@@ -84,6 +87,7 @@ function makeHarness(
     },
     fetchBuyableUsd: opts.fetchBuyableUsd,
     gridConfig: opts.gridConfig,
+    gridBuyLegDelayMs: opts.gridBuyLegDelayMs ?? 0,
     clock,
     scheduler: noopScheduler(),
     storage: store,
@@ -674,6 +678,29 @@ describe('AutoPilot — 매도 관리 그리드 인계(D5·GRID_EXIT)', () => {
     expect(h.trades).toHaveLength(0); // 아직 청산 아님.
     // 새 매도/매수 다리가 다시 걸렸다.
     expect(broker.placed.filter((p) => p.side === 'sell')).toHaveLength(2);
+  });
+
+  it('급락 방어 — 매수 다리는 지연 후 min(평단, 현재가) 앵커로 건다(매도는 즉시)', async () => {
+    const h = makeHarness(['A', 'B', 'C'], {
+      autoFill: false,
+      gridConfig: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1 },
+      gridBuyLegDelayMs: GRID_BUY_LEG_DELAY_MS,
+    });
+    const broker = await enterAndFill(h, 'A', { qty: 5, avgPrice: 100 });
+
+    // 매도(익절)는 즉시 걸렸고, 매수는 아직 없다(pending) — 진입 buy 1건뿐.
+    expect(broker.placed.filter((p) => p.side === 'sell')).toHaveLength(1);
+    expect(broker.placed.filter((p) => p.side === 'buy')).toHaveLength(1);
+    expect(h.pilot.getView().grid).toMatchObject({ buyLegStatus: 'pending', gridActive: true, sellPrice: 110 });
+
+    // 지연 경과 + 폴 — 슬롯 마지막 틱(2)이 평단(100)보다 훨씬 아래(장대음봉 재현)
+    // → min 앵커 2×0.9=1.8에 매수가 걸린다(평단 앵커였다면 90 — 시장가 위라 접수 즉시 체결됐을 가격).
+    h.clock.advance(GRID_BUY_LEG_DELAY_MS);
+    await h.pilot.pollCycle();
+    await flush();
+    const gridBuy = broker.placed.filter((p) => p.side === 'buy').at(-1)!;
+    expect(gridBuy).toMatchObject({ pdno: 'A', qty: 5, price: 1.8 });
+    expect(h.pilot.getView().grid).toMatchObject({ buyPrice: 1.8, sellPrice: 110, buyLegStatus: 'full' });
   });
 });
 

@@ -8,6 +8,11 @@
 //  · 한쪽 체결 → 반대편 실제 취소(OCO):
 //      매도(+w) 체결 → 전량 정리(SOLD) → 오토파일럿 SCANNING 복귀(변곡점 재개)
 //      매수(−w) 체결 → 잔고 재조회(수량↑·평단↓) → 두 주문 재설정(REBRACKET→ARMED)
+//  · 급락 방어(2026-08-14, buyLegDelayMs>0일 때): 매도 다리는 즉시 걸되 **매수 다리는
+//    buyLegDelayMs 쉬었다가**, 그 시점의 min(평단, 현재가)×(1−buyWidth)에 건다.
+//    평단 앵커만 쓰면 장대음봉에서 평단 하락(절반씩)이 시장가 하락을 못 따라가 매수 지정가가
+//    시장가 위에 걸리고 → 접수 즉시 체결 → 연쇄 물타기(올인)가 난다. min 앵커는 다음 매수가
+//    항상 "지금 가격에서 매수폭만큼 아래"임을 보장한다. buyLegDelayMs=0이면 기존 동작(즉시·평단 앵커).
 //
 // 주문 발주/취소/체결확인/잔고조회는 전부 포트로 주입받아 vitest로 전 분기를 재생 검증한다
 // (RunCycle의 OrderPort 패턴과 같은 원칙 — 코어는 결정적).
@@ -86,6 +91,16 @@ export interface GridDeps {
    * null 반환/throw면 config.availableCashUsd로 폴백한다(그것도 없으면 판정 생략).
    */
   fetchAvailableCash?: (buyPrice: number) => Promise<number | null>;
+  /**
+   * 매수 다리 지연(ms, 기본 0=즉시). >0이면 브래킷마다 매도는 즉시 걸고 매수는 이 시간 뒤
+   * poll에서 min(평단, 현재가) 앵커로 건다 — 급락 방어(파일 머리 주석 참조).
+   */
+  buyLegDelayMs?: number;
+  /**
+   * 최신 현재가(WS 체결가) — 지연 매수 발주 시점의 min 앵커 계산용.
+   * 미주입/null/0 이하면 기존대로 평단 앵커로 폴백한다.
+   */
+  getCurrentPrice?: () => number | null;
 }
 
 /**
@@ -94,8 +109,9 @@ export interface GridDeps {
  *  reduced     — 현금에 맞춰 수량 축소 발주.
  *  skippedCash — 현금이 1주 값도 안 돼 매수 다리 생략(매도만).
  *  rejected    — 발주가 거절됐지만 매도 다리는 살아 있어 ARMED 유지.
+ *  pending     — 급락 방어 지연 중(buyLegDelayMs) — 잠시 후 현재가·평단 중 낮은 쪽 기준으로 건다.
  */
-export type BuyLegStatus = 'full' | 'reduced' | 'skippedCash' | 'rejected';
+export type BuyLegStatus = 'full' | 'reduced' | 'skippedCash' | 'rejected' | 'pending';
 
 /** 게이지 UI(다음 단계)가 읽을 그리드 스냅샷. */
 export interface GridView {
@@ -144,6 +160,8 @@ export class Grid {
   private readonly availableCashUsd: number | undefined;
   private readonly positionRetries: number;
   private readonly fetchAvailableCash: ((buyPrice: number) => Promise<number | null>) | undefined;
+  private readonly buyLegDelayMs: number;
+  private readonly getCurrentPrice: (() => number | null) | undefined;
 
   private _state: GridState = 'IDLE';
   private avgPrice = 0;
@@ -167,6 +185,11 @@ export class Grid {
    * 잔고 반영이 한 폴 늦을 수 있어 연속 2폴 일치할 때만 취소로 확정한다(진짜 체결의 오분류 방지).
    */
   private sellCancelSuspect = false;
+  /**
+   * 지연 매수 발주 예정 시각 — null이 아니면 매도 다리만 걸린 ARMED이고, poll이 시각 도래를 보고
+   * min(평단, 현재가) 앵커로 매수를 건다(급락 방어). SOLD·일괄 취소 재발주에서 해제된다.
+   */
+  private pendingBuyLegAt: number | null = null;
 
   constructor(deps: GridDeps) {
     this.port = deps.port;
@@ -177,6 +200,8 @@ export class Grid {
     this.availableCashUsd = deps.config.availableCashUsd;
     this.positionRetries = deps.positionRetries ?? 3;
     this.fetchAvailableCash = deps.fetchAvailableCash;
+    this.buyLegDelayMs = deps.buyLegDelayMs ?? 0;
+    this.getCurrentPrice = deps.getCurrentPrice;
   }
 
   get state(): GridState {
@@ -222,6 +247,11 @@ export class Grid {
     if (this.pendingRebracket) {
       if (this.clock.now() < this.nextRebracketAt) return { kind: 'armed' };
       return this.tryPendingRebracket();
+    }
+
+    // 급락 방어 지연이 끝났다 — 이 시점의 현재가·평단 중 낮은 쪽 기준으로 매수 다리를 건다.
+    if (this.pendingBuyLegAt !== null && this.clock.now() >= this.pendingBuyLegAt) {
+      await this.placeDeferredBuyLeg();
     }
 
     let fills: GridOrderFill[];
@@ -283,6 +313,7 @@ export class Grid {
       }
       this.buyLeg = null;
       this.sellLeg = null;
+      this.pendingBuyLegAt = null; // 지연 중이던 매수 발주도 함께 접는다 — 포지션이 없다.
       this._state = 'SOLD';
       return { kind: 'sold', qty: soldQty, avgPrice: avg, exitPrice };
     }
@@ -354,6 +385,7 @@ export class Grid {
     }
     this.buyLeg = null;
     this.sellLeg = null;
+    this.pendingBuyLegAt = null; // 새 브래킷이 지연을 다시 잡는다 — 옛 예약이 다리 없는 발주를 내면 안 된다.
     const fallback: GridPosition = { qty: this.holdingQty, avgPrice: this.avgPrice };
     this.pendingRebracket = (await this.resolvePosition(fallback)) ?? fallback;
     return this.tryPendingRebracket();
@@ -408,46 +440,73 @@ export class Grid {
     this.sellPrice = roundGridPrice(position.avgPrice * (1 + this.sellWidth));
 
     const sellQty = position.qty;
-    let buyQty = Math.floor(position.qty * this.buyMultiplier);
-    this._buyLegStatus = 'full';
-    // 최신 현금 조회(리브래킷마다) — 실패하면 생성 시 캡처값으로 폴백.
-    let cash = this.availableCashUsd;
-    if (this.fetchAvailableCash && this.buyPrice > 0) {
-      try {
-        const latest = await this.fetchAvailableCash(this.buyPrice);
-        if (typeof latest === 'number' && Number.isFinite(latest)) cash = latest;
-      } catch {
-        // 폴백 유지.
-      }
-    }
-    if (cash !== undefined && this.buyPrice > 0) {
-      const affordable = Math.floor(cash / this.buyPrice);
-      if (affordable < buyQty) {
-        buyQty = Math.max(0, affordable);
-        this._buyLegStatus = buyQty >= 1 ? 'reduced' : 'skippedCash';
-      }
-    }
-
     try {
-      // 매도 다리(익절)는 항상 발주한다.
+      // 매도 다리(익절)는 항상 즉시 발주한다 — 급락 뒤 V자 반등을 지연 없이 받아야 한다.
       const sell = await this.port.placeOrder('sell', sellQty, this.sellPrice);
       this.sellLeg = { odno: sell.odno, qty: sellQty, price: this.sellPrice };
     } catch (err) {
       return summarize(err);
     }
+    this.buyLeg = null;
+    if (this.buyLegDelayMs > 0) {
+      // 급락 방어 — 매수는 잠깐 쉬었다가 poll이 min(평단, 현재가) 앵커로 건다.
+      // 그때까지 view.buyPrice는 평단 앵커 예상가다(발주 직전에 다시 계산한다).
+      this.pendingBuyLegAt = this.clock.now() + this.buyLegDelayMs;
+      this._buyLegStatus = 'pending';
+    } else {
+      this.pendingBuyLegAt = null;
+      await this.placeBuyLeg(this.buyPrice);
+    }
+    this._state = 'ARMED';
+    return null;
+  }
+
+  /**
+   * 지연 매수 발주 — 쉬는 동안 현재가가 평단 아래로 더 내려갔으면 그 현재가를 앵커로 쓴다.
+   * min(평단, 현재가)×(1−매수폭) — 폭락 폭이 얼마든(−50%든) 다음 매수는 항상 지금 가격에서
+   * 매수폭만큼 아래가 보장된다(평단 앵커의 "시장가 위 지정가 → 즉시 체결" 연쇄를 끊는다).
+   */
+  private async placeDeferredBuyLeg(): Promise<void> {
+    this.pendingBuyLegAt = null;
+    let anchor = this.avgPrice;
+    const cur = this.getCurrentPrice?.();
+    if (typeof cur === 'number' && Number.isFinite(cur) && cur > 0 && cur < anchor) anchor = cur;
+    await this.placeBuyLeg(roundGridPrice(anchor * (1 - this.buyWidth)));
+  }
+
+  /** 매수 다리 1회 발주 — 현금 판정(축소/생략·D2) 포함. 앵커 가격은 호출부가 정해 넘긴다. */
+  private async placeBuyLeg(buyPrice: number): Promise<void> {
+    this.buyPrice = buyPrice;
+    let buyQty = Math.floor(this.holdingQty * this.buyMultiplier);
+    this._buyLegStatus = 'full';
+    // 최신 현금 조회(리브래킷마다) — 실패하면 생성 시 캡처값으로 폴백.
+    let cash = this.availableCashUsd;
+    if (this.fetchAvailableCash && buyPrice > 0) {
+      try {
+        const latest = await this.fetchAvailableCash(buyPrice);
+        if (typeof latest === 'number' && Number.isFinite(latest)) cash = latest;
+      } catch {
+        // 폴백 유지.
+      }
+    }
+    if (cash !== undefined && buyPrice > 0) {
+      const affordable = Math.floor(cash / buyPrice);
+      if (affordable < buyQty) {
+        buyQty = Math.max(0, affordable);
+        this._buyLegStatus = buyQty >= 1 ? 'reduced' : 'skippedCash';
+      }
+    }
     // 매수 다리는 수량이 1주 이상일 때만.
     this.buyLeg = null;
     if (buyQty >= 1) {
       try {
-        const buy = await this.port.placeOrder('buy', buyQty, this.buyPrice);
-        this.buyLeg = { odno: buy.odno, qty: buyQty, price: this.buyPrice };
+        const buy = await this.port.placeOrder('buy', buyQty, buyPrice);
+        this.buyLeg = { odno: buy.odno, qty: buyQty, price: buyPrice };
       } catch {
         // 매도는 이미 접수됐다 — 매수 거절만으로 동결하지 않고 매도만 관리한다.
         this._buyLegStatus = 'rejected';
       }
     }
-    this._state = 'ARMED';
-    return null;
   }
 
   /** OCO 취소 1회 — 거절되면 FAULT. */

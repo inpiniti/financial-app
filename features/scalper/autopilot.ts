@@ -53,6 +53,12 @@ export const ABANDON_COOLDOWN_STREAK = 3;
 export const ABANDON_COOLDOWN_MS = 60_000;
 /** 현금 부족(보유 그리드가 있어 PAUSED로 안 가는 경우)에 신규 진입을 쉬는 시간(ms). */
 export const CASH_COOLDOWN_MS = 60_000;
+/**
+ * 그리드 매수 다리 지연(ms) — 급락 방어(2026-08-14). 브래킷마다 매도는 즉시 걸고, 매수는 이 시간
+ * 쉬었다가 그 시점의 min(평단, 현재가) 앵커로 건다. 매수폭(기본 5%)을 1분 안에 지나가는 건
+ * 급락뿐이라 평시 비용은 사실상 0이고, 장대음봉에서만 매수가 폭락한 현재가 아래로 따라 내려간다.
+ */
+export const GRID_BUY_LEG_DELAY_MS = 5_000;
 /** 최소 속도 기본값(틱/초) — 0 설정 불가(> 0 강제, 사용자 확정 §4-6). */
 export const DEFAULT_MIN_TICK_RATE = 1;
 
@@ -186,6 +192,8 @@ export interface AutoPilotDeps {
   repriceIntervalMs?: number;
   /** 매수 미체결 자동 취소 대기(ms, 0=끔). 부분체결이면 취소하지 않는다. */
   buyCancelAfterMs?: number;
+  /** 그리드 매수 다리 지연(ms, 기본 GRID_BUY_LEG_DELAY_MS). 0이면 즉시(옛 동작) — 테스트 하네스용. */
+  gridBuyLegDelayMs?: number;
   reselectIntervalMs?: number;
   hysteresisRatio?: number;
   watchCount?: number;
@@ -303,6 +311,7 @@ export class AutoPilot {
    * 설정 탭 저장이 앱 재시작 전까지 먹지 않던 문제(gridConfig와 같은 원인)를 여기서도 막는다.
    */
   private buyCancelAfterMs: number;
+  private readonly gridBuyLegDelayMs: number;
   private readonly reselectIntervalMs: number;
   private readonly hysteresisRatio: number;
   private readonly watchCount: number;
@@ -359,6 +368,7 @@ export class AutoPilot {
     this.pollIntervalMs = deps.pollIntervalMs ?? 2000;
     this.repriceIntervalMs = deps.repriceIntervalMs ?? 1000;
     this.buyCancelAfterMs = deps.buyCancelAfterMs ?? 0;
+    this.gridBuyLegDelayMs = deps.gridBuyLegDelayMs ?? GRID_BUY_LEG_DELAY_MS;
     this.reselectIntervalMs = deps.reselectIntervalMs ?? RESELECT_INTERVAL_MS;
     this.hysteresisRatio = deps.hysteresisRatio ?? HYSTERESIS_RATIO;
     this.watchCount = deps.watchCount ?? WATCH_COUNT;
@@ -1094,6 +1104,10 @@ export class AutoPilot {
           const cash = await this.deps.fetchBuyableUsd?.(active.ticker, buyPrice);
           return typeof cash === 'number' && Number.isFinite(cash) ? cash / this.maxGrids : null;
         },
+        // 급락 방어 — 매수 다리는 잠깐 쉬었다가 min(평단, 현재가) 앵커로. 입양 포지션(slot=null)은
+        // 현재가가 없어 평단 앵커로 폴백한다(지연은 동일하게 적용).
+        buyLegDelayMs: this.gridBuyLegDelayMs,
+        getCurrentPrice: () => active.slot?.getView().price ?? null,
       });
       active.grid = grid;
       await grid.arm(seed ?? undefined);
@@ -1105,8 +1119,12 @@ export class AutoPilot {
       }
       active.gridArmed = true;
       const v = grid.view;
+      const buyText =
+        v.buyLegStatus === 'pending'
+          ? `매수 ${Math.round(this.gridBuyLegDelayMs / 1000)}초 뒤 현재가 기준 −${(cfg.buyWidth * 100).toFixed(1)}%`
+          : `매수 $${v.buyPrice}(−${(cfg.buyWidth * 100).toFixed(1)}%)`;
       this.event(
-        `${active.ticker} 그리드 관리 ${active.adopted ? '등록' : '인계'} · ${v.holdingQty}주 · 평단 $${v.avgPrice.toFixed(2)} · 매수 $${v.buyPrice}(−${(cfg.buyWidth * 100).toFixed(1)}%) · 매도 $${v.sellPrice}(+${(cfg.sellWidth * 100).toFixed(1)}%)`,
+        `${active.ticker} 그리드 관리 ${active.adopted ? '등록' : '인계'} · ${v.holdingQty}주 · 평단 $${v.avgPrice.toFixed(2)} · ${buyText} · 매도 $${v.sellPrice}(+${(cfg.sellWidth * 100).toFixed(1)}%)`,
       );
       this.emit();
       return true;
@@ -1222,7 +1240,9 @@ export class AutoPilot {
                 ? ' · 현금이 부족해 매수는 생략하고 매도만 걸었어요'
                 : v.buyLegStatus === 'rejected'
                   ? ' · 매수 주문이 거절돼 매도만 걸었어요'
-                  : ''
+                  : v.buyLegStatus === 'pending'
+                    ? ` · 매수는 ${Math.round(this.gridBuyLegDelayMs / 1000)}초 뒤 현재가 기준으로 걸어요`
+                    : ''
           }`,
         );
         this.emit();
