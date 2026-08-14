@@ -1,8 +1,10 @@
-// core/grid — 매도 관리 ±w OCO 지정가 그리드 상태기계 (순수 TS, 실시간/KIS 의존 없음).
+// core/grid — 매도 관리 OCO 지정가 그리드 상태기계 (순수 TS, 실시간/KIS 의존 없음).
 //
 // 변곡점 진입으로 포지션(보유수량 N·평단가 P)이 생기면, 그 뒤 관리를 이 그리드가 인계한다.
-//  · 매수 지정가: N×buyMultiplier 주 @ P×(1−w)  (평단 −10%, 현재가 아래 → 정상 지정가 대기)
-//  · 매도 지정가: N 주            @ P×(1+w)      (평단 +10%, 현재가 위   → 정상 지정가 대기)
+//  · 매수 지정가: N×buyMultiplier 주 @ P×(1−buyWidth)   (평단 아래 → 정상 지정가 대기)
+//  · 매도 지정가: N 주            @ P×(1+sellWidth)     (평단 위   → 정상 지정가 대기)
+//  · 매수폭·매도폭은 **따로 설정한다**(2026-08-14) — 물타기 간격(buyWidth)은 넓게 잡아 올인을
+//    늦추고, 익절 목표(sellWidth)는 좁게 잡아 반등 요구폭을 줄이는 비대칭 운용이 목적이다.
 //  · 한쪽 체결 → 반대편 실제 취소(OCO):
 //      매도(+w) 체결 → 전량 정리(SOLD) → 오토파일럿 SCANNING 복귀(변곡점 재개)
 //      매수(−w) 체결 → 잔고 재조회(수량↑·평단↓) → 두 주문 재설정(REBRACKET→ARMED)
@@ -58,8 +60,10 @@ export interface GridOrderPort {
 export type GridState = 'IDLE' | 'ARMED' | 'SOLD' | 'FAULT';
 
 export interface GridConfig {
-  /** 폭 w — 기본 0.10. buyPrice=P×(1−w), sellPrice=P×(1+w). */
-  width: number;
+  /** 매수폭(물타기 간격) — 소수(0.05=5%). buyPrice=P×(1−buyWidth). */
+  buyWidth: number;
+  /** 매도폭(익절 목표) — 소수(0.02=2%). sellPrice=P×(1+sellWidth). */
+  sellWidth: number;
   /** 매수 배율 — 기본 1. 매수수량 = floor(N×배율). 매도는 항상 N 전량. */
   buyMultiplier: number;
   /**
@@ -134,7 +138,8 @@ interface Leg {
 export class Grid {
   private readonly port: GridOrderPort;
   private readonly clock: ClockLike;
-  private readonly width: number;
+  private readonly buyWidth: number;
+  private readonly sellWidth: number;
   private readonly buyMultiplier: number;
   private readonly availableCashUsd: number | undefined;
   private readonly positionRetries: number;
@@ -166,7 +171,8 @@ export class Grid {
   constructor(deps: GridDeps) {
     this.port = deps.port;
     this.clock = deps.clock;
-    this.width = deps.config.width;
+    this.buyWidth = deps.config.buyWidth;
+    this.sellWidth = deps.config.sellWidth;
     this.buyMultiplier = deps.config.buyMultiplier;
     this.availableCashUsd = deps.config.availableCashUsd;
     this.positionRetries = deps.positionRetries ?? 3;
@@ -398,8 +404,8 @@ export class Grid {
     this.holdingQty = position.qty;
     // KIS 주문가 자릿수 규칙($1이상 2자리·미만 4자리)에 미리 맞춰 둔다 — 뷰·발주가·실제 접수가를
     // 하나로 일치시키고 부동소수 잡음(100×1.1=110.0000…001)을 제거한다. kis/order가 다시 절사해도 멱등이다.
-    this.buyPrice = roundGridPrice(position.avgPrice * (1 - this.width));
-    this.sellPrice = roundGridPrice(position.avgPrice * (1 + this.width));
+    this.buyPrice = roundGridPrice(position.avgPrice * (1 - this.buyWidth));
+    this.sellPrice = roundGridPrice(position.avgPrice * (1 + this.sellWidth));
 
     const sellQty = position.qty;
     let buyQty = Math.floor(position.qty * this.buyMultiplier);

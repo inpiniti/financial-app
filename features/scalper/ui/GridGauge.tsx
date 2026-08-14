@@ -1,5 +1,6 @@
 // 매도 관리 그리드 게이지 — 진입 후 관리 중(view.grid non-null)일 때 AutoPilotScreen이 Panel로 보여준다.
-// 가로 게이지: 중앙=평단가, 왼쪽 끝=매수가(평단−w%), 오른쪽 끝=매도가(평단+w%). 현재가는 ▼ 화살표 + 말풍선.
+// 가로 게이지: 왼쪽 끝=매수가(평단−매수폭), 오른쪽 끝=매도가(평단+매도폭), 평단은 두 폭의 비율 위치.
+// (2026-08-14 매수·매도폭 분리 — 폭이 비대칭이라 평단이 정중앙이 아닐 수 있다.) 현재가는 ▼ 화살표 + 말풍선.
 // app-ui-style: 이모지 금지(Ionicons도 필요 없는 단순 도형이라 SVG 직접), 손익이 아니라 매수/매도 방향 색이라
 // pnlColor() 대신 스킬이 지정한 고정 색(매도=#f04452·매수=#3182f6·평단/현재가=#191f28)을 그대로 쓴다.
 import { useState } from 'react';
@@ -24,9 +25,6 @@ const BUY_LEG_NOTICE: Record<string, string | undefined> = {
 };
 
 const GAUGE_HEIGHT = 28;
-/** 눈금 5개 — 매수가·중간·평단·중간·매도가(가운데가 평단, 폭이 대칭이라 항상 정중앙에 온다). */
-const TICK_COUNT = 5;
-const TICK_MID = Math.floor((TICK_COUNT - 1) / 2);
 
 /** 현재가 말풍선 예상 폭(px) — 좌우 클램프에 쓴다. 텍스트 길이에 따라 살짝 어긋날 수 있지만 게이지 폭에 비해 무시할 정도다. */
 const BUBBLE_HALF_WIDTH = 24;
@@ -48,6 +46,11 @@ export function GridGauge({ grid, name }: GridGaugeProps) {
   const rawArrowLeft = position === null ? null : position * trackWidth;
   const arrowLeft =
     rawArrowLeft === null ? null : Math.min(trackWidth - BUBBLE_HALF_WIDTH, Math.max(BUBBLE_HALF_WIDTH, rawArrowLeft));
+
+  // 매수폭·매도폭이 달라(2026-08-14 분리) 평단이 정중앙이 아니다 — 트랙 위 실제 비율 위치에 그린다.
+  const avgPos = normalizeGridPosition(grid.avgPrice, grid.buyPrice, grid.sellPrice);
+  /** 눈금 5개 — 매수가·중간·평단·중간·매도가. 평단 위치(avgPos) 기준으로 중간 눈금을 이등분한다. */
+  const tickFractions = [0, avgPos / 2, avgPos, (1 + avgPos) / 2, 1];
 
   return (
     <View className="px-5 pb-5 pt-1">
@@ -87,10 +90,10 @@ export function GridGauge({ grid, name }: GridGaugeProps) {
         {trackWidth > 0 && (
           <Svg width={trackWidth} height={GAUGE_HEIGHT}>
             <Line x1={0} y1={GAUGE_HEIGHT / 2} x2={trackWidth} y2={GAUGE_HEIGHT / 2} stroke={TRACK_COLOR} strokeWidth={3} strokeLinecap="round" />
-            {Array.from({ length: TICK_COUNT }, (_, i) => {
-              const x = (trackWidth * i) / (TICK_COUNT - 1);
-              const isEdgeOrMid = i === 0 || i === TICK_COUNT - 1 || i === TICK_MID;
-              const stroke = i === 0 ? BUY_COLOR : i === TICK_COUNT - 1 ? SELL_COLOR : i === TICK_MID ? NEUTRAL_COLOR : TICK_COLOR;
+            {tickFractions.map((f, i) => {
+              const x = trackWidth * f;
+              const isEdgeOrMid = i === 0 || i === tickFractions.length - 1 || i === 2;
+              const stroke = i === 0 ? BUY_COLOR : i === tickFractions.length - 1 ? SELL_COLOR : i === 2 ? NEUTRAL_COLOR : TICK_COLOR;
               return (
                 <Line
                   key={i}
@@ -107,7 +110,9 @@ export function GridGauge({ grid, name }: GridGaugeProps) {
         )}
       </View>
 
-      {/* 하단 가격 라벨 — 매수가(좌)·평단가(중앙)·매도가(우). 매수 다리가 없으면(생략·거절) 회색으로 죽인다. */}
+      {/* 하단 가격 라벨 — 매수가(좌)·평단가(트랙 위 실제 위치)·매도가(우).
+          폭이 비대칭이라 평단 라벨은 avgPos에 절대 배치한다(트랙 폭을 모르면 중앙 폴백).
+          매수 다리가 없으면(생략·거절) 회색으로 죽인다. */}
       <View className="mt-1 flex-row items-start justify-between">
         <View>
           <Text
@@ -120,9 +125,22 @@ export function GridGauge({ grid, name }: GridGaugeProps) {
             {formatPrice(grid.buyPrice)}
           </Text>
         </View>
-        <View className="items-center">
+        <View
+          className="items-center"
+          style={
+            trackWidth > 0
+              ? {
+                  position: 'absolute',
+                  left: Math.min(trackWidth - BUBBLE_HALF_WIDTH * 2, Math.max(BUBBLE_HALF_WIDTH * 2, avgPos * trackWidth)) - BUBBLE_HALF_WIDTH,
+                  width: BUBBLE_HALF_WIDTH * 2,
+                }
+              : undefined
+          }
+        >
           <Text className="text-[11px] font-semibold text-[#191f28]">평단가</Text>
-          <Text className="text-xs font-bold text-[#191f28]">{formatPrice(grid.avgPrice)}</Text>
+          <Text className="text-xs font-bold text-[#191f28]" numberOfLines={1}>
+            {formatPrice(grid.avgPrice)}
+          </Text>
         </View>
         <View className="items-end">
           <Text className="text-[11px] font-semibold" style={{ color: SELL_COLOR }}>

@@ -603,7 +603,7 @@ describe('AutoPilot — 매도 관리 그리드 인계(D5·GRID_EXIT)', () => {
   }
 
   it('진입 체결 → 그리드가 매수(−10%)·매도(+10%) 두 주문을 건다', async () => {
-    const h = makeHarness(['A', 'B', 'C'], { autoFill: false, gridConfig: { width: 0.1, buyMultiplier: 1 } });
+    const h = makeHarness(['A', 'B', 'C'], { autoFill: false, gridConfig: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1 } });
     const broker = await enterAndFill(h, 'A', { qty: 5, avgPrice: 100 });
 
     // 그리드 두 다리: 매도 5주@110, 매수 5주@90 (진입 buy 1건 + 그리드 buy 1건 = buy 2건).
@@ -627,7 +627,7 @@ describe('AutoPilot — 매도 관리 그리드 인계(D5·GRID_EXIT)', () => {
   });
 
   it('매도(+10%) 체결 → 매수 취소(OCO) → 정산 → SCANNING 복귀', async () => {
-    const h = makeHarness(['A', 'B', 'C'], { autoFill: false, gridConfig: { width: 0.1, buyMultiplier: 1 } });
+    const h = makeHarness(['A', 'B', 'C'], { autoFill: false, gridConfig: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1 } });
     const broker = await enterAndFill(h, 'A', { qty: 5, avgPrice: 100 });
 
     const gridSell = broker.placed.find((p) => p.side === 'sell')!;
@@ -653,7 +653,7 @@ describe('AutoPilot — 매도 관리 그리드 인계(D5·GRID_EXIT)', () => {
   });
 
   it('매수(−10%) 체결 → 잔고 재조회로 리브래킷(수량↑·평단↓), 관리 지속', async () => {
-    const h = makeHarness(['A', 'B', 'C'], { autoFill: false, gridConfig: { width: 0.1, buyMultiplier: 1 } });
+    const h = makeHarness(['A', 'B', 'C'], { autoFill: false, gridConfig: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1 } });
     const broker = await enterAndFill(h, 'A', { qty: 5, avgPrice: 100 });
 
     const firstSell = broker.placed.find((p) => p.side === 'sell')!;
@@ -757,7 +757,7 @@ describe('AutoPilot — 다중 그리드', () => {
   it('두 종목이 각자 그리드를 연다 — 게이지가 종목별로 따로 뜬다', async () => {
     const h = makeHarness(['A', 'B'], {
       autoFill: false,
-      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      gridConfig: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1 },
       config: CONFIG_MULTI,
     });
     h.pilot.start();
@@ -818,7 +818,7 @@ describe('AutoPilot — 다중 그리드', () => {
     // 매니저가 모듈 스코프 싱글턴이라 설정 탭에서 폭을 바꿔도 앱 재시작 전에는 반영되지 않던 버그.
     const h = makeHarness(['A', 'B'], {
       autoFill: false,
-      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      gridConfig: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1 },
       config: CONFIG_MULTI,
     });
     h.pilot.start();
@@ -834,8 +834,8 @@ describe('AutoPilot — 다중 그리드', () => {
     expect(h.pilot.getView().grids.find((g) => g.ticker === 'A')).toMatchObject({ buyPrice: 90, sellPrice: 110 });
 
     // 실행 중에 설정을 바꾼다(설정 탭 저장 → managerProvider가 포커스에서 흘려 넣는 경로).
-    h.pilot.setGridConfig({ width: 0.05, buyMultiplier: 0.5 });
-    expect(h.pilot.gridSettings).toEqual({ width: 0.05, buyMultiplier: 0.5 });
+    h.pilot.setGridConfig({ buyWidth: 0.05, sellWidth: 0.05, buyMultiplier: 0.5 });
+    expect(h.pilot.gridSettings).toEqual({ buyWidth: 0.05, sellWidth: 0.05, buyMultiplier: 0.5 });
 
     // B는 새 값(±5%·배율 0.5)으로 열린다.
     await replay(h, 'B', DOWN_UP_DOWN);
@@ -863,7 +863,7 @@ describe('AutoPilot — 다중 그리드', () => {
   it('FAULT로 놓친 물량을 잔고에서 다시 그리드에 태운다(adoptPosition)', async () => {
     const h = makeHarness(['A', 'B'], {
       autoFill: false,
-      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      gridConfig: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1 },
       // 계좌에 7주 @ $100이 있다 — 진입 인계도, 그 뒤 재등록도 이 잔고를 읽는다.
       positions: { A: { qty: 7, avgPrice: 100 } },
     });
@@ -917,7 +917,7 @@ describe('AutoPilot — 다중 그리드', () => {
   });
 
   it('잔고가 비어 있으면 등록에 실패하되 전역 FAULT로 번지지 않는다', async () => {
-    const h = makeHarness(['A'], { autoFill: false, gridConfig: { width: 0.1, buyMultiplier: 1 } });
+    const h = makeHarness(['A'], { autoFill: false, gridConfig: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1 } });
     h.pilot.start();
     // positions 미주입 → 잔고 조회가 null. 계좌 상태가 달라진 것뿐이라 그 종목만 포기해야 한다.
     expect(await h.pilot.adoptPosition('A')).toContain('실패');
@@ -929,7 +929,7 @@ describe('AutoPilot — 다중 그리드', () => {
   it('입양 포지션도 +폭 매도가 체결되면 정상 정산된다(진입 사이클이 없어도)', async () => {
     const h = makeHarness(['A'], {
       autoFill: false,
-      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      gridConfig: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1 },
       positions: { A: { qty: 3, avgPrice: 200 } },
     });
     h.pilot.start();
@@ -955,7 +955,7 @@ describe('AutoPilot — 다중 그리드', () => {
   it('등록 거절 — 이미 관리 중이거나 슬롯이 꽉 찼거나 정지 상태면 문구를 돌려준다', async () => {
     const h = makeHarness(['A', 'B'], {
       autoFill: false,
-      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      gridConfig: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1 },
       config: { startAmountUsd: 100, minTickRate: TINY_RATE, maxConcurrentGrids: 1 },
       positions: { A: { qty: 2, avgPrice: 50 }, B: { qty: 5, avgPrice: 20 } },
     });
@@ -1026,7 +1026,7 @@ describe('AutoPilot — 그리드 격리·현금 소진 매도 전용', () => {
   it('그리드 하나가 멈춰도 전역 FAULT로 번지지 않는다 — 다른 종목은 계속 정산까지 간다', async () => {
     const h = makeHarness(['A', 'B'], {
       autoFill: false,
-      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      gridConfig: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1 },
       config: CONFIG_MULTI,
     });
     const { ba, bb } = await armTwoGrids(h);
@@ -1064,7 +1064,7 @@ describe('AutoPilot — 그리드 격리·현금 소진 매도 전용', () => {
     const cashSeq = [100_000, 100_000, 0];
     const h = makeHarness(['A'], {
       autoFill: false,
-      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      gridConfig: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1 },
       fetchBuyableUsd: async () => cashSeq.shift() ?? 0,
     });
     h.pilot.start();
@@ -1101,7 +1101,7 @@ describe('AutoPilot — 그리드 격리·현금 소진 매도 전용', () => {
   });
 
   it('그리드 매수 발주가 거절돼도 전역 FAULT 없이 매도만 관리한다(rejected)', async () => {
-    const h = makeHarness(['A'], { autoFill: false, gridConfig: { width: 0.1, buyMultiplier: 1 } });
+    const h = makeHarness(['A'], { autoFill: false, gridConfig: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1 } });
     h.pilot.start();
     await replay(h, 'A', DOWN_UP_DOWN);
     const ba = h.brokers.get('A')!;
@@ -1131,7 +1131,7 @@ describe('AutoPilot — 세션 전환(정규장↔주간거래) 그리드 주문
   it('세션 경계를 넘으면 ARMED 그리드의 두 다리를 취소하고 같은 포지션으로 재발주한다', async () => {
     const h = makeHarness(['A'], {
       autoFill: false,
-      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      gridConfig: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1 },
       positions: { A: { qty: 10, avgPrice: 100 } },
     });
     h.pilot.start();
@@ -1162,7 +1162,7 @@ describe('AutoPilot — 세션 전환(정규장↔주간거래) 그리드 주문
   it('경계 직전 매도 체결은 재등록으로 덮지 않고 먼저 정산한다', async () => {
     const h = makeHarness(['A'], {
       autoFill: false,
-      gridConfig: { width: 0.1, buyMultiplier: 1 },
+      gridConfig: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1 },
       positions: { A: { qty: 10, avgPrice: 100 } },
     });
     h.pilot.start();

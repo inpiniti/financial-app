@@ -31,7 +31,7 @@ describe('gridOrderPort — ScalperBroker 글루(정확 지정가)', () => {
     const grid = new Grid({
       port: createGridOrderPort(broker, 'AAPL'),
       clock: { now: () => 0 },
-      config: { width: 0.1, buyMultiplier: 1 },
+      config: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1 },
     });
 
     await grid.arm();

@@ -75,8 +75,9 @@ export default function SettingsScreen() {
   const savedOrderQtyRef = useRef(DEFAULT_APP_SETTINGS.orderQty);
   // 청크·버퍼·모멘텀 문턱·BUY 게이트·수수료율 설정은 2026-08-08 제거 — 코드 기본값 고정 동작.
   const [buyCancelAfterSec, setBuyCancelAfterSec] = useState(DEFAULT_APP_SETTINGS.buyCancelAfterSec);
-  // 매도 관리 그리드 폭·매수 배율 — 텍스트 입력 + 저장 시 검증 패턴.
-  const [gridWidthPct, setGridWidthPct] = useState(String(DEFAULT_APP_SETTINGS.gridWidthPct));
+  // 매도 관리 그리드 매수폭·매도폭·매수 배율 — 텍스트 입력 + 저장 시 검증 패턴. (폭 분리 2026-08-14)
+  const [gridBuyWidthPct, setGridBuyWidthPct] = useState(String(DEFAULT_APP_SETTINGS.gridBuyWidthPct));
+  const [gridSellWidthPct, setGridSellWidthPct] = useState(String(DEFAULT_APP_SETTINGS.gridSellWidthPct));
   const [gridBuyMultiplier, setGridBuyMultiplier] = useState(String(DEFAULT_APP_SETTINGS.gridBuyMultiplier));
   // 사다리 진입 감지(2026-08-07 plan) — 간격 %·홀 횟수.
   const [entryLadderIntervalPct, setEntryLadderIntervalPct] = useState(
@@ -95,7 +96,8 @@ export default function SettingsScreen() {
       const appSettings = await loadAppSettings();
       savedOrderQtyRef.current = appSettings.orderQty;
       setBuyCancelAfterSec(appSettings.buyCancelAfterSec);
-      setGridWidthPct(String(appSettings.gridWidthPct));
+      setGridBuyWidthPct(String(appSettings.gridBuyWidthPct));
+      setGridSellWidthPct(String(appSettings.gridSellWidthPct));
       setGridBuyMultiplier(String(appSettings.gridBuyMultiplier));
       setEntryLadderIntervalPct(String(appSettings.entryLadderIntervalPct));
       setEntryLadderCount(String(appSettings.entryLadderCount));
@@ -134,9 +136,23 @@ export default function SettingsScreen() {
       return;
     }
 
-    const parsedGridWidthPct = Number(gridWidthPct);
-    if (!Number.isFinite(parsedGridWidthPct) || parsedGridWidthPct <= 0 || parsedGridWidthPct > GRID_WIDTH_MAX_PCT) {
-      Alert.alert('알림', `그리드 폭은 0보다 크고 ${GRID_WIDTH_MAX_PCT} 이하인 숫자로 입력해 주세요.`);
+    const parsedGridBuyWidthPct = Number(gridBuyWidthPct);
+    if (
+      !Number.isFinite(parsedGridBuyWidthPct) ||
+      parsedGridBuyWidthPct <= 0 ||
+      parsedGridBuyWidthPct > GRID_WIDTH_MAX_PCT
+    ) {
+      Alert.alert('알림', `매수 간격은 0보다 크고 ${GRID_WIDTH_MAX_PCT} 이하인 숫자로 입력해 주세요.`);
+      return;
+    }
+
+    const parsedGridSellWidthPct = Number(gridSellWidthPct);
+    if (
+      !Number.isFinite(parsedGridSellWidthPct) ||
+      parsedGridSellWidthPct <= 0 ||
+      parsedGridSellWidthPct > GRID_WIDTH_MAX_PCT
+    ) {
+      Alert.alert('알림', `매도 익절은 0보다 크고 ${GRID_WIDTH_MAX_PCT} 이하인 숫자로 입력해 주세요.`);
       return;
     }
 
@@ -178,7 +194,8 @@ export default function SettingsScreen() {
         environment: 'live',
         orderQty: savedOrderQtyRef.current,
         buyCancelAfterSec,
-        gridWidthPct: parsedGridWidthPct,
+        gridBuyWidthPct: parsedGridBuyWidthPct,
+        gridSellWidthPct: parsedGridSellWidthPct,
         gridBuyMultiplier: parsedGridBuyMultiplier,
         entryLadderIntervalPct: parsedLadderIntervalPct,
         entryLadderCount: parsedLadderCount,
@@ -205,18 +222,20 @@ export default function SettingsScreen() {
   })();
 
   /**
-   * 그리드 폭·배율의 즉시 미리보기 — 입력값이 실제 발주가·수량으로 어떻게 번역되는지 그 자리에서 보여준다.
-   * ("매수 배율 1"이 왜 수량 2배가 되는지가 숫자로 보이지 않아 오해가 잦았다.)
+   * 그리드 매수폭·매도폭·배율의 즉시 미리보기 — 입력값이 실제 발주가·수량으로 어떻게 번역되는지
+   * 그 자리에서 보여준다. ("매수 배율 1"이 왜 수량 2배가 되는지가 숫자로 보이지 않아 오해가 잦았다.)
    * 입력이 유효 범위를 벗어나면 null — 저장 시 Alert로 막히므로 여기서는 미리보기만 숨긴다.
    */
   const gridPreview = (() => {
-    const w = Number(gridWidthPct);
+    const wb = Number(gridBuyWidthPct);
+    const ws = Number(gridSellWidthPct);
     const m = Number(gridBuyMultiplier);
-    if (!Number.isFinite(w) || w <= 0 || w > GRID_WIDTH_MAX_PCT) return null;
+    if (!Number.isFinite(wb) || wb <= 0 || wb > GRID_WIDTH_MAX_PCT) return null;
+    if (!Number.isFinite(ws) || ws <= 0 || ws > GRID_WIDTH_MAX_PCT) return null;
     if (!Number.isFinite(m) || m <= 0 || m > GRID_BUY_MULTIPLIER_MAX) return null;
     return {
-      buy: (100 * (1 - w / 100)).toFixed(2),
-      sell: (100 * (1 + w / 100)).toFixed(2),
+      buy: (100 * (1 - wb / 100)).toFixed(2),
+      sell: (100 * (1 + ws / 100)).toFixed(2),
       addQty: Math.floor(10 * m),
     };
   })();
@@ -329,17 +348,30 @@ export default function SettingsScreen() {
 
         <Panel title="매도 그리드">
           <View className="px-5 pb-5">
-            <Text className="mb-1 text-xs text-[#8b95a1]">그리드 폭 (%) — 최대 {GRID_WIDTH_MAX_PCT}</Text>
+            <Text className="mb-1 text-xs text-[#8b95a1]">매수 간격 (%) — 최대 {GRID_WIDTH_MAX_PCT}</Text>
             <TextInput
-              value={gridWidthPct}
-              onChangeText={setGridWidthPct}
+              value={gridBuyWidthPct}
+              onChangeText={setGridBuyWidthPct}
               keyboardType="decimal-pad"
-              placeholder={`기본 ${DEFAULT_APP_SETTINGS.gridWidthPct}`}
+              placeholder={`기본 ${DEFAULT_APP_SETTINGS.gridBuyWidthPct}`}
               placeholderTextColor="#8b95a1"
               className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
             />
             <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
-              평단 ±이 %에 매도·매수 지정가를 걸어요.
+              평단에서 이 %만큼 내려간 자리에 물타기 매수를 걸어요. 넓을수록 올인까지 버티는 낙폭이 깊어져요.
+            </Text>
+
+            <Text className="mb-1 text-xs text-[#8b95a1]">매도 익절 (%) — 최대 {GRID_WIDTH_MAX_PCT}</Text>
+            <TextInput
+              value={gridSellWidthPct}
+              onChangeText={setGridSellWidthPct}
+              keyboardType="decimal-pad"
+              placeholder={`기본 ${DEFAULT_APP_SETTINGS.gridSellWidthPct}`}
+              placeholderTextColor="#8b95a1"
+              className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
+            />
+            <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
+              평단에서 이 %만큼 오르면 전량 익절해요. 좁을수록 바닥에서 필요한 반등이 작아져요.
               {gridPreview && (
                 <Text className="text-[#4e5968]">
                   {' '}평단 $100이면 매수 ${gridPreview.buy} · 매도 ${gridPreview.sell}에 걸려요.

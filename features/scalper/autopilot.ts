@@ -64,10 +64,12 @@ export const DEFAULT_MIN_TICK_RATE = 1;
  */
 export const GRID_EXIT = true;
 
-/** 그리드 설정 — 폭(w)·매수배율(buyMultiplier). 설정 탭(매매 파라미터)에서 조절한다. */
+/** 그리드 설정 — 매수폭·매도폭·매수배율. 설정 탭(매매 파라미터)에서 조절한다. */
 export interface GridExitConfig {
-  /** 폭 w(기본 0.10). buyPrice=P×(1−w), sellPrice=P×(1+w). */
-  width: number;
+  /** 매수폭(물타기 간격, 소수). buyPrice=P×(1−buyWidth). 넓을수록 올인이 늦다. */
+  buyWidth: number;
+  /** 매도폭(익절 목표, 소수). sellPrice=P×(1+sellWidth). 좁을수록 반등 요구가 작다. */
+  sellWidth: number;
   /** 매수 배율(기본 1). 매수수량 = floor(N×배율), 매도는 항상 N 전량. */
   buyMultiplier: number;
 }
@@ -472,7 +474,8 @@ export class AutoPilot {
       prev === config ||
       (prev !== undefined &&
         config !== undefined &&
-        prev.width === config.width &&
+        prev.buyWidth === config.buyWidth &&
+        prev.sellWidth === config.sellWidth &&
         prev.buyMultiplier === config.buyMultiplier)
     ) {
       return;
@@ -480,7 +483,7 @@ export class AutoPilot {
     this.gridConfig = config;
     if (config) {
       this.event(
-        `그리드 설정 적용 · 폭 ±${(config.width * 100).toFixed(1)}% · 매수 배율 ${config.buyMultiplier}배 (다음 그리드부터)`,
+        `그리드 설정 적용 · 매수 −${(config.buyWidth * 100).toFixed(1)}% · 매도 +${(config.sellWidth * 100).toFixed(1)}% · 매수 배율 ${config.buyMultiplier}배 (다음 그리드부터)`,
       );
     }
     this.emit();
@@ -1085,7 +1088,7 @@ export class AutoPilot {
       const grid = new Grid({
         port: createGridOrderPort(active.broker, active.ticker),
         clock: this.deps.clock,
-        config: { width: cfg.width, buyMultiplier: cfg.buyMultiplier },
+        config: { buyWidth: cfg.buyWidth, sellWidth: cfg.sellWidth, buyMultiplier: cfg.buyMultiplier },
         // 조회 실패(null/throw)는 그리드가 판정 생략으로 처리한다(주문 거절은 rejected 격리가 받는다).
         fetchAvailableCash: async (buyPrice) => {
           const cash = await this.deps.fetchBuyableUsd?.(active.ticker, buyPrice);
@@ -1103,7 +1106,7 @@ export class AutoPilot {
       active.gridArmed = true;
       const v = grid.view;
       this.event(
-        `${active.ticker} 그리드 관리 ${active.adopted ? '등록' : '인계'} · ${v.holdingQty}주 · 평단 $${v.avgPrice.toFixed(2)} · 매수 $${v.buyPrice}(−${Math.round(cfg.width * 100)}%) · 매도 $${v.sellPrice}(+${Math.round(cfg.width * 100)}%)`,
+        `${active.ticker} 그리드 관리 ${active.adopted ? '등록' : '인계'} · ${v.holdingQty}주 · 평단 $${v.avgPrice.toFixed(2)} · 매수 $${v.buyPrice}(−${(cfg.buyWidth * 100).toFixed(1)}%) · 매도 $${v.sellPrice}(+${(cfg.sellWidth * 100).toFixed(1)}%)`,
       );
       this.emit();
       return true;

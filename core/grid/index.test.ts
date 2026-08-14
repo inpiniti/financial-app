@@ -87,7 +87,42 @@ class FakeGridPort implements GridOrderPort {
   }
 }
 
-const baseConfig: GridConfig = { width: 0.1, buyMultiplier: 1 };
+const baseConfig: GridConfig = { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1 };
+
+describe('core/grid — 매수폭·매도폭 분리(비대칭)', () => {
+  it('매수 −5%·매도 +2%를 각각 적용해 두 다리를 건다', async () => {
+    const port = new FakeGridPort({ qty: 10, avgPrice: 100 });
+    const grid = new Grid({
+      port,
+      clock: fakeClock(),
+      config: { buyWidth: 0.05, sellWidth: 0.02, buyMultiplier: 1 },
+    });
+
+    await grid.arm();
+
+    expect(port.legBySide('buy')).toMatchObject({ qty: 10, price: 95 });
+    expect(port.legBySide('sell')).toMatchObject({ qty: 10, price: 102 });
+    expect(grid.view).toMatchObject({ avgPrice: 100, buyPrice: 95, sellPrice: 102 });
+  });
+
+  it('물타기 리브래킷도 새 평단에 매수폭·매도폭을 각각 적용한다', async () => {
+    const port = new FakeGridPort({ qty: 10, avgPrice: 100 });
+    port.positionQueue = [{ qty: 10, avgPrice: 100 }, { qty: 20, avgPrice: 97.5 }];
+    const grid = new Grid({
+      port,
+      clock: fakeClock(),
+      config: { buyWidth: 0.05, sellWidth: 0.02, buyMultiplier: 1 },
+    });
+    await grid.arm();
+
+    port.fill(port.legBySide('buy')!.odno, 95);
+    const result = await grid.poll();
+
+    expect(result).toMatchObject({ kind: 'rebracket', position: { qty: 20, avgPrice: 97.5 } });
+    // 새 평단 97.5 기준 — 매수 97.5×0.95=92.63(반올림), 매도 97.5×1.02=99.45.
+    expect(grid.view).toMatchObject({ avgPrice: 97.5, buyPrice: 92.63, sellPrice: 99.45 });
+  });
+});
 
 describe('core/grid — ±w OCO 지정가 그리드', () => {
   it('③ arm은 두 주문을 발주한다 — 매수가=avg×0.9·매도가=avg×1.1·매수수량=N·매도수량=N', async () => {
@@ -163,7 +198,7 @@ describe('core/grid — ±w OCO 지정가 그리드', () => {
 
   it('⑤ buyMultiplier=2 → 매수수량 = N×2, 매도수량 = N', async () => {
     const port = new FakeGridPort({ qty: 10, avgPrice: 100 });
-    const grid = new Grid({ port, clock: fakeClock(), config: { width: 0.1, buyMultiplier: 2 } });
+    const grid = new Grid({ port, clock: fakeClock(), config: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 2 } });
 
     await grid.arm();
 
@@ -175,7 +210,7 @@ describe('core/grid — ±w OCO 지정가 그리드', () => {
   it('⑥ 현금이 부족하면 매수 다리를 살 수 있는 최대로 축소한다', async () => {
     const port = new FakeGridPort({ qty: 10, avgPrice: 100 });
     // buyPrice=90, 매수 필요 10주×90=$900. 가용 $500 → floor(500/90)=5주.
-    const grid = new Grid({ port, clock: fakeClock(), config: { width: 0.1, buyMultiplier: 1, availableCashUsd: 500 } });
+    const grid = new Grid({ port, clock: fakeClock(), config: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1, availableCashUsd: 500 } });
 
     await grid.arm();
 
@@ -185,7 +220,7 @@ describe('core/grid — ±w OCO 지정가 그리드', () => {
 
   it('⑥ 현금이 0이면 매수 다리를 생략하고 매도(익절) 다리만 발주한다', async () => {
     const port = new FakeGridPort({ qty: 10, avgPrice: 100 });
-    const grid = new Grid({ port, clock: fakeClock(), config: { width: 0.1, buyMultiplier: 1, availableCashUsd: 0 } });
+    const grid = new Grid({ port, clock: fakeClock(), config: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1, availableCashUsd: 0 } });
 
     await grid.arm();
 
@@ -259,7 +294,7 @@ describe('core/grid — 최신 현금 콜백(fetchAvailableCash)·다리별 격�
     const g1 = new Grid({
       port: p1,
       clock: fakeClock(),
-      config: { width: 0.1, buyMultiplier: 1, availableCashUsd: 500 },
+      config: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1, availableCashUsd: 500 },
       fetchAvailableCash: async () => null,
     });
     await g1.arm();
@@ -374,7 +409,7 @@ describe('core/grid — 세션 전환·일괄 취소 방어(재발주)', () => {
   it('매도 단독 다리의 추론 소멸 — 잔고가 그대로면(취소) 2폴 유예 뒤 재발주, 잔고가 비면(진짜 체결) SOLD', async () => {
     // ① 취소 케이스 — 잔고에 전량이 그대로 남아 있다.
     const p1 = new FakeGridPort({ qty: 10, avgPrice: 100 });
-    const g1 = new Grid({ port: p1, clock: fakeClock(), config: { width: 0.1, buyMultiplier: 1, availableCashUsd: 0 } });
+    const g1 = new Grid({ port: p1, clock: fakeClock(), config: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1, availableCashUsd: 0 } });
     await g1.arm();
     expect(p1.legBySide('buy')).toBeUndefined(); // 매도만 ARMED.
 
@@ -387,7 +422,7 @@ describe('core/grid — 세션 전환·일괄 취소 방어(재발주)', () => {
 
     // ② 진짜 체결 케이스 — 잔고가 비었다 → 기존대로 SOLD(체결가는 지정가로 폴백).
     const p2 = new FakeGridPort({ qty: 10, avgPrice: 100 });
-    const g2 = new Grid({ port: p2, clock: fakeClock(), config: { width: 0.1, buyMultiplier: 1, availableCashUsd: 0 } });
+    const g2 = new Grid({ port: p2, clock: fakeClock(), config: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1, availableCashUsd: 0 } });
     await g2.arm();
     p2.vanish(p2.legBySide('sell')!.odno);
     p2.positionQueue = [null]; // 매도 체결로 잔고 소멸.
@@ -398,7 +433,7 @@ describe('core/grid — 세션 전환·일괄 취소 방어(재발주)', () => {
 
   it('추론 소멸 검증 중 잔고 조회가 실패하면 판정을 다음 폴로 미룬다(armed 유지)', async () => {
     const port = new FakeGridPort({ qty: 10, avgPrice: 100 });
-    const grid = new Grid({ port, clock: fakeClock(), config: { width: 0.1, buyMultiplier: 1, availableCashUsd: 0 } });
+    const grid = new Grid({ port, clock: fakeClock(), config: { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1, availableCashUsd: 0 } });
     await grid.arm();
 
     port.vanish(port.legBySide('sell')!.odno);

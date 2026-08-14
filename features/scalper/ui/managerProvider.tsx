@@ -142,8 +142,12 @@ async function buildManager(): Promise<ManagerBootstrap> {
     fetchSnapshot,
     fetchBuyableUsd,
     fetchHoldings,
-    // 매도 관리 그리드 인계(D5) — 폭·매수배율은 설정 탭(매매파라미터)에서 조절한다(Phase B).
-    gridConfig: { width: appSettings.gridWidthPct / 100, buyMultiplier: appSettings.gridBuyMultiplier },
+    // 매도 관리 그리드 인계(D5) — 매수폭·매도폭·매수배율은 설정 탭(매매파라미터)에서 조절한다.
+    gridConfig: {
+      buyWidth: appSettings.gridBuyWidthPct / 100,
+      sellWidth: appSettings.gridSellWidthPct / 100,
+      buyMultiplier: appSettings.gridBuyMultiplier,
+    },
     keepAwake: expoKeepAwake,
     // 사다리 판정 주기 = 청크 1초 고정 (2026-08-09 사용자 확정 — 설정 제거 전 실사용 값 복원.
     // 설정 제거 때 기본 3초로 잘못 굳었었다). 버퍼는 미주입(기본 31) — 사다리 모드는 워밍업을
@@ -247,7 +251,8 @@ function getOrCreateManager(): Promise<ManagerBootstrap> {
 async function refreshLiveSettings(boot: ManagerBootstrap): Promise<void> {
   const appSettings = await loadAppSettings();
   boot.autopilot.setGridConfig({
-    width: appSettings.gridWidthPct / 100,
+    buyWidth: appSettings.gridBuyWidthPct / 100,
+    sellWidth: appSettings.gridSellWidthPct / 100,
     buyMultiplier: appSettings.gridBuyMultiplier,
   });
   boot.autopilot.setEntryLadder({

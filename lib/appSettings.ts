@@ -19,20 +19,26 @@ export interface AppSettings {
    */
   buyCancelAfterSec: number;
   /**
-   * 매도 관리 그리드 폭 — **% 단위**. 기본 3(=3%). 진입 체결 후 평단 ±이 %에 매수·매도 지정가를 건다
-   * (buyPrice=평단×(1−w), sellPrice=평단×(1+w)). managerProvider가 /100 해서 core/grid의 width(소수)로 넘긴다.
-   * (매도 관리 그리드 Phase B — 2026-08-05)
+   * 그리드 매수폭(물타기 간격) — **% 단위**. 기본 5. 평단 −이 %에 물타기 지정가를 건다.
+   * 넓을수록 올인까지의 방어선이 깊어진다. managerProvider가 /100 해서 core/grid로 넘긴다.
+   * (2026-08-14 매수·매도폭 분리 — 옛 단일 gridWidthPct 저장값은 로드 시 양쪽으로 승계된다.)
    */
-  gridWidthPct: number;
+  gridBuyWidthPct: number;
   /**
-   * 매도 관리 그리드 매수 배율 — 기본 2(=보유수량의 2배를 더 사서 총 3배). 리브래킷 매수 수량은
-   * floor(보유수량 × 이 배율)로 계산된다(core/grid 몫, 여기서는 값만 전달). (Phase B)
+   * 그리드 매도폭(익절 목표) — **% 단위**. 기본 2. 평단 +이 %에 익절 지정가를 건다.
+   * 좁을수록 바닥에서 필요한 반등폭이 작아진다(대신 사이클당 이익도 작다).
+   */
+  gridSellWidthPct: number;
+  /**
+   * 매도 관리 그리드 매수 배율 — 기본 1(=보유수량만큼 더 사서 총 2배). 리브래킷 매수 수량은
+   * floor(보유수량 × 이 배율)로 계산된다(core/grid 몫, 여기서는 값만 전달).
+   * (기본값 2→1 — 2026-08-14 비대칭 폭 도입과 함께 보수화. 기존 저장값은 그대로 산다.)
    */
   gridBuyMultiplier: number;
   /**
    * 사다리 진입 감지 간격 — **% 단위**. 기본 3(=3%). 감시 시작가(트레일링 고점)에서 이 %씩 떨어질
    * 때마다 홀(가상 매수) 1회를 세고, entryLadderCount번째 홀에서 매수한다(2026-08-07 변곡점 그리드감지 plan).
-   * ⚠ 매도그리드 폭(gridWidthPct)과 **별개** — 감지는 분 단위 잔파동, 그리드는 포지션 관리용이다.
+   * ⚠ 매도그리드 폭(gridBuyWidthPct 등)과 **별개** — 감지는 분 단위 잔파동, 그리드는 포지션 관리용이다.
    * managerProvider가 /100 해서 소수로 넘긴다.
    */
   entryLadderIntervalPct: number;
@@ -59,8 +65,9 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   environment: 'live',
   orderQty: 1,
   buyCancelAfterSec: 0,
-  gridWidthPct: 3,
-  gridBuyMultiplier: 2,
+  gridBuyWidthPct: 5,
+  gridSellWidthPct: 2,
+  gridBuyMultiplier: 1,
   entryLadderIntervalPct: 3,
   entryLadderCount: 4,
   startAmountUsd: 1,
@@ -104,7 +111,8 @@ export async function loadAppSettings(): Promise<AppSettings> {
   const raw = await AsyncStorage.getItem(STORAGE_KEY);
   if (!raw) return DEFAULT_APP_SETTINGS;
   try {
-    const parsed = JSON.parse(raw) as Partial<AppSettings>;
+    // gridWidthPct는 폭 분리(2026-08-14) 전의 옛 단일 키 — 있으면 매수·매도폭 양쪽으로 승계한다.
+    const parsed = JSON.parse(raw) as Partial<AppSettings> & { gridWidthPct?: number };
     // environment는 항상 'live'로 강제한다 (2026-07-30 사용자 확정 — 모의 전환 옵션 제거).
     // KIS 모의투자는 시세 WS·현재가·순위가 전부 미지원이라 이 앱에서 PAPER는 동작 불가이고,
     // 과거 스위치로 'paper'가 저장된 기기도 이 강제로 자연 복구된다.
@@ -113,7 +121,8 @@ export async function loadAppSettings(): Promise<AppSettings> {
       environment: 'live',
       orderQty: parsed.orderQty ?? DEFAULT_APP_SETTINGS.orderQty,
       buyCancelAfterSec: parsed.buyCancelAfterSec ?? DEFAULT_APP_SETTINGS.buyCancelAfterSec,
-      gridWidthPct: parsed.gridWidthPct ?? DEFAULT_APP_SETTINGS.gridWidthPct,
+      gridBuyWidthPct: parsed.gridBuyWidthPct ?? parsed.gridWidthPct ?? DEFAULT_APP_SETTINGS.gridBuyWidthPct,
+      gridSellWidthPct: parsed.gridSellWidthPct ?? parsed.gridWidthPct ?? DEFAULT_APP_SETTINGS.gridSellWidthPct,
       gridBuyMultiplier: parsed.gridBuyMultiplier ?? DEFAULT_APP_SETTINGS.gridBuyMultiplier,
       entryLadderIntervalPct: parsed.entryLadderIntervalPct ?? DEFAULT_APP_SETTINGS.entryLadderIntervalPct,
       entryLadderCount: parsed.entryLadderCount ?? DEFAULT_APP_SETTINGS.entryLadderCount,
