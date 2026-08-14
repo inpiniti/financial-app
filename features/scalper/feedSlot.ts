@@ -36,9 +36,9 @@ export interface FeedSlotOptions {
   chunkSeconds?: number;
   /** SG 버퍼 크기(홀수, 기본 31). */
   bufferSize?: number;
-  /** 틱/초 윈도우(ms, 기본 10초 — plan §4-13). */
+  /** 틱/초 윈도우(ms, 기본 15초 — 2026-08-14 표시 단위 "/15초"와 시야 일치). */
   tickRateWindowMs?: number;
-  /** 기울기/초 윈도우(ms, 기본 10초 — 틱/초와 같은 시야). */
+  /** 기울기/초 윈도우(ms, 기본 15초 — 틱/초와 같은 시야). */
   slopeWindowMs?: number;
   /** detector 옵션 — 부착 시 새 detector에 그대로 주입. */
   minBuyMomentum?: number;
@@ -57,6 +57,14 @@ export interface FeedSlotOptions {
 /** 변곡점 신호 콜백 — attach 시 등록. */
 export type SlotSignalListener = (signal: Signal, ctx: SlotSignalContext) => void;
 
+/**
+ * 속도·기울기 측정 윈도우(공유) — 표기 단위 "N/15초"·"%/15초"와 시야를 맞춘 15초
+ * (2026-08-14 관찰 피드백: 5초 표기에서 15초로. 환산 뻥튀기 대신 실제 15초 관찰값을 보여준다).
+ * 미터 클래스 기본값(10초)은 순수 로직·기존 테스트 보존을 위해 그대로 두고, 배선에서만 덮어쓴다.
+ * 내부 단위는 여전히 틱/초·%/초 정본 — 최소 속도(minTickRate) 비교도 틱/초 그대로다.
+ */
+export const FEED_RATE_WINDOW_MS = 15_000;
+
 export interface SlotSignalContext {
   readonly ticker: string;
   readonly price: number;
@@ -67,12 +75,12 @@ export interface SlotSignalContext {
 
 export interface FeedSlotView {
   readonly ticker: string;
-  /** 현재 시점 틱/초(10초 윈도우 순간값). */
+  /** 현재 시점 틱/초(15초 윈도우 순간값 — FEED_RATE_WINDOW_MS). */
   readonly tickRate: number;
   /** 틱/초 시계열 — [4초전, 3초전, 2초전, 1초전, 현재]. */
   readonly tickRateSeries: number[];
   /**
-   * 현재 시점 기울기/초(%/초, 10초 윈도우 양끝점) — 판정 불가는 null(0=횡보와 다름).
+   * 현재 시점 기울기/초(%/초, 15초 윈도우 양끝점) — 판정 불가는 null(0=횡보와 다름).
    * ⚠ 아래 slope(SG %/청크, 감시 중에만)와 다른 값 — 도메인 문서 §2 용어 구분.
    */
   readonly slopeRate: number | null;
@@ -130,8 +138,8 @@ export class FeedSlot {
   constructor(options: FeedSlotOptions) {
     this.ticker = options.ticker;
     this.clock = options.clock;
-    this.meter = new TickRateMeter(options.tickRateWindowMs);
-    this.slopeMeter = new SlopeMeter(options.slopeWindowMs);
+    this.meter = new TickRateMeter(options.tickRateWindowMs ?? FEED_RATE_WINDOW_MS);
+    this.slopeMeter = new SlopeMeter(options.slopeWindowMs ?? FEED_RATE_WINDOW_MS);
     this.resampler = new Resampler({
       chunkSeconds: options.chunkSeconds,
       bufferSize: options.bufferSize,

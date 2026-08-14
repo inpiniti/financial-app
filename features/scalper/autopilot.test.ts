@@ -202,9 +202,9 @@ describe('AutoPilot — 감시 선정(최소 속도 자격 필터·히스테리�
     h.pilot.start();
     expect(h.pilot.getView().watched).toEqual(['A']);
 
-    h.clock.advance(9_000); // A 틱이 윈도우 끝자락 — 아직 자격(20틱이 10초 창 안).
+    h.clock.advance(13_000); // A 틱이 윈도우 끝자락 — 아직 자격(20틱이 15초 창 안).
     burst(h, 'B', 30); // B가 새 자격자.
-    h.clock.advance(2_000); // A 틱 전부 윈도우 밖 → 0틱/초.
+    h.clock.advance(3_000); // A 틱 전부 윈도우(15초) 밖 → 0틱/초.
     h.pilot.reselect();
     expect(h.pilot.getView().watched).toEqual(['B']);
     expect(h.slots.get('A')!.watched).toBe(true); // 감시 이탈 ≠ 감지 중단

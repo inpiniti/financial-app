@@ -146,18 +146,18 @@ function SlotRow({
         leading={<TickerAvatar ticker={ticker} />}
         title={name || ticker}
         // 속도·기울기는 "4초전→현재" 5칸 시계열로 아래 두 줄에 — 현재값 1개보다 흐름이 보인다(2026-08-14).
-        // 라벨은 단위 포함 "기울기/5초"(단독 "기울기" 금지 — SG %/청크와 혼동, 도메인 문서 §2).
-        // 표기는 %/5초(포맷터가 ×5) — %/초는 소수 1자리에서 다 0.0으로 뭉개졌다.
+        // 라벨은 단위 포함 "속도/15초"·"기울기/15초"(단독 "기울기" 금지 — SG %/청크와 혼동, 도메인 문서 §2).
+        // 표기는 15초당 환산(포맷터가 ×15) — 측정 윈도우도 15초라 실제 "지난 15초" 관찰값이다.
         subtitle={
           <View className="mt-0.5">
             <Text className="text-sm text-[#8b95a1]" numberOfLines={1}>
               {`${name ? `${ticker} · ` : ''}${WATCH_SOURCE_LABEL[item.entry.source]}`}
             </Text>
             <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
-              {`속도 ${formatTickRateSeries(item.view.tickRateSeries)}`}
+              {`속도/15초 ${formatTickRateSeries(item.view.tickRateSeries)}`}
             </Text>
             <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
-              {`기울기/5초 ${formatSlopeRateSeries(item.view.slopeRateSeries)}`}
+              {`기울기/15초 ${formatSlopeRateSeries(item.view.slopeRateSeries)}`}
             </Text>
           </View>
         }
