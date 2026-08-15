@@ -322,3 +322,39 @@ describe('FeedSlot — 상시 수신(틱/초·리샘플) + detector 탈부착', 
     expect(slot.getView().lastSignal).toBeNull();
   });
 });
+
+// ---- 변곡점+그리드 조합 모드(2026-08-15 도메인 문서) ----
+
+describe('FeedSlot — 조합 모드(inflection): 청크 1초·버퍼 21 강제 + 신호 전용 SG', () => {
+  function makeComboSlot(clock = fakeClock(1000)) {
+    // 주입값(청크 5초·버퍼 7)이 뭐든 조합 고정값(1초·21)으로 강제돼야 한다.
+    const slot = new FeedSlot({ ticker: 'AAPL', clock, chunkSeconds: 5, bufferSize: 7, inflection: true });
+    return { slot, clock };
+  }
+
+  it('주입 청크·버퍼를 무시하고 1초·21로 강제한다(워밍업 = 21청크)', () => {
+    const { slot, clock } = makeComboSlot();
+    // 초당 1틱 21개 = 마감 청크 20개(마지막 청크는 미마감) — 버퍼 21이면 아직 워밍업 전이어야 한다.
+    replay(slot, clock, Array.from({ length: 21 }, () => 10));
+    expect(slot.warmedUp).toBe(false);
+    // 2틱 더 = 마감 22개 — 버퍼 21이 가득 찬다. (주입값 버퍼 7이었다면 진작 true였다.)
+    replay(slot, clock, [10, 10], 21);
+    expect(slot.warmedUp).toBe(true);
+  });
+
+  it('신호 전용 SG — 문턱·게이트 없이 기울기 부호 전환 즉시 BUY·SELL이 나온다', () => {
+    const { slot, clock } = makeComboSlot();
+    const down = Array.from({ length: 25 }, (_, i) => 100 - i * 2); // 100→52
+    const up = Array.from({ length: 25 }, (_, i) => 52 + (i + 1) * 2); // →102
+    const down2 = Array.from({ length: 25 }, (_, i) => 102 - (i + 1) * 2); // →52
+    const signals: string[] = [];
+    replay(slot, clock, down.slice(0, 10)); // 워밍업 일부를 하락 구간으로 채운다.
+    slot.attachDetector((signal) => signals.push(signal));
+    replay(slot, clock, down.slice(10), 10);
+    replay(slot, clock, up, 25);
+    expect(signals).toContain('BUY'); // 바닥(−→+) — 모멘텀 확인 대기 없이 즉시.
+    replay(slot, clock, down2, 50);
+    expect(signals).toContain('SELL'); // 천장(+→−) — 매도 대기 없이 즉시.
+    expect(slot.getView().ladder).toBeNull(); // 사다리 모드 아님.
+  });
+});

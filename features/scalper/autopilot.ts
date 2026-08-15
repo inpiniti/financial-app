@@ -22,11 +22,14 @@
 // 한 종목 오류로 나머지 종목 관리와 폴 타이머가 멈추지 않게 한다.
 
 import { RunCycle, type SignalSnapshot, type TradeRecord } from '../../core/cycle';
+import { ConditionalGrid, type ConditionalDecision, type ConditionalPosition } from '../../core/conditional';
 import type { Signal } from '../../core/detector';
+import { Execution, type ExecutionResult } from '../../core/execution';
 import { Grid, REBRACKET_RETRY_MS, type BuyLegStatus, type GridPollResult } from '../../core/grid';
 import { isDaytimeSessionOpen } from './daySession';
 import { FeedSlot, type SlotSignalContext } from './feedSlot';
 import { OrderPortAdapter } from './orderPortAdapter';
+import { createExecutionPort } from './executionPort';
 import { createGridOrderPort } from './gridOrderPort';
 import type {
   AdapterFault,
@@ -69,6 +72,24 @@ export const DEFAULT_MIN_TICK_RATE = 1;
  *    gridConfig가 없으면(기존 테스트 하네스) 항상 기존 청산 경로로 동작한다.
  */
 export const GRID_EXIT = true;
+
+/**
+ * 변곡점+그리드 조합(2026-08-15 도메인 문서)으로 포지션 관리를 대체할지. true면 진입 체결 후
+ * OCO 지정가 그리드(core/grid) 대신 **조건부 그리드**(core/conditional — 주문을 미리 걸지 않고
+ * 변곡점 신호 때만 ±% 문턱 판정)가 관리하고, 실행은 **매매**(core/execution — 현재가 추격 정정)가 한다.
+ * false로 두면 기존 OCO 그리드로 **한 줄 롤백**된다.
+ * ⚠ 실제 활성화는 이 상수 **그리고** deps.inflectionConfig 주입이 모두 있어야 한다(GRID_EXIT와 같은 패턴) —
+ *    미주입(기존 테스트 하네스)이면 항상 기존 경로로 동작한다. 켜져 있으면 GRID_EXIT보다 우선한다.
+ */
+export const INFLECTION_GRID = true;
+
+/** 조건부 그리드 문턱 — 문서 §5 고정값(+2%/−3%)을 managerProvider가 주입한다. */
+export interface InflectionGridConfig {
+  /** 매도 수익 문턱(소수, 0.02=+2%). */
+  sellProfitPct: number;
+  /** 물타기 낙폭 문턱(소수, 0.03=−3%). */
+  buyDropPct: number;
+}
 
 /** 그리드 설정 — 매수폭·매도폭·매수배율. 설정 탭(매매 파라미터)에서 조절한다. */
 export interface GridExitConfig {
@@ -173,6 +194,11 @@ export interface AutoPilotDeps {
    */
   gridConfig?: GridExitConfig;
   /**
+   * 변곡점+그리드 조합 문턱(+2%/−3%). **주입되고 INFLECTION_GRID=true면** 진입 체결 후 관리를
+   * 조건부 그리드+매매가 맡는다(gridConfig보다 우선). 미주입이면(기존 하네스) 기존 경로 — 회귀 안전.
+   */
+  inflectionConfig?: InflectionGridConfig;
+  /**
    * 매수가능금액(USD) 사전 조회 — 현금 부족 판정용. null 반환/미주입/throw면
    * 판정 없이 진행한다(주문 거절은 기존 FAULT 인터록이 받는다 — plan §2-4 폴백).
    */
@@ -258,8 +284,10 @@ interface ActiveCycle {
   adopted: boolean;
   /** 이 사이클의 브로커 — 그리드 발주에 재사용한다(진입 어댑터와 같은 브로커). */
   broker: ScalperBroker;
-  /** 매도 관리 그리드(진입 후 인계). 미인계면 null. */
+  /** 매도 관리 그리드(진입 후 인계). 미인계면 null. 조합 모드에서는 항상 null(cond가 대신). */
   grid: Grid | null;
+  /** 변곡점+그리드 조합 상태(조건부 그리드·진행 중 매매). 조합 모드가 아니면 null. */
+  cond: ConditionalState | null;
   /** 그리드가 두 주문을 실제로 발주했는가(arm 성공). */
   gridArmed: boolean;
   /**
@@ -275,6 +303,21 @@ interface ActiveCycle {
   pendingSettle: TradeRecord | null;
   /** 그리드 arm이 진행 중 — 같은 종목에 두 번 걸지 않기 위한 가드. */
   arming: boolean;
+}
+
+/**
+ * 변곡점+그리드 조합의 종목별 상태 — 판단(grid)과 진행 중 실행(exec)을 한 벌로 든다.
+ * exec가 살아 있는 동안 새 변곡점 판단은 받지 않는다(매매는 한 번에 1건 — 문서 §3 "주문은 항상 1개").
+ */
+interface ConditionalState {
+  grid: ConditionalGrid;
+  exec: Execution | null;
+  /** 진행 중 매매의 방향 — 정산·이벤트 문구용(exec와 함께 세우고 함께 지운다). */
+  execSide: 'buy' | 'sell' | null;
+  /** 매매 시작(비동기 발주)이 진행 중 — 같은 종목에 두 번 걸지 않기 위한 가드(arming과 같은 원칙). */
+  starting: boolean;
+  /** 이 종목 조합 관리가 격리 동결된 사유(gridFaulted와 함께 세운다) — UI 표기용. */
+  faultText: string | null;
 }
 
 interface PendingBuy {
@@ -332,6 +375,8 @@ export class AutoPilot {
    *   (돌고 있는 그리드의 폭을 바꾸려면 접수된 두 주문을 취소·재발주해야 한다 — 하지 않는다).
    */
   private gridConfig: GridExitConfig | undefined;
+  /** 변곡점+그리드 조합 문턱(+2%/−3%) — 문서 고정값이라 setter 없이 생성 시 1회 주입으로 끝난다. */
+  private readonly inflectionConfig: InflectionGridConfig | undefined;
   /** 진행 중 사이클 — 티커당 하나, 최대 maxGrids개. */
   private readonly actives = new Map<string, ActiveCycle>();
   /** 프리플라이트~발주 확정 사이의 진입 후보 — 슬롯 점유를 여기서부터 계산한다(동시 신호 과진입 방지). */
@@ -365,6 +410,7 @@ export class AutoPilot {
   constructor(deps: AutoPilotDeps) {
     this.deps = deps;
     this.gridConfig = deps.gridConfig;
+    this.inflectionConfig = deps.inflectionConfig;
     this.pollIntervalMs = deps.pollIntervalMs ?? 2000;
     this.repriceIntervalMs = deps.repriceIntervalMs ?? 1000;
     this.buyCancelAfterMs = deps.buyCancelAfterMs ?? 0;
@@ -450,6 +496,24 @@ export class AutoPilot {
   private gridViews(): AutoPilotGridView[] {
     const out: AutoPilotGridView[] = [];
     for (const active of this.actives.values()) {
+      // 조합 모드 — 조건선(±% 문턱)을 기존 게이지 필드에 실어 UI 무변경으로 그린다.
+      // buyPrice/sellPrice는 "걸린 지정가"가 아니라 "신호가 와야 실행되는 가상 레벨"이다.
+      if (active.cond) {
+        const v = active.cond.grid.view;
+        out.push({
+          ticker: active.ticker,
+          avgPrice: v.avgPrice,
+          buyPrice: v.buyLine,
+          sellPrice: v.sellLine,
+          currentPrice: active.slot?.getView().price ?? null,
+          holdingQty: v.qty,
+          buyMultiplier: 1,
+          gridActive: true,
+          buyLegStatus: 'full',
+          faultText: active.gridFaulted ? (active.cond.faultText ?? '변곡점 그리드가 멈췄어요') : null,
+        });
+        continue;
+      }
       if (!active.grid) continue;
       const v = active.grid.view;
       out.push({
@@ -471,6 +535,11 @@ export class AutoPilot {
   /** 그리드 인계가 켜져 있는가 — 상수 롤백 스위치 AND 설정 주입. */
   private gridEnabled(): boolean {
     return GRID_EXIT && this.gridConfig !== undefined;
+  }
+
+  /** 변곡점+그리드 조합이 켜져 있는가 — 상수 롤백 스위치 AND 문턱 주입. 켜지면 OCO 그리드보다 우선한다. */
+  private inflectionEnabled(): boolean {
+    return INFLECTION_GRID && this.inflectionConfig !== undefined;
   }
 
   /**
@@ -645,13 +714,25 @@ export class AutoPilot {
     if (this.actives.size > 0) {
       // 입양 포지션은 청산할 진입 사이클이 없고, 격리 동결된 그리드는 폴에서 빠져 있어 정산 경로가 없다
       // — 둘 다 주문이 계좌에 그대로 남는다는 걸 분명히 알리고 즉시 관리를 놓는다.
-      const releaseNow = [...this.actives.values()].filter((a) => a.adopted || a.gridFaulted);
+      // 조합(cond) 포지션도 즉시 놓는다 — 걸린 지정가가 없어(추격 매매 중이면 최선껏 취소) 방치 위험이 없고,
+      // 파킹된 사이클을 stop하면 STOP 매도가 나가 버리므로 그리드 경로처럼 폴 완주를 기다릴 것도 없다.
+      const releaseNow = [...this.actives.values()].filter((a) => a.adopted || a.gridFaulted || a.cond !== null);
       if (releaseNow.length > 0) {
-        this.event(
-          `${releaseNow.map((a) => a.ticker).join(', ')}의 그리드 주문은 계좌에 남아 있어요 — 필요하면 증권사 앱에서 취소하거나 "보유 종목 등록"으로 다시 태울 수 있어요`,
-        );
+        const withOrders = releaseNow.filter((a) => a.cond === null || a.cond.exec !== null || a.gridFaulted);
+        if (withOrders.length > 0) {
+          this.event(
+            `${withOrders.map((a) => a.ticker).join(', ')}의 그리드 주문은 계좌에 남아 있어요 — 필요하면 증권사 앱에서 취소하거나 "보유 종목 등록"으로 다시 태울 수 있어요`,
+          );
+        }
+        const clean = releaseNow.filter((a) => !withOrders.includes(a));
+        if (clean.length > 0) {
+          this.event(
+            `${clean.map((a) => a.ticker).join(', ')} 관리를 놓았어요 — 걸린 주문은 없고, 보유 물량은 "보유 종목 등록"으로 다시 태울 수 있어요`,
+          );
+        }
         for (const active of releaseNow) {
-          active.cycle?.fault(); // 주문 없이 종료 준비(격리 그리드의 파킹된 사이클용 — 입양은 cycle이 없다).
+          void active.cond?.exec?.release(); // 추격 중이던 매매 주문 최선껏 취소(결과는 기다리지 않는다).
+          active.cycle?.fault(); // 주문 없이 종료 준비(파킹된 사이클용 — 입양은 cycle이 없다).
           active.cycle?.stop();
           this.teardownActive(active);
         }
@@ -806,6 +887,12 @@ export class AutoPilot {
   // ---- 신호 → 사이클 ----
 
   private handleSignal(signal: Signal, ctx: SlotSignalContext): void {
+    // 조합 모드의 보유 종목 — BUY(물타기 후보)·SELL(익절 후보) 모두 조건부 그리드가 판정한다.
+    const conditional = this.actives.get(ctx.ticker)?.cond;
+    if (conditional && this.inflectionEnabled()) {
+      this.handleConditionalSignal(this.actives.get(ctx.ticker)!, signal, ctx);
+      return;
+    }
     if (signal === 'BUY') {
       this.handleBuySignal(ctx);
       return;
@@ -941,6 +1028,7 @@ export class AutoPilot {
       adopted: false,
       broker,
       grid: null,
+      cond: null,
       gridArmed: false,
       gridFaulted: false,
       buyingSince: this.deps.clock.now(),
@@ -1013,6 +1101,12 @@ export class AutoPilot {
     // 격리 동결된 그리드 — 건너뛴다(주문은 계좌에 남아 있고, 다른 종목 관리는 계속).
     if (active.gridFaulted) return;
 
+    // 조합 모드 인계 완료 — 진행 중 매매(있으면)를 폴한다. 매매가 없으면 폴할 주문 자체가 없다(조건부).
+    if (active.cond) {
+      await this.pollConditional(active);
+      return;
+    }
+
     // 그리드가 인계됐으면 진입 어댑터 대신 그리드를 구동한다(매도 체결→SCANNING, 매수 체결→리브래킷).
     if (active.grid && active.gridArmed) {
       await this.pollGrid(active);
@@ -1055,6 +1149,13 @@ export class AutoPilot {
       active.buyingSince = null;
       active.abandonRequested = false;
       this.clearAbandon(active.ticker);
+      // 진입 체결 → 조합 모드면 조건부 그리드 인계(주문 없음 — 감시만 시작). OCO 그리드보다 우선.
+      if (this.inflectionEnabled() && !active.cond && !active.arming) {
+        const armed = await this.armConditional(active, { interlockOnFailure: true });
+        if (!armed) return; // 인터록은 armConditional이 이미 걸었다.
+        this.emit();
+        return;
+      }
       // 진입 체결 → 매도 관리 그리드 인계(D5). 그리드가 켜져 있고 아직 안 걸었으면 지금 두 주문을 건다.
       if (this.gridEnabled() && !active.grid && !active.arming) {
         await this.armGrid(active, { interlockOnFailure: true });
@@ -1148,7 +1249,7 @@ export class AutoPilot {
     if (!this.running) return '자동 트레이딩을 먼저 시작해 주세요';
     if (this.faulted) return '멈춤 상태예요 — 먼저 Stop으로 해제해 주세요';
     if (this.paused) return '일시정지 중이에요 — 재개한 뒤 다시 시도해 주세요';
-    if (!this.gridEnabled()) return '그리드 관리가 꺼져 있어 등록할 수 없어요';
+    if (!this.gridEnabled() && !this.inflectionEnabled()) return '그리드 관리가 꺼져 있어 등록할 수 없어요';
     if (this.actives.has(ticker) || this.pendingBuys.has(ticker)) return `${ticker}은(는) 이미 관리 중이에요`;
     if (this.actives.size + this.pendingBuys.size >= this.maxGrids) {
       return `동시 그리드 수(${this.maxGrids}개)가 꽉 찼어요 — 설정에서 늘리거나 기다려 주세요`;
@@ -1163,6 +1264,7 @@ export class AutoPilot {
       adopted: true,
       broker,
       grid: null,
+      cond: null,
       gridArmed: false,
       gridFaulted: false,
       buyingSince: null,
@@ -1175,7 +1277,11 @@ export class AutoPilot {
     this.deps.pin(ticker);
     this.watchedTickers = this.watchedTickers.filter((t) => t !== ticker);
 
-    const armed = await this.armGrid(active, { interlockOnFailure: false });
+    // 조합 모드면 조건부 그리드로 등록한다 — 입양은 진입 기록이 없어 물타기 고정 수량(entryQty)이
+    // 등록 시점 보유 수량으로 잡힌다(문서상 "최초 진입 수량"의 입양 해석).
+    const armed = this.inflectionEnabled()
+      ? await this.armConditional(active, { interlockOnFailure: false })
+      : await this.armGrid(active, { interlockOnFailure: false });
     if (!armed) {
       this.actives.delete(ticker);
       this.deps.unpin(ticker);
@@ -1300,6 +1406,250 @@ export class AutoPilot {
     active.pendingSettle = record;
     this.deps.onTrade?.(record);
     this.settle(active);
+  }
+
+  // ---- 변곡점+그리드 조합 (INFLECTION_GRID · 2026-08-15 도메인 문서) ----
+  //  판단 = 변곡점 신호 + 조건부 그리드(core/conditional, ±% 문턱·평단·수량),
+  //  실행 = 매매(core/execution, 현재가 추격 정정). 주문을 미리 걸지 않는다.
+
+  /**
+   * 진입 체결 후 조건부 그리드 인계 — OCO 그리드(armGrid)와 달리 **주문을 내지 않는다**(감시만 시작).
+   * 평단·수량은 진입 체결(폴백=잔고)에서 읽고, 최초 진입 수량이 이후 모든 물타기의 고정 수량이 된다.
+   */
+  private async armConditional(active: ActiveCycle, opts: { interlockOnFailure: boolean }): Promise<boolean> {
+    const cfg = this.inflectionConfig!;
+    active.arming = true;
+    try {
+      const entry = active.cycle?.position;
+      let seed: ConditionalPosition | null = entry ? { qty: entry.qty, avgPrice: entry.entryPrice } : null;
+      if (!seed) {
+        try {
+          seed = await active.broker.fetchPosition();
+        } catch {
+          seed = null;
+        }
+      }
+      if (this.stopRequested) return false;
+      if (!seed || seed.qty <= 0 || !(seed.avgPrice > 0)) {
+        // 진입 직후 인계 실패 = 방금 산 주식이 방치되는 상황 — armGrid와 같은 원칙으로 인터록.
+        if (opts.interlockOnFailure) {
+          this.enterFault({ kind: 'PLACE', reason: '포지션을 확인할 수 없어 변곡점 그리드를 시작하지 못했어요' });
+        }
+        return false;
+      }
+      const grid = new ConditionalGrid({ position: seed, entryQty: seed.qty, config: cfg });
+      active.cond = { grid, exec: null, execSide: null, starting: false, faultText: null };
+      const v = grid.view;
+      this.event(
+        `${active.ticker} 변곡점 그리드 ${active.adopted ? '등록' : '인계'} · ${v.qty}주 · 평단 $${v.avgPrice.toFixed(2)} · 매도선 $${v.sellLine.toFixed(2)}(+${(cfg.sellProfitPct * 100).toFixed(1)}%) · 매수선 $${v.buyLine.toFixed(2)}(−${(cfg.buyDropPct * 100).toFixed(1)}%) — 주문은 변곡점 신호 때만 나가요`,
+      );
+      this.emit();
+      return true;
+    } finally {
+      active.arming = false;
+    }
+  }
+
+  /**
+   * 보유 종목의 변곡점 신호 1개 판정 — 문턱을 넘긴 신호만 매매로 넘어간다.
+   * 매매가 진행 중이면 새 판단을 받지 않는다(주문은 항상 1개 — 매매 도메인 문서 §3).
+   */
+  private handleConditionalSignal(active: ActiveCycle, signal: Signal, ctx: SlotSignalContext): void {
+    const c = active.cond;
+    if (!c || active.gridFaulted) return;
+    if (this.stopRequested || !this.running || this.faulted || this.paused) return;
+    if (c.exec !== null || c.starting) return;
+    const decision = c.grid.decide(signal, ctx.price);
+    if (!decision) return;
+    // 슬롯 점유(starting)를 동기로 먼저 확정한다 — 발주가 async라 그 사이 신호가 겹치면 이중 매매가 된다.
+    c.starting = true;
+    void this.startConditionalExec(active, c, decision, ctx.price);
+  }
+
+  /** 매매 개시 — 물타기 매수는 현금 사전 판정을 거친다(조회 실패는 통과 — fail-open, 기존 원칙). */
+  private async startConditionalExec(
+    active: ActiveCycle,
+    c: ConditionalState,
+    decision: ConditionalDecision,
+    price: number,
+  ): Promise<void> {
+    try {
+      if (decision.side === 'buy') {
+        const needed = decision.qty * price;
+        let buyable: number | null = null;
+        try {
+          buyable = (await this.deps.fetchBuyableUsd?.(active.ticker, price)) ?? null;
+        } catch {
+          buyable = null;
+        }
+        if (buyable !== null && buyable < needed) {
+          this.event(
+            `${active.ticker} 물타기 생략 · 현금 부족(필요 $${needed.toFixed(2)} > 주문가능 $${buyable.toFixed(2)}) — 다음 변곡점을 기다려요`,
+          );
+          return;
+        }
+      }
+      if (this.stopRequested || this.faulted || active.gridFaulted || !this.actives.has(active.ticker)) return;
+      const exec = new Execution({
+        port: createExecutionPort(active.broker, active.ticker),
+        clock: this.deps.clock,
+        side: decision.side,
+        qty: decision.qty,
+        // 취소선 — 조건부 그리드의 문턱 부정을 술어로 주입한다(매매는 판단하지 않는다).
+        shouldAbort: (p) => c.grid.shouldAbort(decision.side, p),
+      });
+      await exec.start(price);
+      if (exec.state === 'FAULT') {
+        // 발주 거절은 세션 간극·일시 오류가 흔하다 — 종목을 동결하지 않고 다음 변곡점에서 다시 시도한다.
+        this.event(`${active.ticker} 매매 발주 실패 · ${exec.faultText ?? '주문 거절'} — 다음 변곡점에서 다시 시도해요`);
+        return;
+      }
+      c.exec = exec;
+      c.execSide = decision.side;
+      this.event(
+        `${active.ticker} ${decision.side === 'sell' ? '전량 매도' : '물타기 매수'} 매매 시작 · ${decision.qty}주 @ $${(exec.orderPrice ?? price).toFixed(2)} (현재가 추격)`,
+      );
+      this.emit();
+    } finally {
+      c.starting = false;
+    }
+  }
+
+  /** 조합 폴 1회 — 진행 중 매매의 체결/취소를 확정한다. 매매가 없으면 현재가 화살표 갱신만. */
+  private async pollConditional(active: ActiveCycle): Promise<void> {
+    const c = active.cond!;
+    const exec = c.exec;
+    if (!exec) {
+      this.emit();
+      return;
+    }
+    const r = await exec.poll();
+    switch (r.kind) {
+      case 'working':
+        return;
+      case 'fault':
+        this.isolateConditional(active, r.reason);
+        return;
+      case 'cancelled': {
+        const side = c.execSide ?? exec.side;
+        c.exec = null;
+        c.execSide = null;
+        this.event(
+          `${active.ticker} ${side === 'sell' ? '매도' : '매수'} 추격 취소 · 평단 대비 문턱이 깨져 다음 변곡점을 기다려요${
+            r.result.filledQty > 0 ? ` (부분 체결 ${r.result.filledQty}주 반영)` : ''
+          }`,
+        );
+        if (r.result.filledQty > 0) await this.refreshConditionalPosition(active, side, r.result);
+        this.emit();
+        return;
+      }
+      case 'done': {
+        const side = c.execSide ?? exec.side;
+        c.exec = null;
+        c.execSide = null;
+        if (side === 'sell') {
+          await this.settleConditional(active, r.result);
+          return;
+        }
+        await this.refreshConditionalPosition(active, side, r.result);
+        const v = c.grid.view;
+        this.event(`${active.ticker} 물타기 체결 · ${r.result.filledQty}주 · 평단 $${v.avgPrice.toFixed(2)} · ${v.qty}주 보유`);
+        this.emit();
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  /**
+   * 체결/부분 체결 후 포지션 갱신 — 정본은 KIS 잔고(fetchPosition), 폴백은 체결 합산(가중평균).
+   * 잔고가 0이면(취소 전 부분 매도가 사실상 전량) 정산 경로로 넘긴다.
+   */
+  private async refreshConditionalPosition(
+    active: ActiveCycle,
+    side: 'buy' | 'sell',
+    result: ExecutionResult,
+  ): Promise<void> {
+    const grid = active.cond!.grid;
+    const prev = grid.view;
+    const fillPrice = result.fillPrice ?? (side === 'buy' ? prev.buyLine : prev.sellLine);
+    const merged: ConditionalPosition =
+      side === 'buy'
+        ? {
+            qty: prev.qty + result.filledQty,
+            avgPrice:
+              (prev.qty * prev.avgPrice + result.filledQty * fillPrice) / (prev.qty + result.filledQty),
+          }
+        : { qty: prev.qty - result.filledQty, avgPrice: prev.avgPrice };
+    let pos: ConditionalPosition | null = null;
+    try {
+      pos = await active.broker.fetchPosition();
+    } catch {
+      pos = null;
+    }
+    const next = pos && pos.qty > 0 && pos.avgPrice > 0 ? pos : merged;
+    if (next.qty <= 0) {
+      await this.settleConditional(active, result);
+      return;
+    }
+    grid.setPosition(next);
+  }
+
+  /**
+   * 조합 매도 정산 — 조건부 그리드 평단→체결가 손익으로 TradeRecord를 합성한다(settleGrid와 같은 원칙).
+   * 추론 체결(체결가 미실측)은 잔고로 먼저 검증한다 — 세션 일괄 취소가 "목록 부재→전량체결"로
+   * 오판되면 없는 매도를 정산하고 관리를 놓게 되므로(Grid의 일괄 취소 방어와 같은 이유).
+   */
+  private async settleConditional(active: ActiveCycle, result: ExecutionResult): Promise<void> {
+    const v = active.cond!.grid.view;
+    if (!result.priceConfirmed) {
+      let pos: ConditionalPosition | null = null;
+      try {
+        pos = await active.broker.fetchPosition();
+      } catch {
+        pos = null;
+      }
+      if (pos !== null && pos.qty >= v.qty) {
+        this.isolateConditional(active, '매도 체결로 추론됐지만 잔고가 그대로예요 — 일괄 취소 의심, 계좌를 확인해 주세요');
+        return;
+      }
+    }
+    const qty = result.filledQty > 0 ? result.filledQty : v.qty;
+    const entryPrice = v.avgPrice;
+    const exitPrice = result.fillPrice ?? v.sellLine;
+    const grossPnl = (exitPrice - entryPrice) * qty;
+    const feeRate = this.deps.feeRate ?? 0;
+    const fees = feeRate * (entryPrice * qty + exitPrice * qty);
+    const now = this.deps.clock.now();
+    const pos = active.cycle?.position ?? null;
+    const record: TradeRecord = {
+      ticker: active.ticker,
+      qty,
+      entryPrice,
+      entryTs: pos?.entryTs ?? now,
+      exitPrice,
+      exitTs: now,
+      pnl: grossPnl - fees,
+      grossPnl,
+      fees,
+      entrySnapshot: pos?.entrySnapshot ?? { price: entryPrice, slope: 0, accel: 0, ts: now },
+      exitSnapshot: null,
+      exitReason: 'SELL_SIGNAL',
+    };
+    active.pendingSettle = record;
+    this.deps.onTrade?.(record);
+    this.settle(active);
+  }
+
+  /** 조합 관리 격리 동결 — 전역이 아니라 이 종목만(OCO 그리드의 gridFaulted와 같은 원칙). */
+  private isolateConditional(active: ActiveCycle, reason: string): void {
+    active.gridFaulted = true;
+    if (active.cond) active.cond.faultText = reason;
+    this.event(
+      `${active.ticker} 변곡점 그리드가 멈췄어요 — ${reason}. 이 종목 주문은 계좌에서 확인해 주세요 · 다른 종목은 계속 관리해요`,
+    );
+    this.emit();
   }
 
   /**
@@ -1445,6 +1795,13 @@ export class AutoPilot {
     try {
       for (const active of [...this.actives.values()]) {
         if (this.faulted) return;
+        // 조합 매매 추격 — 최신 현재가로 취소선 판정·정정을 구동한다(재정정 스로틀은 Execution 내부).
+        if (active.cond) {
+          const exec = active.cond.exec;
+          const price = active.slot?.getView().price ?? null;
+          if (exec !== null && !active.gridFaulted && price !== null) await exec.onPrice(price);
+          continue;
+        }
         if (!active.cycle || !active.slot) continue; // 입양 포지션 — 리프라이스할 주문도, 매수 시계도 없다.
         if (active.adapter.hasFault()) continue;
         const cycleState = active.cycle.state;

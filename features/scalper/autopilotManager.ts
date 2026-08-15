@@ -15,6 +15,7 @@ import {
   type AutoPilotEvent,
   type AutoPilotView,
   type GridExitConfig,
+  type InflectionGridConfig,
 } from './autopilot';
 import { isDaytimeSessionOpen } from './daySession';
 import { FeedSlot, type FeedSlotView, type LadderEntryOptions } from './feedSlot';
@@ -67,6 +68,12 @@ export interface AutoPilotManagerDeps {
   fetchBuyableUsd?: (ticker: string, price: number, exchange: OverseasExchangeCode) => Promise<number | null>;
   /** 매도 관리 그리드 설정(폭·매수배율) — 주입되면 진입 후 청산을 ±w OCO 그리드가 인계한다(D5). 미주입이면 기존 청산. */
   gridConfig?: GridExitConfig;
+  /**
+   * 변곡점+그리드 조합 문턱(+2%/−3%, 2026-08-15 도메인 문서) — 주입되고 스위치(INFLECTION_GRID·
+   * INFLECTION_ENTRY)가 켜져 있으면 진입 감지는 신호 전용 SG(청크 1초·버퍼 21 고정), 포지션 관리는
+   * 조건부 그리드+매매가 맡는다(gridConfig·entryLadder보다 우선). 미주입이면 기존 동작 — 회귀 안전.
+   */
+  inflection?: InflectionGridConfig;
   /** 재시작 보유 감지(잔고조회 → 보유 티커 목록) — 감지되면 경고 이벤트만 낸다(차단 안 함, plan §2-6). */
   fetchHoldings?: () => Promise<string[]>;
   keepAwake?: KeepAwakeControl;
@@ -199,6 +206,7 @@ export class AutoPilotManager {
         ? (t, price) => deps.fetchBuyableUsd!(t, price, MARKET_TO_EXCHANGE[this.marketOf(t)])
         : undefined,
       gridConfig: deps.gridConfig,
+      inflectionConfig: deps.inflection,
       clock: deps.clock,
       scheduler,
       storage: deps.storage,
@@ -443,6 +451,7 @@ export class AutoPilotManager {
       minVolumeSpikeRatio: this.deps.minVolumeSpikeRatio,
       minStrength: this.deps.minStrength,
       ladder: this.entryLadder,
+      inflection: this.deps.inflection !== undefined,
     });
     this.slots.set(ticker, slot);
     const trKey = this.marketTrKeyOf(ticker); // 체결가 — 전 종목(정규장 D 또는 주간거래 R).

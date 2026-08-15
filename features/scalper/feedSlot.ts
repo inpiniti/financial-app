@@ -23,6 +23,18 @@ import type { ClockLike, TickExtras } from './types';
  */
 export const LADDER_ENTRY = true;
 
+/**
+ * 변곡점+그리드 조합(2026-08-15 도메인 문서) 스위치 — true면 **inflection이 주입된** 슬롯이
+ * 사다리·기존 SG 대신 **신호 전용 SG**(문턱·게이트 전부 끔 = 기울기 부호 전환 즉시 BUY/SELL)로
+ * 판정하고, 리샘플도 문서 고정값(청크 1초·버퍼 21)으로 강제한다. LADDER_ENTRY보다 우선한다.
+ * false로 두면 기존 사다리 진입으로 **한 줄 롤백**된다. inflection 미주입(기존 하네스)이면 값과 무관하게 기존 동작.
+ */
+export const INFLECTION_ENTRY = true;
+/** 조합 고정값 — 변곡점 청크(초). 문서 §5. */
+export const INFLECTION_CHUNK_SECONDS = 1;
+/** 조합 고정값 — SG 버퍼 크기(홀수). 문서 §5. */
+export const INFLECTION_BUFFER_SIZE = 21;
+
 /** 사다리 감지 옵션 — 간격 g(소수)·홀 횟수 N. managerProvider가 설정 탭 값에서 만든다. */
 export interface LadderEntryOptions {
   interval: number;
@@ -52,6 +64,12 @@ export interface FeedSlotOptions {
    * 미주입(기존 하네스·테스트)이면 항상 SG — 회귀 안전.
    */
   ladder?: LadderEntryOptions;
+  /**
+   * 변곡점+그리드 조합 모드 — true고 INFLECTION_ENTRY=true면 사다리·detector 옵션을 무시하고
+   * 신호 전용 SG(전환 즉시 BUY/SELL)로 판정하며, 청크·버퍼도 조합 고정값(1초·21)으로 강제한다.
+   * 미주입(기존 하네스·테스트)이면 기존 동작 그대로 — 회귀 안전.
+   */
+  inflection?: boolean;
 }
 
 /** 변곡점 신호 콜백 — attach 시 등록. */
@@ -141,14 +159,19 @@ export class FeedSlot {
   private ask1: number | null = null;
   private quoteAt: number | null = null;
 
+  /** 변곡점+그리드 조합 모드인가 — 생성 시 확정(INFLECTION_ENTRY AND inflection 주입). */
+  private readonly inflectionMode: boolean;
+
   constructor(options: FeedSlotOptions) {
     this.ticker = options.ticker;
     this.clock = options.clock;
+    this.inflectionMode = INFLECTION_ENTRY && options.inflection === true;
     this.meter = new TickRateMeter(options.tickRateWindowMs ?? FEED_RATE_WINDOW_MS, FEED_SERIES_HISTORY_MS);
     this.slopeMeter = new SlopeMeter(options.slopeWindowMs ?? FEED_RATE_WINDOW_MS, FEED_SERIES_HISTORY_MS);
     this.resampler = new Resampler({
-      chunkSeconds: options.chunkSeconds,
-      bufferSize: options.bufferSize,
+      // 조합 모드는 문서 고정값(청크 1초·버퍼 21)을 강제한다 — 주입값이 뭐든 판정 주기가 흔들리면 안 된다.
+      chunkSeconds: this.inflectionMode ? INFLECTION_CHUNK_SECONDS : options.chunkSeconds,
+      bufferSize: this.inflectionMode ? INFLECTION_BUFFER_SIZE : options.bufferSize,
     });
     this.detectorOptions = {
       minBuyMomentum: options.minBuyMomentum,
@@ -242,7 +265,17 @@ export class FeedSlot {
    * 버퍼는 이미 차 있으므로 다음 청크 마감부터 바로 판정한다(워밍업 공백 없음 — plan §2-1).
    */
   attachDetector(onSignal: SlotSignalListener): void {
-    if (LADDER_ENTRY && this.ladderOptions) {
+    if (this.inflectionMode) {
+      // 변곡점+그리드 조합 — 감지기는 "신호만" 낸다(문서 §7 역할 분리). 모멘텀 확인·게이트를 전부 꺼서
+      // 기울기 부호 전환 즉시 BUY/SELL이 나오고, ±% 문턱 판정·실행은 조건부 그리드·매매가 맡는다.
+      this.detector = new TrendDetector({
+        minBuyMomentum: 0,
+        minSellMomentum: 0,
+        minVolumeSpikeRatio: 0,
+        minStrength: 0,
+      });
+      this.ladder = null;
+    } else if (LADDER_ENTRY && this.ladderOptions) {
       // 사다리 모드 — 새 감지기 = 새 앵커(이전 감시 이력과 단절, SG의 새 detector와 같은 원칙).
       this.ladder = new LadderDetector({
         interval: this.ladderOptions.interval,

@@ -144,11 +144,15 @@ async function buildManager(): Promise<ManagerBootstrap> {
     fetchBuyableUsd,
     fetchHoldings,
     // 매도 관리 그리드 인계(D5) — 매수폭·매도폭·매수배율은 설정 탭(매매파라미터)에서 조절한다.
+    // ⚠ 아래 inflection이 켜져 있는 동안은 조합 경로가 우선이라 이 값은 쓰이지 않는다(롤백용 보존).
     gridConfig: {
       buyWidth: appSettings.gridBuyWidthPct / 100,
       sellWidth: appSettings.gridSellWidthPct / 100,
       buyMultiplier: appSettings.gridBuyMultiplier,
     },
+    // 변곡점+그리드 조합(2026-08-15 도메인 문서) — 문턱은 문서 §5 고정값(+2%/−3%), 설정 탭 없음.
+    // 끄려면 feedSlot.INFLECTION_ENTRY·autopilot.INFLECTION_GRID를 false로(한 줄 롤백) 하거나 이 주입을 뺀다.
+    inflection: { sellProfitPct: 0.02, buyDropPct: 0.03 },
     keepAwake: expoKeepAwake,
     // 사다리 판정 주기 = 청크 1초 고정 (2026-08-09 사용자 확정 — 설정 제거 전 실사용 값 복원.
     // 설정 제거 때 기본 3초로 잘못 굳었었다). 버퍼는 미주입(기본 31) — 사다리 모드는 워밍업을
