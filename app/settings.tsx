@@ -11,16 +11,9 @@ import Slider from '@react-native-community/slider';
 import { BackHeader } from '../components/BackHeader';
 import { Panel } from '../components/Panel';
 import { DEFAULT_APP_SETTINGS, loadAppSettings, saveAppSettings, snapToStep } from '../lib/appSettings';
-import { MAX_GRIDS_LIMIT } from '../features/scalper/autopilot';
+import { INFLECTION_THRESHOLDS, MAX_GRIDS_LIMIT } from '../features/scalper/autopilot';
+import { INFLECTION_BUFFER_SIZE, INFLECTION_CHUNK_SECONDS } from '../features/scalper/feedSlot';
 
-/** 그리드 폭 상한(%) — 오타 방어. 평단 ±50%를 넘는 브래킷은 사실상 관리가 아니다. */
-const GRID_WIDTH_MAX_PCT = 50;
-/** 매수 배율 상한 — 1이면 보유수량만큼 더 사서 총 2배가 된다. 5면 한 번에 6배라 그 위는 막는다. */
-const GRID_BUY_MULTIPLIER_MAX = 5;
-/** 사다리 진입 간격 상한(%) — 오타 방어. 간격 10% × 횟수면 이미 대폭락에서만 진입한다. */
-const LADDER_INTERVAL_MAX_PCT = 10;
-/** 사다리 홀 횟수 상한 — 간격과 곱해 누적 낙폭이 되므로 10이면 충분히 보수적 끝단이다. */
-const LADDER_COUNT_MAX = 10;
 /** 종목당 진입금액 상한(USD) — 오타 하나(100 → 10000)가 그대로 발주 금액이 된다. */
 const START_AMOUNT_MAX_USD = 100_000;
 
@@ -75,15 +68,16 @@ export default function SettingsScreen() {
   const savedOrderQtyRef = useRef(DEFAULT_APP_SETTINGS.orderQty);
   // 청크·버퍼·모멘텀 문턱·BUY 게이트·수수료율 설정은 2026-08-08 제거 — 코드 기본값 고정 동작.
   const [buyCancelAfterSec, setBuyCancelAfterSec] = useState(DEFAULT_APP_SETTINGS.buyCancelAfterSec);
-  // 매도 관리 그리드 매수폭·매도폭·매수 배율 — 텍스트 입력 + 저장 시 검증 패턴. (폭 분리 2026-08-14)
-  const [gridBuyWidthPct, setGridBuyWidthPct] = useState(String(DEFAULT_APP_SETTINGS.gridBuyWidthPct));
-  const [gridSellWidthPct, setGridSellWidthPct] = useState(String(DEFAULT_APP_SETTINGS.gridSellWidthPct));
-  const [gridBuyMultiplier, setGridBuyMultiplier] = useState(String(DEFAULT_APP_SETTINGS.gridBuyMultiplier));
-  // 사다리 진입 감지(2026-08-07 plan) — 간격 %·홀 횟수.
-  const [entryLadderIntervalPct, setEntryLadderIntervalPct] = useState(
-    String(DEFAULT_APP_SETTINGS.entryLadderIntervalPct),
-  );
-  const [entryLadderCount, setEntryLadderCount] = useState(String(DEFAULT_APP_SETTINGS.entryLadderCount));
+  // 매도 그리드(폭·배율)·사다리 진입(간격·횟수) 입력란은 변곡점+그리드 조합(2026-08-15)으로 내렸다 —
+  // 조합 모드에서는 미사용이라 화면에 두면 "바꾸면 반영되는 것처럼" 보인다. 값은 롤백 스위치
+  // (INFLECTION_ENTRY/INFLECTION_GRID=false)로 옛 경로에 돌아갈 때 그대로 쓰이므로 저장은 유지한다.
+  const savedRollbackRef = useRef({
+    gridBuyWidthPct: DEFAULT_APP_SETTINGS.gridBuyWidthPct,
+    gridSellWidthPct: DEFAULT_APP_SETTINGS.gridSellWidthPct,
+    gridBuyMultiplier: DEFAULT_APP_SETTINGS.gridBuyMultiplier,
+    entryLadderIntervalPct: DEFAULT_APP_SETTINGS.entryLadderIntervalPct,
+    entryLadderCount: DEFAULT_APP_SETTINGS.entryLadderCount,
+  });
   // 트레이딩 운용 설정 — 옛 자동 단타 설정 시트에서 옮겨 왔다(2026-08-12). 진입금액 0 = 미설정(빈 칸).
   const [startAmountUsd, setStartAmountUsd] = useState(String(DEFAULT_APP_SETTINGS.startAmountUsd));
   const [minTickRate, setMinTickRate] = useState(String(DEFAULT_APP_SETTINGS.minTickRate));
@@ -96,11 +90,13 @@ export default function SettingsScreen() {
       const appSettings = await loadAppSettings();
       savedOrderQtyRef.current = appSettings.orderQty;
       setBuyCancelAfterSec(appSettings.buyCancelAfterSec);
-      setGridBuyWidthPct(String(appSettings.gridBuyWidthPct));
-      setGridSellWidthPct(String(appSettings.gridSellWidthPct));
-      setGridBuyMultiplier(String(appSettings.gridBuyMultiplier));
-      setEntryLadderIntervalPct(String(appSettings.entryLadderIntervalPct));
-      setEntryLadderCount(String(appSettings.entryLadderCount));
+      savedRollbackRef.current = {
+        gridBuyWidthPct: appSettings.gridBuyWidthPct,
+        gridSellWidthPct: appSettings.gridSellWidthPct,
+        gridBuyMultiplier: appSettings.gridBuyMultiplier,
+        entryLadderIntervalPct: appSettings.entryLadderIntervalPct,
+        entryLadderCount: appSettings.entryLadderCount,
+      };
       setStartAmountUsd(appSettings.startAmountUsd > 0 ? String(appSettings.startAmountUsd) : '');
       setMinTickRate(String(appSettings.minTickRate));
       setMaxConcurrentGrids(String(appSettings.maxConcurrentGrids));
@@ -136,69 +132,15 @@ export default function SettingsScreen() {
       return;
     }
 
-    const parsedGridBuyWidthPct = Number(gridBuyWidthPct);
-    if (
-      !Number.isFinite(parsedGridBuyWidthPct) ||
-      parsedGridBuyWidthPct <= 0 ||
-      parsedGridBuyWidthPct > GRID_WIDTH_MAX_PCT
-    ) {
-      Alert.alert('알림', `매수 간격은 0보다 크고 ${GRID_WIDTH_MAX_PCT} 이하인 숫자로 입력해 주세요.`);
-      return;
-    }
-
-    const parsedGridSellWidthPct = Number(gridSellWidthPct);
-    if (
-      !Number.isFinite(parsedGridSellWidthPct) ||
-      parsedGridSellWidthPct <= 0 ||
-      parsedGridSellWidthPct > GRID_WIDTH_MAX_PCT
-    ) {
-      Alert.alert('알림', `매도 익절은 0보다 크고 ${GRID_WIDTH_MAX_PCT} 이하인 숫자로 입력해 주세요.`);
-      return;
-    }
-
-    const parsedGridBuyMultiplier = Number(gridBuyMultiplier);
-    if (
-      !Number.isFinite(parsedGridBuyMultiplier) ||
-      parsedGridBuyMultiplier <= 0 ||
-      parsedGridBuyMultiplier > GRID_BUY_MULTIPLIER_MAX
-    ) {
-      Alert.alert('알림', `매수 배율은 0보다 크고 ${GRID_BUY_MULTIPLIER_MAX} 이하인 숫자로 입력해 주세요.`);
-      return;
-    }
-
-    const parsedLadderIntervalPct = Number(entryLadderIntervalPct);
-    if (
-      !Number.isFinite(parsedLadderIntervalPct) ||
-      parsedLadderIntervalPct <= 0 ||
-      parsedLadderIntervalPct > LADDER_INTERVAL_MAX_PCT
-    ) {
-      Alert.alert('알림', `진입 간격은 0보다 크고 ${LADDER_INTERVAL_MAX_PCT} 이하인 숫자로 입력해 주세요.`);
-      return;
-    }
-
-    const parsedLadderCount = Number(entryLadderCount);
-    if (
-      !Number.isFinite(parsedLadderCount) ||
-      !Number.isInteger(parsedLadderCount) ||
-      parsedLadderCount < 1 ||
-      parsedLadderCount > LADDER_COUNT_MAX
-    ) {
-      Alert.alert('알림', `진입 횟수는 1~${LADDER_COUNT_MAX} 사이 정수로 입력해 주세요.`);
-      return;
-    }
-
     setSaving(true);
     try {
       // 미체결 취소는 슬라이더가 범위·스텝 격자를 보장하므로 별도 검증이 없다.
+      // 그리드 폭·배율·사다리 값은 화면에서 내렸다(조합 모드 미사용) — 로드해 둔 저장값 그대로 되쓴다(롤백 보존).
       await saveAppSettings({
         environment: 'live',
         orderQty: savedOrderQtyRef.current,
         buyCancelAfterSec,
-        gridBuyWidthPct: parsedGridBuyWidthPct,
-        gridSellWidthPct: parsedGridSellWidthPct,
-        gridBuyMultiplier: parsedGridBuyMultiplier,
-        entryLadderIntervalPct: parsedLadderIntervalPct,
-        entryLadderCount: parsedLadderCount,
+        ...savedRollbackRef.current,
         startAmountUsd: parsedStartAmountUsd,
         minTickRate: parsedMinTickRate,
         maxConcurrentGrids: parsedMaxGrids,
@@ -209,36 +151,9 @@ export default function SettingsScreen() {
     }
   };
 
-  /**
-   * 사다리 진입의 즉시 미리보기 — 간격×횟수가 실제로 "몇 % 떨어져야 진입"인지 그 자리에서 보여준다.
-   * 누적 낙폭은 복리(1−(1−g)^N)라 단순곱(g×N)보다 조금 작다.
-   */
-  const ladderPreview = (() => {
-    const g = Number(entryLadderIntervalPct);
-    const n = Number(entryLadderCount);
-    if (!Number.isFinite(g) || g <= 0 || g > LADDER_INTERVAL_MAX_PCT) return null;
-    if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1 || n > LADDER_COUNT_MAX) return null;
-    return { dropPct: ((1 - Math.pow(1 - g / 100, n)) * 100).toFixed(2) };
-  })();
-
-  /**
-   * 그리드 매수폭·매도폭·배율의 즉시 미리보기 — 입력값이 실제 발주가·수량으로 어떻게 번역되는지
-   * 그 자리에서 보여준다. ("매수 배율 1"이 왜 수량 2배가 되는지가 숫자로 보이지 않아 오해가 잦았다.)
-   * 입력이 유효 범위를 벗어나면 null — 저장 시 Alert로 막히므로 여기서는 미리보기만 숨긴다.
-   */
-  const gridPreview = (() => {
-    const wb = Number(gridBuyWidthPct);
-    const ws = Number(gridSellWidthPct);
-    const m = Number(gridBuyMultiplier);
-    if (!Number.isFinite(wb) || wb <= 0 || wb > GRID_WIDTH_MAX_PCT) return null;
-    if (!Number.isFinite(ws) || ws <= 0 || ws > GRID_WIDTH_MAX_PCT) return null;
-    if (!Number.isFinite(m) || m <= 0 || m > GRID_BUY_MULTIPLIER_MAX) return null;
-    return {
-      buy: (100 * (1 - wb / 100)).toFixed(2),
-      sell: (100 * (1 + ws / 100)).toFixed(2),
-      addQty: Math.floor(10 * m),
-    };
-  })();
+  /** 조합 고정 문턱(%) — 표시용. INFLECTION_THRESHOLDS가 단일 출처다. */
+  const sellPct = (INFLECTION_THRESHOLDS.sellProfitPct * 100).toFixed(0);
+  const dropPct = (INFLECTION_THRESHOLDS.buyDropPct * 100).toFixed(0);
 
   /** 첫 진입에 한 번에 들어갈 수 있는 최대 금액 — 진입금액 × 동시 그리드 수. */
   const exposure = (() => {
@@ -256,8 +171,9 @@ export default function SettingsScreen() {
         <Panel title="트레이딩 설정">
           <View className="px-5 pb-5">
             <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
-              변곡점이 잡힐 때마다 한 종목씩 진입하고, 진입한 종목은 ±폭 그리드가 이어받아 관리해요. 이미 보유 중인
-              종목은 다시 사지 않고, 그리드가 익절되면 그 자리에 새 종목이 들어와요.
+              상승 변곡점이 잡힐 때마다 한 종목씩 진입하고, 진입한 종목은 변곡점 그리드가 이어받아 관리해요(주문을
+              미리 걸지 않고 변곡점 신호 때만 사고팔아요). 이미 보유 중인 종목은 다시 진입하지 않고, 매도가 끝나면
+              그 자리에 새 종목이 들어와요.
             </Text>
 
             <Text className="mb-1 text-xs text-[#8b95a1]">진입금액 (USD) — 종목 하나를 살 때 쓰는 금액</Text>
@@ -283,8 +199,8 @@ export default function SettingsScreen() {
             />
             <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
               {exposure
-                ? `첫 진입에만 최대 $${exposure}가 들어가요. 그리드가 물타기(−폭 매수)를 하면 종목당 금액이 더 늘어날 수 있어요.`
-                : '그리드가 물타기(−폭 매수)를 하면 종목당 금액이 더 늘어날 수 있어요.'}
+                ? `첫 진입에만 최대 $${exposure}가 들어가요. 물타기는 매번 최초 진입 수량만큼이라, 물탈 때마다 종목당 금액이 진입금액만큼씩 더 들어가요.`
+                : '물타기는 매번 최초 진입 수량만큼이라, 물탈 때마다 종목당 금액이 진입금액만큼씩 더 들어가요.'}
             </Text>
 
             <Text className="mb-1 text-xs text-[#8b95a1]">
@@ -308,102 +224,46 @@ export default function SettingsScreen() {
           </View>
         </Panel>
 
-        <Panel title="진입 감지">
+        <Panel title="변곡점 그리드 (고정값)">
           <View className="px-5 pb-5">
-            <Text className="mb-1 text-xs text-[#8b95a1]">진입 간격 (%) — 최대 {LADDER_INTERVAL_MAX_PCT}</Text>
-            <TextInput
-              value={entryLadderIntervalPct}
-              onChangeText={setEntryLadderIntervalPct}
-              keyboardType="decimal-pad"
-              placeholder={`기본 ${DEFAULT_APP_SETTINGS.entryLadderIntervalPct}`}
-              placeholderTextColor="#8b95a1"
-              className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
-            />
-            <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
-              최근 고점에서 이 %씩 내려올 때마다 한 칸으로 세요.
+            <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+              진입·매도·물타기는 전부 변곡점 신호로만 움직여요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
             </Text>
 
-            <Text className="mb-1 text-xs text-[#8b95a1]">진입 횟수 — 최대 {LADDER_COUNT_MAX}</Text>
-            <TextInput
-              value={entryLadderCount}
-              onChangeText={setEntryLadderCount}
-              keyboardType="number-pad"
-              placeholder={`기본 ${DEFAULT_APP_SETTINGS.entryLadderCount}`}
-              placeholderTextColor="#8b95a1"
-              className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
-            />
-            <Text className="mb-1 text-xs leading-5 text-[#8b95a1]">
-              이 횟수만큼 칸이 쌓이면 바닥으로 보고 매수해요. 중간에 한 칸 이상 반등하면 처음부터 다시 세요.
-              {ladderPreview && (
-                <Text className="text-[#4e5968]">
-                  {' '}지금 설정이면 고점에서 약 {ladderPreview.dropPct}% 떨어져야 진입해요.
-                </Text>
-              )}
-            </Text>
-            <Text className="text-xs leading-5 text-[#8b95a1]">
-              잔파동(간격 미만의 오르내림)에서는 진입하지 않아요. 매수 뒤 관리는 아래 그리드가 맡아요.
-            </Text>
-          </View>
-        </Panel>
-
-        <Panel title="매도 그리드">
-          <View className="px-5 pb-5">
-            <Text className="mb-1 text-xs text-[#8b95a1]">매수 간격 (%) — 최대 {GRID_WIDTH_MAX_PCT}</Text>
-            <TextInput
-              value={gridBuyWidthPct}
-              onChangeText={setGridBuyWidthPct}
-              keyboardType="decimal-pad"
-              placeholder={`기본 ${DEFAULT_APP_SETTINGS.gridBuyWidthPct}`}
-              placeholderTextColor="#8b95a1"
-              className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
-            />
-            <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
-              평단에서 이 %만큼 내려간 자리에 물타기 매수를 걸어요. 넓을수록 올인까지 버티는 낙폭이 깊어져요.
+            <View className="mb-1 flex-row items-center justify-between">
+              <Text className="text-xs text-[#8b95a1]">진입 · 물타기</Text>
+              <Text className="text-sm font-semibold text-[#191f28]">상승 변곡점</Text>
+            </View>
+            <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+              바닥(상승 변곡점)이 확인될 때만 사요. 물타기는 평단보다 {dropPct}% 이상 떨어진 바닥에서만, 매번 최초
+              진입 수량만큼(고정 수량) 사요. 낙폭이 모자라면 신호가 와도 사지 않아요.
             </Text>
 
-            <Text className="mb-1 text-xs text-[#8b95a1]">매도 익절 (%) — 최대 {GRID_WIDTH_MAX_PCT}</Text>
-            <TextInput
-              value={gridSellWidthPct}
-              onChangeText={setGridSellWidthPct}
-              keyboardType="decimal-pad"
-              placeholder={`기본 ${DEFAULT_APP_SETTINGS.gridSellWidthPct}`}
-              placeholderTextColor="#8b95a1"
-              className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
-            />
-            <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
-              평단에서 이 %만큼 오르면 전량 익절해요. 좁을수록 바닥에서 필요한 반등이 작아져요.
-              {gridPreview && (
-                <Text className="text-[#4e5968]">
-                  {' '}평단 $100이면 매수 ${gridPreview.buy} · 매도 ${gridPreview.sell}에 걸려요.
-                </Text>
-              )}
+            <View className="mb-1 flex-row items-center justify-between">
+              <Text className="text-xs text-[#8b95a1]">매도</Text>
+              <Text className="text-sm font-semibold text-[#191f28]">고점 변곡점 · +{sellPct}% 이상</Text>
+            </View>
+            <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+              천장(고점 변곡점)에서 평단 대비 {sellPct}% 이상 이익일 때만 전량 매도해요. 그보다 이익이 작으면 팔지
+              않고 계속 지켜봐요.
             </Text>
 
-            <Text className="mb-1 text-xs text-[#8b95a1]">매수 배율 — 최대 {GRID_BUY_MULTIPLIER_MAX}</Text>
-            <TextInput
-              value={gridBuyMultiplier}
-              onChangeText={setGridBuyMultiplier}
-              keyboardType="decimal-pad"
-              placeholder={`기본 ${DEFAULT_APP_SETTINGS.gridBuyMultiplier}`}
-              placeholderTextColor="#8b95a1"
-              className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
-            />
-            <Text className="mb-1 text-xs leading-5 text-[#8b95a1]">
-              물타기 매수는 보유수량 × 이 배율만큼 발주해요.
-              {gridPreview && (
-                <Text className="text-[#4e5968]">
-                  {' '}10주를 갖고 있으면 {gridPreview.addQty}주를 더 사서 총 {10 + gridPreview.addQty}주가 돼요.
-                </Text>
-              )}
-            </Text>
-            <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
-              배율을 1로 두면 물타기마다 수량이 2배가 돼요. 0.5로 낮추면 1.5배씩 늘어나요.
+            <View className="mb-1 flex-row items-center justify-between">
+              <Text className="text-xs text-[#8b95a1]">변곡점 판정</Text>
+              <Text className="text-sm font-semibold text-[#191f28]">
+                청크 {INFLECTION_CHUNK_SECONDS}초 · 버퍼 {INFLECTION_BUFFER_SIZE}
+              </Text>
+            </View>
+            <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+              체결가를 {INFLECTION_CHUNK_SECONDS}초 단위로 평균해 최근 {INFLECTION_BUFFER_SIZE}개로 곡선을 그리고,
+              기울기의 방향이 바뀌는 지점을 바닥·천장으로 봐요.
             </Text>
 
             <View className="rounded-2xl bg-[#f2f4f6] px-4 py-3">
               <Text className="text-xs leading-5 text-[#4e5968]">
-                폭·배율은 <Text className="font-semibold text-[#191f28]">다음에 새로 여는 그리드부터</Text> 적용돼요.
-                지금 돌고 있는 그리드는 이미 주문이 접수돼 있어서 그대로 관리돼요.
+                주문은 미리 걸어두지 않고 신호가 온 순간 <Text className="font-semibold text-[#191f28]">현재가</Text>로
+                내요. 체결 전에 가격이 움직이면 새 현재가로 따라가고, 그 사이 조건({sellPct}%/{dropPct}%)이 깨지면
+                주문을 거두고 다음 변곡점을 기다려요.
               </Text>
             </View>
           </View>

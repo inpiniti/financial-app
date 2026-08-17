@@ -91,6 +91,12 @@ export interface InflectionGridConfig {
   buyDropPct: number;
 }
 
+/**
+ * 조합 문턱의 단일 출처 — 문서 §5 고정값(설정 탭 없음). managerProvider가 이 값을 주입하고,
+ * 설정 화면의 "변곡점 그리드(고정값)" 안내도 같은 값을 읽는다(하드코딩 이중화로 어긋나지 않게).
+ */
+export const INFLECTION_THRESHOLDS: InflectionGridConfig = { sellProfitPct: 0.02, buyDropPct: 0.03 };
+
 /** 그리드 설정 — 매수폭·매도폭·매수배율. 설정 탭(매매 파라미터)에서 조절한다. */
 export interface GridExitConfig {
   /** 매수폭(물타기 간격, 소수). buyPrice=P×(1−buyWidth). 넓을수록 올인이 늦다. */

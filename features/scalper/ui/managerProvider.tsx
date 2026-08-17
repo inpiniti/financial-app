@@ -22,6 +22,7 @@ import { inquireOverseasBalance } from '../../../kis/balance';
 import { buyableUsdOf, inquirePsAmount } from '../../../kis/psamount';
 import { fetchTossRankings, type TossRankingRow } from '../../../lib/tossRanking';
 import type { OverseasExchangeCode } from '../../../kis/trId';
+import { INFLECTION_THRESHOLDS } from '../autopilot';
 import { AutoPilotManager } from '../autopilotManager';
 import { createKisBroker } from '../createKisBroker';
 import { createRealtimeFeed } from '../createRealtimeFeed';
@@ -152,7 +153,7 @@ async function buildManager(): Promise<ManagerBootstrap> {
     },
     // 변곡점+그리드 조합(2026-08-15 도메인 문서) — 문턱은 문서 §5 고정값(+2%/−3%), 설정 탭 없음.
     // 끄려면 feedSlot.INFLECTION_ENTRY·autopilot.INFLECTION_GRID를 false로(한 줄 롤백) 하거나 이 주입을 뺀다.
-    inflection: { sellProfitPct: 0.02, buyDropPct: 0.03 },
+    inflection: INFLECTION_THRESHOLDS,
     keepAwake: expoKeepAwake,
     // 사다리 판정 주기 = 청크 1초 고정 (2026-08-09 사용자 확정 — 설정 제거 전 실사용 값 복원.
     // 설정 제거 때 기본 3초로 잘못 굳었었다). 버퍼는 미주입(기본 31) — 사다리 모드는 워밍업을
