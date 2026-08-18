@@ -34,6 +34,7 @@ class FakePort implements ExecutionOrderPort {
       orderQty: qty,
       filledQty: this.autoFill ? qty : 0,
       filledPrice: this.autoFill ? price : null,
+      listed: true,
     });
     return { odno };
   }
@@ -48,6 +49,7 @@ class FakePort implements ExecutionOrderPort {
       orderQty: qty,
       filledQty: this.autoFill ? qty : 0,
       filledPrice: this.autoFill ? price : null,
+      listed: true,
     });
     return { odno: next };
   }
@@ -79,12 +81,23 @@ class FakePort implements ExecutionOrderPort {
     }
   }
 
-  /** "목록 부재→전량체결" 추론 재현 — 체결가 없는 전량체결. */
+  /** "목록 부재→전량체결" 추론 재현 — 체결가 없는 전량체결(목록 실측 아님). */
   fillWithoutPrice(odno: string): void {
     const f = this.fills.get(odno);
     if (f) {
       f.filledQty = f.orderQty;
       f.filledPrice = null;
+      f.listed = false;
+    }
+  }
+
+  /** "목록 부재인데 유예 중" 재현 — 체결도 생존도 확인 안 되는 모호 스냅샷. */
+  markUnknown(odno: string): void {
+    const f = this.fills.get(odno);
+    if (f) {
+      f.filledQty = 0;
+      f.filledPrice = null;
+      f.listed = false;
     }
   }
 }
@@ -165,18 +178,58 @@ describe('Execution — 현재가 추격(정정)', () => {
     }
   });
 
-  it('정정 거절 1회는 견딘다(주문은 옛 가격에 살아 있다) — 연속 한도 도달 시 FAULT', async () => {
+  it('정정 거절 → 재정정 없이 동결, 폴이 잔량 생존을 실측하면 추격 재개 — 생존 확인 후에도 3라운드 연속 거절이면 FAULT', async () => {
     const { exec, port, clock } = make('sell', 10);
     await exec.start(100);
     port.failAmend = true;
     clock.advance(1000);
-    await exec.onPrice(101);
-    expect(exec.state).toBe('WORKING'); // 1회 — 유지
+    await exec.onPrice(101); // 거절 1 — 동결
+    expect(exec.state).toBe('WORKING');
     clock.advance(1000);
-    await exec.onPrice(102);
+    await exec.onPrice(102); // 동결 중 — 재정정을 쏘지 않는다(재발사 금지)
+    expect(port.amended).toHaveLength(0);
+    await exec.poll(); // 목록에 잔량과 함께 살아 있음(실측) — 재개
     clock.advance(1000);
-    await exec.onPrice(103);
-    expect(exec.state).toBe('FAULT'); // 3회 연속 — 동결
+    await exec.onPrice(102); // 거절 2
+    expect(exec.state).toBe('WORKING');
+    await exec.poll();
+    clock.advance(1000);
+    await exec.onPrice(103); // 거절 3 — 살아 있는 주문의 정정이 3라운드 연속 거절 = 진짜 API 장애
+    expect(exec.state).toBe('FAULT');
+  });
+
+  it('정정 거절(이미 체결·APBK0124 시나리오) → 폴이 체결을 확정하면 FAULT 없이 DONE — 2026-08-18 사고 회귀', async () => {
+    const { exec, port, clock } = make('buy', 54);
+    await exec.start(7.61);
+    port.failAmend = true; // 잔량 없음 — 정정은 계속 거절된다
+    clock.advance(1000);
+    await exec.onPrice(7.0); // 거절 — 동결(과거엔 여기서 1초마다 재거절이 쌓여 FAULT)
+    clock.advance(1000);
+    await exec.onPrice(6.9);
+    clock.advance(1000);
+    await exec.onPrice(6.8); // 동결이라 추가 거절이 쌓이지 않는다
+    expect(exec.state).toBe('WORKING');
+    port.fillWithoutPrice('O1'); // 미체결 목록에서 사라짐 → 전량체결 추론
+    const r = await exec.poll();
+    expect(r.kind).toBe('done');
+    if (r.kind === 'done') {
+      expect(r.result.filledQty).toBe(54);
+      expect(r.result.priceConfirmed).toBe(false); // 호출부 잔고 재검증 트리거
+    }
+  });
+
+  it('정정 거절 후 체결도 생존도 확인되지 않으면 한도 폴에서 FAULT(모호 — 사람 호출)', async () => {
+    const { exec, port, clock } = make('sell', 10);
+    await exec.start(100);
+    port.failAmend = true;
+    clock.advance(1000);
+    await exec.onPrice(101); // 거절 — 동결
+    port.markUnknown('O1'); // 목록 부재 + 체결 확정도 없음
+    expect((await exec.poll()).kind).toBe('working');
+    expect((await exec.poll()).kind).toBe('working');
+    const r = await exec.poll();
+    expect(r.kind).toBe('fault');
+    expect(exec.state).toBe('FAULT');
   });
 
   it('추론 체결(체결가 미실측)은 지정가로 대체하고 priceConfirmed=false를 남긴다', async () => {

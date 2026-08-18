@@ -20,12 +20,13 @@ export function createExecutionPort(broker: ScalperBroker, pdno: string): Execut
     },
     async fetchFills(): Promise<ExecutionOrderFill[]> {
       const fills = await broker.fetchFills();
-      // BrokerFill과 ExecutionOrderFill은 같은 모양(odno·orderQty·filledQty·filledPrice) — 그대로 전달.
+      // BrokerFill과 ExecutionOrderFill은 같은 모양(odno·orderQty·filledQty·filledPrice·listed) — 그대로 전달.
       return fills.map((f) => ({
         odno: f.odno,
         orderQty: f.orderQty,
         filledQty: f.filledQty,
         filledPrice: f.filledPrice,
+        listed: f.listed === true,
       }));
     },
   };

@@ -7,7 +7,8 @@
 //    (취소→재발주가 아니라 정정 — 원자 교체라 무주문 공백·이중 주문 레이스가 없고 REST 1회로 끝난다).
 //  · 추격 중 취소선 도달 → 잔량 취소하고 CANCELLED(체결분만 보고) — 판단이 다음 변곡점을 기다린다.
 //  · 부분 체결은 잔량만 추격한다(문서 열린 문제 #2의 확정). 재정정은 최소 간격 스로틀(문제 #1).
-//  · 취소/정정 거절은 "이미 체결" 신호일 수 있어 즉시 동결하지 않고 폴 확인을 기다린다(문제 #3).
+//  · 취소/정정 거절은 "이미 체결"(잔량 없음) 신호일 수 있어 재발사 없이 추격만 멈추고, 폴의 수량 실측이
+//    판정한다 — 체결 확정=DONE, 잔량 생존 실측(정정)=추격 재개, 한도 폴까지 모호하면 FAULT(문제 #3).
 //
 // 주문 발주/정정/취소/체결확인은 포트로 주입받아 vitest로 전 분기를 재생 검증한다(Grid와 같은 원칙).
 
@@ -25,6 +26,11 @@ export interface ExecutionOrderFill {
   filledQty: number;
   /** 평균 체결단가 — 미확정이면 null("목록 부재→전량체결" 추론). */
   filledPrice: number | null;
+  /**
+   * 미체결 목록 **실측** 스냅샷인가 — true면 주문이 목록에 살아 있고 filledQty는 잔량 역산 실측.
+   * false/미지정은 추론(목록 부재, 유예, 정정 왕복 보류). 정정 거절 후 "주문 생존" 판정에만 쓴다.
+   */
+  listed?: boolean;
 }
 
 /**
@@ -80,11 +86,15 @@ export interface ExecutionDeps {
   shouldAbort: (price: number) => boolean;
   /** 재정정 최소 간격(ms, 기본 1000) — KIS REST 유량 방어. 현재가가 틱마다 바뀌어도 이 간격으로만 정정한다. */
   minReorderIntervalMs?: number;
-  /** 정정 연속 실패 한도(기본 3) — 도달 시 FAULT(주문은 옛 가격에 살아 있다 — 사람이 확인). */
+  /**
+   * 정정 거절 라운드 한도(기본 3) — 거절 1회마다 추격을 동결하고 폴이 "주문 생존(listed 잔량)"을
+   * 실측한 뒤에만 재개하므로, 한도 도달 = 살아 있는 주문의 정정이 3라운드 연속 거절(진짜 API 장애).
+   * 이미 체결된 주문의 거절(APBK0124)은 폴의 체결 확정(DONE)으로 흡수돼 여기 오지 않는다.
+   */
   amendFailLimit?: number;
   /** 체결확인 연속 실패 한도(기본 3) — Grid.FILL_FAIL_LIMIT와 같은 원칙. */
   fillFailLimit?: number;
-  /** 취소 거절 후 체결도 확인되지 않는 폴 수 한도(기본 3) — 도달 시 FAULT(모호 상태 — 사람 호출). */
+  /** 취소·정정 거절 후 체결(정정은 생존도)이 확인되지 않는 폴 수 한도(기본 3) — 도달 시 FAULT(모호 — 사람 호출). */
   cancelAmbiguityLimit?: number;
 }
 
@@ -124,6 +134,15 @@ export class Execution {
    */
   private cancelAmbiguous = false;
   private cancelAmbiguousPolls = 0;
+  /**
+   * 정정이 거절돼 "이미 체결 추정" 상태 — 재정정을 멈추고 폴의 수량 실측을 기다린다(재발사 금지, §4-3).
+   *  · 폴이 전량 체결을 확정 → DONE (2026-08-18 사고의 정상 경로 — APBK0124는 잔량 없음 신호였다).
+   *  · 폴이 잔량 있는 생존(listed)을 실측 → 거절은 일시 장애였다 — 동결 해제, 추격 재개.
+   *  · 한도 폴까지 둘 다 확인 안 되면 FAULT(모호 — 사람 호출).
+   */
+  private amendAmbiguous = false;
+  private amendAmbiguousPolls = 0;
+  private lastAmendError: string | null = null;
   /** 취소선 도달로 취소했는가(true) vs release 호출인가 — 결과 의미는 같아 상태만 CANCELLED로 둔다. */
   private amendFailStreak = 0;
   private fillFailStreak = 0;
@@ -193,7 +212,7 @@ export class Execution {
         await this.cancelRemaining();
         return;
       }
-      if (this.cancelAmbiguous) return; // 취소/정정 거절 후 — 폴이 체결을 확정할 때까지 손대지 않는다.
+      if (this.cancelAmbiguous || this.amendAmbiguous) return; // 취소/정정 거절 후 — 폴이 수량을 확정할 때까지 손대지 않는다.
       const target = roundGridPrice(price);
       if (target === this.leg.price) return;
       if (this.clock.now() - this.lastOrderAt < this.minReorderIntervalMs) return;
@@ -207,12 +226,17 @@ export class Execution {
         this.lastOrderAt = this.clock.now();
         this.amendFailStreak = 0;
       } catch (err) {
-        // 정정 거절 — "이미 체결"이 가장 흔한 원인이라 즉시 동결하지 않는다. 주문은 옛 가격에 살아 있고
-        // 폴이 체결을 확정하면 DONE이다. 연속 한도 도달 시에만 FAULT(진짜 API 장애).
+        // 정정 거절 — "이미 체결"(잔량 없음, APBK0124)이 가장 흔한 원인이다. 재정정을 쏘지 않고(재발사 금지)
+        // 동결한 뒤 폴의 수량 실측에 판정을 맡긴다: 체결 확정→DONE, 잔량 생존 실측→추격 재개.
+        // 한도(amendFailLimit)는 "생존 실측 후 재개했는데 또 거절"이 반복된 라운드 수 — 진짜 API 장애만 남는다.
         this.amendFailStreak += 1;
+        this.lastAmendError = summarize(err);
         if (this.amendFailStreak >= this.amendFailLimit) {
-          this.enterFault(`정정 ${this.amendFailStreak}회 연속 거절 — ${summarize(err)}`);
+          this.enterFault(`정정 ${this.amendFailStreak}회 연속 거절 — ${this.lastAmendError}`);
+          return;
         }
+        this.amendAmbiguous = true;
+        this.amendAmbiguousPolls = 0;
       }
     } finally {
       this.busy = false;
@@ -245,6 +269,22 @@ export class Execution {
       if (this.totalFilled() >= this.qty) {
         this._state = 'DONE';
         return { kind: 'done', result: this.result };
+      }
+      if (this.amendAmbiguous) {
+        if (f && f.listed === true && f.filledQty < this.leg!.qty) {
+          // 주문이 미체결 목록에 잔량과 함께 살아 있다(실측) — 거절은 일시 장애였다. 추격을 재개한다.
+          // (거절 라운드 카운트 amendFailStreak는 유지 — 재개 후 또 거절이 반복되면 FAULT로 간다.)
+          this.amendAmbiguous = false;
+        } else {
+          // 체결 확정도 생존 실측도 아직 없다 — 몇 폴은 반영 지연으로 보고 기다리되, 한도에서 사람을 부른다.
+          this.amendAmbiguousPolls += 1;
+          if (this.amendAmbiguousPolls >= this.cancelAmbiguityLimit) {
+            this.enterFault(
+              `정정이 거절됐는데 체결도 확인되지 않아요 — ${this.lastAmendError ?? '원인 미상'} — 계좌에서 주문을 확인해 주세요`,
+            );
+            return { kind: 'fault', reason: this.faultReason! };
+          }
+        }
       }
       if (this.cancelAmbiguous) {
         // 취소/정정이 거절됐는데 체결도 안 보인다 — 몇 폴은 지연으로 보고 기다리되, 한도에서 사람을 부른다.

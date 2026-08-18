@@ -143,6 +143,11 @@ export interface BrokerFill {
   filledQty: number;
   /** 평균 체결단가 — 미확정이면 null. */
   filledPrice: number | null;
+  /**
+   * 이 스냅샷이 미체결 목록의 **실측**인가 — true면 주문이 목록에 살아 있고 filledQty가 잔량 역산 실측.
+   * false/미지정이면 추론(목록 부재→전량체결, 유예, 정정 왕복 보류)이다. 정정 거절 구제의 생존 판정에 쓴다.
+   */
+  listed?: boolean;
 }
 
 export interface BrokerPlaceInput {

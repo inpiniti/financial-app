@@ -117,7 +117,7 @@ describe('createKisBroker.fetchFills — 미체결내역(nccs) 기반 체결 판
 
     const fills = await broker.fetchFills();
 
-    expect(fills).toEqual([{ odno, orderQty: 10, filledQty: 3, filledPrice: 100 }]);
+    expect(fills).toEqual([{ odno, orderQty: 10, filledQty: 3, filledPrice: 100, listed: true }]);
   });
 
   it('② 목록에서 사라지고(직전 폴에서는 목록에 보였음) 유예를 거쳤다면 전량체결로 확정한다', async () => {
@@ -129,7 +129,7 @@ describe('createKisBroker.fetchFills — 미체결내역(nccs) 기반 체결 판
     // 1차 폴: 아직 미체결로 목록에 보임 → everListed=true로 기록된다.
     nccsQueue.push([unfilledItem(odno, 5, 0)]);
     const first = await broker.fetchFills();
-    expect(first).toEqual([{ odno, orderQty: 5, filledQty: 0, filledPrice: null }]);
+    expect(first).toEqual([{ odno, orderQty: 5, filledQty: 0, filledPrice: null, listed: true }]);
 
     // 2차 폴: 목록에서 사라짐 → 직전에 보였으므로 전량체결로 확정.
     nccsQueue.push([]);
@@ -194,7 +194,8 @@ describe('createKisBroker.fetchFills — 미체결내역(nccs) 기반 체결 판
 
     const fills = await broker.fetchFills();
     // 패딩이 어긋난 목록과도 매칭되어 부분체결(2/5)로 정확히 판정한다("전량체결" 오판 아님).
-    expect(fills).toEqual([{ odno: '0031370465', orderQty: 5, filledQty: 2, filledPrice: 100 }]);
+    // listed=true — 목록 실측 스냅샷 표시(정정 거절 구제의 생존 판정 근거).
+    expect(fills).toEqual([{ odno: '0031370465', orderQty: 5, filledQty: 2, filledPrice: 100, listed: true }]);
   });
 
   it('주간거래 창(KST 10~16시)의 발주는 daytime-order API로 나가고, 세션이 바뀌어도 취소는 원주문 계열(daytime)을 따른다', async () => {

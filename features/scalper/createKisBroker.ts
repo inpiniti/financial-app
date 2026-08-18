@@ -160,7 +160,8 @@ export function createKisBroker(config: KisBrokerConfig): ScalperBroker {
           state.polled = true;
           const filledQty = toNum(item.ft_ord_qty) - toNum(item.nccs_qty);
           const price = toNum(item.ft_ccld_unpr3);
-          fills.push({ odno, orderQty: state.qty, filledQty, filledPrice: price > 0 ? price : null });
+          // listed=true — 미체결 목록 실측(주문 생존 + 잔량 역산). 정정 거절 구제의 생존 판정 근거.
+          fills.push({ odno, orderQty: state.qty, filledQty, filledPrice: price > 0 ? price : null, listed: true });
           continue;
         }
         // 정정 왕복 중인 주문은 "사라짐"의 원인이 체결이 아니라 정정일 수 있다 — 추론을 통째로 보류한다.
