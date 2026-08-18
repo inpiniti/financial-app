@@ -12,6 +12,13 @@ import { BackHeader } from '../components/BackHeader';
 import { Panel } from '../components/Panel';
 import { DEFAULT_APP_SETTINGS, loadAppSettings, saveAppSettings, snapToStep } from '../lib/appSettings';
 import { MAX_GRIDS_LIMIT } from '../features/scalper/autopilot';
+import {
+  RankingSelectionPanel,
+  draftFromSelection,
+  selectionFromDraft,
+  type RankingSelectionDraft,
+} from '../features/scalper/ui/RankingSelectionPanel';
+import { normalizeRankingSelection, validateRankingSelection } from '../core/ranking';
 
 /** 종목당 진입금액 상한(USD) — 오타 하나(100 → 10000)가 그대로 발주 금액이 된다. */
 const START_AMOUNT_MAX_USD = 100_000;
@@ -81,6 +88,10 @@ export default function SettingsScreen() {
   const [startAmountUsd, setStartAmountUsd] = useState(String(DEFAULT_APP_SETTINGS.startAmountUsd));
   const [minTickRate, setMinTickRate] = useState(String(DEFAULT_APP_SETTINGS.minTickRate));
   const [maxConcurrentGrids, setMaxConcurrentGrids] = useState(String(DEFAULT_APP_SETTINGS.maxConcurrentGrids));
+  // 순위 선택(2026-08-18 순위 도메인) — 트레이딩 리스트 원천별 켬·개수·(한투) 기간창.
+  const [rankingDraft, setRankingDraft] = useState<RankingSelectionDraft>(() =>
+    draftFromSelection(normalizeRankingSelection(DEFAULT_APP_SETTINGS.rankingSelection)),
+  );
 
   const [saving, setSaving] = useState(false);
 
@@ -99,6 +110,7 @@ export default function SettingsScreen() {
       setStartAmountUsd(appSettings.startAmountUsd > 0 ? String(appSettings.startAmountUsd) : '');
       setMinTickRate(String(appSettings.minTickRate));
       setMaxConcurrentGrids(String(appSettings.maxConcurrentGrids));
+      setRankingDraft(draftFromSelection(appSettings.rankingSelection));
     })();
   }, []);
 
@@ -131,6 +143,13 @@ export default function SettingsScreen() {
       return;
     }
 
+    const rankingSelection = selectionFromDraft(rankingDraft);
+    const rankingError = validateRankingSelection(rankingSelection);
+    if (rankingError) {
+      Alert.alert('알림', rankingError);
+      return;
+    }
+
     setSaving(true);
     try {
       // 미체결 취소는 슬라이더가 범위·스텝 격자를 보장하므로 별도 검증이 없다.
@@ -143,6 +162,7 @@ export default function SettingsScreen() {
         startAmountUsd: parsedStartAmountUsd,
         minTickRate: parsedMinTickRate,
         maxConcurrentGrids: parsedMaxGrids,
+        rankingSelection,
       });
       Alert.alert('알림', '설정을 저장했어요.');
     } finally {
@@ -218,6 +238,8 @@ export default function SettingsScreen() {
             </View>
           </View>
         </Panel>
+
+        <RankingSelectionPanel draft={rankingDraft} onChange={setRankingDraft} />
 
         <Panel title="추세 (고정값)">
           <View className="px-5 pb-5">

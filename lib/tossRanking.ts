@@ -22,8 +22,15 @@ export interface TossRankingDeps {
 export const TOSS_RANKING_URL = 'https://wts-cert-api.tossinvest.com/api/v2/dashboard/wts/overview/ranking';
 export const TOSS_STOCK_INFO_URL = 'https://wts-info-api.tossinvest.com/api/v2/stock-infos';
 
-/** 순위 종류 — 거래량(biggest_market_volume)·거래대금(biggest_total_amount). 둘 다 실시간(us). */
+/** 순위 종류 — 거래량(biggest_market_volume)·거래대금(biggest_total_amount). 기간은 TossRankingDuration으로 따로 고른다. */
 export type TossRankingKind = 'volume' | 'amount';
+
+/**
+ * 순위 기간(duration) — 실시간(realtime)·1일(1d). 2026-08-18 실호출로 확인: 이 둘만 결과가 다르고
+ * 그 외 값(1w·1m·1D·day 등)은 전부 realtime과 같은 응답이 온다(서버가 realtime으로 폴백).
+ */
+export type TossRankingDuration = 'realtime' | '1d';
+export const TOSS_RANKING_DURATIONS: readonly TossRankingDuration[] = ['realtime', '1d'];
 
 export const TOSS_RANKING_ID: Record<TossRankingKind, string> = {
   volume: 'biggest_market_volume',
@@ -38,12 +45,16 @@ export const TOSS_RANKING_ID: Record<TossRankingKind, string> = {
  */
 export const TOSS_FILTER_EXCLUDE_MANAGEMENT = 'KRX_MANAGEMENT_STOCK';
 
-/** 순위 요청 본문 — kind별 id, excludeManagement면 관리종목 제외 필터를 싣는다. */
-export function buildTossRankingBody(kind: TossRankingKind, excludeManagement = false) {
+/** 순위 요청 본문 — kind별 id, excludeManagement면 관리종목 제외 필터, duration(기본 realtime). */
+export function buildTossRankingBody(
+  kind: TossRankingKind,
+  excludeManagement = false,
+  duration: TossRankingDuration = 'realtime',
+) {
   return {
     id: TOSS_RANKING_ID[kind],
     filters: excludeManagement ? [TOSS_FILTER_EXCLUDE_MANAGEMENT] : ([] as string[]),
-    duration: 'realtime',
+    duration,
     tag: 'us',
   };
 }
@@ -181,38 +192,67 @@ export async function fetchStockInfos(codes: readonly string[], deps: TossRankin
 }
 
 export interface TossRankingOptions extends TossRankingDeps {
-  /** true면 관리종목 제외 필터(KRX_MANAGEMENT_STOCK)를 싣는다 — 감지리스트 전용(화면 조회는 필터 없음). */
+  /** true면 관리종목 제외 필터(KRX_MANAGEMENT_STOCK)를 싣는다 — 감지리스트 기본값(화면 조회는 사용자가 고른다). */
   excludeManagement?: boolean;
+  /** 순위 기간 — 기본 realtime. */
+  duration?: TossRankingDuration;
+}
+
+/** 순위 조회 1건의 명세 — 순위 도메인(core/ranking)의 토스 원천 하나가 여기 1:1로 대응한다. */
+export interface TossRankingQuery {
+  kind: TossRankingKind;
+  duration: TossRankingDuration;
+  excludeManagement: boolean;
 }
 
 /**
- * 토스 실시간 순위 여러 종을 한 번에(미국) — ETF·ETN을 뺀 주식만 순위 순서대로 돌려준다.
- * 순위 POST는 병렬, 종목정보(stock-infos)는 코드 합집합으로 1회만 조회한다(2종이어도 총 3콜).
- * 어느 한 종이라도 비면 throw — 호출부(조회 화면·워치리스트)가 직전 상태 유지/에러 표시로 처리한다.
+ * 토스 순위 여러 건(종류·기간·관리종목 필터가 제각각)을 한 번에(미국) — ETF·ETN을 뺀 주식만 순위 순서대로,
+ * 결과 배열은 요청 순서와 같다. 순위 POST는 병렬, 종목정보(stock-infos)는 코드 합집합으로 1회만
+ * 조회한다(N건이어도 총 N+1콜). 어느 한 건이라도 비면 throw — 호출부(워치리스트)가 직전 상태 유지로 처리한다.
+ */
+export async function fetchTossRankingQueries(
+  queries: readonly TossRankingQuery[],
+  deps: TossRankingDeps = {},
+): Promise<TossRankingRow[][]> {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const productsByQuery = await Promise.all(
+    queries.map((q) =>
+      postJson(TOSS_RANKING_URL, buildTossRankingBody(q.kind, q.excludeManagement, q.duration), fetchImpl).then(
+        parseRankingProducts,
+      ),
+    ),
+  );
+  if (productsByQuery.some((products) => products.length === 0)) throw new Error('토스 순위 응답이 비어 있어요');
+  const codes = [
+    ...new Set(productsByQuery.flat().map((p) => p.productCode?.trim()).filter((c): c is string => !!c)),
+  ];
+  const infos = codes.length > 0 ? await fetchStockInfos(codes, { fetchImpl }) : new Map<string, TossStockInfo>();
+  return productsByQuery.map((products) => joinRankingRows(products, infos));
+}
+
+/**
+ * 토스 순위 여러 종을 같은 기간·필터로 한 번에 — fetchTossRankingQueries의 편의 래퍼(종류별 맵으로 돌려준다).
  */
 export async function fetchTossRankings<K extends TossRankingKind>(
   kinds: readonly K[],
   opts: TossRankingOptions = {},
 ): Promise<Record<K, TossRankingRow[]>> {
-  const fetchImpl = opts.fetchImpl ?? fetch;
-  const productsByKind = await Promise.all(
-    kinds.map((kind) =>
-      postJson(TOSS_RANKING_URL, buildTossRankingBody(kind, opts.excludeManagement), fetchImpl).then(parseRankingProducts),
-    ),
+  const lists = await fetchTossRankingQueries(
+    kinds.map((kind) => ({
+      kind,
+      duration: opts.duration ?? 'realtime',
+      excludeManagement: opts.excludeManagement ?? false,
+    })),
+    { fetchImpl: opts.fetchImpl },
   );
-  if (productsByKind.some((products) => products.length === 0)) throw new Error('토스 순위 응답이 비어 있어요');
-  const codes = [
-    ...new Set(productsByKind.flat().map((p) => p.productCode?.trim()).filter((c): c is string => !!c)),
-  ];
-  const infos = await fetchStockInfos(codes, { fetchImpl });
   const out = {} as Record<K, TossRankingRow[]>;
   kinds.forEach((kind, i) => {
-    out[kind] = joinRankingRows(productsByKind[i], infos);
+    out[kind] = lists[i];
   });
   return out;
 }
 
-/** 순위 1종만 조회 — 홈 순위 화면용(필터 없이 토스 앱 화면과 같은 목록). */
+/** 순위 1종만 조회 — 홈 순위 화면용(기간·관리종목 필터는 opts로, 기본은 실시간·필터 없음 = 토스 앱 화면과 같은 목록). */
 export async function fetchTossRanking(kind: TossRankingKind, opts: TossRankingOptions = {}): Promise<TossRankingRow[]> {
   return (await fetchTossRankings([kind], opts))[kind];
 }

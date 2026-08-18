@@ -51,7 +51,7 @@ class PairFeed implements RealtimeFeed {
 const TWELVE = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'];
 
 function snapshotOf(tickers: string[]): RankingSnapshot {
-  return { tossAmount: [], tossVolume: tickers.map((t) => ({ symb: t, rate: '1' })) };
+  return [{ source: 'tossVolume', count: 15, rows: tickers.map((t) => ({ symb: t, rate: '1' })) }];
 }
 
 function makeManager(
@@ -110,14 +110,17 @@ describe('AutoPilotManager — 배선(구독·라우팅·상호 배타)', () => 
 
   it('3거래소 병합 리스트 — 채용 거래소(NYS/AMS)로 체결가 trKey를 조립한다(excd 없으면 NAS)', async () => {
     const { manager, feed, fetchSnapshot } = makeManager();
-    fetchSnapshot.mockResolvedValue({
-      tossAmount: [],
-      tossVolume: [
-        { symb: 'NY1', rate: '1', excd: 'NYS' },
-        { symb: 'AM1', rate: '1', excd: 'AMS' },
-        { symb: 'NQ1', rate: '1' },
-      ],
-    });
+    fetchSnapshot.mockResolvedValue([
+      {
+        source: 'tossVolume',
+        count: 15,
+        rows: [
+          { symb: 'NY1', rate: '1', excd: 'NYS' },
+          { symb: 'AM1', rate: '1', excd: 'AMS' },
+          { symb: 'NQ1', rate: '1' },
+        ],
+      },
+    ]);
     manager.start();
     await vi.waitFor(() => expect(manager.watchlist.size).toBe(3));
 

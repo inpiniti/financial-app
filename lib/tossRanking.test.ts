@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   buildTossRankingBody,
+  fetchTossRankingQueries,
   fetchTossRankings,
   fetchTossVolumeRanking,
   isTradableGroup,
@@ -156,6 +157,11 @@ describe('buildTossRankingBody', () => {
   it('excludeManagement면 관리종목 제외 필터만 싣는다 — $1·시총 필터는 넣지 않는다(2026-08-14 사용자 결정)', () => {
     expect(buildTossRankingBody('amount', true).filters).toEqual([TOSS_FILTER_EXCLUDE_MANAGEMENT]);
   });
+
+  it('duration은 실시간(realtime)·1일(1d) — 순위 도메인의 토스 기간 옵션(2026-08-18)', () => {
+    expect(buildTossRankingBody('volume', false, '1d').duration).toBe('1d');
+    expect(buildTossRankingBody('volume').duration).toBe('realtime');
+  });
 });
 
 describe('fetchTossRankings — 2종 병렬 + 종목정보 합집합 1콜', () => {
@@ -185,6 +191,32 @@ describe('fetchTossRankings — 2종 병렬 + 종목정보 합집합 1콜', () =
     const calls = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls;
     expect(JSON.parse(calls[0][1].body).filters).toEqual([TOSS_FILTER_EXCLUDE_MANAGEMENT]);
     expect(calls[2][0]).toBe(`${TOSS_STOCK_INFO_URL}?codes=C2,C3,C1`);
+  });
+
+  it('fetchTossRankingQueries — 종류·기간·필터가 제각각인 N건을 요청 순서대로, 종목정보는 1콜', async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: { body?: string }) => {
+      if (url === TOSS_RANKING_URL) {
+        const body = JSON.parse(init!.body!) as { id: string; duration: string; filters: string[] };
+        // 1일 순위엔 니오만, 실시간엔 엔비디아만 — 응답이 요청별로 다른지 확인.
+        const products = body.duration === '1d' ? [product(1, 'C3', '니오', 4.7, 4.8)] : [product(1, 'C2', '엔비디아', 219, 200)];
+        return { json: async () => ({ result: { products } }) };
+      }
+      return { json: async () => ({ result: [info('C2', 'NVDA', 'NSQ', 'ST'), info('C3', 'NIO', 'NYS', 'DR')] }) };
+    }) as unknown as typeof fetch;
+
+    const lists = await fetchTossRankingQueries(
+      [
+        { kind: 'amount', duration: 'realtime', excludeManagement: true },
+        { kind: 'volume', duration: '1d', excludeManagement: false },
+        { kind: 'volume', duration: 'realtime', excludeManagement: false },
+      ],
+      { fetchImpl },
+    );
+    expect(lists.map((l) => l.map((r) => r.symbol))).toEqual([['NVDA'], ['NIO'], ['NVDA']]);
+    expect(fetchImpl).toHaveBeenCalledTimes(4); // 순위 3 + 종목정보 1.
+    const calls = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(JSON.parse(calls[0][1].body)).toEqual({ id: 'biggest_total_amount', filters: [TOSS_FILTER_EXCLUDE_MANAGEMENT], duration: 'realtime', tag: 'us' });
+    expect(JSON.parse(calls[1][1].body)).toEqual({ id: 'biggest_market_volume', filters: [], duration: '1d', tag: 'us' });
   });
 
   it('한 종류라도 비면 던진다 — 워치리스트가 직전 리스트를 유지하도록', async () => {

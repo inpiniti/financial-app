@@ -3,8 +3,11 @@
 //
 // 원천 교체(2026-08-11 사용자 요청): KIS 순위 4종 → 토스 실시간 순위(lib/tossRanking.ts).
 // 원천 확장(2026-08-14 사용자 요청): 거래량 1종 → **거래대금+거래량 2종, 각 15개**(관리종목 제외 필터).
-// 토스 순위(ETF·ETN 제외)를 3분 간격으로 폴링해
-// "등락률 +, 주문가능, 진입금액 이하" 상위 총 30티커를 상시 유지한다(모자라면 차순위로 충원).
+// 원천 옵션화(2026-08-18 순위 도메인, core/ranking): 어느 순위(토스 8종·한투 7종)에서 몇 개씩 뽑을지는
+//   설정(순위 선택)이 정한다. 이 파일은 원천을 모른다 — 폴링 결과(RankingSnapshot = 원천별 {source, count, rows})를
+//   우선권 순서대로 받아 필터·중복 제거·차순위 충원만 한다. 기본 선택은 옛 구성(토스 거래대금·거래량 실시간 각 15)이다.
+// 순위(ETF·ETN 제외)를 3분 간격으로 폴링해
+// "등락률 +, 주문가능, 진입금액 이하" 상위 총 최대 30티커를 상시 유지한다(모자라면 차순위로 충원).
 //  · 현재가 > 진입금액이면 어차피 1주도 못 사서(qtyForAmount=0) 감시·WS 구독이 낭비다 —
 //    리스트 구성 단계에서 걸러내고 차순위로 충원한다(maxPriceUsd).
 //  · 중복 티커는 1개만 올리고 차순위로 충원(원천이 여러 개면 배열 순서가 곧 우선권).
@@ -18,24 +21,16 @@
 import type { SchedulerLike } from './types';
 
 /**
- * 리스트 원천 — 토스 실시간 순위 2종: 거래대금·거래량(2026-08-14 사용자 요청, 거래대금 우선권).
- * 두 순위에 겹치는 티커는 앞 원천(거래대금)에 채용되고 뒤 원천은 차순위로 충원한다.
+ * 리스트 원천 식별자 — 순위 도메인(core/ranking)의 RankingSourceId(예: 'toss:amount:realtime:norisk', 'kis:tradeVolume').
+ * 표시명은 core/ranking.rankingSourceLabelOf로 얻는다. 이 파일은 id를 불투명 문자열로만 다룬다.
  */
-export const WATCH_SOURCES = ['tossAmount', 'tossVolume'] as const;
-export type WatchSource = (typeof WATCH_SOURCES)[number];
-
-export const WATCH_SOURCE_LABEL: Record<WatchSource, string> = {
-  tossAmount: '토스거래대금',
-  tossVolume: '토스거래량',
-};
+export type WatchSource = string;
 
 /**
- * 원천별 채용 슬롯 수 — 2종 × 15 = 총 30(2026-08-14, 1종 30개에서 재배분 — 총 크기는 유지).
- * 구독 예산(KIS 41건): 체결가 30 + 호가(감시 3 + 진입·보유 + 급등 에피소드 3) + 상세화면 ≤ 41.
+ * 평시 리스트 최대 크기 — 구독 예산(KIS 41건): 체결가 30 + 호가(감시 3 + 진입·보유 + 급등 에피소드 3) + 상세화면 ≤ 41.
+ * 순위 선택의 개수 합 상한(core/ranking.RANKING_TOTAL_MAX)과 같은 값. 핀 유예 중에는 이보다 커질 수 있다.
  */
-export const WATCH_SLOTS_PER_SOURCE = 15;
-/** 평시 리스트 최대 크기(원천 수 × 슬롯 수 = 30) — 핀 유예 중에는 이보다 커질 수 있다. */
-export const WATCHLIST_MAX_SIZE = WATCH_SOURCES.length * WATCH_SLOTS_PER_SOURCE;
+export const WATCHLIST_MAX_SIZE = 30;
 export const WATCHLIST_POLL_INTERVAL_MS = 180_000;
 
 /** 랭킹 응답에서 리스트 판정에 필요한 최소 필드(kis/ranking.ts RankingRowBase 부분집합). */
@@ -65,8 +60,18 @@ export function toWatchMarket(excd: string | undefined): WatchMarket {
   return v === 'NYS' || v === 'AMS' ? v : 'NAS';
 }
 
-/** 한 번의 폴링에서 얻은 원천별 스냅샷 — 각 배열은 순위 순서(상위부터)라고 가정한다. */
-export type RankingSnapshot = Record<WatchSource, readonly WatchCandidateRow[]>;
+/** 원천 하나의 폴링 결과 — rows는 순위 순서(상위부터), count는 이 원천에서 채용할 최대 개수. */
+export interface RankingSourceSnapshot {
+  readonly source: WatchSource;
+  readonly count: number;
+  readonly rows: readonly WatchCandidateRow[];
+}
+
+/**
+ * 한 번의 폴링에서 얻은 스냅샷 — **배열 순서가 우선권**(앞 원천이 겹치는 티커를 가져간다).
+ * 순위 계획(core/ranking.RankingPlan)의 순서를 그대로 따른다.
+ */
+export type RankingSnapshot = readonly RankingSourceSnapshot[];
 
 export interface WatchEntry {
   readonly ticker: string;
@@ -132,16 +137,17 @@ export function isWithinMaxPrice(row: WatchCandidateRow, maxPriceUsd: number | n
 
 /**
  * 스냅샷 → 목표 리스트(서로 다른 최대 WATCHLIST_MAX_SIZE티커) 계산. 순수 함수 — 테스트 진입점.
- * 각 순위에서 "+등락·주문가능·진입금액 이하·미중복" 상위 WATCH_SLOTS_PER_SOURCE개를 우선권 순서로 채용한다.
+ * 각 순위에서 "+등락·주문가능·진입금액 이하·미중복" 상위 count개를 우선권(배열) 순서로 채용한다.
  * 필터를 통과한 후보가 모자라면 그 순위 슬롯은 비워둔다(억지로 채우지 않는다).
+ * 총합이 WATCHLIST_MAX_SIZE를 넘으면 뒤 원천부터 잘린다(계획 단계에서 이미 막지만 최후 방어선).
  */
 export function computeDesired(snapshot: RankingSnapshot, maxPriceUsd?: number | null): WatchEntry[] {
   const taken = new Set<string>();
   const desired: WatchEntry[] = [];
-  for (const source of WATCH_SOURCES) {
+  for (const { source, count, rows } of snapshot) {
     let slots = 0;
-    for (const row of snapshot[source] ?? []) {
-      if (slots >= WATCH_SLOTS_PER_SOURCE) break;
+    for (const row of rows) {
+      if (slots >= count || desired.length >= WATCHLIST_MAX_SIZE) break;
       const ticker = row.symb?.trim();
       if (!ticker || taken.has(ticker)) continue;
       const rate = parseSignedRate(row);
@@ -187,6 +193,11 @@ export class ScalperWatchlist {
 
   has(ticker: string): boolean {
     return this.entries.has(ticker);
+  }
+
+  /** 폴링 중인가(start~stop 사이) — 순위 선택이 바뀌었을 때 즉시 재조회할지 판단하는 데 쓴다. */
+  get running(): boolean {
+    return this.timer !== null;
   }
 
   /** 폴링 시작 — 즉시 1회 갱신 후 주기 반복. 중복 start는 무시. */

@@ -20,7 +20,21 @@ import { loadKisSettings } from '../../../lib/kisSettings';
 import { secureTokenStorage } from '../../../lib/secureTokenStorage';
 import { inquireOverseasBalance } from '../../../kis/balance';
 import { buyableUsdOf, inquirePsAmount } from '../../../kis/psamount';
-import { fetchTossRankings, type TossRankingRow } from '../../../lib/tossRanking';
+import { fetchTossRankingQueries, type TossRankingRow } from '../../../lib/tossRanking';
+import {
+  inquirePriceFluctRanking,
+  inquireTradeGrowthRanking,
+  inquireTradeTurnoverRanking,
+  inquireTradeVolumeRanking,
+  inquireUpDownRateRanking,
+  inquireVolumePowerRanking,
+  inquireVolumeSurgeRanking,
+  mergeRankingRows,
+  US_RANKING_EXCHANGES,
+  type RankingExchangeCode,
+} from '../../../kis/ranking';
+import { planFromSelection, rankingPlanKey, type KisMetric, type KisWindow, type RankingPlan } from '../../../core/ranking';
+import { buildRankingSnapshot } from '../rankingSnapshot';
 import type { OverseasExchangeCode } from '../../../kis/trId';
 import { INFLECTION_THRESHOLDS, TREND_CONFIG } from '../autopilot';
 import { inquireOverseasMinuteChart } from '../../../kis/minuteChart';
@@ -49,6 +63,13 @@ export type ManagerBootstrapState =
 // 모듈 스코프 싱글턴 — 탭 전환으로 화면이 리마운트돼도 매니저·WS 연결·인스턴스는 유지한다.
 let cached: ManagerBootstrap | null = null;
 let inFlight: Promise<ManagerBootstrap> | null = null;
+
+/**
+ * 현재 순위 계획(2026-08-18 순위 도메인) — 설정(rankingSelection)에서 만든다. 폴링(fetchSnapshot)이 매번 이 값을 읽고,
+ * refreshLiveSettings가 저장값이 바뀌었을 때 갈아끼운다(매니저 싱글턴이라 부팅 값에 묶이지 않게 — 설정 문서 §6-2).
+ */
+let liveRankingPlan: RankingPlan = [];
+let liveRankingPlanKey = '';
 
 const clock = { now: () => Date.now() };
 
@@ -80,23 +101,76 @@ async function buildManager(): Promise<ManagerBootstrap> {
     return token.accessToken;
   };
 
-  // 리스트 원천 — 토스 실시간 순위 2종(거래대금·거래량, 2026-08-14 사용자 요청으로 거래량 1종에서 확장).
-  // 감지 후보 조회라 **관리종목 제외 필터**를 건다(화면 순위 조회는 필터 없음 — lib/tossRanking.ts 주석).
-  // ETF·ETN은 lib/tossRanking.ts가 종목구분(group)으로 이미 걸러낸 상태로 온다.
-  // KIS 토큰이 필요 없다(비공식 공개 API) — 실패하면 throw해서 ScalperWatchlist가 직전 리스트를 유지한다.
-  const fetchSnapshot = async (): Promise<RankingSnapshot> => {
-    const rankings = await fetchTossRankings(['amount', 'volume'], { excludeManagement: true });
-    const toRows = (rows: TossRankingRow[]): WatchCandidateRow[] =>
-      rows.map((r) => ({
-        symb: r.symbol,
-        // 등락률은 소수 문자열로 넘긴다 — 부호는 sign 없이 rate 원문 그대로 읽힌다(parseSignedRate).
-        rate: r.ratePct.toFixed(2),
-        last: String(r.price),
-        excd: r.market,
-        name: r.name,
-      }));
-    return { tossAmount: toRows(rankings.amount), tossVolume: toRows(rankings.volume) };
+  // 리스트 원천 — 순위 선택(설정 rankingSelection → 계획 liveRankingPlan)대로 토스·한투 순위를 조회한다(2026-08-18 순위 도메인).
+  // 기본 계획은 옛 구성(토스 거래대금·거래량 실시간, 관리종목 제외, 각 15)이라 설정을 건드리지 않으면 동작이 같다.
+  // 토스: 위험미포함 원천은 **관리종목 제외 필터**, 위험포함은 필터 없음. ETF·ETN은 lib/tossRanking.ts가 종목구분으로 걸러낸다.
+  //   KIS 토큰이 필요 없다(비공식 공개 API) — 실패하면 throw해서 ScalperWatchlist가 직전 리스트를 유지한다.
+  // 한투: kis/ranking 7종을 미국 거래소(NAS·NYS) 직렬 조회 후 지표로 병합(홈 순위 화면과 같은 규칙). 방향은 급등·상승율 고정
+  //   (리스트는 어차피 +등락만 채용). 원천 하나가 실패하면 그 원천만 비운다(rankingSnapshot.ts 실패 정책).
+  liveRankingPlan = planFromSelection(appSettings.rankingSelection);
+  liveRankingPlanKey = rankingPlanKey(liveRankingPlan);
+
+  const tossToRows = (rows: TossRankingRow[]): WatchCandidateRow[] =>
+    rows.map((r) => ({
+      symb: r.symbol,
+      // 등락률은 소수 문자열로 넘긴다 — 부호는 sign 없이 rate 원문 그대로 읽힌다(parseSignedRate).
+      rate: r.ratePct.toFixed(2),
+      last: String(r.price),
+      excd: r.market,
+      name: r.name,
+    }));
+
+  const fetchKisRanking = async (metric: KisMetric, window: KisWindow): Promise<WatchCandidateRow[]> => {
+    const accessToken = await getTokenStr();
+    const one = async (excd: RankingExchangeCode): Promise<{ output2: Array<Record<string, unknown>> }> => {
+      switch (metric) {
+        case 'tradeVolume':
+          return inquireTradeVolumeRanking(credentials, accessToken, { excd, nday: window });
+        case 'volumeSurge':
+          return inquireVolumeSurgeRanking(credentials, accessToken, { excd, minx: window });
+        case 'priceFluct':
+          return inquirePriceFluctRanking(credentials, accessToken, { excd, gubn: '1', minx: window });
+        case 'tradeGrowth':
+          return inquireTradeGrowthRanking(credentials, accessToken, { excd, nday: window });
+        case 'tradeTurnover':
+          return inquireTradeTurnoverRanking(credentials, accessToken, { excd, nday: window });
+        case 'volumePower':
+          return inquireVolumePowerRanking(credentials, accessToken, { excd, nday: window });
+        case 'upDownRate':
+          return inquireUpDownRateRanking(credentials, accessToken, { excd, gubn: '1', nday: window });
+      }
+    };
+    const lists: Array<Array<Record<string, unknown>>> = [];
+    const errors: unknown[] = [];
+    for (const excd of US_RANKING_EXCHANGES) {
+      try {
+        lists.push((await one(excd)).output2.map((r) => ({ ...r, excd })));
+      } catch (e) {
+        errors.push(e);
+      }
+    }
+    if (lists.length === 0) throw errors[0] ?? new Error('순위 조회 실패');
+    return mergeRankingRows(metric, lists).map((r) => ({
+      symb: String(r.symb ?? ''),
+      rate: String(r.rate ?? ''),
+      sign: typeof r.sign === 'string' ? r.sign : undefined,
+      e_ordyn: typeof r.e_ordyn === 'string' ? r.e_ordyn : undefined,
+      last: typeof r.last === 'string' ? r.last : undefined,
+      excd: String(r.excd),
+      name: (typeof r.name === 'string' && r.name) || (typeof r.knam === 'string' && r.knam) || undefined,
+    }));
   };
+
+  const fetchSnapshot = async (): Promise<RankingSnapshot> =>
+    buildRankingSnapshot(liveRankingPlan, {
+      fetchToss: async (queries) =>
+        (
+          await fetchTossRankingQueries(
+            queries.map((q) => ({ kind: q.metric, duration: q.duration, excludeManagement: q.excludeManagement })),
+          )
+        ).map(tossToRows),
+      fetchKis: fetchKisRanking,
+    });
 
   // 재시작 보유 감지(plan §2-6) — 잔고에 수량이 남은 종목 티커 목록.
   // ⚠ cblc_qty13(결제보유수량)이 아니라 ccld_qty_smtl1(체결기준 보유수량)을 본다 — 미국주식은 T+1 결제라
@@ -288,6 +362,15 @@ export async function refreshLiveSettings(autopilot: AutoPilotManager): Promise<
     triggerCount: ladderCountOf(appSettings.entryLadderCount),
   });
   autopilot.setBuyCancelAfterMs(buyCancelAfterToMs(appSettings.buyCancelAfterSec));
+  // 순위 계획(2026-08-18) — 바뀌었을 때만 갈아끼우고, 폴링 중이면 다음 주기(최대 3분)를 기다리지 않고 즉시 재조회한다.
+  // 정지 상태에서는 재조회하지 않는다(start가 즉시 1회 돌며 새 계획을 쓴다 — 정지 중 구독을 만들지 않게).
+  const nextPlan = planFromSelection(appSettings.rankingSelection);
+  const nextKey = rankingPlanKey(nextPlan);
+  if (nextKey !== liveRankingPlanKey) {
+    liveRankingPlan = nextPlan;
+    liveRankingPlanKey = nextKey;
+    if (autopilot.watchlist.running) void autopilot.watchlist.refresh();
+  }
   await syncTradingConfig(autopilot, appSettings);
 }
 

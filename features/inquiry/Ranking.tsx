@@ -1,4 +1,4 @@
-// 홈 순위 섹션 — 토스 실시간 순위 2종(거래량 기본·거래대금) + KIS 순위 7종(kis/ranking.ts).
+// 홈 순위 섹션 — 토스 순위 2종(거래량 기본·거래대금, 실시간/1일 · 위험포함/미포함 선택) + KIS 순위 7종(kis/ranking.ts).
 // 행 탭 시 종목 상세화면으로 이동한다.
 //
 // 토스 순위(lib/tossRanking.ts)는 KIS 키가 없어도 보이는 공개 API라 세션 게이트를 걸지 않는다 —
@@ -30,7 +30,7 @@ import {
   type RankingExchangeCode,
   type RankingKind,
 } from '../../kis/ranking';
-import { fetchTossRanking, type TossRankingKind } from '../../lib/tossRanking';
+import { fetchTossRanking, type TossRankingDuration, type TossRankingKind } from '../../lib/tossRanking';
 import { toStockMarketCode } from '../stock/marketCodes';
 import { EmptyState, ErrorNotice, SetupNotice, SkeletonList } from './components';
 import { useKisSession } from './useKisSession';
@@ -41,7 +41,7 @@ const TOSS_AMOUNT_KIND = 'tossAmount';
 type TossUiKind = typeof TOSS_KIND | typeof TOSS_AMOUNT_KIND;
 type UiRankingKind = TossUiKind | RankingKind;
 
-/** UI 종류 → lib/tossRanking.ts 순위 종류. 화면 조회라 관리종목 필터는 걸지 않는다(토스 앱 화면과 동일). */
+/** UI 종류 → lib/tossRanking.ts 순위 종류. 기간(실시간·1일)·관리종목 필터는 화면 셀렉트로 고른다(기본: 실시간·위험포함 = 토스 앱 화면과 동일). */
 const TOSS_FETCH_KIND: Record<TossUiKind, TossRankingKind> = {
   [TOSS_KIND]: 'volume',
   [TOSS_AMOUNT_KIND]: 'amount',
@@ -64,12 +64,24 @@ const KIND_ORDER: UiRankingKind[] = [
 ];
 
 const KIND_LABEL: Record<UiRankingKind, string> = {
-  [TOSS_KIND]: '토스거래량실시간순위',
-  [TOSS_AMOUNT_KIND]: '토스거래대금실시간순위',
+  [TOSS_KIND]: '토스거래량순위',
+  [TOSS_AMOUNT_KIND]: '토스거래대금순위',
   ...RANKING_KIND_LABEL,
 };
 
 const KIND_OPTIONS = KIND_ORDER.map((k) => ({ value: k, label: KIND_LABEL[k] }));
+
+// 토스 순위 기간 — 실시간·1일(2026-08-18 실호출 확인: 이 둘만 다른 결과, 나머지 값은 realtime 폴백).
+const TOSS_DURATION_OPTIONS: Array<{ value: TossRankingDuration; label: string }> = [
+  { value: 'realtime', label: '실시간' },
+  { value: '1d', label: '1일' },
+];
+
+// 토스 관리종목(투자위험·경고 계열) 포함 여부 — 'include'가 토스 앱 기본 화면, 'exclude'는 KRX_MANAGEMENT_STOCK 필터.
+const TOSS_RISK_OPTIONS = [
+  { value: 'include', label: '위험포함' },
+  { value: 'exclude', label: '위험미포함' },
+];
 
 // 방향(GUBN) — 가격급등락과 상승율/하락율이 값은 같고(0·1) 라벨만 다르다.
 const DIRECTION_OPTIONS: Array<{ value: PriceFluctDirection; label: string }> = [
@@ -132,6 +144,8 @@ export function Ranking() {
   const [dayWindow, setDayWindow] = useState<DayWindow>('0');
   const [minuteWindow, setMinuteWindow] = useState<MinuteWindow>('0');
   const [priceDirection, setPriceDirection] = useState<PriceFluctDirection>('1');
+  const [tossDuration, setTossDuration] = useState<TossRankingDuration>('realtime');
+  const [tossRisk, setTossRisk] = useState<'include' | 'exclude'>('include');
 
   const [rows, setRows] = useState<RankingRowShape[] | null>(null);
   const [loadingData, setLoadingData] = useState(false);
@@ -145,7 +159,10 @@ export function Ranking() {
     setLoadingData(true);
     setDataError(null);
     try {
-      const tossRows = await fetchTossRanking(TOSS_FETCH_KIND[kind]);
+      const tossRows = await fetchTossRanking(TOSS_FETCH_KIND[kind], {
+        duration: tossDuration,
+        excludeManagement: tossRisk === 'exclude',
+      });
       // 응답에 등락률 필드가 없어 기준가 대비로 계산된 값이 온다 — 색은 KIS의 sign 관례로 맞춘다.
       setRows(
         tossRows.map((r) => ({
@@ -163,7 +180,7 @@ export function Ranking() {
       setLoadingData(false);
       setRefreshing(false);
     }
-  }, [kind]);
+  }, [kind, tossDuration, tossRisk]);
 
   const fetchKisRanking = useCallback(async () => {
     if (isTossKind(kind)) return;
@@ -240,7 +257,7 @@ export function Ranking() {
   }, []);
 
   const isToss = isTossKind(kind);
-  // 토스 순위는 기간·방향 선택이 없다(항상 실시간). 시간창 라벨은 KIS 순위에서만 쓴다.
+  // 토스 순위는 기간(실시간·1일)·위험종목 포함 여부를 따로 고르고 방향 선택은 없다. 시간창 라벨은 KIS 순위에서만 쓴다.
   const timeUnit = isToss ? 'none' : RANKING_TIME_UNIT[kind];
   // 토스 순위는 KIS 키 없이도 보인다 — 세션 안내는 KIS 순위를 골랐을 때만.
   const sessionBlocked = !isToss && (session.kind === 'needsSetup' || session.kind === 'error');
@@ -264,6 +281,22 @@ export function Ranking() {
               setKind(v as UiRankingKind);
             }}
           />
+          {isToss && (
+            <SelectBox
+              label="기간"
+              value={tossDuration}
+              options={TOSS_DURATION_OPTIONS}
+              onChange={(v) => setTossDuration(v as TossRankingDuration)}
+            />
+          )}
+          {isToss && (
+            <SelectBox
+              label="위험종목"
+              value={tossRisk}
+              options={TOSS_RISK_OPTIONS}
+              onChange={(v) => setTossRisk(v as 'include' | 'exclude')}
+            />
+          )}
           {!isToss && (
             <SelectBox
               label={timeUnit === 'minute' ? '기간(분)' : '기간(일)'}

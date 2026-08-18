@@ -1,6 +1,7 @@
 // 매매 파라미터(민감정보 아님) — AsyncStorage에 저장한다 (PRD §5 / §4-E). KIS 키는 lib/kisSettings.ts(secure-store) 담당.
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { KisEnvironment } from '../kis/types';
+import { DEFAULT_RANKING_SELECTION, normalizeRankingSelection, type RankingSelection } from '../core/ranking';
 
 const STORAGE_KEY = 'app:settings';
 
@@ -59,6 +60,13 @@ export interface AppSettings {
   minTickRate: number;
   /** 동시에 관리할 그리드(종목) 개수. 기본 1(autopilot.DEFAULT_MAX_GRIDS와 같은 값), 상한은 autopilot이 잘라낸다. */
   maxConcurrentGrids: number;
+  /**
+   * 순위 선택(2026-08-18 순위 도메인, core/ranking) — 트레이딩 리스트를 어느 순위에서 몇 개씩 뽑을지.
+   * 원천 id → {enabled, count, window}. 기본은 옛 고정 구성(토스 거래대금·거래량 실시간, 관리종목 제외, 각 15).
+   * 켜진 원천의 개수 합은 RANKING_TOTAL_MAX(30)를 넘지 못한다(설정 화면이 저장 전 검증).
+   * managerProvider가 폴링마다 계획(planFromSelection)으로 바꿔 순위를 조회한다.
+   */
+  rankingSelection: RankingSelection;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -73,6 +81,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   startAmountUsd: 1,
   minTickRate: 1,
   maxConcurrentGrids: 1,
+  rankingSelection: DEFAULT_RANKING_SELECTION,
 };
 
 /** 사다리 간격 %를 소수로(3% → 0.03). 비정상·0 이하는 기본값(3%)으로 방어(감지가 꺼지는 개념이 아니다). */
@@ -129,6 +138,8 @@ export async function loadAppSettings(): Promise<AppSettings> {
       startAmountUsd: parsed.startAmountUsd ?? DEFAULT_APP_SETTINGS.startAmountUsd,
       minTickRate: parsed.minTickRate ?? DEFAULT_APP_SETTINGS.minTickRate,
       maxConcurrentGrids: parsed.maxConcurrentGrids ?? DEFAULT_APP_SETTINGS.maxConcurrentGrids,
+      // 순위 선택은 저장값이 없으면 기본 구성, 있으면 카탈로그 기준으로 정리(모르는 id 폐기·누락 원천 채움).
+      rankingSelection: normalizeRankingSelection(parsed.rankingSelection ?? DEFAULT_APP_SETTINGS.rankingSelection),
     };
   } catch {
     // 저장값 파손 — 기본값으로 자연 복구.

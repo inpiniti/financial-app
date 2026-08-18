@@ -19,7 +19,7 @@ import type { AutoPilotManager, AutoPilotSlotRow } from '../autopilotManager';
 import type { FeedEvent, ScalperManager } from '../scalperManager';
 import type { FeedStatus } from '../types';
 import { isDaytimeSessionOpen } from '../daySession';
-import { WATCH_SOURCE_LABEL } from '../watchlist';
+import { rankingSourceLabelOf } from '../../../core/ranking';
 import { TREND_MODE } from '../trendMode';
 import type { TrendEval } from '../../../core/trend/signal';
 import { AdoptSheet } from './AdoptSheet';
@@ -162,7 +162,7 @@ function SlotRow({
         subtitle={
           <View className="mt-0.5">
             <Text className="text-sm text-[#8b95a1]" numberOfLines={1}>
-              {`${name ? `${ticker} · ` : ''}${WATCH_SOURCE_LABEL[item.entry.source]}`}
+              {`${name ? `${ticker} · ` : ''}${rankingSourceLabelOf(item.entry.source)}`}
             </Text>
             <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
               {`속도/10초 ${formatTickRateSeries(item.view.tickRateSeries)}`}
@@ -415,7 +415,7 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
             <View className="bg-white">
               <View className="flex-row items-center justify-between px-5 pb-2 pt-4">
                 <Text className="text-[15px] font-bold text-[#191f28]">트레이딩 리스트</Text>
-                <Text className="text-xs text-[#8b95a1]">토스 거래량 실시간 순위 상위 {rows.length}종목</Text>
+                <Text className="text-xs text-[#8b95a1]">순위 상위 {rows.length}종목 · 원천은 설정에서</Text>
               </View>
             </View>
           </>

@@ -7,7 +7,6 @@ import {
   isWithinMaxPrice,
   parseSignedRate,
   ScalperWatchlist,
-  WATCH_SLOTS_PER_SOURCE,
   WATCHLIST_MAX_SIZE,
   WATCHLIST_POLL_INTERVAL_MS,
   type RankingSnapshot,
@@ -18,8 +17,12 @@ function row(symb: string, rate: string, extra: Partial<WatchCandidateRow> = {})
   return { symb, rate, ...extra };
 }
 
-function snapshot(partial: Partial<RankingSnapshot>): RankingSnapshot {
-  return { tossAmount: [], tossVolume: [], ...partial };
+/** 옛 2원천 구성(거래대금 → 거래량, 각 15)을 스냅샷 배열로 — 우선권은 배열 순서. */
+function snapshot(partial: { tossAmount?: WatchCandidateRow[]; tossVolume?: WatchCandidateRow[] }): RankingSnapshot {
+  return [
+    { source: 'tossAmount', count: 15, rows: partial.tossAmount ?? [] },
+    { source: 'tossVolume', count: 15, rows: partial.tossVolume ?? [] },
+  ];
 }
 
 /** 수동 트리거 스케줄러 — setInterval 콜백을 잡아두고 tick()으로 강제 실행. */
@@ -74,7 +77,6 @@ describe('computeDesired — 필터·중복 제거·차순위 충원', () => {
 
     // 2종 × 15 = 총 30(2026-08-14 거래대금+거래량 확장 — 총 크기는 30 유지).
     expect(WATCHLIST_MAX_SIZE).toBe(30);
-    expect(WATCH_SLOTS_PER_SOURCE).toBe(15);
     expect(desired).toHaveLength(30);
     const amountSide = desired.filter((e) => e.source === 'tossAmount').map((e) => e.ticker);
     const volumeSide = desired.filter((e) => e.source === 'tossVolume').map((e) => e.ticker);
@@ -85,6 +87,30 @@ describe('computeDesired — 필터·중복 제거·차순위 충원', () => {
 
   it('순위가 비면(조회 실패 등) 리스트도 비운다', () => {
     expect(computeDesired(snapshot({ tossVolume: [] }))).toHaveLength(0);
+    expect(computeDesired([])).toHaveLength(0); // 계획이 비면(원천을 다 끔) 리스트도 빈다.
+  });
+
+  it('원천별 count가 채용 개수를 정하고, 총합은 WATCHLIST_MAX_SIZE에서 잘린다(2026-08-18 순위 도메인)', () => {
+    const rows = (prefix: string, n: number) => Array.from({ length: n }, (_, i) => row(`${prefix}${i + 1}`, '1'));
+    const desired = computeDesired([
+      { source: 'toss:amount:realtime:norisk', count: 3, rows: rows('A', 10) },
+      { source: 'kis:tradeVolume', count: 2, rows: [row('A1', '1'), ...rows('K', 10)] }, // A1은 앞 원천이 채용 — 차순위 충원.
+      { source: 'x', count: 0, rows: rows('X', 3) }, // 0개 — 채용 없음.
+    ]);
+    expect(desired.map((e) => [e.ticker, e.source])).toEqual([
+      ['A1', 'toss:amount:realtime:norisk'],
+      ['A2', 'toss:amount:realtime:norisk'],
+      ['A3', 'toss:amount:realtime:norisk'],
+      ['K1', 'kis:tradeVolume'],
+      ['K2', 'kis:tradeVolume'],
+    ]);
+
+    const capped = computeDesired([
+      { source: 'p', count: 25, rows: rows('P', 40) },
+      { source: 'q', count: 25, rows: rows('Q', 40) },
+    ]);
+    expect(capped).toHaveLength(WATCHLIST_MAX_SIZE);
+    expect(capped.filter((e) => e.source === 'q')).toHaveLength(5);
   });
 
   it('음전(-)·보합(0)·주문불가·빈 티커는 건너뛰고 차순위로 충원한다', () => {

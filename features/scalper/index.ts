@@ -19,12 +19,17 @@ export { SlopeMeter, DEFAULT_SLOPE_WINDOW_MS, DEFAULT_SLOPE_HISTORY_MS } from '.
 export {
   ScalperWatchlist,
   computeDesired,
-  WATCH_SOURCES,
-  WATCH_SOURCE_LABEL,
-  WATCH_SLOTS_PER_SOURCE,
+  WATCHLIST_MAX_SIZE,
   WATCHLIST_POLL_INTERVAL_MS,
 } from './watchlist';
-export type { RankingSnapshot, WatchCandidateRow, WatchEntry, WatchlistDiff } from './watchlist';
+export type {
+  RankingSnapshot,
+  RankingSourceSnapshot,
+  WatchCandidateRow,
+  WatchEntry,
+  WatchSource,
+  WatchlistDiff,
+} from './watchlist';
 export { FeedSlot } from './feedSlot';
 export type { FeedSlotView, SlotSignalContext } from './feedSlot';
 export {
