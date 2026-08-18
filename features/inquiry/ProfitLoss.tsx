@@ -23,6 +23,7 @@ import { useUsdKrwRate } from '../../lib/useUsdKrwRate';
 import { readTodayTrades, type StoredTrade } from '../scalper/tradeStore';
 import { toStockMarketCode } from '../stock/marketCodes';
 import { EmptyState, ErrorNotice, SetupNotice, SkeletonList } from './components';
+import { KellySection } from './KellySection';
 import { useKisSession } from './useKisSession';
 import {
   aggregateDaily,
@@ -330,6 +331,8 @@ export function ProfitLoss({ onDetailOpenChange }: ProfitLossProps = {}) {
                 {showTodayRow && todayEstimate && <TodayEstimateRow tradeDt={todayDt} estimate={todayEstimate} />}
               </>
             }
+            // 켈리 배율 조회(docs/domain/켈리) — 기록된 거래 결과로 계산해 보여주기만 한다. 매매와 무관.
+            ListFooterComponent={<KellySection />}
             ListEmptyComponent={
               kisFailed || showTodayRow ? null : (
                 <EmptyState

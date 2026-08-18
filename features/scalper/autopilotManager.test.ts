@@ -276,8 +276,8 @@ describe('AutoPilotManager — 배선(구독·라우팅·상호 배타)', () => 
     expect(manager.recentEvents.some((e) => e.text.includes('매수 미체결 취소를 껐어요'))).toBe(true);
   });
 
-  it('진입 수량을 지정하면 "진입금액 이하" 가격 필터가 꺼진다 — 비싼 종목도 리스트에 남는다(2026-08-18)', async () => {
-    // 진입금액 $100 · A는 $500 — 금액 계산이면 리스트에서 빠지고, 고정 수량이면 남는다.
+  it('진입 수량을 지정해도 "진입금액 이하" 가격 필터는 유지된다 — 진입금액이 가격 상한 역할(2026-08-18)', async () => {
+    // 진입금액 $100 · A는 $500 — 수량 모드에서도 A는 리스트에서 빠져야 한다.
     const { manager, fetchSnapshot } = makeManager();
     fetchSnapshot.mockResolvedValue([
       {
@@ -297,8 +297,9 @@ describe('AutoPilotManager — 배선(구독·라우팅·상호 배타)', () => 
 
     manager.pilot.setConfig({ startAmountUsd: 100, minTickRate: 0.01, entryQty: 1 });
     manager.start();
-    await vi.waitFor(() => expect(manager.watchlist.size).toBe(2));
-    expect(manager.watchlist.has('A')).toBe(true);
+    await vi.waitFor(() => expect(manager.watchlist.size).toBe(1));
+    expect(manager.watchlist.has('A')).toBe(false);
+    expect(manager.watchlist.has('B')).toBe(true);
   });
 
   it('AUTOPILOT_TRADE_ID 상수 계약', () => {
@@ -363,5 +364,16 @@ describe('AutoPilotManager — 추세 워밍업 큐(REST 분봉 시드)', () => 
     await vi.waitFor(() => expect(manager.watchlist.size).toBe(12));
     await flush();
     expect(manager.getRows().every((r) => r.view.trend === null)).toBe(true);
+  });
+});
+
+describe('AutoPilotManager — 거래 결과 기록 전략 태그', () => {
+  it('trend 주입이면 trend, 아니면 사다리(entryLadder) → ladder', () => {
+    const withTrend = makeManager({ fetchMinuteBars: async () => [] });
+    expect(withTrend.manager.strategyTag()).toBe('trend');
+    const ladder = makeManager({ entryLadder: { interval: 0.01, triggerCount: 3 } });
+    expect(ladder.manager.strategyTag()).toBe('ladder');
+    const plain = makeManager();
+    expect(plain.manager.strategyTag()).toBe('grid');
   });
 });

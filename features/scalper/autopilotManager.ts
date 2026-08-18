@@ -11,7 +11,6 @@
 import { appendTradeRecord } from './tradeStore';
 import {
   AutoPilot,
-  fixedEntryQtyOf,
   type AutoPilotDeps,
   type AutoPilotEvent,
   type AutoPilotView,
@@ -20,7 +19,10 @@ import {
   type TrendGridConfig,
 } from './autopilot';
 import { isDaytimeSessionOpen } from './daySession';
-import { FeedSlot, type FeedSlotView, type LadderEntryOptions } from './feedSlot';
+import { FeedSlot, INFLECTION_ENTRY, LADDER_ENTRY, type FeedSlotView, type LadderEntryOptions } from './feedSlot';
+import { TREND_MODE } from './trendMode';
+import type { TradeStrategy } from './tradeResults';
+import type { TradeRecord } from '../../core/cycle';
 import { ScalperWatchlist, type RankingSnapshot, type WatchEntry, type WatchMarket } from './watchlist';
 import type { MinuteBar } from '../../core/trend/bars';
 import {
@@ -91,6 +93,17 @@ export interface AutoPilotManagerDeps {
    * FeedSlot.seedTrend에 넣는다. 미주입이면 WS 봉만으로 서서히 채운다(2시간 뒤에야 4선 완성).
    */
   fetchMinuteBars?: (ticker: string, market: WatchMarket) => Promise<MinuteBar[]>;
+  /**
+   * 거래 결과 외부 기록(docs/domain/켈리 §4 — Supabase trade_results). 정산마다 로컬 tradeStore append 뒤에
+   * **await 없이** 부른다. 실패는 여기서 이벤트로만 남기고 매매는 계속(fail-open). 미주입이면 로컬 기록만.
+   * 매매 판단·켈리 계산과 무관 — 기록만.
+   */
+  recordTradeResult?: (input: {
+    record: TradeRecord;
+    strategy: TradeStrategy;
+    market: WatchMarket;
+    name?: string;
+  }) => Promise<void>;
   /** 재시작 보유 감지(잔고조회 → 보유 티커 목록) — 감지되면 경고 이벤트만 낸다(차단 안 함, plan §2-6). */
   fetchHoldings?: () => Promise<string[]>;
   keepAwake?: KeepAwakeControl;
@@ -193,12 +206,9 @@ export class AutoPilotManager {
       pollIntervalMs: deps.watchlistPollIntervalMs,
       // 진입금액보다 비싼 종목은 1주도 못 사서 감시·WS 구독만 낭비 — 리스트 단계에서 거른다.
       // setConfig는 IDLE에서만 통과하고 폴링은 start 직후 즉시 1회 돌므로, 시작 시점 금액이 곧바로 반영된다.
-      // 고정 진입 수량이 지정돼 있으면 가격 상한 필터를 끈다 — 비싼 종목도 그 수량만큼은 사는 게 의도(2026-08-18).
-      maxPriceUsd: () => {
-        const config = this.pilot.getView().config;
-        if (fixedEntryQtyOf(config) !== null) return null;
-        return config?.startAmountUsd ?? null;
-      },
+      // 진입 수량(entryQty)을 지정해도 이 필터는 유지한다 — 그때 진입금액은 "이 가격 이하 종목만"이라는
+      // 상한 역할을 한다(사용자 확정 2026-08-18: 테스트 중이라 $10 이하 종목만 1주씩 같은 운용).
+      maxPriceUsd: () => this.pilot.getView().config?.startAmountUsd ?? null,
       onChange: (entries, diff) => {
         // 구독·주문 거래소 판별용 — dropSlot/addSlot보다 먼저 최신화한다(추가 종목의 trKey가 이 맵을 읽는다).
         for (const entry of entries) {
@@ -248,6 +258,17 @@ export class AutoPilotManager {
           this.marketOf(record.ticker),
           this.tickerNames.get(record.ticker),
         ).catch((err) => this.deps.onError?.(err));
+        // 외부 기록(켈리 조회용) — 실패해도 매매와 로컬 기록에는 영향 없다.
+        if (deps.recordTradeResult) {
+          void deps
+            .recordTradeResult({
+              record,
+              strategy: this.strategyTag(),
+              market: this.marketOf(record.ticker),
+              name: this.tickerNames.get(record.ticker),
+            })
+            .catch((err) => this.pushEvent({ at: this.deps.clock.now(), text: `거래 기록 업로드 실패 · ${summarize(err)}` }));
+        }
       },
       onEvent: (e) => this.pushEvent(e),
       onFault: (fault: InstanceFault) => this.pushEvent({ at: fault.at, text: fault.text }),
@@ -424,6 +445,14 @@ export class AutoPilotManager {
   }
 
   // ---- 내부 ----
+
+  /** 현재 배선의 진입·청산 규칙 태그(거래 결과 기록용) — 스위치·주입 조합을 그대로 읽는다. */
+  strategyTag(): TradeStrategy {
+    if (TREND_MODE && this.deps.trend !== undefined) return 'trend';
+    if (INFLECTION_ENTRY && this.deps.inflection !== undefined) return 'inflection';
+    if (LADDER_ENTRY && this.entryLadder !== undefined) return 'ladder';
+    return 'grid';
+  }
 
   /** 티커의 채용 거래소 — 리스트에서 한 번도 못 본 티커(입양 보유분 등)는 NAS. */
   private marketOf(ticker: string): WatchMarket {

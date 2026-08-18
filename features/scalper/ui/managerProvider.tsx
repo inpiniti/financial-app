@@ -39,7 +39,10 @@ import type { OverseasExchangeCode } from '../../../kis/trId';
 import { INFLECTION_THRESHOLDS, TREND_CONFIG } from '../autopilot';
 import { inquireOverseasMinuteChart } from '../../../kis/minuteChart';
 import { kstToMinuteKey, type MinuteBar } from '../../../core/trend/bars';
-import { AutoPilotManager } from '../autopilotManager';
+import { getSupabaseClient, isSupabaseConfigured } from '../../../lib/supabase';
+import { loadApprovedAccountNo } from '../../../lib/gateStorage';
+import { TradeResultRecorder, toTradeResultRow, type TradeResultsInsertClient } from '../tradeResults';
+import { AutoPilotManager, type AutoPilotManagerDeps } from '../autopilotManager';
 import { createKisBroker } from '../createKisBroker';
 import { createRealtimeFeed } from '../createRealtimeFeed';
 import { expoKeepAwake } from '../keepAwake';
@@ -217,6 +220,38 @@ async function buildManager(): Promise<ManagerBootstrap> {
     return out;
   };
 
+  // 거래 결과 외부 기록(docs/domain/켈리 §4) — Supabase env와 게이트 계좌번호가 있을 때만. 없으면 로컬 기록만.
+  // 매매·켈리 계산과 무관한 "기록만"이다. 정산 시점 계좌 총평가(USD 근사)를 함께 남긴다 — 실패면 null.
+  const approvedAccountNo = await loadApprovedAccountNo();
+  let recordTradeResult: AutoPilotManagerDeps['recordTradeResult'];
+  let tradeRecorder: TradeResultRecorder | null = null;
+  if (isSupabaseConfigured() && approvedAccountNo) {
+    tradeRecorder = new TradeResultRecorder({
+      client: getSupabaseClient() as unknown as TradeResultsInsertClient,
+      storage: AsyncStorage,
+    });
+    const accountNo = approvedAccountNo;
+    const fetchEquityUsd = async (): Promise<number | null> => {
+      try {
+        const accessToken = await getTokenStr();
+        const res = await inquireOverseasBalance(environment, credentials, accessToken, { account });
+        const totKrw = Number(res.output3?.tot_asst_amt);
+        const exrt = res.output1.map((p) => Number(p.bass_exrt)).find((v) => Number.isFinite(v) && v > 0);
+        if (!Number.isFinite(totKrw) || totKrw <= 0 || exrt === undefined) return null;
+        return totKrw / exrt;
+      } catch {
+        return null;
+      }
+    };
+    const recorder = tradeRecorder;
+    recordTradeResult = async ({ record, strategy, market, name }) => {
+      const equityUsd = await fetchEquityUsd();
+      const ok = await recorder.record(toTradeResultRow({ accountNo, strategy, record, market, name, equityUsd }));
+      // 실패는 매니저가 이벤트로 남긴다(매매는 계속). 행은 로컬 대기열에 있어 다음 부팅 때 재전송된다.
+      if (!ok) throw new Error('로컬 대기열에 보관 — 다음에 다시 올려요');
+    };
+  }
+
   const finalManager = manager;
 
   const autopilot = new AutoPilotManager({
@@ -251,6 +286,7 @@ async function buildManager(): Promise<ManagerBootstrap> {
     // 끄려면 TREND_MODE=false(한 줄 롤백 → 변곡점 조합) 또는 이 주입 두 줄을 뺀다.
     trend: TREND_CONFIG,
     fetchMinuteBars,
+    recordTradeResult,
     keepAwake: expoKeepAwake,
     // 사다리 판정 주기 = 청크 1초 고정 (2026-08-09 사용자 확정 — 설정 제거 전 실사용 값 복원.
     // 설정 제거 때 기본 3초로 잘못 굳었었다). 버퍼는 미주입(기본 31) — 사다리 모드는 워밍업을
@@ -273,6 +309,8 @@ async function buildManager(): Promise<ManagerBootstrap> {
   manager.setFeedUseProbe((trKey, trId) => autopilot.usesTrKey(trKey, trId));
   await autopilot.restore();
   await syncTradingConfig(autopilot, appSettings);
+  // 지난번 업로드 못 한 거래 기록 재전송(직렬) — 실패해도 조용히, 다음 부팅에 다시.
+  if (tradeRecorder) void tradeRecorder.flushPending().catch(() => {});
 
   return {
     manager,
