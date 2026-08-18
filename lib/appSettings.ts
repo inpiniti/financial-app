@@ -56,6 +56,13 @@ export interface AppSettings {
    * 이 값을 심는다 — 그보다 큰 금액을 코드가 임의로 정하지는 않는다.
    */
   startAmountUsd: number;
+  /**
+   * 진입 수량(주) — 기본 0(=미설정). 0보다 크면 진입 수량을 **금액 계산 대신 이 수량으로 고정**한다
+   * (2026-08-18). $0.001짜리도 $100짜리도 똑같이 이 수량만 산다. 물타기 고정 수량도 이 값이 된다.
+   * 지정하면 리스트의 "진입금액 이하" 가격 필터도 꺼진다(비싼 종목도 이 수량만큼은 사는 게 의도).
+   * 0이면 옛 그대로 floor(진입금액 ÷ 현재가).
+   */
+  entryQty: number;
   /** 최소 속도(틱/초) — 이보다 조용한 종목은 감시하지 않는다. 기본 1(autopilot.DEFAULT_MIN_TICK_RATE와 같은 값). */
   minTickRate: number;
   /** 동시에 관리할 그리드(종목) 개수. 기본 1(autopilot.DEFAULT_MAX_GRIDS와 같은 값), 상한은 autopilot이 잘라낸다. */
@@ -79,6 +86,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   entryLadderIntervalPct: 3,
   entryLadderCount: 4,
   startAmountUsd: 1,
+  entryQty: 0,
   minTickRate: 1,
   maxConcurrentGrids: 1,
   rankingSelection: DEFAULT_RANKING_SELECTION,
@@ -136,6 +144,7 @@ export async function loadAppSettings(): Promise<AppSettings> {
       entryLadderIntervalPct: parsed.entryLadderIntervalPct ?? DEFAULT_APP_SETTINGS.entryLadderIntervalPct,
       entryLadderCount: parsed.entryLadderCount ?? DEFAULT_APP_SETTINGS.entryLadderCount,
       startAmountUsd: parsed.startAmountUsd ?? DEFAULT_APP_SETTINGS.startAmountUsd,
+      entryQty: parsed.entryQty ?? DEFAULT_APP_SETTINGS.entryQty,
       minTickRate: parsed.minTickRate ?? DEFAULT_APP_SETTINGS.minTickRate,
       maxConcurrentGrids: parsed.maxConcurrentGrids ?? DEFAULT_APP_SETTINGS.maxConcurrentGrids,
       // 순위 선택은 저장값이 없으면 기본 구성, 있으면 카탈로그 기준으로 정리(모르는 id 폐기·누락 원천 채움).

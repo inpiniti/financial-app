@@ -8,6 +8,7 @@ import {
   DEFAULT_MAX_GRIDS,
   DEFAULT_MIN_TICK_RATE,
   etDateOf,
+  fixedEntryQtyOf,
   GRID_BUY_LEG_DELAY_MS,
   MAX_GRIDS_LIMIT,
   maxGridsOf,
@@ -139,6 +140,20 @@ describe('순수 규칙 — 수량·검증·기준일', () => {
     expect(validateConfig({ startAmountUsd: 0, minTickRate: 1 })).toContain('금액');
     expect(validateConfig({ startAmountUsd: 100, minTickRate: 0 })).toContain('최소 속도');
     expect(DEFAULT_MIN_TICK_RATE).toBe(1);
+  });
+
+  it('고정 진입 수량 — 미지정·0·손상값은 null(금액 계산), 양수는 정수 절사, 검증은 1 이상 정수만', () => {
+    expect(fixedEntryQtyOf(null)).toBeNull();
+    expect(fixedEntryQtyOf({})).toBeNull();
+    expect(fixedEntryQtyOf({ entryQty: 0 })).toBeNull();
+    expect(fixedEntryQtyOf({ entryQty: NaN })).toBeNull();
+    expect(fixedEntryQtyOf({ entryQty: 1 })).toBe(1);
+    expect(fixedEntryQtyOf({ entryQty: 3.7 })).toBe(3);
+    // 검증: 미지정·0은 통과(옛 저장값 보존), 소수·음수는 문구.
+    expect(validateConfig({ startAmountUsd: 100, minTickRate: 1, entryQty: 0 })).toBeNull();
+    expect(validateConfig({ startAmountUsd: 100, minTickRate: 1, entryQty: 2 })).toBeNull();
+    expect(validateConfig({ startAmountUsd: 100, minTickRate: 1, entryQty: 1.5 })).toContain('진입 수량');
+    expect(validateConfig({ startAmountUsd: 100, minTickRate: 1, entryQty: -1 })).toContain('진입 수량');
   });
 
   it('동시 그리드 수 — 미지정·손상값은 기본값, 상한은 클램프, 검증은 범위만 본다', () => {
@@ -839,6 +854,27 @@ describe('AutoPilot — 다중 그리드', () => {
     const buy = h.brokers.get('B')!.placed.find((p) => p.side === 'buy')!;
     expect(buy.qty).toBe(qtyForAmount(100, buy.price));
     expect(buy.qty).not.toBe(qtyForAmount(200, buy.price));
+  });
+
+  it('진입 수량을 지정하면 가격·진입금액과 무관하게 딱 그 수량만 산다(2026-08-18)', async () => {
+    // 진입금액 $1 · 바닥가 2 → 금액 계산이면 0주(진입 포기)지만, 고정 1주면 1주를 산다.
+    const h = makeHarness(['A', 'B'], { config: { startAmountUsd: 1, minTickRate: TINY_RATE, entryQty: 1 } });
+    h.pilot.start();
+    await replay(h, 'A', V);
+    const buy = h.brokers.get('A')!.placed.find((p) => p.side === 'buy')!;
+    expect(buy.qty).toBe(1);
+    expect(qtyForAmount(1, buy.price)).toBe(0);
+    expect(h.events.some((e) => e.includes('고정 수량 1주'))).toBe(true);
+  });
+
+  it('진입 수량을 지정하면 진입금액이 커도 그 수량만 산다(금액 계산으로 늘리지 않음)', async () => {
+    // 진입금액 $100 · 바닥가 2 → 금액 계산이면 50주, 고정 2주면 2주.
+    const h = makeHarness(['A'], { config: { ...CONFIG_100, entryQty: 2 } });
+    h.pilot.start();
+    await replay(h, 'A', V);
+    const buy = h.brokers.get('A')!.placed.find((p) => p.side === 'buy')!;
+    expect(buy.qty).toBe(2);
+    expect(qtyForAmount(100, buy.price)).toBeGreaterThan(2);
   });
 
   it('[사고 재현] setGridConfig — 폭·배율을 바꾸면 다음에 여는 그리드부터 그 값으로 발주한다', async () => {

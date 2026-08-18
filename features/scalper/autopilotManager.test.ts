@@ -276,6 +276,31 @@ describe('AutoPilotManager — 배선(구독·라우팅·상호 배타)', () => 
     expect(manager.recentEvents.some((e) => e.text.includes('매수 미체결 취소를 껐어요'))).toBe(true);
   });
 
+  it('진입 수량을 지정하면 "진입금액 이하" 가격 필터가 꺼진다 — 비싼 종목도 리스트에 남는다(2026-08-18)', async () => {
+    // 진입금액 $100 · A는 $500 — 금액 계산이면 리스트에서 빠지고, 고정 수량이면 남는다.
+    const { manager, fetchSnapshot } = makeManager();
+    fetchSnapshot.mockResolvedValue([
+      {
+        source: 'tossVolume',
+        count: 15,
+        rows: [
+          { symb: 'A', rate: '1', last: '500' },
+          { symb: 'B', rate: '1', last: '10' },
+        ],
+      },
+    ]);
+    manager.start();
+    await vi.waitFor(() => expect(manager.watchlist.size).toBe(1));
+    expect(manager.watchlist.has('A')).toBe(false);
+    manager.stop();
+    await flush();
+
+    manager.pilot.setConfig({ startAmountUsd: 100, minTickRate: 0.01, entryQty: 1 });
+    manager.start();
+    await vi.waitFor(() => expect(manager.watchlist.size).toBe(2));
+    expect(manager.watchlist.has('A')).toBe(true);
+  });
+
   it('AUTOPILOT_TRADE_ID 상수 계약', () => {
     expect(AUTOPILOT_TRADE_ID).toBe('autopilot');
   });

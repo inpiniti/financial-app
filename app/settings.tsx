@@ -86,6 +86,8 @@ export default function SettingsScreen() {
   });
   // 트레이딩 운용 설정 — 옛 자동 단타 설정 시트에서 옮겨 왔다(2026-08-12). 진입금액 0 = 미설정(빈 칸).
   const [startAmountUsd, setStartAmountUsd] = useState(String(DEFAULT_APP_SETTINGS.startAmountUsd));
+  // 진입 수량(2026-08-18) — 0/빈 칸 = 미설정(진입금액으로 계산). 지정하면 가격과 무관하게 이 수량만 산다.
+  const [entryQty, setEntryQty] = useState('');
   const [minTickRate, setMinTickRate] = useState(String(DEFAULT_APP_SETTINGS.minTickRate));
   const [maxConcurrentGrids, setMaxConcurrentGrids] = useState(String(DEFAULT_APP_SETTINGS.maxConcurrentGrids));
   // 순위 선택(2026-08-18 순위 도메인) — 트레이딩 리스트 원천별 켬·개수·(한투) 기간창.
@@ -108,6 +110,7 @@ export default function SettingsScreen() {
         entryLadderCount: appSettings.entryLadderCount,
       };
       setStartAmountUsd(appSettings.startAmountUsd > 0 ? String(appSettings.startAmountUsd) : '');
+      setEntryQty(appSettings.entryQty > 0 ? String(appSettings.entryQty) : '');
       setMinTickRate(String(appSettings.minTickRate));
       setMaxConcurrentGrids(String(appSettings.maxConcurrentGrids));
       setRankingDraft(draftFromSelection(appSettings.rankingSelection));
@@ -123,6 +126,13 @@ export default function SettingsScreen() {
       parsedStartAmountUsd > START_AMOUNT_MAX_USD
     ) {
       Alert.alert('알림', `진입금액은 0보다 크고 ${START_AMOUNT_MAX_USD.toLocaleString('en-US')} 이하인 달러 금액으로 입력해 주세요.`);
+      return;
+    }
+
+    // 진입 수량 — 빈 칸/0은 미설정(0 저장). 지정하면 1 이상 정수.
+    const parsedEntryQty = entryQty.trim() === '' ? 0 : Number(entryQty);
+    if (!Number.isFinite(parsedEntryQty) || !Number.isInteger(parsedEntryQty) || parsedEntryQty < 0) {
+      Alert.alert('알림', '진입 수량은 1 이상의 정수로 입력하거나, 비워 두면 진입금액으로 계산해요.');
       return;
     }
 
@@ -160,6 +170,7 @@ export default function SettingsScreen() {
         buyCancelAfterSec,
         ...savedRollbackRef.current,
         startAmountUsd: parsedStartAmountUsd,
+        entryQty: parsedEntryQty,
         minTickRate: parsedMinTickRate,
         maxConcurrentGrids: parsedMaxGrids,
         rankingSelection,
@@ -174,6 +185,7 @@ export default function SettingsScreen() {
   const exposure = (() => {
     const amount = Number(startAmountUsd);
     const grids = Number(maxConcurrentGrids);
+    if (entryQty.trim() !== '' && Number(entryQty) > 0) return null; // 고정 수량이면 금액 노출은 종목 가격에 달렸다.
     if (!Number.isFinite(amount) || amount <= 0) return null;
     if (!Number.isFinite(grids) || grids < 1) return null;
     return (amount * Math.min(Math.floor(grids), MAX_GRIDS_LIMIT)).toFixed(2);
@@ -201,6 +213,20 @@ export default function SettingsScreen() {
               className="mb-4 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
             />
 
+            <Text className="mb-1 text-xs text-[#8b95a1]">수량 (주) — 비우면 진입금액으로 계산해요</Text>
+            <TextInput
+              value={entryQty}
+              onChangeText={setEntryQty}
+              keyboardType="number-pad"
+              placeholder="미설정 (진입금액 ÷ 현재가)"
+              placeholderTextColor="#8b95a1"
+              className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
+            />
+            <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
+              수량을 정하면 종목 가격과 상관없이 딱 이 수량만 사요($0.01짜리도 $100짜리도 같은 수량). 이때는 진입금액보다
+              비싼 종목도 리스트에서 빠지지 않고, 물타기도 이 수량씩 해요.
+            </Text>
+
             <Text className="mb-1 text-xs text-[#8b95a1]">
               동시 그리드 수 (1~{MAX_GRIDS_LIMIT}) — 한 번에 관리할 종목 개수
             </Text>
@@ -215,7 +241,9 @@ export default function SettingsScreen() {
             <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
               {exposure
                 ? `첫 진입에만 최대 $${exposure}가 들어가요. 물타기는 매번 최초 진입 수량만큼이라, 물탈 때마다 종목당 금액이 진입금액만큼씩 더 들어가요.`
-                : '물타기는 매번 최초 진입 수량만큼이라, 물탈 때마다 종목당 금액이 진입금액만큼씩 더 들어가요.'}
+                : entryQty.trim() !== '' && Number(entryQty) > 0
+                  ? `종목당 ${Number(entryQty)}주 × 현재가만큼 들어가고, 물타기도 매번 ${Number(entryQty)}주씩이에요.`
+                  : '물타기는 매번 최초 진입 수량만큼이라, 물탈 때마다 종목당 금액이 진입금액만큼씩 더 들어가요.'}
             </Text>
 
             <Text className="mb-1 text-xs text-[#8b95a1]">

@@ -311,7 +311,7 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
               <View className="px-5 pb-2">
                 <Text className="text-xs leading-5 text-[#8b95a1]">
                   {config
-                    ? `종목당 ${formatUsd(config.startAmountUsd)} · 그리드 최대 ${view.maxGrids}개 · 최소 속도 ${config.minTickRate}틱/초`
+                    ? `종목당 ${config.entryQty && config.entryQty > 0 ? `${config.entryQty}주 고정` : formatUsd(config.startAmountUsd)} · 그리드 최대 ${view.maxGrids}개 · 최소 속도 ${config.minTickRate}틱/초`
                     : '진입금액이 아직 없어요 — 설정 > 트레이딩 설정에서 정해 주세요'}
                 </Text>
               </View>

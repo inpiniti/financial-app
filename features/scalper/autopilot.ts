@@ -9,7 +9,7 @@
 //  · RUN(매매 사이클)은 **동시에 여러 종목**이 가능하다(maxConcurrentGrids, 기본 3).
 //    종목마다 RunCycle + OrderPortAdapter + Grid를 따로 만들고, 이미 보유·진입 중인 종목은
 //    감시 후보에서 제외한다 — 즉 진입 뒤에도 변곡점 감시는 멈추지 않고 계속 돈다.
-//  · 진입금액은 **설정한 고정 금액(config.startAmountUsd)**이다.
+//  · 진입금액은 **설정한 고정 금액(config.startAmountUsd)**이다 — 단, 진입 수량(config.entryQty)을 지정하면 가격과 무관하게 그 수량이다(2026-08-18).
 //    (그리드가 스스로 물타기로 수량을 늘리므로, 진입금액을 가변으로 두면 노출이 두 겹으로 폭주한다.)
 //  · 현금 부족(매수가능금액 < 필요금액):
 //      보유 그리드가 하나도 없으면 → PAUSED(입금 후 사람이 재개를 선택)
@@ -146,12 +146,24 @@ export interface AutoPilotConfig {
    * (이름은 옛 세션 개시금액과 겸용이던 흔적 — 저장 포맷 하위호환을 위해 startAmountUsd 그대로 둔다.)
    */
   startAmountUsd: number;
+  /**
+   * 진입 수량(주) 고정 — 지정(> 0)하면 진입 수량은 가격과 무관하게 이 값이다(2026-08-18).
+   * 미지정(undefined·0)이면 floor(startAmountUsd ÷ 현재가). 옛 저장값 호환을 위해 선택 키.
+   */
+  entryQty?: number;
   minTickRate: number;
   /** 동시에 열 수 있는 그리드(포지션) 최대 개수. 미지정이면 DEFAULT_MAX_GRIDS. */
   maxConcurrentGrids?: number;
 }
 
 /** 동시 그리드 개수 단일 판정 — 미지정·손상값은 기본값으로, 상한은 MAX_GRIDS_LIMIT. */
+/** 고정 진입 수량 단일 판정 — 미지정·0·손상값은 null(금액 계산), 양수는 정수 절사. */
+export function fixedEntryQtyOf(config: Pick<AutoPilotConfig, 'entryQty'> | null | undefined): number | null {
+  const raw = config?.entryQty;
+  if (!Number.isFinite(raw) || (raw as number) < 1) return null;
+  return Math.floor(raw as number);
+}
+
 export function maxGridsOf(config: Pick<AutoPilotConfig, 'maxConcurrentGrids'> | null | undefined): number {
   const raw = config?.maxConcurrentGrids;
   if (!Number.isFinite(raw) || (raw as number) < 1) return DEFAULT_MAX_GRIDS;
@@ -284,6 +296,11 @@ export function validateConfig(config: AutoPilotConfig): string | null {
   }
   if (!Number.isFinite(config.minTickRate) || config.minTickRate <= 0) {
     return '최소 속도는 0보다 크게 입력해 주세요 (기본 1틱/초)';
+  }
+  if (config.entryQty !== undefined && config.entryQty !== 0) {
+    if (!Number.isFinite(config.entryQty) || config.entryQty < 1 || !Number.isInteger(config.entryQty)) {
+      return '진입 수량은 1 이상의 정수로 입력해 주세요 (비우면 진입금액으로 계산)';
+    }
   }
   if (config.maxConcurrentGrids !== undefined) {
     const n = config.maxConcurrentGrids;
@@ -748,7 +765,10 @@ export class AutoPilot {
     }
     this.reselect();
     this.reselectTimer = this.deps.scheduler.setInterval(() => this.reselect(), this.reselectIntervalMs);
-    this.event(`자동 트레이딩을 시작했어요 · 종목당 $${this.config.startAmountUsd.toFixed(2)} · 그리드 최대 ${this.maxGrids}개`);
+    const fixedQty = fixedEntryQtyOf(this.config);
+    this.event(
+      `자동 트레이딩을 시작했어요 · 종목당 ${fixedQty !== null ? `${fixedQty}주 고정` : `${this.config.startAmountUsd.toFixed(2)}`} · 그리드 최대 ${this.maxGrids}개`,
+    );
     void this.persist();
     this.emit();
   }
@@ -1019,8 +1039,10 @@ export class AutoPilot {
 
     if (this.stopRequested) return giveUp();
 
+    // 진입 수량 — 고정 수량이 지정돼 있으면 가격과 무관하게 그 수량, 아니면 floor(진입금액 ÷ 현재가).
+    const fixedQty = fixedEntryQtyOf(config);
     const entryAmountUsd = config.startAmountUsd;
-    const qty = qtyForAmount(entryAmountUsd, ctx.price);
+    const qty = fixedQty ?? qtyForAmount(entryAmountUsd, ctx.price);
     if (qty < 1) {
       this.event(
         `${ctx.ticker} 진입 포기 · 진입금액($${entryAmountUsd.toFixed(2)})이 1주 가격($${ctx.price})보다 작아요`,
@@ -1121,7 +1143,7 @@ export class AutoPilot {
     active.cycle.onSignal('BUY', this.toSnapshot(ctx));
     this.startPollTimer();
     this.event(
-      `${ctx.ticker} 진입 · ${qty}주 × $${ctx.price} (진입금액 $${entryAmountUsd.toFixed(2)}) · 그리드 ${this.actives.size}/${this.maxGrids}`,
+      `${ctx.ticker} 진입 · ${qty}주 × ${ctx.price} (${fixedQty !== null ? `고정 수량 ${fixedQty}주` : `진입금액 ${entryAmountUsd.toFixed(2)}`}) · 그리드 ${this.actives.size}/${this.maxGrids}`,
     );
     this.reselect(); // 빈 감시 자리를 즉시 채운다.
     this.emit();

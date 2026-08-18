@@ -297,6 +297,7 @@ async function syncTradingConfig(autopilot: AutoPilotManager, appSettings: AppSe
     if (
       current &&
       current.startAmountUsd === appSettings.startAmountUsd &&
+      (current.entryQty ?? 0) === appSettings.entryQty &&
       current.minTickRate === appSettings.minTickRate &&
       current.maxConcurrentGrids === appSettings.maxConcurrentGrids
     ) {
@@ -304,6 +305,7 @@ async function syncTradingConfig(autopilot: AutoPilotManager, appSettings: AppSe
     }
     autopilot.pilot.setConfig({
       startAmountUsd: appSettings.startAmountUsd,
+      entryQty: appSettings.entryQty,
       minTickRate: appSettings.minTickRate,
       maxConcurrentGrids: appSettings.maxConcurrentGrids,
     });
@@ -313,6 +315,7 @@ async function syncTradingConfig(autopilot: AutoPilotManager, appSettings: AppSe
     await saveAppSettings({
       ...appSettings,
       startAmountUsd: current.startAmountUsd,
+      entryQty: current.entryQty ?? appSettings.entryQty,
       minTickRate: current.minTickRate,
       maxConcurrentGrids: current.maxConcurrentGrids ?? appSettings.maxConcurrentGrids,
     });

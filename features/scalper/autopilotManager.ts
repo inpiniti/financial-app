@@ -11,6 +11,7 @@
 import { appendTradeRecord } from './tradeStore';
 import {
   AutoPilot,
+  fixedEntryQtyOf,
   type AutoPilotDeps,
   type AutoPilotEvent,
   type AutoPilotView,
@@ -192,7 +193,12 @@ export class AutoPilotManager {
       pollIntervalMs: deps.watchlistPollIntervalMs,
       // 진입금액보다 비싼 종목은 1주도 못 사서 감시·WS 구독만 낭비 — 리스트 단계에서 거른다.
       // setConfig는 IDLE에서만 통과하고 폴링은 start 직후 즉시 1회 돌므로, 시작 시점 금액이 곧바로 반영된다.
-      maxPriceUsd: () => this.pilot.getView().config?.startAmountUsd ?? null,
+      // 고정 진입 수량이 지정돼 있으면 가격 상한 필터를 끈다 — 비싼 종목도 그 수량만큼은 사는 게 의도(2026-08-18).
+      maxPriceUsd: () => {
+        const config = this.pilot.getView().config;
+        if (fixedEntryQtyOf(config) !== null) return null;
+        return config?.startAmountUsd ?? null;
+      },
       onChange: (entries, diff) => {
         // 구독·주문 거래소 판별용 — dropSlot/addSlot보다 먼저 최신화한다(추가 종목의 trKey가 이 맵을 읽는다).
         for (const entry of entries) {
