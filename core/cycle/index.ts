@@ -19,7 +19,8 @@ export type { Signal };
  */
 export type CycleState = 'IDLE' | 'WATCH_BUY' | 'BUYING' | 'HOLDING' | 'SELLING' | 'DONE' | 'FAULT';
 
-export type ExitReason = 'SELL_SIGNAL' | 'STOP';
+/** SELL_SIGNAL=신호 청산, STOP=수동/중지 청산, STOP_LOSS=추세 손절선(틱 판정, 2026-08-18). */
+export type ExitReason = 'SELL_SIGNAL' | 'STOP' | 'STOP_LOSS';
 
 /** 신호 발생 시점의 스냅샷(거래 기록용). */
 export interface SignalSnapshot {

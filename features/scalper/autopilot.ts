@@ -95,12 +95,13 @@ export const INFLECTION_GRID = true;
  * **주입 자체가 활성화 신호**다(TREND_MODE AND 주입). 확장 대비 인터페이스로 둔다.
  */
 export interface TrendGridConfig {
-  /** 자리 표시 — 값은 아직 없다. */
   readonly kind?: 'trend';
+  /** 손절 낙폭(소수) — 현재가 ≤ 평단×(1−p)면 봉 마감 없이 즉시 전량 매도. 0이면 끔. */
+  readonly stopLossPct: number;
 }
 
-/** 추세 설정의 단일 출처 — managerProvider가 주입한다. */
-export const TREND_CONFIG: TrendGridConfig = { kind: 'trend' };
+/** 추세 설정의 단일 출처 — managerProvider가 주입한다. 손절 −5%(2026-08-18 사용자 확정, EJH −13% 사고 뒤). */
+export const TREND_CONFIG: TrendGridConfig = { kind: 'trend', stopLossPct: 0.05 };
 
 /**
  * 진입 후 포지션 규칙 계약 — 조건부 그리드(변곡점 조합)와 추세 청산 규칙이 구조적으로 만족한다.
@@ -109,6 +110,8 @@ export const TREND_CONFIG: TrendGridConfig = { kind: 'trend' };
 export interface PositionRule {
   readonly view: ConditionalGridView;
   decide(signal: Signal, price: number): ConditionalDecision | null;
+  /** 틱(현재가) 판정 — 봉·신호 없이 가격만으로 나가는 결정(추세 손절선). 미구현이면 틱 판정 없음. */
+  onPrice?(price: number): ConditionalDecision | null;
   shouldAbort(side: 'buy' | 'sell', price: number): boolean;
   setPosition(position: ConditionalPosition): void;
 }
@@ -382,6 +385,8 @@ interface ConditionalState {
   starting: boolean;
   /** 이 종목 조합 관리가 격리 동결된 사유(gridFaulted와 함께 세운다) — UI 표기용. */
   faultText: string | null;
+  /** 진행 중 매도가 손절선(틱 판정)에서 시작됐는가 — 정산 기록의 exitReason(STOP_LOSS)용. 정산 시 지운다. */
+  stopLossHit?: boolean;
 }
 
 interface PendingBuy {
@@ -1533,10 +1538,13 @@ export class AutoPilot {
       }
       if (this.trendEnabled()) {
         // 추세 → 그리드 → 매매 — 규칙은 추세 도메인(TrendExitRule): 분봉5선 꺾임에 전량 매도, 물타기 없음.
-        const rule = new TrendExitRule(seed);
+        const rule = new TrendExitRule(seed, { stopLossPct: this.trendConfig!.stopLossPct });
         active.cond = { grid: rule, exec: null, execSide: null, starting: false, faultText: null };
+        const stop = rule.stopLossPrice;
         this.event(
-          `${active.ticker} 추세 관리 ${active.adopted ? '등록' : '인계'} · ${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} — 분봉5선이 꺾이면 전량 매도해요(문턱 없음)`,
+          `${active.ticker} 추세 관리 ${active.adopted ? '등록' : '인계'} · ${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} — 분봉5선이 꺾이면 전량 매도해요(문턱 없음)${
+            stop === null ? '' : ` · 손절선 ${stop.toFixed(2)}(−${(this.trendConfig!.stopLossPct * 100).toFixed(0)}%)`
+          }`,
         );
       } else {
         const cfg = this.inflectionConfig!;
@@ -1606,6 +1614,7 @@ export class AutoPilot {
       if (exec.state === 'FAULT') {
         // 발주 거절은 세션 간극·일시 오류가 흔하다 — 종목을 동결하지 않고 다음 변곡점에서 다시 시도한다.
         this.event(`${active.ticker} 매매 발주 실패 · ${exec.faultText ?? '주문 거절'} — 다음 변곡점에서 다시 시도해요`);
+        c.stopLossHit = false; // 손절 매도가 발주에 실패하면 다음 틱이 다시 판정한다(플래그도 함께 되돌린다).
         return;
       }
       c.exec = exec;
@@ -1638,6 +1647,7 @@ export class AutoPilot {
         const side = c.execSide ?? exec.side;
         c.exec = null;
         c.execSide = null;
+        c.stopLossHit = false;
         this.event(
           `${active.ticker} ${side === 'sell' ? '매도' : '매수'} 추격 취소 · 평단 대비 문턱이 깨져 다음 변곡점을 기다려요${
             r.result.filledQty > 0 ? ` (부분 체결 ${r.result.filledQty}주 반영)` : ''
@@ -1741,8 +1751,9 @@ export class AutoPilot {
       fees,
       entrySnapshot: pos?.entrySnapshot ?? { price: entryPrice, slope: 0, accel: 0, ts: now },
       exitSnapshot: null,
-      exitReason: 'SELL_SIGNAL',
+      exitReason: active.cond?.stopLossHit ? 'STOP_LOSS' : 'SELL_SIGNAL',
     };
+    if (active.cond) active.cond.stopLossHit = false;
     active.pendingSettle = record;
     this.deps.onTrade?.(record);
     this.settle(active);
@@ -1822,7 +1833,7 @@ export class AutoPilot {
       this.cycles += 1;
       this.cumPnl += record.pnl;
       this.event(
-        `${record.ticker} ${record.exitReason === 'SELL_SIGNAL' ? '청산' : '수동 청산'} · 손익 $${record.pnl.toFixed(2)}`,
+        `${record.ticker} ${record.exitReason === 'SELL_SIGNAL' ? '청산' : record.exitReason === 'STOP_LOSS' ? '손절 청산' : '수동 청산'} · 손익 ${record.pnl.toFixed(2)}`,
       );
       void this.persist();
     }
@@ -1903,9 +1914,20 @@ export class AutoPilot {
         if (this.faulted) return;
         // 조합 매매 추격 — 최신 현재가로 취소선 판정·정정을 구동한다(재정정 스로틀은 Execution 내부).
         if (active.cond) {
-          const exec = active.cond.exec;
+          const c = active.cond;
+          const exec = c.exec;
           const price = active.slot?.getView().price ?? null;
           if (exec !== null && !active.gridFaulted && price !== null) await exec.onPrice(price);
+          // 틱 판정(추세 손절선) — 매매가 없을 때만. 신호 경로(handleConditionalSignal)와 같은 게이트·점유 규칙.
+          else if (exec === null && !c.starting && !active.gridFaulted && price !== null && this.running && !this.paused && !this.stopRequested) {
+            const decision = c.grid.onPrice?.(price) ?? null;
+            if (decision) {
+              c.starting = true;
+              c.stopLossHit = true;
+              this.event(`${active.ticker} 손절선 도달 · 현재가 ${price.toFixed(2)} ≤ 평단 대비 −${((this.trendConfig?.stopLossPct ?? 0) * 100).toFixed(0)}% — 봉 마감을 기다리지 않고 전량 매도해요`);
+              void this.startConditionalExec(active, c, decision, price);
+            }
+          }
           continue;
         }
         if (!active.cycle || !active.slot) continue; // 입양 포지션 — 리프라이스할 주문도, 매수 시계도 없다.

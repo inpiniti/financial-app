@@ -147,6 +147,45 @@ describe('추세 → 그리드 → 매매 — 청산(분봉5선 꺾임, 무조�
     expect(h.pilot.getView().activeTickers).toEqual([]);
   });
 
+  it('손절선(−5%) — 봉 마감 전 틱에서 즉시 전량 매도, exitReason=STOP_LOSS', async () => {
+    const h = makeHarness();
+    await enter(h);
+    const broker = h.brokers.get('A')!;
+    const g = h.pilot.getView().grids[0];
+    const stop = g.avgPrice * (1 - TREND_CONFIG.stopLossPct);
+    expect(h.events.some((e) => e.includes('손절선'))).toBe(true);
+    // 같은 분(키 123 진행 중) 안에서 −4%는 아직 아무 일도 없다 — 봉도 안 닫혔고 손절선 미달.
+    h.slots.get('A')!.pushTick(g.avgPrice * 0.96, 123 * M + 5_000);
+    await fireTimers(h); // 리프라이스 틱(1초) — 손절 판정 경로
+    expect(broker.placed).toHaveLength(1);
+    // −5% 아래 틱 → 봉 마감 없이 즉시 매도.
+    h.slots.get('A')!.pushTick(stop * 0.999, 123 * M + 10_000);
+    await fireTimers(h);
+    expect(broker.placed).toHaveLength(2);
+    expect(broker.placed[1].side).toBe('sell');
+    expect(broker.placed[1].qty).toBe(g.holdingQty);
+    expect(h.events.some((e) => e.includes('손절선 도달'))).toBe(true);
+    await h.pilot.pollCycle();
+    await flush();
+    expect(h.trades).toHaveLength(1);
+    expect(h.trades[0].exitReason).toBe('STOP_LOSS');
+    expect(h.pilot.getView().activeTickers).toEqual([]);
+  });
+
+  it('손절 매도가 진행 중이면 봉 마감 SELL은 겹쳐 나가지 않는다(주문은 항상 1개)', async () => {
+    const h = makeHarness();
+    await enter(h);
+    const broker = h.brokers.get('A')!;
+    broker.autoFill = false;
+    const g = h.pilot.getView().grids[0];
+    h.slots.get('A')!.pushTick(g.avgPrice * 0.9, 123 * M + 10_000);
+    await fireTimers(h);
+    expect(broker.placed).toHaveLength(2);
+    await tick(h, g.avgPrice * 0.9, 124); // 키 123 닫힘(급락) → 다음 봉에서 SELL이 떠도
+    await tick(h, g.avgPrice * 0.9, 125);
+    expect(broker.placed).toHaveLength(2); // 매도 주문은 여전히 하나
+  });
+
   it('매도 추격에는 취소선이 없다 — 미체결 중 가격이 더 빠져도 취소하지 않는다', async () => {
     const h = makeHarness();
     await enter(h);

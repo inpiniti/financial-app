@@ -11,7 +11,7 @@ import Slider from '@react-native-community/slider';
 import { BackHeader } from '../components/BackHeader';
 import { Panel } from '../components/Panel';
 import { DEFAULT_APP_SETTINGS, loadAppSettings, saveAppSettings, snapToStep } from '../lib/appSettings';
-import { MAX_GRIDS_LIMIT } from '../features/scalper/autopilot';
+import { MAX_GRIDS_LIMIT, TREND_CONFIG } from '../features/scalper/autopilot';
 import {
   RankingSelectionPanel,
   draftFromSelection,
@@ -292,6 +292,15 @@ export default function SettingsScreen() {
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
               분봉5선이 직전 봉보다 내려가는 순간 수익·손실과 상관없이 전량 매도해요. 매도 주문은 체결될 때까지 현재가를
               따라가고, 도중에 거두지 않아요.
+            </Text>
+
+            <View className="mb-1 flex-row items-center justify-between">
+              <Text className="text-xs text-[#8b95a1]">손절선</Text>
+              <Text className="text-sm font-semibold text-[#191f28]">평단 대비 −{Math.round(TREND_CONFIG.stopLossPct * 100)}% 즉시 전량</Text>
+            </View>
+            <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+              봉이 닫히기 전이라도 현재가가 평단보다 {Math.round(TREND_CONFIG.stopLossPct * 100)}% 넘게 빠지면 바로 전량 매도해요. 봉 안에서 급락하는 종목을
+              받아내는 바닥이에요 — 평소엔 분봉5선 청산이 먼저 나가요.
             </Text>
 
             <View className="mb-1 flex-row items-center justify-between">

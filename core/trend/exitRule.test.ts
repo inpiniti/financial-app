@@ -29,6 +29,22 @@ describe('TrendExitRule', () => {
     expect(r.decide('SELL', 1)).toEqual({ side: 'sell', qty: 3 });
   });
 
+  it('손절선 — 현재가 ≤ 평단×(1−p)면 onPrice가 전량 매도, 위면 null, 미설정이면 항상 null', () => {
+    const r = new TrendExitRule({ qty: 7, avgPrice: 100 }, { stopLossPct: 0.05 });
+    expect(r.stopLossPrice).toBe(95);
+    expect(r.onPrice(95.01)).toBeNull();
+    expect(r.onPrice(95)).toEqual({ side: 'sell', qty: 7 });
+    expect(r.onPrice(80)).toEqual({ side: 'sell', qty: 7 });
+    r.setPosition({ qty: 3, avgPrice: 50 }); // 평단이 바뀌면 손절선도 따라간다
+    expect(r.stopLossPrice).toBe(47.5);
+    expect(r.onPrice(47)).toEqual({ side: 'sell', qty: 3 });
+    const off = new TrendExitRule({ qty: 7, avgPrice: 100 });
+    expect(off.stopLossPrice).toBeNull();
+    expect(off.onPrice(1)).toBeNull();
+    const zero = new TrendExitRule({ qty: 7, avgPrice: 100 }, { stopLossPct: 0 });
+    expect(zero.onPrice(1)).toBeNull();
+  });
+
   it('수량 0·비유한 가격이면 null', () => {
     const r = new TrendExitRule({ qty: 0, avgPrice: 100 });
     expect(r.decide('SELL', 100)).toBeNull();
