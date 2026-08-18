@@ -69,6 +69,8 @@ describe('inquireOverseasMinuteChart (분봉조회.md, HHDFS76950200)', () => {
     expect(result.candles[0]).toEqual({
       ymd: '20260729',
       hms: '093000',
+      kymd: '20260729', // 한국 기준 일자·시각 원문 — 추세 1분봉 시드(kstToMinuteKey)용
+      khms: '223000',
       open: 9,
       high: 10,
       low: 8,

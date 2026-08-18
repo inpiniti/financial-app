@@ -4,7 +4,8 @@
 import { useEffect, useState } from 'react';
 import { Pressable, Text, View, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import Svg, { Line, Rect, Text as SvgText } from 'react-native-svg';
+import Svg, { Line, Polyline, Rect, Text as SvgText } from 'react-native-svg';
+import { computeTrendSeries } from '../../../core/trend';
 import { getAccessToken } from '../../../kis/token';
 import { inquireOverseasMinuteChart, type MinuteChartExchangeCode } from '../../../kis/minuteChart';
 import { inquireOverseasPeriodChart, type PeriodChartPeriod } from '../../../kis/periodChart';
@@ -136,7 +137,26 @@ function SegmentedToggle<T extends string | number>({
 }
 
 /** 캔들 SVG 본체 — 심지+몸통, 거래량 미니 바, 마지막 종가 점선+태그, 가격/시간 축 라벨. */
-function CandleChart({ candles, width, height }: { candles: ChartCandle[]; width: number; height: number }) {
+/** 추세 4선 색 — 분봉5선·20선·60선·120선(HTS 관례에 가깝게 빨강·보라·파랑·초록). */
+const TREND_LINE_COLORS: Record<'ma5' | 'ma20' | 'ma60' | 'ma120', string> = {
+  ma5: '#f04452',
+  ma20: '#a855f7',
+  ma60: '#3182f6',
+  ma120: '#22c55e',
+};
+
+function CandleChart({
+  candles,
+  width,
+  height,
+  trendOverlay = false,
+}: {
+  candles: ChartCandle[];
+  width: number;
+  height: number;
+  /** 분봉 모드 — 추세 4선(core/trend) 오버레이. 전체 봉으로 계산해 표시 구간만 그린다. */
+  trendOverlay?: boolean;
+}) {
   // 시트(고정 260)와 달리 상세화면은 세로 공간이 넉넉하다 — height를 받아 영역을 나눈다.
   const volumeHeight = Math.round(height * 0.15);
   const priceHeight = height - volumeHeight - 8; // 8 = 가격/거래량 영역 사이 여백
@@ -160,6 +180,22 @@ function CandleChart({ candles, width, height }: { candles: ChartCandle[]; width
 
   const last = shown[shown.length - 1];
   const lastY = priceToY(last.close);
+
+  // 추세 4선 — 전체 candles로 SMA를 계산하고(표시 구간 앞의 봉이 창을 채운다) 표시 구간만 폴리라인으로.
+  const trendLines = (() => {
+    if (!trendOverlay || candles.length < 2) return [];
+    const series = computeTrendSeries(candles.map((c) => c.close));
+    const offset = candles.length - shown.length;
+    return (Object.keys(TREND_LINE_COLORS) as Array<keyof typeof TREND_LINE_COLORS>).map((key) => {
+      const pts: string[] = [];
+      for (let i = 0; i < shown.length; i += 1) {
+        const v = series[key][offset + i];
+        if (v === null) continue;
+        pts.push(`${(i * slotWidth + slotWidth / 2).toFixed(1)},${priceToY(v).toFixed(1)}`);
+      }
+      return { key, color: TREND_LINE_COLORS[key], points: pts.join(' ') };
+    });
+  })();
 
   const priceLabels = [priceMax, priceMin + priceRange / 2, priceMin];
   const timeLabels =
@@ -188,6 +224,13 @@ function CandleChart({ candles, width, height }: { candles: ChartCandle[]; width
             </View>
           );
         })}
+
+        {/* 추세 4선 오버레이(분봉) */}
+        {trendLines.map((l) =>
+          l.points.length > 0 ? (
+            <Polyline key={`trend-${l.key}`} points={l.points} fill="none" stroke={l.color} strokeWidth={1.2} />
+          ) : null,
+        )}
 
         {/* 마지막 종가 점선 + 우측 가격 태그 */}
         <Line
@@ -398,7 +441,7 @@ export function ChartPanel({ ticker, excd }: ChartPanelProps) {
           </View>
         ) : (
           <View className="px-4">
-            <CandleChart candles={state.candles} width={svgWidth} height={chartHeight} />
+            <CandleChart candles={state.candles} width={svgWidth} height={chartHeight} trendOverlay={mode === 'minute'} />
           </View>
         )}
       </View>

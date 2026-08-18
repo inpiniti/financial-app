@@ -12,6 +12,9 @@
 import { TrendDetector, type DetectorResult, type Signal } from '../../core/detector';
 import { LadderDetector } from '../../core/ladder';
 import { Resampler } from '../../core/resample';
+import { MinuteBarBuilder, type MinuteBar } from '../../core/trend/bars';
+import { evaluateTrend, type TrendEval } from '../../core/trend/signal';
+import { TREND_MODE } from './trendMode';
 import { TickRateMeter } from './tickRate';
 import { SlopeMeter } from './slopeRate';
 import type { ClockLike, TickExtras } from './types';
@@ -70,6 +73,12 @@ export interface FeedSlotOptions {
    * 미주입(기존 하네스·테스트)이면 기존 동작 그대로 — 회귀 안전.
    */
   inflection?: boolean;
+  /**
+   * 추세 모드(2026-08-18 도메인 문서) — true고 TREND_MODE=true면 리샘플/SG/사다리 대신 **1분봉 로컬 합성 +
+   * 분봉 이동평균 4선**으로 BUY/SELL을 낸다(봉 마감마다). 변곡점 조합·사다리보다 우선한다.
+   * 미주입(기존 하네스·테스트)이면 기존 동작 그대로 — 회귀 안전.
+   */
+  trend?: boolean;
 }
 
 /** 변곡점 신호 콜백 — attach 시 등록. */
@@ -122,6 +131,8 @@ export interface FeedSlotView {
   readonly ask1: number | null;
   /** 사다리 감시 스냅샷(사다리 모드로 감시 중일 때만) — 홀 n/N·다음 매수선. SG 모드·미감시면 null. */
   readonly ladder: { count: number; triggerCount: number; nextBuyLevel: number } | null;
+  /** 추세 스냅샷(추세 모드에서만) — 마지막 봉 마감 시점 4선·상승 플래그·봉 수. 아직 봉이 없거나 다른 모드면 null. */
+  readonly trend: TrendEval | null;
 }
 
 export class FeedSlot {
@@ -161,11 +172,21 @@ export class FeedSlot {
 
   /** 변곡점+그리드 조합 모드인가 — 생성 시 확정(INFLECTION_ENTRY AND inflection 주입). */
   private readonly inflectionMode: boolean;
+  /** 추세 모드인가 — 생성 시 확정(TREND_MODE AND trend 주입). 조합·사다리보다 우선. */
+  private readonly trendMode: boolean;
+  /**
+   * 1분봉 빌더·마지막 추세 판정 — **슬롯 필드로 상시 누적**(리샘플과 같은 원칙). attach/detach는
+   * 리스너만 붙였다 뗀다 — 재부착해도 봉 링이 유지돼 매도 직후 122봉을 다시 기다리지 않는다.
+   */
+  private readonly bars = new MinuteBarBuilder();
+  private trendEval: TrendEval | null = null;
+  private trendListener: SlotSignalListener | null = null;
 
   constructor(options: FeedSlotOptions) {
     this.ticker = options.ticker;
     this.clock = options.clock;
-    this.inflectionMode = INFLECTION_ENTRY && options.inflection === true;
+    this.trendMode = TREND_MODE && options.trend === true;
+    this.inflectionMode = !this.trendMode && INFLECTION_ENTRY && options.inflection === true;
     this.meter = new TickRateMeter(options.tickRateWindowMs ?? FEED_RATE_WINDOW_MS, FEED_SERIES_HISTORY_MS);
     this.slopeMeter = new SlopeMeter(options.slopeWindowMs ?? FEED_RATE_WINDOW_MS, FEED_SERIES_HISTORY_MS);
     this.resampler = new Resampler({
@@ -188,6 +209,13 @@ export class FeedSlot {
     this.lastTickAt = this.clock.now();
     this.meter.record(this.lastTickAt);
     this.slopeMeter.record(this.lastTickAt, price);
+
+    if (this.trendMode) {
+      // 추세 모드 — 1분봉 마감마다 4선을 다시 재고 신호를 낸다(리샘플·SG·사다리 미사용).
+      const bar = this.bars.pushTick(price, tsMs);
+      if (bar !== null) this.evaluateTrendBar(price);
+      return null;
+    }
 
     const closed = this.resampler.addTick({
       price,
@@ -265,6 +293,16 @@ export class FeedSlot {
    * 버퍼는 이미 차 있으므로 다음 청크 마감부터 바로 판정한다(워밍업 공백 없음 — plan §2-1).
    */
   attachDetector(onSignal: SlotSignalListener): void {
+    if (this.trendMode) {
+      // 추세 모드 — 감지기 객체가 없다. 봉·4선은 상시 쌓이므로 리스너만 등록하면 다음 봉 마감부터 신호가 나온다.
+      this.trendListener = onSignal;
+      this.detector = null;
+      this.ladder = null;
+      this.ladderState = null;
+      this.onSignal = onSignal;
+      this.lastSignal = null;
+      return;
+    }
     if (this.inflectionMode) {
       // 변곡점+그리드 조합 — 감지기는 "신호만" 낸다(문서 §7 역할 분리). 모멘텀 확인·게이트를 전부 꺼서
       // 기울기 부호 전환 즉시 BUY/SELL이 나오고, ±% 문턱 판정·실행은 조건부 그리드·매매가 맡는다.
@@ -324,12 +362,45 @@ export class FeedSlot {
     this.ladder = null;
     this.ladderState = null;
     this.onSignal = null;
+    this.trendListener = null; // 봉 링·trendEval은 지우지 않는다(재부착 대비 상시 누적).
     this.slope = null;
     this.accel = null;
   }
 
   get watched(): boolean {
-    return this.detector !== null || this.ladder !== null;
+    return this.detector !== null || this.ladder !== null || this.trendListener !== null;
+  }
+
+  /**
+   * 추세 워밍업 시드 — REST 분봉조회 결과(분 키·종가)를 넣는다. 매니저의 워밍업 큐가 부른다.
+   * seed 마지막 키 이하의 라이브 봉은 폐기된다(core/trend/bars 정합 규칙). 반영 봉 수를 돌려준다.
+   * 시드 직후 4선을 다시 재 스냅샷을 갱신하되 **신호는 내지 않는다**(과거 봉으로 진입/청산하지 않는다 — 다음 마감부터).
+   */
+  seedTrend(bars: readonly MinuteBar[]): number {
+    if (!this.trendMode) return 0;
+    const n = this.bars.seed(bars);
+    if (n > 0) this.trendEval = evaluateTrend(this.bars.closes);
+    return n;
+  }
+
+  /** 추세 모드의 마지막 닫힌 봉 분 키(뷰·이음새 로그용). */
+  get trendLastBarKey(): number | null {
+    return this.trendMode ? this.bars.lastClosedKey : null;
+  }
+
+  /** 봉 마감 1회 처리 — 4선 재계산·스냅샷 갱신·신호 전달. price = 마감을 유발한 새 분 첫 틱 가격. */
+  private evaluateTrendBar(price: number): void {
+    const ev = evaluateTrend(this.bars.closes);
+    this.trendEval = ev;
+    if (ev.signal === null || this.trendListener === null) return;
+    this.lastSignal = ev.signal;
+    this.trendListener(ev.signal, {
+      ticker: this.ticker,
+      price,
+      slope: 0, // 추세 모드엔 SG 미분이 없다 — 스냅샷 필드 계약 유지용 0(사다리와 동일).
+      accel: 0,
+      at: this.lastTickAt ?? this.clock.now(),
+    });
   }
 
   /** 현재 시점 틱/초 — 감시 3종 선정 기준(plan §2-4). */
@@ -364,6 +435,7 @@ export class FeedSlot {
       bid1: this.bid1,
       ask1: this.ask1,
       ladder: this.ladderState === null ? null : { ...this.ladderState },
+      trend: this.trendEval,
     };
   }
 }

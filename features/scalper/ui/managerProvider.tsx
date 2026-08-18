@@ -22,13 +22,15 @@ import { inquireOverseasBalance } from '../../../kis/balance';
 import { buyableUsdOf, inquirePsAmount } from '../../../kis/psamount';
 import { fetchTossRankings, type TossRankingRow } from '../../../lib/tossRanking';
 import type { OverseasExchangeCode } from '../../../kis/trId';
-import { INFLECTION_THRESHOLDS } from '../autopilot';
+import { INFLECTION_THRESHOLDS, TREND_CONFIG } from '../autopilot';
+import { inquireOverseasMinuteChart } from '../../../kis/minuteChart';
+import { kstToMinuteKey, type MinuteBar } from '../../../core/trend/bars';
 import { AutoPilotManager } from '../autopilotManager';
 import { createKisBroker } from '../createKisBroker';
 import { createRealtimeFeed } from '../createRealtimeFeed';
 import { expoKeepAwake } from '../keepAwake';
 import { ScalperManager } from '../scalperManager';
-import type { RankingSnapshot, WatchCandidateRow } from '../watchlist';
+import type { RankingSnapshot, WatchCandidateRow, WatchMarket } from '../watchlist';
 
 export interface ManagerBootstrap {
   /** 피드 허브 — WS 단일 연결 소유, 자동 단타·상세화면으로 틱·호가 분배. */
@@ -124,6 +126,23 @@ async function buildManager(): Promise<ManagerBootstrap> {
     }
   };
 
+  // 추세 워밍업(2026-08-18) — 분봉조회 첫 페이지(최근 120봉, 전일 포함)를 KST 분 키·종가로. 실패는 throw → 매니저 큐가 1회 재시도.
+  const fetchMinuteBars = async (ticker: string, market: WatchMarket): Promise<MinuteBar[]> => {
+    const accessToken = await getTokenStr();
+    const { candles } = await inquireOverseasMinuteChart(credentials, accessToken, {
+      excd: market,
+      symb: ticker,
+      nmin: 1,
+      includePrev: true,
+    });
+    const out: MinuteBar[] = [];
+    for (const c of candles) {
+      const minuteKey = kstToMinuteKey(c.kymd, c.khms);
+      if (minuteKey !== null && Number.isFinite(c.close) && c.close > 0) out.push({ minuteKey, close: c.close });
+    }
+    return out;
+  };
+
   const finalManager = manager;
 
   const autopilot = new AutoPilotManager({
@@ -154,6 +173,10 @@ async function buildManager(): Promise<ManagerBootstrap> {
     // 변곡점+그리드 조합(2026-08-15 도메인 문서) — 문턱은 문서 §5 고정값(+2%/−3%), 설정 탭 없음.
     // 끄려면 feedSlot.INFLECTION_ENTRY·autopilot.INFLECTION_GRID를 false로(한 줄 롤백) 하거나 이 주입을 뺀다.
     inflection: INFLECTION_THRESHOLDS,
+    // 추세 → 그리드 → 매매(2026-08-18 도메인 문서) — 위 변곡점 조합·사다리보다 우선한다(단일 스위치 trendMode.TREND_MODE).
+    // 끄려면 TREND_MODE=false(한 줄 롤백 → 변곡점 조합) 또는 이 주입 두 줄을 뺀다.
+    trend: TREND_CONFIG,
+    fetchMinuteBars,
     keepAwake: expoKeepAwake,
     // 사다리 판정 주기 = 청크 1초 고정 (2026-08-09 사용자 확정 — 설정 제거 전 실사용 값 복원.
     // 설정 제거 때 기본 3초로 잘못 굳었었다). 버퍼는 미주입(기본 31) — 사다리 모드는 워밍업을

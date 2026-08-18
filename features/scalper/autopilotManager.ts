@@ -16,10 +16,12 @@ import {
   type AutoPilotView,
   type GridExitConfig,
   type InflectionGridConfig,
+  type TrendGridConfig,
 } from './autopilot';
 import { isDaytimeSessionOpen } from './daySession';
 import { FeedSlot, type FeedSlotView, type LadderEntryOptions } from './feedSlot';
 import { ScalperWatchlist, type RankingSnapshot, type WatchEntry, type WatchMarket } from './watchlist';
+import type { MinuteBar } from '../../core/trend/bars';
 import {
   buildDaytimeQuoteTrKey,
   buildFreeQuoteTrKey,
@@ -49,6 +51,9 @@ const MARKET_TO_EXCHANGE: Record<WatchMarket, OverseasExchangeCode> = { NAS: 'NA
 const MARKET_TO_DAYTIME: Record<WatchMarket, DaytimeMarketCode> = { NAS: 'BAQ', NYS: 'BAY', AMS: 'BAA' };
 /** 세션 전환(정규장↔주간거래) 감지 주기 — 전환 시 구독 trKey를 새 세션 키로 회전한다. */
 const SESSION_KEY_CHECK_MS = 30_000;
+/** 추세 워밍업(REST 분봉조회) 실패 재시도 — 1회, 60초 뒤. 그 뒤로는 WS 봉으로 채운다. */
+export const TREND_WARMUP_RETRY_MS = 60_000;
+export const TREND_WARMUP_MAX_RETRY = 1;
 
 const defaultScheduler: SchedulerLike = {
   setInterval: (fn, ms) => setInterval(fn, ms),
@@ -74,6 +79,17 @@ export interface AutoPilotManagerDeps {
    * 조건부 그리드+매매가 맡는다(gridConfig·entryLadder보다 우선). 미주입이면 기존 동작 — 회귀 안전.
    */
   inflection?: InflectionGridConfig;
+  /**
+   * 추세 → 그리드 → 매매(2026-08-18 도메인 문서) — 주입되고 trendMode.TREND_MODE=true면 슬롯은 1분봉 합성+4선으로
+   * 신호를 내고(FeedSlot trend), 포지션 관리는 추세 청산 규칙+매매가 맡는다(AutoPilot trendConfig). 조합·사다리보다 우선.
+   * 미주입이면 기존 동작 — 회귀 안전.
+   */
+  trend?: TrendGridConfig;
+  /**
+   * 추세 워밍업 — 분봉조회(REST 120봉)를 분 키·종가로 돌려준다. 슬롯 생성마다 직렬 큐로 1회 호출해
+   * FeedSlot.seedTrend에 넣는다. 미주입이면 WS 봉만으로 서서히 채운다(2시간 뒤에야 4선 완성).
+   */
+  fetchMinuteBars?: (ticker: string, market: WatchMarket) => Promise<MinuteBar[]>;
   /** 재시작 보유 감지(잔고조회 → 보유 티커 목록) — 감지되면 경고 이벤트만 낸다(차단 안 함, plan §2-6). */
   fetchHoldings?: () => Promise<string[]>;
   keepAwake?: KeepAwakeControl;
@@ -207,6 +223,7 @@ export class AutoPilotManager {
         : undefined,
       gridConfig: deps.gridConfig,
       inflectionConfig: deps.inflection,
+      trendConfig: deps.trend,
       clock: deps.clock,
       scheduler,
       storage: deps.storage,
@@ -452,11 +469,73 @@ export class AutoPilotManager {
       minStrength: this.deps.minStrength,
       ladder: this.entryLadder,
       inflection: this.deps.inflection !== undefined,
+      trend: this.deps.trend !== undefined,
     });
     this.slots.set(ticker, slot);
     const trKey = this.marketTrKeyOf(ticker); // 체결가 — 전 종목(정규장 D 또는 주간거래 R).
     this.tickTrKeys.set(ticker, trKey);
     this.deps.realtime.subscribe(trKey);
+    this.enqueueTrendWarmup(ticker);
+  }
+
+  // ---- 추세 워밍업 큐(REST 분봉조회 → FeedSlot.seedTrend) — 직렬 1개, 티커 중복 제거, 실패 1회 재시도 ----
+
+  private readonly trendWarmupQueue: string[] = [];
+  private trendWarmupBusy = false;
+  private readonly trendWarmupAttempts = new Map<string, number>();
+
+  private enqueueTrendWarmup(ticker: string): void {
+    if (this.deps.trend === undefined || !this.deps.fetchMinuteBars) return;
+    if (this.trendWarmupQueue.includes(ticker)) return;
+    this.trendWarmupQueue.push(ticker);
+    void this.drainTrendWarmup();
+  }
+
+  private async drainTrendWarmup(): Promise<void> {
+    if (this.trendWarmupBusy) return;
+    this.trendWarmupBusy = true;
+    try {
+      while (this.trendWarmupQueue.length > 0) {
+        const ticker = this.trendWarmupQueue.shift()!;
+        const slot = this.slots.get(ticker);
+        if (!slot) continue; // 그 사이 리스트에서 빠졌다.
+        try {
+          const bars = await this.deps.fetchMinuteBars!(ticker, this.marketOf(ticker));
+          const live = this.slots.get(ticker);
+          if (!live) continue;
+          const n = live.seedTrend(bars);
+          this.trendWarmupAttempts.delete(ticker);
+          const lastKey = live.trendLastBarKey;
+          const nowKey = Math.floor(this.deps.clock.now() / 60_000);
+          this.pushEvent({
+            at: this.deps.clock.now(),
+            // 이음새 검증용 — 마지막 시드 봉과 현재 분의 간격(분). 실사용 첫날 오프셋 확인에 쓴다.
+            text: `${ticker} 추세 시드 · ${n}봉 · 마지막 봉 ${lastKey === null ? '없음' : `${nowKey - lastKey}분 전`}`,
+          });
+        } catch (err) {
+          const attempt = (this.trendWarmupAttempts.get(ticker) ?? 0) + 1;
+          this.trendWarmupAttempts.set(ticker, attempt);
+          if (attempt <= TREND_WARMUP_MAX_RETRY) {
+            this.pushEvent({
+              at: this.deps.clock.now(),
+              text: `${ticker} 추세 시드 실패 · ${summarize(err)} — ${Math.round(TREND_WARMUP_RETRY_MS / 1000)}초 뒤 다시 시도해요`,
+            });
+            const handle = this.scheduler.setInterval(() => {
+              this.scheduler.clearInterval(handle);
+              this.enqueueTrendWarmup(ticker);
+            }, TREND_WARMUP_RETRY_MS);
+          } else {
+            this.trendWarmupAttempts.delete(ticker);
+            this.pushEvent({
+              at: this.deps.clock.now(),
+              text: `${ticker} 추세 시드 포기 · ${summarize(err)} — 체결가 봉으로 서서히 채워요(4선 완성까지 약 2시간)`,
+            });
+          }
+        }
+      }
+    } finally {
+      this.trendWarmupBusy = false;
+    }
   }
 
   private dropSlot(ticker: string): void {
@@ -467,6 +546,9 @@ export class AutoPilotManager {
     if (!slot) return;
     slot.detachDetector();
     this.slots.delete(ticker);
+    const qi = this.trendWarmupQueue.indexOf(ticker);
+    if (qi >= 0) this.trendWarmupQueue.splice(qi, 1);
+    this.trendWarmupAttempts.delete(ticker);
     const tickTrKey = this.tickTrKeys.get(ticker);
     this.tickTrKeys.delete(ticker);
     // 상세화면이 같은 키를 잡고 있으면 실제 해제는 건너뛴다 — 그쪽 releaseFeed가 마지막에 정리한다.

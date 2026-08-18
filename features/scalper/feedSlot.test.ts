@@ -358,3 +358,96 @@ describe('FeedSlot — 조합 모드(inflection): 청크 1초·버퍼 21 강제 
     expect(slot.getView().ladder).toBeNull(); // 사다리 모드 아님.
   });
 });
+
+// ---- 추세 모드(2026-08-18 추세→그리드→매매 도메인 문서) ----
+
+describe('FeedSlot — 추세 모드(trend): 1분봉 합성 + 4선 신호, 리샘플·SG 미사용', () => {
+  const M = 60_000;
+  /** 오름차순 122봉 시드(키 0..121) — 4선 2봉 연속 상승·종가>ma60. */
+  const risingSeed = (n = 122) => Array.from({ length: n }, (_, i) => ({ minuteKey: i, close: 100 + i }));
+
+  function makeTrendSlot(clock = fakeClock(1000)) {
+    const slot = new FeedSlot({ ticker: 'AAPL', clock, chunkSeconds: 5, bufferSize: 7, trend: true, inflection: true });
+    return { slot, clock };
+  }
+
+  it('옵션 미주입 슬롯은 기존 동작 — trend 뷰가 null이고 SG 신호가 그대로 나온다', () => {
+    const { slot, clock } = makeSlot();
+    const signals: string[] = [];
+    slot.attachDetector((s) => signals.push(s));
+    replay(slot, clock, V);
+    expect(signals).toContain('BUY');
+    expect(slot.getView().trend).toBeNull();
+  });
+
+  it('리스너 미부착이면 봉은 쌓이되 신호는 없고, 시드는 신호 없이 스냅샷만 갱신한다', () => {
+    const { slot } = makeTrendSlot();
+    expect(slot.seedTrend(risingSeed())).toBe(122);
+    const view = slot.getView().trend!;
+    expect(view.bars).toBe(122);
+    expect(view.signal).toBe('BUY'); // 스냅샷은 판정 결과를 담지만 리스너가 없어 아무 데도 안 흘렀다.
+    expect(slot.watched).toBe(false);
+    expect(slot.trendLastBarKey).toBe(121);
+  });
+
+  it('attach 후 다음 봉 마감(다음 분 첫 틱)에 즉시 BUY — 재워밍업 없음, ctx.price=새 분 틱가', () => {
+    const { slot } = makeTrendSlot();
+    slot.seedTrend(risingSeed());
+    const got: { signal: string; price: number }[] = [];
+    slot.attachDetector((signal, ctx) => got.push({ signal, price: ctx.price }));
+    expect(slot.watched).toBe(true);
+    slot.pushTick(222, 122 * M); // 키 122 진행 중 — 마감 없음
+    slot.pushTick(223, 122 * M + 30_000);
+    expect(got).toHaveLength(0);
+    slot.pushTick(224, 123 * M); // 키 122 닫힘(close 223) → 4선 상승 유지 → BUY
+    expect(got).toEqual([{ signal: 'BUY', price: 224 }]);
+    expect(slot.getView().lastSignal).toBe('BUY');
+    expect(slot.getView().trend?.bars).toBe(123);
+    expect(slot.warmedUp).toBe(false); // 리샘플은 안 돈다.
+  });
+
+  it('분봉5선이 꺾이면 SELL — 봉 마감 시점에', () => {
+    const { slot } = makeTrendSlot();
+    slot.seedTrend(risingSeed());
+    const signals: string[] = [];
+    slot.attachDetector((s) => signals.push(s));
+    slot.pushTick(150, 122 * M); // 급락 봉(키 122)
+    slot.pushTick(151, 123 * M); // 키 122 닫힘 → ma5 하락 → SELL
+    expect(signals).toEqual(['SELL']);
+  });
+
+  it('detach → attach 뒤에도 봉 링이 유지된다(매도 직후 122봉 재대기 금지)', () => {
+    const { slot } = makeTrendSlot();
+    slot.seedTrend(risingSeed());
+    slot.attachDetector(() => {});
+    slot.pushTick(222, 122 * M);
+    slot.detachDetector();
+    expect(slot.watched).toBe(false);
+    expect(slot.getView().trend?.bars).toBe(122); // 스냅샷도 유지.
+    const signals: string[] = [];
+    slot.attachDetector((s) => signals.push(s));
+    slot.pushTick(223, 123 * M); // 키 122 닫힘 — 링이 살아 있어 바로 판정.
+    expect(signals).toEqual(['BUY']);
+  });
+
+  it('시드가 늦게 와도 같은 분 이하의 라이브 봉은 폐기되고 시드가 정본이 된다', () => {
+    const { slot } = makeTrendSlot();
+    slot.pushTick(1, 120 * M);
+    slot.pushTick(2, 121 * M); // 키 120 닫힘(라이브)
+    slot.pushTick(3, 122 * M); // 키 121 닫힘(라이브), 122 진행 중
+    expect(slot.getView().trend?.bars).toBe(2);
+    slot.seedTrend(risingSeed()); // 키 0..121 — 라이브 120·121 폐기, 진행 중 122는 시드보다 뒤라 생존
+    expect(slot.getView().trend?.bars).toBe(122);
+    const signals: string[] = [];
+    slot.attachDetector((s) => signals.push(s));
+    slot.pushTick(224, 123 * M); // 키 122 닫힘(close 3 → 급락) → SELL
+    expect(signals).toEqual(['SELL']);
+  });
+
+  it('추세 모드는 조합(inflection) 주입이 함께 있어도 우선한다 — 뷰 ladder null·리샘플 미강제', () => {
+    const { slot } = makeTrendSlot();
+    slot.attachDetector(() => {});
+    expect(slot.getView().ladder).toBeNull();
+    expect(slot.getView().slope).toBeNull();
+  });
+});

@@ -11,8 +11,7 @@ import Slider from '@react-native-community/slider';
 import { BackHeader } from '../components/BackHeader';
 import { Panel } from '../components/Panel';
 import { DEFAULT_APP_SETTINGS, loadAppSettings, saveAppSettings, snapToStep } from '../lib/appSettings';
-import { INFLECTION_THRESHOLDS, MAX_GRIDS_LIMIT } from '../features/scalper/autopilot';
-import { INFLECTION_BUFFER_SIZE, INFLECTION_CHUNK_SECONDS } from '../features/scalper/feedSlot';
+import { MAX_GRIDS_LIMIT } from '../features/scalper/autopilot';
 
 /** 종목당 진입금액 상한(USD) — 오타 하나(100 → 10000)가 그대로 발주 금액이 된다. */
 const START_AMOUNT_MAX_USD = 100_000;
@@ -151,10 +150,6 @@ export default function SettingsScreen() {
     }
   };
 
-  /** 조합 고정 문턱(%) — 표시용. INFLECTION_THRESHOLDS가 단일 출처다. */
-  const sellPct = (INFLECTION_THRESHOLDS.sellProfitPct * 100).toFixed(0);
-  const dropPct = (INFLECTION_THRESHOLDS.buyDropPct * 100).toFixed(0);
-
   /** 첫 진입에 한 번에 들어갈 수 있는 최대 금액 — 진입금액 × 동시 그리드 수. */
   const exposure = (() => {
     const amount = Number(startAmountUsd);
@@ -224,46 +219,44 @@ export default function SettingsScreen() {
           </View>
         </Panel>
 
-        <Panel title="변곡점 그리드 (고정값)">
+        <Panel title="추세 (고정값)">
           <View className="px-5 pb-5">
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              진입·매도·물타기는 전부 변곡점 신호로만 움직여요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
+              진입과 매도는 1분봉 이동평균 4선(분봉5선·20선·60선·120선)의 방향으로만 움직여요. 아래 값은 설계 고정값이라
+              여기서 바꿀 수 없어요.
             </Text>
 
             <View className="mb-1 flex-row items-center justify-between">
-              <Text className="text-xs text-[#8b95a1]">진입 · 물타기</Text>
-              <Text className="text-sm font-semibold text-[#191f28]">상승 변곡점</Text>
+              <Text className="text-xs text-[#8b95a1]">진입</Text>
+              <Text className="text-sm font-semibold text-[#191f28]">4선 상승 2봉 연속 · 종가 &gt; 분봉60선</Text>
             </View>
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              바닥(상승 변곡점)이 확인될 때만 사요. 물타기는 평단보다 {dropPct}% 이상 떨어진 바닥에서만, 매번 최초
-              진입 수량만큼(고정 수량) 사요. 낙폭이 모자라면 신호가 와도 사지 않아요.
+              네 선이 모두 직전 봉보다 올라간 상태가 두 봉 연속이고, 그 봉의 종가가 분봉60선 위에 있을 때 사요. 봉이 모자라
+              4선 중 하나라도 계산이 안 되면 사지 않아요. 물타기는 하지 않아요.
             </Text>
 
             <View className="mb-1 flex-row items-center justify-between">
               <Text className="text-xs text-[#8b95a1]">매도</Text>
-              <Text className="text-sm font-semibold text-[#191f28]">고점 변곡점 · +{sellPct}% 이상</Text>
+              <Text className="text-sm font-semibold text-[#191f28]">분봉5선이 꺾이면 즉시 전량</Text>
             </View>
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              천장(고점 변곡점)에서 평단 대비 {sellPct}% 이상 이익일 때만 전량 매도해요. 그보다 이익이 작으면 팔지
-              않고 계속 지켜봐요.
+              분봉5선이 직전 봉보다 내려가는 순간 수익·손실과 상관없이 전량 매도해요. 매도 주문은 체결될 때까지 현재가를
+              따라가고, 도중에 거두지 않아요.
             </Text>
 
             <View className="mb-1 flex-row items-center justify-between">
-              <Text className="text-xs text-[#8b95a1]">변곡점 판정</Text>
-              <Text className="text-sm font-semibold text-[#191f28]">
-                청크 {INFLECTION_CHUNK_SECONDS}초 · 버퍼 {INFLECTION_BUFFER_SIZE}
-              </Text>
+              <Text className="text-xs text-[#8b95a1]">봉</Text>
+              <Text className="text-sm font-semibold text-[#191f28]">1분봉 · 체결가 합성</Text>
             </View>
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              체결가를 {INFLECTION_CHUNK_SECONDS}초 단위로 평균해 최근 {INFLECTION_BUFFER_SIZE}개로 곡선을 그리고,
-              기울기의 방향이 바뀌는 지점을 바닥·천장으로 봐요.
+              실시간 체결가를 1분 단위로 묶어 봉을 만들고, 봉이 닫힐 때마다 4선을 다시 재요. 감시를 시작할 때 최근 120봉을
+              한 번 불러와 채우므로 바로 판정할 수 있어요.
             </Text>
 
             <View className="rounded-2xl bg-[#f2f4f6] px-4 py-3">
               <Text className="text-xs leading-5 text-[#4e5968]">
-                주문은 미리 걸어두지 않고 신호가 온 순간 <Text className="font-semibold text-[#191f28]">현재가</Text>로
-                내요. 체결 전에 가격이 움직이면 새 현재가로 따라가고, 그 사이 조건({sellPct}%/{dropPct}%)이 깨지면
-                주문을 거두고 다음 변곡점을 기다려요.
+                주문은 미리 걸어두지 않고 봉이 닫힌 순간 <Text className="font-semibold text-[#191f28]">현재가</Text>로
+                내요. 진입 주문이 체결되기 전에 5선이 꺾이면 그 봉의 매도는 건너뛰고, 다음 봉에서 다시 판단해요.
               </Text>
             </View>
           </View>

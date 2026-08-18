@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { AutoPilotManager, AUTOPILOT_TRADE_ID } from './autopilotManager';
+import { AutoPilotManager, AUTOPILOT_TRADE_ID, type AutoPilotManagerDeps } from './autopilotManager';
+import { TREND_CONFIG } from './autopilot';
 import { FakeBroker, FakeStore, fakeClock, flush, noopScheduler } from './fakes';
 import type { FeedStatus, RealtimeControlMessage, RealtimeFeed } from './types';
 import type { RankingSnapshot } from './watchlist';
@@ -53,7 +54,14 @@ function snapshotOf(tickers: string[]): RankingSnapshot {
   return { tossAmount: [], tossVolume: tickers.map((t) => ({ symb: t, rate: '1' })) };
 }
 
-function makeManager(opts: { holdings?: string[]; entryLadder?: { interval: number; triggerCount: number } } = {}) {
+function makeManager(
+  opts: {
+    holdings?: string[];
+    entryLadder?: { interval: number; triggerCount: number };
+    /** 추세 모드 — 주입하면 trend 활성 + 워밍업 큐가 이 함수를 부른다. */
+    fetchMinuteBars?: AutoPilotManagerDeps['fetchMinuteBars'];
+  } = {},
+) {
   const feed = new PairFeed();
   const store = new FakeStore();
   const clock = fakeClock(1000);
@@ -72,6 +80,8 @@ function makeManager(opts: { holdings?: string[]; entryLadder?: { interval: numb
     chunkSeconds: 1,
     bufferSize: 7,
     entryLadder: opts.entryLadder,
+    trend: opts.fetchMinuteBars ? TREND_CONFIG : undefined,
+    fetchMinuteBars: opts.fetchMinuteBars,
   });
   manager.pilot.setConfig({ startAmountUsd: 100, minTickRate: 0.01 });
   return { manager, feed, store, clock, fetchSnapshot, keepAwake, scheduler };
@@ -265,5 +275,65 @@ describe('AutoPilotManager — 배선(구독·라우팅·상호 배타)', () => 
 
   it('AUTOPILOT_TRADE_ID 상수 계약', () => {
     expect(AUTOPILOT_TRADE_ID).toBe('autopilot');
+  });
+});
+
+// ---- 추세 워밍업 큐(2026-08-18 추세→그리드→매매) ----
+
+describe('AutoPilotManager — 추세 워밍업 큐(REST 분봉 시드)', () => {
+  const rising = Array.from({ length: 122 }, (_, i) => ({ minuteKey: i, close: 100 + i }));
+
+  it('슬롯마다 티커당 1회, 직렬로 호출해 seedTrend에 넣는다', async () => {
+    let inflight = 0;
+    let maxInflight = 0;
+    const calls: string[] = [];
+    const fetchMinuteBars = vi.fn(async (ticker: string) => {
+      calls.push(ticker);
+      inflight += 1;
+      maxInflight = Math.max(maxInflight, inflight);
+      await flush();
+      inflight -= 1;
+      return rising;
+    });
+    const { manager } = makeManager({ fetchMinuteBars });
+    manager.start();
+    await vi.waitFor(() => expect(manager.watchlist.size).toBe(12));
+    await vi.waitFor(() => expect(calls).toHaveLength(12));
+    await flush();
+    expect(new Set(calls).size).toBe(12); // 티커당 1회
+    expect(maxInflight).toBe(1); // 직렬
+    const rowA = manager.getRows().find((r) => r.entry.ticker === 'A')!;
+    expect(rowA.view.trend?.bars).toBe(122);
+    expect(manager.recentEvents.some((e) => e.text.includes('A 추세 시드 · 122봉'))).toBe(true);
+  });
+
+  it('조회 실패는 throw 없이 이벤트 1건 + 재시도 타이머 1회, 재시도 성공이면 시드된다', async () => {
+    let fail = true;
+    const fetchMinuteBars = vi.fn(async () => {
+      if (fail) throw new Error('분봉 실패(모의)');
+      return rising;
+    });
+    const { manager, scheduler, fetchSnapshot } = makeManager({ fetchMinuteBars });
+    fetchSnapshot.mockResolvedValue(snapshotOf(['A']));
+    manager.start();
+    await vi.waitFor(() => expect(manager.watchlist.size).toBe(1));
+    await vi.waitFor(() => expect(fetchMinuteBars).toHaveBeenCalledTimes(1));
+    await flush();
+    expect(manager.recentEvents.some((e) => e.text.includes('추세 시드 실패'))).toBe(true);
+    // 재시도 타이머 발화 → 다시 큐에 들어가 성공.
+    fail = false;
+    for (const fn of scheduler.fired) fn();
+    await vi.waitFor(() => expect(fetchMinuteBars).toHaveBeenCalledTimes(2));
+    await flush();
+    const rowA = manager.getRows().find((r) => r.entry.ticker === 'A')!;
+    expect(rowA.view.trend?.bars).toBe(122);
+  });
+
+  it('trend 미주입이면 워밍업 호출이 없고 슬롯 뷰 trend는 null', async () => {
+    const { manager } = makeManager();
+    manager.start();
+    await vi.waitFor(() => expect(manager.watchlist.size).toBe(12));
+    await flush();
+    expect(manager.getRows().every((r) => r.view.trend === null)).toBe(true);
   });
 });

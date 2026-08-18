@@ -28,6 +28,10 @@ export interface MinuteCandle {
   ymd: string;
   /** 현지기준시간(xhms, HHMMSS). */
   hms: string;
+  /** 한국기준일자(kymd, YYYYMMDD) — KST는 DST가 없어 epoch 변환에 안전하다(추세 1분봉 시드용). */
+  kymd: string;
+  /** 한국기준시간(khms, HHMMSS). */
+  khms: string;
   open: number;
   high: number;
   low: number;
@@ -94,6 +98,8 @@ export async function inquireOverseasMinuteChart(
   const candles: MinuteCandle[] = raw.map((item) => ({
     ymd: item.xymd,
     hms: item.xhms,
+    kymd: item.kymd,
+    khms: item.khms,
     open: Number(item.open),
     high: Number(item.high),
     low: Number(item.low),
