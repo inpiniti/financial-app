@@ -34,42 +34,101 @@ interface RawTossCandle {
   volume?: number;
 }
 
-/** 차트 URL 조립 — count는 1..TOSS_CHART_MAX_COUNT로 자른다. */
-export function buildTossChartUrl(productCode: string, count: number): string {
-  const n = Math.max(1, Math.min(TOSS_CHART_MAX_COUNT, Math.floor(count)));
-  return `${TOSS_CHART_URL}/${encodeURIComponent(productCode)}/min:1?count=${n}&useAdjustedRate=true`;
+/** 봉 하나 — dt는 원문 그대로(오프셋 붙은 ISO, 미국 종목은 ET). 차트 화면용 OHLCV. */
+export interface TossMinuteCandle {
+  dt: string;
+  /** dt의 epoch 분 키. */
+  minuteKey: number;
+  sessionType?: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
 }
 
-/**
- * 응답 → MinuteBar[](분 키·종가). dt는 오프셋이 붙은 ISO라 Date.parse로 epoch가 정확히 나온다(DST 무관).
- * 파싱 불가·비유한·0 이하 종가는 버린다. 정렬·중복은 호출부(MinuteBarBuilder.seed)가 흡수하므로 손대지 않는다.
- */
-export function parseTossMinuteBars(body: unknown): MinuteBar[] {
+/** 차트 URL 조립 — min:{interval}, count는 1..TOSS_CHART_MAX_COUNT로 자른다. (min:3·5·15도 실호출 확인) */
+export function buildTossChartUrl(productCode: string, count: number, intervalMin = 1): string {
+  const n = Math.max(1, Math.min(TOSS_CHART_MAX_COUNT, Math.floor(count)));
+  const iv = Math.max(1, Math.floor(intervalMin));
+  return `${TOSS_CHART_URL}/${encodeURIComponent(productCode)}/min:${iv}?count=${n}&useAdjustedRate=true`;
+}
+
+/** 응답 → OHLCV 봉(원문 순서 그대로 = 최신순). dt 파싱 불가·종가 0 이하는 버린다. */
+export function parseTossMinuteCandles(body: unknown): TossMinuteCandle[] {
   const candles = (body as { result?: { candles?: unknown } } | null)?.result?.candles;
   if (!Array.isArray(candles)) return [];
-  const out: MinuteBar[] = [];
+  const out: TossMinuteCandle[] = [];
   for (const raw of candles as RawTossCandle[]) {
     if (typeof raw?.dt !== 'string') continue;
     const ms = Date.parse(raw.dt);
     const close = Number(raw.close);
     if (!Number.isFinite(ms) || !Number.isFinite(close) || close <= 0) continue;
-    out.push({ minuteKey: Math.floor(ms / 60_000), close });
+    const open = Number(raw.open);
+    const high = Number(raw.high);
+    const low = Number(raw.low);
+    out.push({
+      dt: raw.dt,
+      minuteKey: Math.floor(ms / 60_000),
+      sessionType: raw.sessionType,
+      open: Number.isFinite(open) && open > 0 ? open : close,
+      high: Number.isFinite(high) && high > 0 ? high : close,
+      low: Number.isFinite(low) && low > 0 ? low : close,
+      close,
+      volume: Number.isFinite(Number(raw.volume)) ? Number(raw.volume) : 0,
+    });
   }
   return out;
 }
 
-/** 토스 productCode의 최근 1분봉 count개(닫힌 봉만 온다). 응답이 비면 [] — throw는 네트워크·JSON 실패뿐. */
+/** 차트 화면용 — N분봉 count개(최신순). */
+export async function fetchTossMinuteCandles(
+  productCode: string,
+  intervalMin: number,
+  count: number,
+  deps: TossMinuteChartDeps = {},
+): Promise<TossMinuteCandle[]> {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const res = await fetchImpl(buildTossChartUrl(productCode, count, intervalMin), {
+    method: 'GET',
+    headers: { accept: 'application/json' },
+  });
+  return parseTossMinuteCandles(await res.json());
+}
+
+/**
+ * 응답 → MinuteBar[](분 키·종가). dt는 오프셋이 붙은 ISO라 Date.parse로 epoch가 정확히 나온다(DST 무관).
+ * 파싱 불가·비유한·0 이하 종가는 버린다. 정렬·중복은 호출부(MinuteBarBuilder.seed)가 흡수하므로 손대지 않는다.
+ * beforeMinuteKey를 주면 그 키 **이상**은 버린다 — 토스는 현재 분의 진행 중 봉도 내려주는데(min:5 실호출에서 확인)
+ * 그걸 seed하면 MinuteBarBuilder가 그 분의 뒤이은 WS 틱을 "seed 마지막 키 이하"로 버려 봉이 미완성값으로 굳는다.
+ */
+export function parseTossMinuteBars(body: unknown, beforeMinuteKey?: number): MinuteBar[] {
+  const out: MinuteBar[] = [];
+  for (const c of parseTossMinuteCandles(body)) {
+    if (beforeMinuteKey !== undefined && c.minuteKey >= beforeMinuteKey) continue;
+    out.push({ minuteKey: c.minuteKey, close: c.close });
+  }
+  return out;
+}
+
+export interface FetchTossMinuteBarsOptions extends TossMinuteChartDeps {
+  /** 지금(epoch ms) — 진행 중 봉 컷오프 기준. 기본 Date.now(). */
+  nowMs?: number;
+}
+
+/** 토스 productCode의 최근 1분봉 count개 — 현재 분(진행 중) 봉은 뺀다. 응답이 비면 [] — throw는 네트워크·JSON 실패뿐. */
 export async function fetchTossMinuteBars(
   productCode: string,
   count: number,
-  deps: TossMinuteChartDeps = {},
+  deps: FetchTossMinuteBarsOptions = {},
 ): Promise<MinuteBar[]> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const res = await fetchImpl(buildTossChartUrl(productCode, count), {
     method: 'GET',
     headers: { accept: 'application/json' },
   });
-  return parseTossMinuteBars(await res.json());
+  const nowKey = Math.floor((deps.nowMs ?? Date.now()) / 60_000);
+  return parseTossMinuteBars(await res.json(), nowKey);
 }
 
 interface RawSearchItem {

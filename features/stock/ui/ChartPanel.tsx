@@ -1,16 +1,19 @@
 // 종목 상세화면 "차트" 탭 — 옛 ChartSheet.tsx(바텀시트)에서 추출한 유일한 차트 구현.
 // 분봉/일봉/주봉/월봉 통합 — 진입·기간(모드/분봉 간격) 변경·새로고침 버튼 때만 조회한다(폴링 금지).
+// 분봉 원천은 토스 c-chart(lib/tossMinuteChart, 2026-08-18) — 한투 분봉조회는 정규장만 줘서 프리·애프터·주간거래에
+// 4선 오버레이가 꼬였다. 일/주/월봉은 그대로 한투 기간별시세.
 // 캔들 렌더는 react-native-svg(기설치)로 직접 그린다 — 차트 라이브러리 추가 설치 없음.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Pressable, Text, View, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Line, Polyline, Rect, Text as SvgText } from 'react-native-svg';
 import { computeTrendSeries } from '../../../core/trend';
 import { getAccessToken } from '../../../kis/token';
-import { inquireOverseasMinuteChart, type MinuteChartExchangeCode } from '../../../kis/minuteChart';
+import type { MinuteChartExchangeCode } from '../../../kis/minuteChart';
 import { inquireOverseasPeriodChart, type PeriodChartPeriod } from '../../../kis/periodChart';
 import type { KisCredentials, KisEnvironment } from '../../../kis/types';
 import { loadAppSettings } from '../../../lib/appSettings';
+import { fetchTossMinuteCandles, resolveTossProductCode } from '../../../lib/tossMinuteChart';
 import { loadKisSettings } from '../../../lib/kisSettings';
 import { secureTokenStorage } from '../../../lib/secureTokenStorage';
 import { formatUsd } from '../../../lib/format';
@@ -80,9 +83,10 @@ interface Session {
 }
 
 /** "093000"(HHMMSS) → "09:30". 형식이 다르면 원본을 그대로 돌려준다. */
-function formatClock(hms: string): string {
-  if (hms.length < 4) return hms;
-  return `${hms.slice(0, 2)}:${hms.slice(2, 4)}`;
+/** 토스 dt("2026-08-18T01:33:00-04:00") → 현지(ET) "HH:MM" — 오프셋 뒤 시각을 문자열에서 그대로 자른다(옛 한투 xhms 라벨과 같은 기준). */
+function formatTossClock(dt: string): string {
+  const m = /T(d{2}):(d{2})/.exec(dt);
+  return m ? `${m[1]}:${m[2]}` : dt;
 }
 
 /** "20260729"(YYYYMMDD) → 일봉은 "07/29", 주/월봉은 "26/07". 형식이 다르면 원본을 그대로 돌려준다. */
@@ -303,6 +307,8 @@ export function ChartPanel({ ticker, excd }: ChartPanelProps) {
   const [state, setState] = useState<LoadState>({ kind: 'sessionLoading' });
   const [sessionReloadKey, setSessionReloadKey] = useState(0);
   const [chartReloadKey, setChartReloadKey] = useState(0);
+  /** 티커→토스 productCode 캐시(불변) — 분봉 조회마다 검색을 다시 하지 않는다. */
+  const tossCodeRef = useRef<{ ticker: string; code: string } | null>(null);
 
   // 진입 시 한 번 세션(설정 탭 KIS 키 → accessToken) 로드.
   useEffect(() => {
@@ -343,20 +349,26 @@ export function ChartPanel({ ticker, excd }: ChartPanelProps) {
       try {
         let candles: ChartCandle[];
         if (mode === 'minute') {
-          const result = await inquireOverseasMinuteChart(session.credentials, session.accessToken, {
-            excd,
-            symb: ticker,
-            nmin: minuteInterval,
-          });
-          candles = result.candles.map((c) => ({
-            key: `${c.ymd}${c.hms}`,
-            label: formatClock(c.hms),
-            open: c.open,
-            high: c.high,
-            low: c.low,
-            close: c.close,
-            volume: c.volume,
-          }));
+          let code = tossCodeRef.current?.ticker === ticker ? tossCodeRef.current.code : null;
+          if (!code) {
+            code = await resolveTossProductCode(ticker, excd);
+            if (!code) throw new Error('토스에서 종목을 찾지 못했어요');
+            tossCodeRef.current = { ticker, code };
+          }
+          // 최신순으로 오므로 오름차순으로 뒤집는다. 표시 80봉 + 4선(120선) 워밍업 몫으로 넉넉히 받는다.
+          const result = await fetchTossMinuteCandles(code, minuteInterval, 300);
+          candles = result
+            .slice()
+            .reverse()
+            .map((c) => ({
+              key: String(c.minuteKey),
+              label: formatTossClock(c.dt),
+              open: c.open,
+              high: c.high,
+              low: c.low,
+              close: c.close,
+              volume: c.volume,
+            }));
         } else {
           const result = await inquireOverseasPeriodChart(session.environment, session.credentials, session.accessToken, {
             excd,

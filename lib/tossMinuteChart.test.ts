@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildTossChartUrl,
   fetchTossMinuteBars,
+  fetchTossMinuteCandles,
   parseTossMinuteBars,
+  parseTossMinuteCandles,
   resolveTossProductCode,
   TOSS_CHART_MAX_COUNT,
 } from './tossMinuteChart';
@@ -32,6 +34,22 @@ describe('buildTossChartUrl', () => {
     expect(buildTossChartUrl('X', 0)).toContain('count=1&');
     expect(buildTossChartUrl('X', 99_999)).toContain(`count=${TOSS_CHART_MAX_COUNT}&`);
   });
+  it('N분봉은 min:N', () => {
+    expect(buildTossChartUrl('X', 10, 5)).toContain('/min:5?count=10&');
+  });
+});
+
+describe('parseTossMinuteCandles', () => {
+  it('OHLCV·dt·sessionType을 원문 순서(최신순)로', () => {
+    const c = parseTossMinuteCandles(SAMPLE);
+    expect(c).toHaveLength(3);
+    expect(c[0]).toMatchObject({ dt: '2026-08-18T01:33:00-04:00', sessionType: 'day', open: 0.7518, high: 0.7519, low: 0.7518, close: 0.7519, volume: 107 });
+    expect(c[0].minuteKey).toBe(Math.floor(Date.UTC(2026, 7, 18, 5, 33) / 60_000));
+  });
+  it('OHL이 없거나 0이면 종가로 채운다', () => {
+    const c = parseTossMinuteCandles({ result: { candles: [{ dt: '2026-08-18T01:33:00-04:00', close: 2, open: 0 }] } });
+    expect(c[0]).toMatchObject({ open: 2, high: 2, low: 2, close: 2, volume: 0 });
+  });
 });
 
 describe('parseTossMinuteBars', () => {
@@ -56,13 +74,27 @@ describe('parseTossMinuteBars', () => {
 });
 
 describe('fetchTossMinuteBars', () => {
-  it('GET · accept json · 응답을 MinuteBar[]로', async () => {
+  it('GET · accept json · 응답을 MinuteBar[]로(지금이 마지막 봉보다 뒤면 전부)', async () => {
     const fetchImpl = vi.fn().mockResolvedValue({ json: async () => SAMPLE });
-    const bars = await fetchTossMinuteBars('US20200609002', 130, { fetchImpl });
+    const bars = await fetchTossMinuteBars('US20200609002', 130, { fetchImpl, nowMs: Date.UTC(2026, 7, 18, 5, 40) });
     expect(bars).toHaveLength(3);
     const [url, init] = fetchImpl.mock.calls[0];
     expect(url).toContain('/c-chart/us-s/US20200609002/min:1?count=130');
     expect(init.method).toBe('GET');
+  });
+  it('현재 분(진행 중) 봉은 뺀다 — 지금이 01:33이면 01:33 봉 제외', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ json: async () => SAMPLE });
+    const bars = await fetchTossMinuteBars('X', 130, { fetchImpl, nowMs: Date.UTC(2026, 7, 18, 5, 33, 20) });
+    expect(bars.map((b) => b.close)).toEqual([0.7519, 0.752]);
+  });
+});
+
+describe('fetchTossMinuteCandles', () => {
+  it('min:N URL로 GET, 진행 중 봉 포함 그대로', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ json: async () => SAMPLE });
+    const c = await fetchTossMinuteCandles('X', 3, 50, { fetchImpl });
+    expect(c).toHaveLength(3);
+    expect(fetchImpl.mock.calls[0][0]).toContain('/min:3?count=50&');
   });
 });
 
