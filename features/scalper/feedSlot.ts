@@ -129,6 +129,9 @@ export interface FeedSlotView {
   readonly lastTickAt: number | null;
   readonly bid1: number | null;
   readonly ask1: number | null;
+  /** 당일 고가·저가(체결가 틱의 HIGH/LOW, 마지막 수신값). 아직 없으면 null. */
+  readonly dayHigh: number | null;
+  readonly dayLow: number | null;
   /** 사다리 감시 스냅샷(사다리 모드로 감시 중일 때만) — 홀 n/N·다음 매수선. SG 모드·미감시면 null. */
   readonly ladder: { count: number; triggerCount: number; nextBuyLevel: number } | null;
   /** 추세 스냅샷(추세 모드에서만) — 마지막 봉 마감 시점 4선·상승 플래그·봉 수. 아직 봉이 없거나 다른 모드면 null. */
@@ -169,6 +172,8 @@ export class FeedSlot {
   private bid1: number | null = null;
   private ask1: number | null = null;
   private quoteAt: number | null = null;
+  private dayHigh: number | null = null;
+  private dayLow: number | null = null;
 
   /** 변곡점+그리드 조합 모드인가 — 생성 시 확정(INFLECTION_ENTRY AND inflection 주입). */
   private readonly inflectionMode: boolean;
@@ -207,6 +212,8 @@ export class FeedSlot {
   pushTick(price: number, tsMs: number, extras?: TickExtras): DetectorResult | null {
     this.price = price;
     this.lastTickAt = this.clock.now();
+    if (extras?.dayHigh !== undefined) this.dayHigh = extras.dayHigh;
+    if (extras?.dayLow !== undefined) this.dayLow = extras.dayLow;
     this.meter.record(this.lastTickAt);
     this.slopeMeter.record(this.lastTickAt, price);
 
@@ -434,6 +441,8 @@ export class FeedSlot {
       lastTickAt: this.lastTickAt,
       bid1: this.bid1,
       ask1: this.ask1,
+      dayHigh: this.dayHigh,
+      dayLow: this.dayLow,
       ladder: this.ladderState === null ? null : { ...this.ladderState },
       trend: this.trendEval,
     };

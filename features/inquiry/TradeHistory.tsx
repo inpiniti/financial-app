@@ -8,7 +8,7 @@ import { Text, View } from 'react-native';
 import { ListRow } from '../../components/ListRow';
 import { Panel } from '../../components/Panel';
 import { TickerAvatar } from '../../components/TickerAvatar';
-import { formatKrw, formatSignedKrw, formatSignedUsd, formatUsd, pnlColor } from '../../lib/format';
+import { formatKrw, formatSignedKrw, formatSignedPercentFromRatio, formatSignedUsd, formatUsd, pnlColor } from '../../lib/format';
 import { readTodayTrades, type StoredTrade } from '../scalper/tradeStore';
 import { EmptyState, SkeletonList } from './components';
 
@@ -38,6 +38,9 @@ function CycleRow({ item, usdKrw }: { item: StoredTrade; usdKrw: number | null }
   const feeNote =
     item.fees && item.fees > 0 ? ` · 수수료 ${usdKrw !== null ? toKrw(item.fees) : formatUsd(item.fees)}` : '';
 
+  // 수익률(진입가 대비 청산가, 수수료 전) — 1주 실험에선 금액이 동전 단위라 %가 실제 정보다.
+  const returnRatio = item.entryPrice > 0 ? (item.exitPrice - item.entryPrice) / item.entryPrice : null;
+
   const handlePress = () => {
     // market이 없는 옛 기록은 NAS 폴백 — 자동 트레이딩 미채용 티커 기본값(autopilotManager.marketOf)과 동일 관례.
     router.push({ pathname: '/stock/[ticker]', params: { ticker: item.ticker, market: item.market ?? 'NAS' } });
@@ -62,9 +65,14 @@ function CycleRow({ item, usdKrw }: { item: StoredTrade; usdKrw: number | null }
         </View>
       }
       trailing={
-        <Text style={{ color: pnlColor(item.pnl) }} className="text-sm font-bold">
-          {usdKrw !== null ? formatSignedKrw(item.pnl * usdKrw) : formatSignedUsd(item.pnl)}
-        </Text>
+        <View className="items-end">
+          <Text style={{ color: pnlColor(item.pnl) }} className="text-sm font-bold">
+            {usdKrw !== null ? formatSignedKrw(item.pnl * usdKrw) : formatSignedUsd(item.pnl)}
+          </Text>
+          <Text style={{ color: pnlColor(returnRatio) }} className="mt-0.5 text-xs font-semibold">
+            {formatSignedPercentFromRatio(returnRatio, 2)}
+          </Text>
+        </View>
       }
     />
   );

@@ -69,6 +69,11 @@ export function createRealtimeFeed(
         const extras: TickExtras = {};
         if (Number.isFinite(volume)) extras.volume = volume;
         if (Number.isFinite(strength)) extras.strength = strength;
+        // 당일 고저(HIGH/LOW) — 추세 포지션 게이지의 양끝(오늘 최저·최고)용. 0/비유한이면 뺀다.
+        const dayHigh = Number(tick.HIGH);
+        const dayLow = Number(tick.LOW);
+        if (Number.isFinite(dayHigh) && dayHigh > 0) extras.dayHigh = dayHigh;
+        if (Number.isFinite(dayLow) && dayLow > 0) extras.dayLow = dayLow;
         const now = clock.now();
         handler?.(symb, price, now, extras);
         // 1호가는 체결가 페이로드(PBID/PASK/VBID/VASK)에 함께 실려 온다 — 별도 호가(HDFSASP0) 구독 없이

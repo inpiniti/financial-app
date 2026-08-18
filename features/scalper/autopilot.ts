@@ -226,6 +226,11 @@ export interface AutoPilotGridView {
   buyLegStatus: BuyLegStatus;
   /** 이 그리드만 멈춘 사유(그리드 단위 격리) — null이면 정상. 전역 FAULT와 다르다. */
   faultText: string | null;
+  /**
+   * 게이지 양끝의 의미 — 'orders'면 buyPrice/sellPrice가 주문선(그리드·변곡점 조합), 'dayRange'면
+   * 오늘 최저가/최고가(추세 관리 — 주문선이 없어 참고 범위만 보여준다, 2026-08-18). 미지정은 'orders'.
+   */
+  rangeKind?: 'orders' | 'dayRange';
 }
 
 export interface AutoPilotDeps {
@@ -562,12 +567,19 @@ export class AutoPilot {
       // buyPrice/sellPrice는 "걸린 지정가"가 아니라 "신호가 와야 실행되는 가상 레벨"이다.
       if (active.cond) {
         const v = active.cond.grid.view;
+        const slotView = active.slot?.getView();
+        // 추세 관리는 주문선이 없다(sellLine=buyLine=평단) — 양끝을 오늘 최저·최고(틱 HIGH/LOW)로 대신 그린다.
+        // 고저가 아직 없으면 평단으로 폴백(게이지가 평단 한 점으로 접힌다 — 첫 틱이 오면 펴진다).
+        const dayRange = this.trendEnabled();
+        const dayLow = slotView?.dayLow ?? null;
+        const dayHigh = slotView?.dayHigh ?? null;
         out.push({
           ticker: active.ticker,
           avgPrice: v.avgPrice,
-          buyPrice: v.buyLine,
-          sellPrice: v.sellLine,
-          currentPrice: active.slot?.getView().price ?? null,
+          buyPrice: dayRange ? Math.min(dayLow ?? v.avgPrice, v.avgPrice) : v.buyLine,
+          sellPrice: dayRange ? Math.max(dayHigh ?? v.avgPrice, v.avgPrice) : v.sellLine,
+          rangeKind: dayRange ? 'dayRange' : 'orders',
+          currentPrice: slotView?.price ?? null,
           holdingQty: v.qty,
           buyMultiplier: 1,
           gridActive: true,

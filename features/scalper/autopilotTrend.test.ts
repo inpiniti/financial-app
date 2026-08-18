@@ -95,10 +95,26 @@ describe('추세 → 그리드 → 매매 — 진입·인계', () => {
     expect(broker.placed[0].side).toBe('buy');
     const g = h.pilot.getView().grids[0];
     expect(g.gridActive).toBe(true);
+    // 고저 틱이 아직 없으면 양끝은 평단으로 접힌다(주문선 없음).
+    expect(g.rangeKind).toBe('dayRange');
     expect(g.sellPrice).toBe(g.avgPrice);
     expect(g.buyPrice).toBe(g.avgPrice);
     expect(h.events.some((e) => e.includes('추세 관리 인계'))).toBe(true);
     expect(h.events.some((e) => e.includes('변곡점 그리드 인계'))).toBe(false);
+  });
+
+  it('추세 게이지 양끝은 오늘 최저·최고(틱 HIGH/LOW) — 평단을 항상 포함한다', async () => {
+    const h = makeHarness();
+    await enter(h);
+    const g0 = h.pilot.getView().grids[0];
+    h.slots.get('A')!.pushTick(g0.avgPrice, 200 * M, { dayHigh: g0.avgPrice * 1.1, dayLow: g0.avgPrice * 0.9 });
+    const g = h.pilot.getView().grids[0];
+    expect(g.rangeKind).toBe('dayRange');
+    expect(g.buyPrice).toBeCloseTo(g0.avgPrice * 0.9);
+    expect(g.sellPrice).toBeCloseTo(g0.avgPrice * 1.1);
+    // 저가가 평단보다 높게 와도(진입 직후 상승) 왼쪽 끝은 평단 이하로 클램프.
+    h.slots.get('A')!.pushTick(g0.avgPrice * 1.05, 200 * M + 1000, { dayHigh: g0.avgPrice * 1.1, dayLow: g0.avgPrice * 1.02 });
+    expect(h.pilot.getView().grids[0].buyPrice).toBe(g0.avgPrice);
   });
 
   it('보유 중 BUY 신호(봉 마감마다 반복)는 무시한다 — 물타기 없음, 평단 아래여도', async () => {

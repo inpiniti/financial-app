@@ -1,12 +1,14 @@
 // 매도 관리 그리드 게이지 — 진입 후 관리 중(view.grid non-null)일 때 AutoPilotScreen이 Panel로 보여준다.
 // 가로 게이지: 왼쪽 끝=매수가(평단−매수폭), 오른쪽 끝=매도가(평단+매도폭), 평단은 두 폭의 비율 위치.
+// 추세 관리(rangeKind='dayRange', 2026-08-18)는 주문선이 없어 양끝이 오늘 최저·최고가(참고 범위)이고 회색 라벨로 구분한다.
+// 헤더에 현재가의 평단 대비 %(pnlColor)를 함께 보여준다 — 1주 실험에선 금액보다 %가 정보다.
 // (2026-08-14 매수·매도폭 분리 — 폭이 비대칭이라 평단이 정중앙이 아닐 수 있다.) 현재가는 ▼ 화살표 + 말풍선.
 // app-ui-style: 이모지 금지(Ionicons도 필요 없는 단순 도형이라 SVG 직접), 손익이 아니라 매수/매도 방향 색이라
 // pnlColor() 대신 스킬이 지정한 고정 색(매도=#f04452·매수=#3182f6·평단/현재가=#191f28)을 그대로 쓴다.
 import { useState } from 'react';
 import { Text, View, type LayoutChangeEvent } from 'react-native';
 import Svg, { Line } from 'react-native-svg';
-import { formatKrw, formatUsd } from '../../../lib/format';
+import { formatKrw, formatSignedPercentFromRatio, formatUsd, pnlColor } from '../../../lib/format';
 import { useUsdKrwRate } from '../../../lib/useUsdKrwRate';
 import type { AutoPilotGridView } from '../autopilot';
 import { formatPrice } from './format';
@@ -48,6 +50,10 @@ export function GridGauge({ grid, name }: GridGaugeProps) {
   const holdingValueUsd = grid.currentPrice === null ? null : grid.currentPrice * grid.holdingQty;
   const holdingValueKrw = holdingValueUsd !== null && usdKrw !== null ? holdingValueUsd * usdKrw : null;
 
+  const dayRange = grid.rangeKind === 'dayRange';
+  // 평단 대비 현재가 비율 — 틱이 없으면 null(—).
+  const pnlRatio =
+    grid.currentPrice === null || !(grid.avgPrice > 0) ? null : (grid.currentPrice - grid.avgPrice) / grid.avgPrice;
   const buyLegAbsent = grid.buyLegStatus === 'skippedCash' || grid.buyLegStatus === 'rejected';
   const buyLegNotice = BUY_LEG_NOTICE[grid.buyLegStatus];
 
@@ -73,6 +79,9 @@ export function GridGauge({ grid, name }: GridGaugeProps) {
           <Text className="text-xs text-[#8b95a1]">
             {name !== undefined ? `${grid.ticker} · ` : ''}
             {grid.holdingQty}주
+          </Text>
+          <Text className="mt-0.5 text-xs font-semibold" style={{ color: pnlColor(pnlRatio) }}>
+            평단 대비 {formatSignedPercentFromRatio(pnlRatio, 2)}
           </Text>
         </View>
         <View className="items-end">
@@ -108,7 +117,9 @@ export function GridGauge({ grid, name }: GridGaugeProps) {
             {tickFractions.map((f, i) => {
               const x = trackWidth * f;
               const isEdgeOrMid = i === 0 || i === tickFractions.length - 1 || i === 2;
-              const stroke = i === 0 ? BUY_COLOR : i === tickFractions.length - 1 ? SELL_COLOR : i === 2 ? NEUTRAL_COLOR : TICK_COLOR;
+              const edgeStroke = (orders: string) => (dayRange ? MUTED_COLOR : orders);
+              const stroke =
+                i === 0 ? edgeStroke(BUY_COLOR) : i === tickFractions.length - 1 ? edgeStroke(SELL_COLOR) : i === 2 ? NEUTRAL_COLOR : TICK_COLOR;
               return (
                 <Line
                   key={i}
@@ -132,9 +143,9 @@ export function GridGauge({ grid, name }: GridGaugeProps) {
         <View>
           <Text
             className="text-[11px] font-semibold"
-            style={{ color: buyLegAbsent ? MUTED_COLOR : BUY_COLOR }}
+            style={{ color: dayRange || buyLegAbsent ? MUTED_COLOR : BUY_COLOR }}
           >
-            매수가
+            {dayRange ? '오늘 최저' : '매수가'}
           </Text>
           <Text className="text-xs font-bold" style={{ color: buyLegAbsent ? MUTED_COLOR : NEUTRAL_COLOR }}>
             {formatPrice(grid.buyPrice)}
@@ -158,8 +169,8 @@ export function GridGauge({ grid, name }: GridGaugeProps) {
           </Text>
         </View>
         <View className="items-end">
-          <Text className="text-[11px] font-semibold" style={{ color: SELL_COLOR }}>
-            매도가
+          <Text className="text-[11px] font-semibold" style={{ color: dayRange ? MUTED_COLOR : SELL_COLOR }}>
+            {dayRange ? '오늘 최고' : '매도가'}
           </Text>
           <Text className="text-xs font-bold text-[#191f28]">{formatPrice(grid.sellPrice)}</Text>
         </View>

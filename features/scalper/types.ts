@@ -221,6 +221,10 @@ export interface TickExtras {
   volume?: number;
   /** 체결강도(KIS STRN, 100=매수·매도 균형). */
   strength?: number;
+  /** 당일 고가(KIS HIGH) — 게이지 "오늘 최고" 표시용. 세션 기준은 KIS가 정한다(주간거래는 그 세션). */
+  dayHigh?: number;
+  /** 당일 저가(KIS LOW). */
+  dayLow?: number;
 }
 
 /** WS 단일 연결을 감싸는 시세 피드. 매니저가 티커별 구독을 이 위로 멀티플렉스한다. */
