@@ -223,8 +223,8 @@ export default function SettingsScreen() {
               className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
             />
             <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
-              수량을 정하면 종목 가격과 상관없이 딱 이 수량만 사요($0.01짜리도 $100짜리도 같은 수량). 이때는 진입금액보다
-              비싼 종목도 리스트에서 빠지지 않고, 물타기도 이 수량씩 해요.
+              수량을 정하면 종목 가격과 상관없이 딱 이 수량만 사요($0.01짜리도 $9짜리도 같은 수량). 이때 진입금액은
+              "이 가격 이하 종목만"이라는 상한으로 쓰이고, 물타기도 이 수량씩 해요.
             </Text>
 
             <Text className="mb-1 text-xs text-[#8b95a1]">
