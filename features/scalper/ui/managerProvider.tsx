@@ -37,8 +37,8 @@ import { planFromSelection, rankingPlanKey, type KisMetric, type KisWindow, type
 import { buildRankingSnapshot } from '../rankingSnapshot';
 import type { OverseasExchangeCode } from '../../../kis/trId';
 import { INFLECTION_THRESHOLDS, TREND_CONFIG } from '../autopilot';
-import { inquireOverseasMinuteChart } from '../../../kis/minuteChart';
-import { kstToMinuteKey, type MinuteBar } from '../../../core/trend/bars';
+import { MINUTE_BAR_RING_SIZE, type MinuteBar } from '../../../core/trend/bars';
+import { fetchTossMinuteBars, resolveTossProductCode } from '../../../lib/tossMinuteChart';
 import { getSupabaseClient, isSupabaseConfigured } from '../../../lib/supabase';
 import { loadApprovedAccountNo } from '../../../lib/gateStorage';
 import { TradeResultRecorder, toTradeResultRow, type TradeResultsInsertClient } from '../tradeResults';
@@ -203,21 +203,20 @@ async function buildManager(): Promise<ManagerBootstrap> {
     }
   };
 
-  // 추세 워밍업(2026-08-18) — 분봉조회 첫 페이지(최근 120봉, 전일 포함)를 KST 분 키·종가로. 실패는 throw → 매니저 큐가 1회 재시도.
+  // 추세 워밍업(2026-08-18) — 토스 c-chart 1분봉(lib/tossMinuteChart) 최근 130봉(링 크기)을 시드로.
+  // 한투 분봉조회는 정규장만 줘서 프리·애프터·주간거래에 4선이 꼬였다(같은 날 확정) — 토스는 세션 무관 연속 봉.
+  // 티커→토스 productCode는 검색 1회로 풀고 세션 동안 캐시(코드는 불변). 못 풀면 throw → 매니저 큐가 1회 재시도,
+  // 그래도 안 되면 WS 봉만으로 서서히 채운다.
+  const tossCodeCache = new Map<string, string>();
   const fetchMinuteBars = async (ticker: string, market: WatchMarket): Promise<MinuteBar[]> => {
-    const accessToken = await getTokenStr();
-    const { candles } = await inquireOverseasMinuteChart(credentials, accessToken, {
-      excd: market,
-      symb: ticker,
-      nmin: 1,
-      includePrev: true,
-    });
-    const out: MinuteBar[] = [];
-    for (const c of candles) {
-      const minuteKey = kstToMinuteKey(c.kymd, c.khms);
-      if (minuteKey !== null && Number.isFinite(c.close) && c.close > 0) out.push({ minuteKey, close: c.close });
+    let code = tossCodeCache.get(ticker);
+    if (!code) {
+      const resolved = await resolveTossProductCode(ticker, market);
+      if (!resolved) throw new Error('토스 종목코드를 못 찾았어요');
+      tossCodeCache.set(ticker, resolved);
+      code = resolved;
     }
-    return out;
+    return fetchTossMinuteBars(code, MINUTE_BAR_RING_SIZE);
   };
 
   // 거래 결과 외부 기록(docs/domain/켈리 §4) — Supabase env와 게이트 계좌번호가 있을 때만. 없으면 로컬 기록만.
