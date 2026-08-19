@@ -11,6 +11,7 @@
 import { appendTradeRecord } from './tradeStore';
 import {
   AutoPilot,
+  type AutoPilotConfig,
   type AutoPilotDeps,
   type AutoPilotEvent,
   type AutoPilotView,
@@ -151,6 +152,10 @@ type ListListener = (rows: readonly AutoPilotSlotRow[]) => void;
 const EVENT_LIMIT = 50;
 
 export class AutoPilotManager {
+  /**
+   * 오토파일럿 본체 — **테스트 하네스 전용**(타이머 대신 reselect/pollCycle을 직접 구동).
+   * 화면·provider는 이 필드를 만지지 않고 getView/resume/setConfig 등 매니저 인터페이스만 쓴다.
+   */
   readonly pilot: AutoPilot;
   readonly watchlist: ScalperWatchlist;
 
@@ -285,6 +290,21 @@ export class AutoPilotManager {
   // ---- 모드 수명주기 ----
 
   /** 자동관리 시작. */
+  /** 오토파일럿 현재 뷰(상태·감시·활성 사이클·설정) — 화면 초기 렌더·설정 화면 동기화용. */
+  getView(): AutoPilotView {
+    return this.pilot.getView();
+  }
+
+  /** 현금 부족 등으로 PAUSED된 오토파일럿을 사용자가 재개한다. */
+  resume(): void {
+    this.pilot.resume();
+  }
+
+  /** 트레이딩 설정 저장(IDLE에서만 통과) — 거절 사유 문자열 또는 null. */
+  setConfig(config: AutoPilotConfig): string | null {
+    return this.pilot.setConfig(config);
+  }
+
   start(): void {
     this.deps.realtime.connect();
     this.watchlist.start();

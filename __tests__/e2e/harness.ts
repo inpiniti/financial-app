@@ -350,7 +350,7 @@ export function makeHarness(opts: MakeHarnessOptions = {}): Harness {
   manager.setFeedUseProbe((trKey, trId) => autopilot.usesTrKey(trKey, trId));
 
   // 속도 필터가 사실상 안 걸리는 문턱(단위 테스트 CONFIG_100과 동일 취지).
-  autopilot.pilot.setConfig({
+  autopilot.setConfig({
     startAmountUsd: opts.startAmountUsd ?? 100,
     minTickRate: 0.01,
   });

@@ -84,7 +84,7 @@ function makeManager(
     trend: opts.fetchMinuteBars ? TREND_CONFIG : undefined,
     fetchMinuteBars: opts.fetchMinuteBars,
   });
-  manager.pilot.setConfig({ startAmountUsd: 100, minTickRate: 0.01 });
+  manager.setConfig({ startAmountUsd: 100, minTickRate: 0.01 });
   return { manager, feed, store, clock, fetchSnapshot, keepAwake, scheduler };
 }
 
@@ -98,7 +98,7 @@ describe('AutoPilotManager — 배선(구독·라우팅·상호 배타)', () => 
     expect(feed.connected).toBe(true);
     expect(feed.tickPairs()).toHaveLength(12); // 체결가(D) — 전 종목.
     expect(feed.pairs.size).toBe(12); // 다른 TR(HDFSASP0 등) 구독 없음.
-    expect(manager.pilot.getView().state).toBe('SCANNING');
+    expect(manager.getView().state).toBe('SCANNING');
     expect(manager.getRows()).toHaveLength(12);
 
     // 감시가 붙어도 추가 구독은 생기지 않는다.
@@ -217,7 +217,7 @@ describe('AutoPilotManager — 배선(구독·라우팅·상호 배타)', () => 
         true,
       ),
     );
-    expect(manager.pilot.getView().state).toBe('SCANNING'); // 차단하지 않는다.
+    expect(manager.getView().state).toBe('SCANNING'); // 차단하지 않는다.
   });
 
   it('keep-awake — 시작하면 켜지고 정지하면 꺼진다', async () => {
@@ -226,7 +226,7 @@ describe('AutoPilotManager — 배선(구독·라우팅·상호 배타)', () => 
     await vi.waitFor(() => expect(keepAwake.activate).toHaveBeenCalled());
     manager.stop();
     expect(keepAwake.deactivate).toHaveBeenCalled();
-    expect(manager.pilot.getView().state).toBe('IDLE');
+    expect(manager.getView().state).toBe('IDLE');
   });
 
   it('[사고 재현] setEntryLadder — 이미 감시 중인 슬롯도 새 간격·횟수로 갈아탄다(앱 재시작 불필요)', async () => {
@@ -296,7 +296,7 @@ describe('AutoPilotManager — 배선(구독·라우팅·상호 배타)', () => 
     manager.stop();
     await flush();
 
-    manager.pilot.setConfig({ startAmountUsd: 100, minTickRate: 0.01, entryQty: 1 });
+    manager.setConfig({ startAmountUsd: 100, minTickRate: 0.01, entryQty: 1 });
     manager.start();
     await vi.waitFor(() => expect(manager.watchlist.size).toBe(1));
     expect(manager.watchlist.has('A')).toBe(false);

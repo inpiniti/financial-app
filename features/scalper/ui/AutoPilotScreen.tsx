@@ -196,7 +196,7 @@ export interface AutoPilotScreenProps {
 }
 
 export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
-  const [view, setView] = useState<AutoPilotView>(() => autopilot.pilot.getView());
+  const [view, setView] = useState<AutoPilotView>(() => autopilot.getView());
   const [rows, setRows] = useState<readonly AutoPilotSlotRow[]>(() => autopilot.getRows());
   const [events, setEvents] = useState<readonly AutoPilotEvent[]>(() => autopilot.recentEvents);
   // 계좌 잔고 보유분을 그리드에 다시 태우는 시트(FAULT 이후 복구 경로).
@@ -236,7 +236,7 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
     } catch {
       // 설정 로드 실패 — 마지막으로 적용된 값으로 시작한다.
     }
-    if (!autopilot.pilot.getView().config) {
+    if (!autopilot.getView().config) {
       Alert.alert('알림', '진입금액을 먼저 정해 주세요. 상단바 설정 > 트레이딩 설정에서 바꿀 수 있어요.');
       return;
     }
@@ -248,7 +248,7 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
   }, [autopilot]);
 
   const handleStop = useCallback(() => autopilot.stop(), [autopilot]);
-  const handleResume = useCallback(() => autopilot.pilot.resume(), [autopilot]);
+  const handleResume = useCallback(() => autopilot.resume(), [autopilot]);
 
   // 행 탭 → 종목 상세화면(차트/댓글/호가) — 3거래소 병합 리스트라 행마다 채용 거래소를 넘긴다.
   // 종목명도 함께 넘겨 상세 상단바가 티커만 덩그러니 뜨지 않게 한다(리스트와 같은 제목).

@@ -328,7 +328,7 @@ async function buildManager(): Promise<ManagerBootstrap> {
  * setConfig는 IDLE에서만 통과한다 — 매매 중 저장은 조용히 무시되고 정지 후 다음 포커스에 반영된다.
  */
 async function syncTradingConfig(autopilot: AutoPilotManager, appSettings: AppSettings): Promise<void> {
-  const current = autopilot.pilot.getView().config;
+  const current = autopilot.getView().config;
   if (appSettings.startAmountUsd > 0) {
     // 값이 그대로면 건너뛴다 — setConfig는 매번 저장하고 뷰를 다시 쏘는데, 이 함수는 화면 포커스마다 돈다.
     if (
@@ -340,7 +340,7 @@ async function syncTradingConfig(autopilot: AutoPilotManager, appSettings: AppSe
     ) {
       return;
     }
-    autopilot.pilot.setConfig({
+    autopilot.setConfig({
       startAmountUsd: appSettings.startAmountUsd,
       entryQty: appSettings.entryQty,
       minTickRate: appSettings.minTickRate,

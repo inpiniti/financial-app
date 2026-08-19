@@ -29,7 +29,7 @@ describe('7단계 종단 — 자동 단타 체인 (WS 프레임 → 허브 라�
 
     // 실물 OverseasRealtimePriceClient가 만든 register 프레임에 trKey가 실려 나갔는가(경계 검증).
     expect(h.socket().sent.some((s) => s.includes('DNASAAPL'))).toBe(true);
-    expect(h.autopilot.pilot.getView().state).toBe('SCANNING');
+    expect(h.autopilot.getView().state).toBe('SCANNING');
   });
 
   it('② V자 가격 시퀀스에서 진입 BUY가 정확히 1회 발주된다(TR ID·PDNO·금액÷가격 수량 검증)', async () => {
@@ -82,6 +82,6 @@ describe('7단계 종단 — 자동 단타 체인 (WS 프레임 → 허브 라�
     await tickSeries(h, 'AAPL', DOWN_UP_DOWN); // 변곡점이 뚜렷한 시퀀스인데도
 
     expect(h.api.placed).toHaveLength(0);
-    expect(h.autopilot.pilot.getView().state).toBe('IDLE');
+    expect(h.autopilot.getView().state).toBe('IDLE');
   });
 });
