@@ -147,7 +147,18 @@ export interface AutoPilotConfig {
   maxConcurrentGrids?: number;
 }
 
-/** 동시 그리드 개수 단일 판정 — 미지정·손상값은 기본값으로, 상한은 MAX_GRIDS_LIMIT. */
+/**
+ * 트레이딩 설정 스냅샷 — 설정 정본(lib/appSettings)에서 한 번에 내려온다(2026-08-19 설정 배관 단일화).
+ * config(진입금액·수량·속도·동시 종목)는 IDLE에서만 반영되고, grid·buyCancelAfterMs는 실행 중에도 즉시 반영된다.
+ */
+export interface TradingSettings {
+  config?: AutoPilotConfig;
+  /** 매도 관리 그리드 폭·배율(OCO 경로·롤백 보존). 미지정이면 그리드 경로 비활성. */
+  grid?: GridExitConfig;
+  /** 매수 미체결 자동 취소 대기(ms, 0=끔). */
+  buyCancelAfterMs?: number;
+}
+
 /** 고정 진입 수량 단일 판정 — 미지정·0·손상값은 null(금액 계산), 양수는 정수 절사. */
 export function fixedEntryQtyOf(config: Pick<AutoPilotConfig, 'entryQty'> | null | undefined): number | null {
   const raw = config?.entryQty;
@@ -383,15 +394,15 @@ interface PendingBuy {
   tickRate: number;
 }
 
-interface PersistedV3 {
-  version: 3;
-  config: AutoPilotConfig | null;
+/** 영속 v4(2026-08-19) — 상태만(일시정지·일별 누계). 설정값은 lib/appSettings가 정본이라 더 저장하지 않는다. */
+interface PersistedV4 {
+  version: 4;
   /** 현금 부족 일시정지 — 재시작에도 복원돼야 한다(자동 재개 금지). */
   paused: boolean;
   daily: { date: string; cycles: number; cumPnl: number } | null;
 }
 
-/** 옛 저장 포맷(마이그레이션 파싱 전용) — v2는 세션, v1은 baseAmountUsd 단일 값. */
+/** 옛 저장 포맷(마이그레이션 파싱 전용) — v3는 config 동봉, v2는 세션, v1은 baseAmountUsd 단일 값. */
 interface LegacyPersisted {
   version?: number;
   config?: (AutoPilotConfig & { maxAmountUsd?: number; martingale?: boolean }) | null;
@@ -626,11 +637,21 @@ export class AutoPilot {
   }
 
   /**
-   * 그리드 폭·매수배율 교체 — 설정 탭 저장 후 매니저가 부른다. **실행 중에도 안전하다.**
+   * 트레이딩 설정 스냅샷 적용 — 설정 정본에서 내려온 값을 **한 번에** 받는다(항목별 setter 없음).
+   * grid·buyCancelAfterMs는 즉시, config는 IDLE에서만(거절 사유 문자열 반환, 나머지는 그대로 적용된다).
+   */
+  applySettings(settings: TradingSettings): string | null {
+    if ('grid' in settings) this.applyGridConfig(settings.grid);
+    if (settings.buyCancelAfterMs !== undefined) this.applyBuyCancelAfterMs(settings.buyCancelAfterMs);
+    return settings.config ? this.setConfig(settings.config) : null;
+  }
+
+  /**
+   * 그리드 폭·매수배율 교체 — **실행 중에도 안전하다.**
    * 이미 걸린 그리드는 자기 폭을 그대로 유지하고(주문이 이미 접수돼 있다), 다음 진입부터 새 값이 쓰인다.
    * 현재 값과 같으면 아무것도 하지 않는다(불필요한 이벤트·리렌더 방지).
    */
-  setGridConfig(config: GridExitConfig | undefined): void {
+  private applyGridConfig(config: GridExitConfig | undefined): void {
     const prev = this.gridConfig;
     if (
       prev === config ||
@@ -655,7 +676,7 @@ export class AutoPilot {
    * 매수 미체결 취소 대기 교체(설정 탭 저장 반영). **실행 중에도 안전하다** — 판정은 매 리프라이스 틱마다
    * 현재 값을 읽으므로, 이미 대기 중인 매수도 다음 틱부터 새 기준(buyingSince로부터의 경과)으로 잰다.
    */
-  setBuyCancelAfterMs(ms: number): void {
+  private applyBuyCancelAfterMs(ms: number): void {
     const next = Number.isFinite(ms) && ms > 0 ? ms : 0;
     if (next === this.buyCancelAfterMs) return;
     this.buyCancelAfterMs = next;
@@ -669,28 +690,48 @@ export class AutoPilot {
 
   // ---- 설정/영속화 ----
 
-  /** 설정 변경 — IDLE에서만. 검증 실패 문구를 반환한다(성공 시 null). */
+  /**
+   * 진입 설정(금액·수량·속도·동시 종목) — IDLE에서만. 검증 실패 문구를 반환한다(성공 시 null).
+   * 저장하지 않는다 — 정본은 lib/appSettings이고 부팅·포커스마다 applySettings로 다시 내려온다. 같은 값이면 no-op.
+   */
   setConfig(config: AutoPilotConfig): string | null {
     if (this.state !== 'IDLE') return '설정은 정지 상태에서 바꿀 수 있어요';
     const error = validateConfig(config);
     if (error) return error;
+    const prev = this.config;
+    if (
+      prev &&
+      prev.startAmountUsd === config.startAmountUsd &&
+      (prev.entryQty ?? 0) === (config.entryQty ?? 0) &&
+      prev.minTickRate === config.minTickRate &&
+      (prev.maxConcurrentGrids ?? DEFAULT_MAX_GRIDS) === (config.maxConcurrentGrids ?? DEFAULT_MAX_GRIDS)
+    ) {
+      return null;
+    }
     this.config = { ...config };
-    void this.persist();
     this.emit();
     return null;
   }
 
   /**
-   * 재시작 복원 — v3 설정·paused·일일 통계.
-   * 옛 포맷 마이그레이션: v2(세션)는 config에서 maxAmountUsd·martingale을 버리고 session.paused만 승계,
-   * v1(baseAmountUsd)은 진입금액으로 승계(최소 속도 기본 1).
+   * 재시작 복원 — v4 paused·일일 통계.
+   * 옛 포맷 마이그레이션: v3는 동봉된 config를 **폴백**으로만 승계(정본 appSettings가 부팅 때 덮어쓴다),
+   * v2(세션)는 config에서 maxAmountUsd·martingale을 버리고 session.paused만 승계, v1(baseAmountUsd)은 진입금액으로 승계.
+   * 어느 경우든 다음 저장은 v4(설정값 없음)다.
    */
   async restore(): Promise<void> {
     const raw = await this.deps.storage.getItem(AUTOPILOT_STORAGE_KEY);
     if (!raw) return;
     try {
-      const parsed = JSON.parse(raw) as Partial<PersistedV3> & LegacyPersisted;
-      if (parsed.version === 3) {
+      const parsed = JSON.parse(raw) as Partial<PersistedV4> & LegacyPersisted;
+      if (parsed.version === 4) {
+        this.paused = parsed.paused === true;
+        if (parsed.daily && typeof parsed.daily.date === 'string') {
+          this.dailyDate = parsed.daily.date;
+          this.cycles = parsed.daily.cycles ?? 0;
+          this.cumPnl = parsed.daily.cumPnl ?? 0;
+        }
+      } else if (parsed.version === 3) {
         if (parsed.config && validateConfig(parsed.config) === null) this.config = parsed.config;
         this.paused = parsed.paused === true;
         if (parsed.daily && typeof parsed.daily.date === 'string') {
@@ -698,6 +739,7 @@ export class AutoPilot {
           this.cycles = parsed.daily.cycles ?? 0;
           this.cumPnl = parsed.daily.cumPnl ?? 0;
         }
+        void this.persist();
       } else if (parsed.version === 2) {
         // v2 → v3: 세션 제거 — config의 세션 전용 키를 버리고, PAUSED 상태만 승계한다.
         if (parsed.config) {
@@ -727,9 +769,8 @@ export class AutoPilot {
   }
 
   private async persist(): Promise<void> {
-    const data: PersistedV3 = {
-      version: 3,
-      config: this.config,
+    const data: PersistedV4 = {
+      version: 4,
       paused: this.paused,
       daily:
         this.dailyDate === null

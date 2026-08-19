@@ -16,6 +16,7 @@ import {
   type AutoPilotEvent,
   type AutoPilotView,
   type GridExitConfig,
+  type TradingSettings,
   type InflectionGridConfig,
   type TrendGridConfig,
 } from './autopilot';
@@ -148,6 +149,12 @@ export interface AutoPilotSlotRow {
 type ViewListener = (view: AutoPilotView) => void;
 type EventListener = (event: AutoPilotEvent) => void;
 type ListListener = (rows: readonly AutoPilotSlotRow[]) => void;
+
+/** 매니저 설정 스냅샷 — 오토파일럿 몫(trading) + 슬롯 몫(사다리 진입 감지). managerProvider가 lib/appSettings에서 변환한다. */
+export interface ManagerSettings {
+  trading: TradingSettings;
+  entryLadder?: LadderEntryOptions;
+}
 
 const EVENT_LIMIT = 50;
 
@@ -300,9 +307,20 @@ export class AutoPilotManager {
     this.pilot.resume();
   }
 
-  /** 트레이딩 설정 저장(IDLE에서만 통과) — 거절 사유 문자열 또는 null. */
+  /** 진입 설정만(IDLE에서만 통과) — 거절 사유 문자열 또는 null. 전체 스냅샷은 applySettings. */
   setConfig(config: AutoPilotConfig): string | null {
     return this.pilot.setConfig(config);
+  }
+
+  /**
+   * 설정 스냅샷 적용 — 설정 정본(lib/appSettings)에서 내려온 값을 **한 번에** 받는다(managerProvider가 부팅·포커스·시작 직전에 부른다).
+   * 오토파일럿 몫(진입 설정·그리드·매수취소)은 그대로 넘기고, 사다리 진입 감지는 슬롯(FeedSlot)마다 박혀 있어 여기서 살아 있는 슬롯 전부에 흘려 넣는다.
+   * ⚠ 이 매니저는 모듈 스코프 싱글턴이라 앱을 껐다 켜기 전에는 buildManager()가 다시 돌지 않는다 — 이 경로가 없으면 설정을 바꿔도 부팅 때 값으로 계속 발주한다(실제 사고).
+   * 반환값은 진입 설정 거절 사유(IDLE이 아닐 때) 또는 null — 나머지는 그대로 적용된다.
+   */
+  applySettings(settings: ManagerSettings): string | null {
+    if ('entryLadder' in settings) this.applyEntryLadder(settings.entryLadder);
+    return this.pilot.applySettings(settings.trading);
   }
 
   start(): void {
@@ -327,21 +345,10 @@ export class AutoPilotManager {
   }
 
   /**
-   * 그리드 폭·매수배율 교체 — 설정 탭에서 저장한 값을 반영한다(managerProvider가 단타 탭 포커스마다 호출).
-   * ⚠ 이 매니저는 모듈 스코프 싱글턴이라 앱을 껐다 켜기 전에는 buildManager()가 다시 돌지 않는다.
-   *   이 경로가 없으면 설정 탭에서 폭을 바꿔도 최초 부팅 때 읽은 값으로 계속 발주한다(실제 사고).
+   * 사다리 진입 감지(간격·홀 횟수) 교체 — 살아 있는 슬롯 전부에 흘려 넣고, 앞으로 만들어질 슬롯을 위해 기준값도
+   * 갈아끼운다(addSlot이 이 값을 읽는다). 감시 중이던 슬롯은 새 간격 기준의 새 앵커에서 홀을 다시 센다(FeedSlot.setLadderOptions).
    */
-  setGridConfig(config: GridExitConfig | undefined): void {
-    this.pilot.setGridConfig(config);
-  }
-
-  /**
-   * 사다리 진입 감지(간격·홀 횟수) 교체 — 그리드 폭과 같은 이유로 필요한 경로다.
-   * 감지 옵션은 슬롯(FeedSlot)마다 박혀 있어 여기서 **살아 있는 슬롯 전부**에 흘려 넣고,
-   * 앞으로 만들어질 슬롯을 위해 기준값도 갈아끼운다(addSlot이 이 값을 읽는다).
-   * 감시 중이던 슬롯은 새 간격 기준의 새 앵커에서 홀을 다시 센다(FeedSlot.setLadderOptions).
-   */
-  setEntryLadder(options: LadderEntryOptions | undefined): void {
+  private applyEntryLadder(options: LadderEntryOptions | undefined): void {
     const prev = this.entryLadder;
     if (
       prev === options ||
@@ -360,11 +367,6 @@ export class AutoPilotManager {
         text: `진입 감지 설정 적용 · 간격 ${(options.interval * 100).toFixed(2)}% · ${options.triggerCount}칸`,
       });
     }
-  }
-
-  /** 매수 미체결 취소 대기(ms) 교체 — 파일럿으로 그대로 흘려보낸다(설정 탭 저장 반영). */
-  setBuyCancelAfterMs(ms: number): void {
-    this.pilot.setBuyCancelAfterMs(ms);
   }
 
   // ---- 잔고 보유분 입양(FAULT 이후 복구) ----

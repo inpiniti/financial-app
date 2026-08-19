@@ -13,7 +13,6 @@ import {
   loadAppSettings,
   ladderCountOf,
   ladderIntervalToRatio,
-  saveAppSettings,
   type AppSettings,
 } from '../../../lib/appSettings';
 import { loadKisSettings } from '../../../lib/kisSettings';
@@ -42,7 +41,7 @@ import { fetchTossMinuteBars, resolveTossProductCode } from '../../../lib/tossMi
 import { getSupabaseClient, isSupabaseConfigured } from '../../../lib/supabase';
 import { loadApprovedAccountNo } from '../../../lib/gateStorage';
 import { TradeResultRecorder, toTradeResultRow, type TradeResultsInsertClient } from '../tradeResults';
-import { AutoPilotManager, type AutoPilotManagerDeps } from '../autopilotManager';
+import { AutoPilotManager, type AutoPilotManagerDeps, type ManagerSettings } from '../autopilotManager';
 import { createKisBroker } from '../createKisBroker';
 import { createRealtimeFeed } from '../createRealtimeFeed';
 import { expoKeepAwake } from '../keepAwake';
@@ -252,6 +251,7 @@ async function buildManager(): Promise<ManagerBootstrap> {
   }
 
   const finalManager = manager;
+  const initialSettings = managerSettingsFrom(appSettings);
 
   const autopilot = new AutoPilotManager({
     realtime,
@@ -272,12 +272,8 @@ async function buildManager(): Promise<ManagerBootstrap> {
     fetchBuyableUsd,
     fetchHoldings,
     // 매도 관리 그리드 인계(D5) — 매수폭·매도폭·매수배율은 설정 탭(매매파라미터)에서 조절한다.
-    // ⚠ 아래 inflection이 켜져 있는 동안은 조합 경로가 우선이라 이 값은 쓰이지 않는다(롤백용 보존).
-    gridConfig: {
-      buyWidth: appSettings.gridBuyWidthPct / 100,
-      sellWidth: appSettings.gridSellWidthPct / 100,
-      buyMultiplier: appSettings.gridBuyMultiplier,
-    },
+    // ⚠ 아래 inflection·trend가 켜져 있는 동안은 그 경로가 우선이라 이 값은 쓰이지 않는다(롤백용 보존).
+    gridConfig: initialSettings.trading.grid,
     // 변곡점+그리드 조합(2026-08-15 도메인 문서) — 문턱은 문서 §5 고정값(+2%/−3%), 설정 탭 없음.
     // 끄려면 feedSlot.INFLECTION_ENTRY·autopilot.INFLECTION_GRID를 false로(한 줄 롤백) 하거나 이 주입을 뺀다.
     inflection: INFLECTION_THRESHOLDS,
@@ -292,11 +288,8 @@ async function buildManager(): Promise<ManagerBootstrap> {
     // 기다리지 않아(feedSlot) 버퍼 크기는 판정 시작 시점과 무관하다.
     chunkSeconds: 1,
     // 사다리 진입 감지(2026-08-07 plan) — 간격 %→소수, 홀 횟수 정수. feedSlot.LADDER_ENTRY가 최종 스위치다.
-    entryLadder: {
-      interval: ladderIntervalToRatio(appSettings.entryLadderIntervalPct),
-      triggerCount: ladderCountOf(appSettings.entryLadderCount),
-    },
-    buyCancelAfterMs: buyCancelAfterToMs(appSettings.buyCancelAfterSec),
+    entryLadder: initialSettings.entryLadder,
+    buyCancelAfterMs: initialSettings.trading.buyCancelAfterMs,
     // 종목 상세화면(acquireFeed)이 잡고 있는 구독은 리스트 이탈 시에도 해제하지 않는다(교차 해제 방지).
     isFeedHeldExternally: (trKey, trId) => finalManager.holdsFeed(trKey, trId),
     onError: (err) => finalManager.reportFeedError(err),
@@ -307,7 +300,8 @@ async function buildManager(): Promise<ManagerBootstrap> {
   // 반대 방향 프로브 — 상세화면 releaseFeed가 자동 단타의 감시·보유 구독을 끊지 않게 한다.
   manager.setFeedUseProbe((trKey, trId) => autopilot.usesTrKey(trKey, trId));
   await autopilot.restore();
-  await syncTradingConfig(autopilot, appSettings);
+  // 설정 정본(appSettings) → 오토파일럿. 옛 v3 영속에 남은 진입 설정은 restore가 폴백으로 올렸고 여기서 정본이 덮어쓴다.
+  autopilot.applySettings(initialSettings);
   // 지난번 업로드 못 한 거래 기록 재전송(직렬) — 실패해도 조용히, 다음 부팅에 다시.
   if (tradeRecorder) void tradeRecorder.flushPending().catch(() => {});
 
@@ -318,45 +312,34 @@ async function buildManager(): Promise<ManagerBootstrap> {
 }
 
 /**
- * 트레이딩 운용 설정(진입금액·최소 속도·동시 그리드)을 설정 화면 저장소 → 오토파일럿으로 흘려 넣는다.
- *
- * 2026-08-12에 이 값들의 편집 위치가 트레이딩 화면 시트(오토파일럿이 스스로 저장)에서 설정 화면
- * (lib/appSettings)으로 옮겨졌다. 그래서 방향을 하나로 고정한다 — appSettings가 원본, 오토파일럿이 사본.
- * 다만 시트 시절에 값을 넣어 둔 기기는 appSettings가 비어 있으므로(startAmountUsd 0), 그 한 번만
- * 반대로 복사해 설정 화면이 빈 칸으로 뜨지 않게 한다.
- *
- * setConfig는 IDLE에서만 통과한다 — 매매 중 저장은 조용히 무시되고 정지 후 다음 포커스에 반영된다.
+ * 설정 정본(lib/appSettings) → 매니저 설정 스냅샷. 단위 변환(%→소수, 초→ms)은 전부 여기서 — 설정 하나를 더하려면
+ * 설정 화면(app/settings + lib/appSettings)과 소비처(이 변환 + 쓰는 모듈)만 고치면 된다.
+ * 진입금액이 0(미설정)이면 진입 설정(config)은 내려보내지 않는다 — 오토파일럿이 시작 시 "설정 먼저"로 거른다.
  */
-async function syncTradingConfig(autopilot: AutoPilotManager, appSettings: AppSettings): Promise<void> {
-  const current = autopilot.getView().config;
-  if (appSettings.startAmountUsd > 0) {
-    // 값이 그대로면 건너뛴다 — setConfig는 매번 저장하고 뷰를 다시 쏘는데, 이 함수는 화면 포커스마다 돈다.
-    if (
-      current &&
-      current.startAmountUsd === appSettings.startAmountUsd &&
-      (current.entryQty ?? 0) === appSettings.entryQty &&
-      current.minTickRate === appSettings.minTickRate &&
-      current.maxConcurrentGrids === appSettings.maxConcurrentGrids
-    ) {
-      return;
-    }
-    autopilot.setConfig({
-      startAmountUsd: appSettings.startAmountUsd,
-      entryQty: appSettings.entryQty,
-      minTickRate: appSettings.minTickRate,
-      maxConcurrentGrids: appSettings.maxConcurrentGrids,
-    });
-    return;
-  }
-  if (current) {
-    await saveAppSettings({
-      ...appSettings,
-      startAmountUsd: current.startAmountUsd,
-      entryQty: current.entryQty ?? appSettings.entryQty,
-      minTickRate: current.minTickRate,
-      maxConcurrentGrids: current.maxConcurrentGrids ?? appSettings.maxConcurrentGrids,
-    });
-  }
+export function managerSettingsFrom(appSettings: AppSettings): ManagerSettings {
+  return {
+    trading: {
+      config:
+        appSettings.startAmountUsd > 0
+          ? {
+              startAmountUsd: appSettings.startAmountUsd,
+              entryQty: appSettings.entryQty,
+              minTickRate: appSettings.minTickRate,
+              maxConcurrentGrids: appSettings.maxConcurrentGrids,
+            }
+          : undefined,
+      grid: {
+        buyWidth: appSettings.gridBuyWidthPct / 100,
+        sellWidth: appSettings.gridSellWidthPct / 100,
+        buyMultiplier: appSettings.gridBuyMultiplier,
+      },
+      buyCancelAfterMs: buyCancelAfterToMs(appSettings.buyCancelAfterSec),
+    },
+    entryLadder: {
+      interval: ladderIntervalToRatio(appSettings.entryLadderIntervalPct),
+      triggerCount: ladderCountOf(appSettings.entryLadderCount),
+    },
+  };
 }
 
 class NeedsSetupError extends Error {}
@@ -392,16 +375,8 @@ function getOrCreateManager(): Promise<ManagerBootstrap> {
  */
 export async function refreshLiveSettings(autopilot: AutoPilotManager): Promise<void> {
   const appSettings = await loadAppSettings();
-  autopilot.setGridConfig({
-    buyWidth: appSettings.gridBuyWidthPct / 100,
-    sellWidth: appSettings.gridSellWidthPct / 100,
-    buyMultiplier: appSettings.gridBuyMultiplier,
-  });
-  autopilot.setEntryLadder({
-    interval: ladderIntervalToRatio(appSettings.entryLadderIntervalPct),
-    triggerCount: ladderCountOf(appSettings.entryLadderCount),
-  });
-  autopilot.setBuyCancelAfterMs(buyCancelAfterToMs(appSettings.buyCancelAfterSec));
+  // 진입 설정(IDLE 게이트)이 거절돼도 나머지는 적용된다 — 매매 중 저장은 정지 후 다음 포커스·시작 직전에 반영된다.
+  autopilot.applySettings(managerSettingsFrom(appSettings));
   // 순위 계획(2026-08-18) — 바뀌었을 때만 갈아끼우고, 폴링 중이면 다음 주기(최대 3분)를 기다리지 않고 즉시 재조회한다.
   // 정지 상태에서는 재조회하지 않는다(start가 즉시 1회 돌며 새 계획을 쓴다 — 정지 중 구독을 만들지 않게).
   const nextPlan = planFromSelection(appSettings.rankingSelection);
@@ -411,7 +386,6 @@ export async function refreshLiveSettings(autopilot: AutoPilotManager): Promise<
     liveRankingPlanKey = nextKey;
     if (autopilot.watchlist.running) void autopilot.watchlist.refresh();
   }
-  await syncTradingConfig(autopilot, appSettings);
 }
 
 /**

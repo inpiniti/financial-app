@@ -516,21 +516,56 @@ describe('AutoPilot — Stop·FAULT·영속화·마이그레이션', () => {
     });
   }
 
-  it('영속화 v3 — 설정·일일 통계가 복원된다', async () => {
+  it('영속화 v4 — 진입 설정은 저장하지 않는다(정본은 lib/appSettings), 일시정지·일일 통계만', async () => {
     const h = makeHarness(['A'], {
       config: { startAmountUsd: 50, minTickRate: 2 },
     });
     h.pilot.start(); // persist.
     h.pilot.stop();
 
+    const raw = JSON.parse((await h.store.getItem(AUTOPILOT_STORAGE_KEY))!);
+    expect(raw.version).toBe(4);
+    expect(raw.config).toBeUndefined();
     const pilot2 = makeBarePilot(h.store);
     await pilot2.restore();
     const view = pilot2.getView();
-    expect(view.config).toEqual({ startAmountUsd: 50, minTickRate: 2 });
+    expect(view.config).toBeNull(); // 부팅 때 정본(appSettings)이 applySettings로 내려준다.
     expect(view.paused).toBe(false);
   });
 
-  it('영속화 v3 — PAUSED 상태가 재시작 후에도 복원된다(자동 재개 금지)', async () => {
+  it('영속화 v3(옛) — 동봉된 진입 설정은 폴백으로 승계하고 v4로 다시 저장한다', async () => {
+    const store = new FakeStore();
+    await store.setItem(
+      AUTOPILOT_STORAGE_KEY,
+      JSON.stringify({ version: 3, config: { startAmountUsd: 50, minTickRate: 2 }, paused: true, daily: null }),
+    );
+    const pilot = makeBarePilot(store);
+    await pilot.restore();
+    expect(pilot.getView().config).toEqual({ startAmountUsd: 50, minTickRate: 2 });
+    expect(pilot.getView().paused).toBe(true);
+    const raw = JSON.parse((await store.getItem(AUTOPILOT_STORAGE_KEY))!);
+    expect(raw.version).toBe(4);
+    expect(raw.config).toBeUndefined();
+  });
+
+  it('applySettings — 그리드·매수취소는 실행 중에도 즉시, 진입 설정은 IDLE에서만(거절 사유 반환)', async () => {
+    const h = makeHarness(['A'], { config: { startAmountUsd: 50, minTickRate: 2 } });
+    h.pilot.start();
+    const err = h.pilot.applySettings({
+      config: { startAmountUsd: 99, minTickRate: 3 },
+      grid: { buyWidth: 0.04, sellWidth: 0.01, buyMultiplier: 1 },
+      buyCancelAfterMs: 5000,
+    });
+    expect(err).toBe('설정은 정지 상태에서 바꿀 수 있어요');
+    expect(h.pilot.getView().config).toEqual({ startAmountUsd: 50, minTickRate: 2 });
+    expect(h.pilot.gridSettings).toEqual({ buyWidth: 0.04, sellWidth: 0.01, buyMultiplier: 1 });
+    expect(h.events.some((e) => e.includes('매수 미체결 취소 5초'))).toBe(true);
+    h.pilot.stop();
+    expect(h.pilot.applySettings({ config: { startAmountUsd: 99, minTickRate: 3 } })).toBeNull();
+    expect(h.pilot.getView().config).toEqual({ startAmountUsd: 99, minTickRate: 3 });
+  });
+
+  it('영속화 — PAUSED 상태가 재시작 후에도 복원된다(자동 재개 금지)', async () => {
     const h = makeHarness(['A', 'B', 'C'], { fetchBuyableUsd: async () => 0 });
     h.pilot.start();
     const n = await replay(h, 'A', V);
@@ -540,6 +575,7 @@ describe('AutoPilot — Stop·FAULT·영속화·마이그레이션', () => {
     const pilot2 = makeBarePilot(h.store);
     await pilot2.restore();
     expect(pilot2.getView().paused).toBe(true);
+    pilot2.setConfig({ startAmountUsd: 50, minTickRate: 2 }); // 부팅 때 정본(appSettings)이 내려주는 역할.
     pilot2.start();
     expect(pilot2.getView().state).toBe('PAUSED'); // 복원 후에도 사람이 재개해야 한다.
   });
@@ -561,11 +597,11 @@ describe('AutoPilot — Stop·FAULT·영속화·마이그레이션', () => {
     const view = pilot.getView();
     expect(view.config).toEqual({ startAmountUsd: 30, minTickRate: 2, maxConcurrentGrids: 2 });
     expect(view.paused).toBe(true); // session.paused 승계 — 입금 대기 중이던 상태를 잃지 않는다.
-    // v3로 다시 저장됐다(세션 키 소멸).
+    // v4로 다시 저장됐다(세션 키·설정값 소멸 — 설정 정본은 appSettings).
     const raw = JSON.parse((await store.getItem(AUTOPILOT_STORAGE_KEY))!);
-    expect(raw.version).toBe(3);
+    expect(raw.version).toBe(4);
     expect(raw.session).toBeUndefined();
-    expect(raw.config.maxAmountUsd).toBeUndefined();
+    expect(raw.config).toBeUndefined();
   });
 
   it('v1(baseAmountUsd) 저장값 → 진입금액=base·속도=1로 마이그레이션', async () => {
@@ -897,7 +933,7 @@ describe('AutoPilot — 다중 그리드', () => {
     expect(h.pilot.getView().grids.find((g) => g.ticker === 'A')).toMatchObject({ buyPrice: 90, sellPrice: 110 });
 
     // 실행 중에 설정을 바꾼다(설정 탭 저장 → managerProvider가 포커스에서 흘려 넣는 경로).
-    h.pilot.setGridConfig({ buyWidth: 0.05, sellWidth: 0.05, buyMultiplier: 0.5 });
+    h.pilot.applySettings({ grid: { buyWidth: 0.05, sellWidth: 0.05, buyMultiplier: 0.5 } });
     expect(h.pilot.gridSettings).toEqual({ buyWidth: 0.05, sellWidth: 0.05, buyMultiplier: 0.5 });
 
     // B는 새 값(±5%·배율 0.5)으로 열린다.
