@@ -12,6 +12,7 @@ import { BackHeader } from '../components/BackHeader';
 import { Panel } from '../components/Panel';
 import { DEFAULT_APP_SETTINGS, loadAppSettings, saveAppSettings, snapToStep } from '../lib/appSettings';
 import { MAX_GRIDS_LIMIT, TREND_CONFIG } from '../features/scalper/autopilot';
+import { TREND_BAR_MINUTES } from '../core/trend/bars';
 import {
   RankingSelectionPanel,
   draftFromSelection,
@@ -272,7 +273,7 @@ export default function SettingsScreen() {
         <Panel title="추세 (고정값)">
           <View className="px-5 pb-5">
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              진입과 매도는 1분봉 이동평균 4선(분봉5선·20선·60선·120선)의 방향으로만 움직여요. 아래 값은 설계 고정값이라
+              진입과 매도는 {TREND_BAR_MINUTES}분봉 이동평균 4선(분봉5선·20선·60선·120선)으로만 움직여요. 아래 값은 설계 고정값이라
               여기서 바꿀 수 없어요.
             </Text>
 
@@ -287,11 +288,11 @@ export default function SettingsScreen() {
 
             <View className="mb-1 flex-row items-center justify-between">
               <Text className="text-xs text-[#8b95a1]">매도</Text>
-              <Text className="text-sm font-semibold text-[#191f28]">분봉5선이 꺾이면 즉시 전량</Text>
+              <Text className="text-sm font-semibold text-[#191f28]">종가가 분봉5선 아래면 즉시 전량</Text>
             </View>
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              분봉5선이 직전 봉보다 내려가는 순간 수익·손실과 상관없이 전량 매도해요. 매도 주문은 체결될 때까지 현재가를
-              따라가고, 도중에 거두지 않아요.
+              봉이 닫힐 때 종가가 분봉5선보다 낮으면 수익·손실과 상관없이 전량 매도해요. 매도 주문은 체결될 때까지 현재가를
+              따라가고, 도중에 거두지 않아요. 다시 4선이 서면 다시 사요.
             </Text>
 
             <View className="mb-1 flex-row items-center justify-between">
@@ -305,17 +306,17 @@ export default function SettingsScreen() {
 
             <View className="mb-1 flex-row items-center justify-between">
               <Text className="text-xs text-[#8b95a1]">봉</Text>
-              <Text className="text-sm font-semibold text-[#191f28]">1분봉 · 체결가 합성</Text>
+              <Text className="text-sm font-semibold text-[#191f28]">{TREND_BAR_MINUTES}분봉 · 체결가 합성</Text>
             </View>
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              실시간 체결가를 1분 단위로 묶어 봉을 만들고, 봉이 닫힐 때마다 4선을 다시 재요. 감시를 시작할 때 최근 120봉을
+              실시간 체결가를 {TREND_BAR_MINUTES}분 단위로 묶어 봉을 만들고, 봉이 닫힐 때마다 4선을 다시 재요. 감시를 시작할 때 최근 130봉을
               한 번 불러와 채우므로 바로 판정할 수 있어요.
             </Text>
 
             <View className="rounded-2xl bg-[#f2f4f6] px-4 py-3">
               <Text className="text-xs leading-5 text-[#4e5968]">
                 주문은 미리 걸어두지 않고 봉이 닫힌 순간 <Text className="font-semibold text-[#191f28]">현재가</Text>로
-                내요. 진입 주문이 체결되기 전에 5선이 꺾이면 그 봉의 매도는 건너뛰고, 다음 봉에서 다시 판단해요.
+                내요. 진입 주문이 체결되기 전에 매도 신호가 오면 그 봉의 매도는 건너뛰고, 다음 봉에서 다시 판단해요.
               </Text>
             </View>
           </View>

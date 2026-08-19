@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { kstToMinuteKey, MinuteBarBuilder, minuteKeyOf } from './bars';
+import { barKeyOf, kstToMinuteKey, MinuteBarBuilder, minuteKeyOf } from './bars';
 
 const M = 60_000;
 
@@ -123,6 +123,20 @@ describe('MinuteBarBuilder — seed 정합', () => {
     expect(b.seed([])).toBe(0);
     expect(b.closes).toEqual([1]);
     expect(b.inProgress).toEqual({ minuteKey: 1, close: 2 });
+  });
+
+  it('barMinutes=3 — 같은 3분 버킷 틱은 한 봉, 키는 봉 시작 분(3의 배수), 1분 키 seed도 버킷으로 합쳐진다', () => {
+    const b = new MinuteBarBuilder(130, 3);
+    expect(b.pushTick(1, 0)).toBeNull();
+    expect(b.pushTick(2, 2 * M + 59_000)).toBeNull(); // 분 2 — 같은 버킷(0~2)
+    expect(b.inProgress).toEqual({ minuteKey: 0, close: 2 });
+    expect(b.pushTick(3, 3 * M)).toEqual({ minuteKey: 0, close: 2 }); // 분 3 → 새 버킷, 직전 봉 마감
+    expect(b.inProgress).toEqual({ minuteKey: 3, close: 3 });
+    // seed: 1분 키 6,7,8은 버킷 6 하나(마지막 값), 9는 버킷 9
+    expect(b.seed([{ minuteKey: 6, close: 60 }, { minuteKey: 7, close: 70 }, { minuteKey: 8, close: 80 }, { minuteKey: 9, close: 90 }])).toBe(2);
+    expect(b.closes).toEqual([80, 90]);
+    expect(barKeyOf(10 * M + 1, 3)).toBe(9);
+    expect(barKeyOf(12 * M, 3)).toBe(12);
   });
 
   it('minuteKeyOf는 epoch ms를 분으로 내림', () => {

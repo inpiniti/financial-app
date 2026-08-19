@@ -27,7 +27,7 @@ interface Harness {
 function makeHarness(opts: { autoFill?: boolean; positions?: Record<string, { qty: number; avgPrice: number }> } = {}): Harness {
   const clock = fakeClock(1000);
   // 조합(inflection)도 함께 주입한 슬롯 — 추세가 우선해야 한다.
-  const slots = new Map([['A', new FeedSlot({ ticker: 'A', clock, trend: true, inflection: true })]]);
+  const slots = new Map([['A', new FeedSlot({ ticker: 'A', clock, trend: true, trendBarMinutes: 1, inflection: true })]]);
   const brokers = new Map<string, FakeBroker>();
   const trades: TradeRecord[] = [];
   const events: string[] = [];

@@ -3,7 +3,9 @@
 //
 //  up_N(t) = ma_N(t) > ma_N(t−1)  (strict — 보합은 상승도 하락도 아님)
 //  BUY : allUp(t) ∧ allUp(t−1) AND close(t) > ma60(t)   — 4선 중 하나라도 null이면 신호 없음(fail-closed)
-//  SELL: ma5(t) < ma5(t−1)                               — ma5 null이면 신호 없음
+//  SELL: close(t) < ma5(t)                                — ma5 null이면 신호 없음
+//        (2026-08-19 변경: 옛 규칙 "ma5(t) < ma5(t−1)"(기울기)는 가격이 이미 밀린 뒤 1~2봉 늦게 울렸다 —
+//         첫날 42건 재현에서 "종가<ma5"(위치)가 1·3·5분봉 모두 승률·합계 우위. up.ma5는 뷰용으로 계속 계산한다.)
 // 상태 기반: 봉 마감마다 조건이 참이면 매번 발화한다(엣지 아님). 보유/미보유 거름은 호출부(autopilot).
 // "2봉 연속"은 배열에서 ma[i]/ma[i−1]/ma[i−2]로 계산 — 내부 카운터가 없어 attach/detach·seed 순서에 흔들리지 않는다.
 
@@ -71,8 +73,8 @@ export function evaluateTrend(closes: readonly number[]): TrendEval {
   const aboveMa60 = lines.ma60 === null || !Number.isFinite(close) ? null : close > lines.ma60;
 
   let signal: TrendSignal | null = null;
-  // SELL 우선 — ma5 하락(strict). 다른 선이 상승 중이어도 판다.
-  if (up.ma5 === false && lines.ma5 !== null && s5[last - 1] !== null && (lines.ma5 as number) < (s5[last - 1] as number)) {
+  // SELL 우선 — 종가가 ma5 아래(strict). 다른 선이 상승 중이어도 판다.
+  if (lines.ma5 !== null && Number.isFinite(close) && close < lines.ma5) {
     signal = 'SELL';
   } else if (curAll === true && prevAllUp === true && aboveMa60 === true) {
     signal = 'BUY';

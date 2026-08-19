@@ -55,8 +55,22 @@ describe('evaluateTrend — 진입(BUY)', () => {
   });
 });
 
-describe('evaluateTrend — 청산(SELL)', () => {
-  it('ma5 하락이면 SELL — 다른 3선이 상승 중이어도', () => {
+describe('evaluateTrend — 청산(SELL: 종가 < ma5, 2026-08-19)', () => {
+  it('종가가 ma5 아래로 내려오면 SELL — ma5 기울기가 아직 상승이어도(옛 규칙보다 1~2봉 빠름)', () => {
+    // 5봉 평균이 아직 오르는 중인데 마지막 종가가 평균 아래: [10,11,12,13,14] → ma5=12, 다음 봉 11.9 → ma5(t)=12.38>12(상승) but close<ma5
+    const r = evaluateTrend([1, 2, 3, 10, 11, 12, 13, 14, 11.9]);
+    expect(r.up.ma5).toBe(true);
+    expect(r.signal).toBe('SELL');
+  });
+
+  it('종가가 ma5 위면 ma5가 꺾여도 SELL 아님(위치 규칙)', () => {
+    // 급등봉 하나가 창에서 빠져 ma5는 내려가지만 종가는 여전히 평균 위.
+    const r = evaluateTrend([50, 10, 10, 10, 10, 10.5]);
+    expect(r.up.ma5).toBe(false);
+    expect(r.signal).toBeNull();
+  });
+
+  it('ma5 하락 + 종가<ma5면 SELL — 다른 3선이 상승 중이어도', () => {
     // 오름차순 뒤 마지막 봉만 살짝 하락(122→116): ma5는 꺾이고 ma20/60/120은 여전히 상승.
     const closes = asc(122);
     closes[121] = 116;
@@ -72,7 +86,7 @@ describe('evaluateTrend — 청산(SELL)', () => {
     expect(r.signal).toBe('SELL');
   });
 
-  it('ma5 보합이면 SELL 아님', () => {
+  it('종가 = ma5(보합)이면 SELL 아님', () => {
     const r = evaluateTrend([10, 10, 10, 10, 10, 10]);
     expect(r.signal).toBeNull();
   });

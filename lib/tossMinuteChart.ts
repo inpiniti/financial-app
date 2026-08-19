@@ -114,6 +114,8 @@ export function parseTossMinuteBars(body: unknown, beforeMinuteKey?: number): Mi
 export interface FetchTossMinuteBarsOptions extends TossMinuteChartDeps {
   /** 지금(epoch ms) — 진행 중 봉 컷오프 기준. 기본 Date.now(). */
   nowMs?: number;
+  /** 봉 주기(분, min:N). 기본 1. 컷오프도 이 주기의 진행 중 봉(봉 시작 키 ≥ 지금의 봉 시작 키)을 뺀다. */
+  intervalMin?: number;
 }
 
 /** 토스 productCode의 최근 1분봉 count개 — 현재 분(진행 중) 봉은 뺀다. 응답이 비면 [] — throw는 네트워크·JSON 실패뿐. */
@@ -123,11 +125,12 @@ export async function fetchTossMinuteBars(
   deps: FetchTossMinuteBarsOptions = {},
 ): Promise<MinuteBar[]> {
   const fetchImpl = deps.fetchImpl ?? fetch;
-  const res = await fetchImpl(buildTossChartUrl(productCode, count), {
+  const iv = Math.max(1, Math.floor(deps.intervalMin ?? 1));
+  const res = await fetchImpl(buildTossChartUrl(productCode, count, iv), {
     method: 'GET',
     headers: { accept: 'application/json' },
   });
-  const nowKey = Math.floor((deps.nowMs ?? Date.now()) / 60_000);
+  const nowKey = Math.floor((deps.nowMs ?? Date.now()) / (60_000 * iv)) * iv;
   return parseTossMinuteBars(await res.json(), nowKey);
 }
 

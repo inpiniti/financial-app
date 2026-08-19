@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { AutoPilotManager, AUTOPILOT_TRADE_ID, type AutoPilotManagerDeps } from './autopilotManager';
 import { TREND_CONFIG } from './autopilot';
+import { TREND_BAR_MINUTES } from '../../core/trend/bars';
 import { FakeBroker, FakeStore, fakeClock, flush, noopScheduler } from './fakes';
 import type { FeedStatus, RealtimeControlMessage, RealtimeFeed } from './types';
 import type { RankingSnapshot } from './watchlist';
@@ -310,7 +311,8 @@ describe('AutoPilotManager — 배선(구독·라우팅·상호 배타)', () => 
 // ---- 추세 워밍업 큐(2026-08-18 추세→그리드→매매) ----
 
 describe('AutoPilotManager — 추세 워밍업 큐(REST 분봉 시드)', () => {
-  const rising = Array.from({ length: 122 }, (_, i) => ({ minuteKey: i, close: 100 + i }));
+  // 슬롯 봉 주기(TREND_BAR_MINUTES)에 맞춘 키 — 1분 키로 주면 3분 버킷에서 합쳐져 봉 수가 준다.
+  const rising = Array.from({ length: 122 }, (_, i) => ({ minuteKey: i * TREND_BAR_MINUTES, close: 100 + i }));
 
   it('슬롯마다 티커당 1회, 직렬로 호출해 seedTrend에 넣는다', async () => {
     let inflight = 0;

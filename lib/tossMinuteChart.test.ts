@@ -89,6 +89,21 @@ describe('fetchTossMinuteBars', () => {
   });
 });
 
+describe('fetchTossMinuteBars — intervalMin', () => {
+  it('min:N URL로 받고, 지금이 속한 N분 봉(진행 중)은 뺀다', async () => {
+    const body = { result: { candles: [
+      { dt: '2026-08-18T01:33:00-04:00', close: 3 }, // UTC 05:33 → 3분 버킷 시작(05:33 = 분 키 …33, 3의 배수)
+      { dt: '2026-08-18T01:30:00-04:00', close: 2 },
+      { dt: '2026-08-18T01:27:00-04:00', close: 1 },
+    ] } };
+    const fetchImpl = vi.fn().mockResolvedValue({ json: async () => body });
+    // 지금 = 05:34:10 UTC → 진행 중 3분 봉은 05:33 시작 → 그 봉 제외
+    const bars = await fetchTossMinuteBars('X', 130, { fetchImpl, intervalMin: 3, nowMs: Date.UTC(2026, 7, 18, 5, 34, 10) });
+    expect(fetchImpl.mock.calls[0][0]).toContain('/min:3?count=130&');
+    expect(bars.map((b) => b.close)).toEqual([2, 1]);
+  });
+});
+
 describe('fetchTossMinuteCandles', () => {
   it('min:N URL로 GET, 진행 중 봉 포함 그대로', async () => {
     const fetchImpl = vi.fn().mockResolvedValue({ json: async () => SAMPLE });

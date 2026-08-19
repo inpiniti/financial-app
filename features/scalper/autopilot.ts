@@ -100,8 +100,11 @@ export interface TrendGridConfig {
   readonly stopLossPct: number;
 }
 
-/** 추세 설정의 단일 출처 — managerProvider가 주입한다. 손절 −5%(2026-08-18 사용자 확정, EJH −13% 사고 뒤). */
-export const TREND_CONFIG: TrendGridConfig = { kind: 'trend', stopLossPct: 0.05 };
+/**
+ * 추세 설정의 단일 출처 — managerProvider가 주입한다.
+ * 손절 −5%(2026-08-18 EJH −13% 사고 뒤) → −7%(2026-08-19 첫날 재현: −5%는 꼬리에 찍혀 반등을 놓치는 비용, −7%부터 그 비용이 사라지며 최악 −13%로 자름).
+ */
+export const TREND_CONFIG: TrendGridConfig = { kind: 'trend', stopLossPct: 0.07 };
 
 /**
  * 진입 후 포지션 규칙 계약 — 조건부 그리드(변곡점 조합)와 추세 청산 규칙이 구조적으로 만족한다.
@@ -1542,7 +1545,7 @@ export class AutoPilot {
         active.cond = { grid: rule, exec: null, execSide: null, starting: false, faultText: null };
         const stop = rule.stopLossPrice;
         this.event(
-          `${active.ticker} 추세 관리 ${active.adopted ? '등록' : '인계'} · ${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} — 분봉5선이 꺾이면 전량 매도해요(문턱 없음)${
+          `${active.ticker} 추세 관리 ${active.adopted ? '등록' : '인계'} · ${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} — 종가가 분봉5선 아래로 닫히면 전량 매도해요(문턱 없음)${
             stop === null ? '' : ` · 손절선 ${stop.toFixed(2)}(−${(this.trendConfig!.stopLossPct * 100).toFixed(0)}%)`
           }`,
         );

@@ -83,7 +83,7 @@ export interface AutoPilotManagerDeps {
    */
   inflection?: InflectionGridConfig;
   /**
-   * 추세 → 그리드 → 매매(2026-08-18 도메인 문서) — 주입되고 trendMode.TREND_MODE=true면 슬롯은 1분봉 합성+4선으로
+   * 추세 → 그리드 → 매매(2026-08-18 도메인 문서) — 주입되고 trendMode.TREND_MODE=true면 슬롯은 분봉(TREND_BAR_MINUTES) 합성+4선으로
    * 신호를 내고(FeedSlot trend), 포지션 관리는 추세 청산 규칙+매매가 맡는다(AutoPilot trendConfig). 조합·사다리보다 우선.
    * 미주입이면 기존 동작 — 회귀 안전.
    */

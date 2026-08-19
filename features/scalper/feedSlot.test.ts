@@ -367,7 +367,7 @@ describe('FeedSlot — 추세 모드(trend): 1분봉 합성 + 4선 신호, 리�
   const risingSeed = (n = 122) => Array.from({ length: n }, (_, i) => ({ minuteKey: i, close: 100 + i }));
 
   function makeTrendSlot(clock = fakeClock(1000)) {
-    const slot = new FeedSlot({ ticker: 'AAPL', clock, chunkSeconds: 5, bufferSize: 7, trend: true, inflection: true });
+    const slot = new FeedSlot({ ticker: 'AAPL', clock, chunkSeconds: 5, bufferSize: 7, trend: true, trendBarMinutes: 1, inflection: true });
     return { slot, clock };
   }
 

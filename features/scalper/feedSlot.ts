@@ -12,7 +12,7 @@
 import { TrendDetector, type DetectorResult, type Signal } from '../../core/detector';
 import { LadderDetector } from '../../core/ladder';
 import { Resampler } from '../../core/resample';
-import { MinuteBarBuilder, type MinuteBar } from '../../core/trend/bars';
+import { MinuteBarBuilder, TREND_BAR_MINUTES, type MinuteBar } from '../../core/trend/bars';
 import { evaluateTrend, type TrendEval } from '../../core/trend/signal';
 import { TREND_MODE } from './trendMode';
 import { TickRateMeter } from './tickRate';
@@ -74,11 +74,13 @@ export interface FeedSlotOptions {
    */
   inflection?: boolean;
   /**
-   * 추세 모드(2026-08-18 도메인 문서) — true고 TREND_MODE=true면 리샘플/SG/사다리 대신 **1분봉 로컬 합성 +
+   * 추세 모드(2026-08-18 도메인 문서) — true고 TREND_MODE=true면 리샘플/SG/사다리 대신 **분봉(TREND_BAR_MINUTES분) 로컬 합성 +
    * 분봉 이동평균 4선**으로 BUY/SELL을 낸다(봉 마감마다). 변곡점 조합·사다리보다 우선한다.
    * 미주입(기존 하네스·테스트)이면 기존 동작 그대로 — 회귀 안전.
    */
   trend?: boolean;
+  /** 추세 봉 주기(분) — 기본 TREND_BAR_MINUTES(3). 테스트 하네스가 1분봉으로 고정할 때 쓴다. */
+  trendBarMinutes?: number;
 }
 
 /** 변곡점 신호 콜백 — attach 시 등록. */
@@ -180,10 +182,10 @@ export class FeedSlot {
   /** 추세 모드인가 — 생성 시 확정(TREND_MODE AND trend 주입). 조합·사다리보다 우선. */
   private readonly trendMode: boolean;
   /**
-   * 1분봉 빌더·마지막 추세 판정 — **슬롯 필드로 상시 누적**(리샘플과 같은 원칙). attach/detach는
+   * 분봉 빌더·마지막 추세 판정 — **슬롯 필드로 상시 누적**(리샘플과 같은 원칙). attach/detach는
    * 리스너만 붙였다 뗀다 — 재부착해도 봉 링이 유지돼 매도 직후 122봉을 다시 기다리지 않는다.
    */
-  private readonly bars = new MinuteBarBuilder();
+  private readonly bars: MinuteBarBuilder;
   private trendEval: TrendEval | null = null;
   private trendListener: SlotSignalListener | null = null;
 
@@ -191,6 +193,7 @@ export class FeedSlot {
     this.ticker = options.ticker;
     this.clock = options.clock;
     this.trendMode = TREND_MODE && options.trend === true;
+    this.bars = new MinuteBarBuilder(undefined, options.trendBarMinutes ?? TREND_BAR_MINUTES);
     this.inflectionMode = !this.trendMode && INFLECTION_ENTRY && options.inflection === true;
     this.meter = new TickRateMeter(options.tickRateWindowMs ?? FEED_RATE_WINDOW_MS, FEED_SERIES_HISTORY_MS);
     this.slopeMeter = new SlopeMeter(options.slopeWindowMs ?? FEED_RATE_WINDOW_MS, FEED_SERIES_HISTORY_MS);
@@ -218,7 +221,7 @@ export class FeedSlot {
     this.slopeMeter.record(this.lastTickAt, price);
 
     if (this.trendMode) {
-      // 추세 모드 — 1분봉 마감마다 4선을 다시 재고 신호를 낸다(리샘플·SG·사다리 미사용).
+      // 추세 모드 — 봉(TREND_BAR_MINUTES분) 마감마다 4선을 다시 재고 신호를 낸다(리샘플·SG·사다리 미사용).
       const bar = this.bars.pushTick(price, tsMs);
       if (bar !== null) this.evaluateTrendBar(price);
       return null;
