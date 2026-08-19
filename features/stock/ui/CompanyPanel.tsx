@@ -15,8 +15,10 @@ import { pnlColor } from '../../../lib/format';
 import {
   fetchCompanyBrief,
   loadCachedCompanyBrief,
+  parsePartialCompanyBrief,
   saveCachedCompanyBrief,
   type CompanyBrief,
+  type CompanyBriefProgress,
   type CompanyPoint,
 } from '../companyBrief';
 import type { StockMarketCode } from '../marketCodes';
@@ -34,16 +36,74 @@ export interface CompanyPanelProps {
 
 type BriefState =
   | { kind: 'idle' }
-  | { kind: 'loading' }
+  /** progress가 없으면 캐시 확인 중(아직 단계 시작 전). */
+  | { kind: 'loading'; progress: CompanyBriefProgress | null }
   | { kind: 'error'; message: string }
   | { kind: 'ready'; brief: CompanyBrief; fromCache: boolean };
 
-function Section({ title, body }: { title: string; body: string }) {
-  if (!body) return null;
+/** 본문 섹션 — writing이면 끝에 커서(▍)를 붙여 지금 쓰는 중임을 보인다(2026-08-19 스트리밍). */
+function Section({ title, body, writing = false }: { title: string; body: string; writing?: boolean }) {
+  if (!body && !writing) return null;
   return (
     <View className="px-5 pb-4">
       <Text className="mb-1 text-xs font-semibold text-[#8b95a1]">{title}</Text>
-      <Text className="text-[15px] leading-[22px] text-[#191f28]">{body}</Text>
+      <Text className="text-[15px] leading-[22px] text-[#191f28]">
+        {body}
+        {writing ? <Text className="text-[#3182f6]">▍</Text> : null}
+      </Text>
+    </View>
+  );
+}
+
+const STEP_LABELS = ['시세 확인', '뉴스·프로필 검색', '기사 읽기', 'AI 정리'] as const;
+
+/** 진행 단계 인덱스 — 시세(0)는 이 패널이 열릴 때 이미 끝나 있으므로 search 단계부터 1. */
+function stepIndexOf(progress: CompanyBriefProgress | null): number {
+  if (!progress) return 0;
+  if (progress.stage === 'search') return 1;
+  if (progress.stage === 'articles') return 2;
+  return 3;
+}
+
+/**
+ * 진행 표시 — 단계 4개를 한 줄씩(끝난 단계 체크, 진행 중 스피너, 남은 단계 회색).
+ * 기다림의 대부분이 "기사 읽기"와 "AI 정리"라 각 단계에 짧은 설명을 붙인다.
+ */
+function ProgressSteps({ progress }: { progress: CompanyBriefProgress | null }) {
+  const current = stepIndexOf(progress);
+  const detail = (i: number): string => {
+    if (i === 2 && progress?.stage === 'articles') return progress.total > 0 ? `최신 기사 ${progress.total}건 본문을 읽고 있어요` : '읽을 기사가 없어요';
+    if (i === 3 && progress?.stage === 'generate') return progress.text ? '쓰는 중이에요' : '재료를 넘기고 첫 문장을 기다려요';
+    if (i === 1 && progress?.stage === 'search') return 'Yahoo Finance에서 찾고 있어요';
+    return '';
+  };
+  return (
+    <View className="px-5 pb-3">
+      {STEP_LABELS.map((label, i) => {
+        const done = i < current;
+        const active = i === current;
+        return (
+          <View key={label} className="flex-row items-center py-[5px]">
+            <View className="w-5 items-center">
+              {done ? (
+                <Ionicons name="checkmark-circle" size={16} color="#3182f6" />
+              ) : active ? (
+                <ActivityIndicator size="small" color="#3182f6" />
+              ) : (
+                <Ionicons name="ellipse-outline" size={14} color="#d1d6db" />
+              )}
+            </View>
+            <Text
+              className={
+                done ? 'ml-2 text-sm text-[#8b95a1]' : active ? 'ml-2 text-sm font-semibold text-[#191f28]' : 'ml-2 text-sm text-[#b0b8c1]'
+              }
+            >
+              {label}
+            </Text>
+            {active && detail(i) ? <Text className="ml-2 flex-1 text-xs text-[#8b95a1]" numberOfLines={1}>{detail(i)}</Text> : null}
+          </View>
+        );
+      })}
     </View>
   );
 }
@@ -231,7 +291,7 @@ export function CompanyPanel({ ticker, excd, name, manager, quoteState, trKey }:
 
   const generate = useCallback(
     async (force: boolean) => {
-      setState({ kind: 'loading' });
+      setState({ kind: 'loading', progress: null });
       try {
         if (!force) {
           const cached = await loadCachedCompanyBrief(ticker, excd, Date.now());
@@ -240,7 +300,11 @@ export function CompanyPanel({ ticker, excd, name, manager, quoteState, trKey }:
             return;
           }
         }
-        const brief = await fetchCompanyBrief({ ticker, market: excd, name, detail: detail ?? null });
+        // 단계·조각마다 상태를 갱신 — 스트리밍 조각은 초당 여러 번 올 수 있지만 텍스트 setState라 부담이 작다.
+        const brief = await fetchCompanyBrief(
+          { ticker, market: excd, name, detail: detail ?? null },
+          { onProgress: (progress) => setState({ kind: 'loading', progress }) },
+        );
         await saveCachedCompanyBrief(ticker, excd, brief);
         setState({ kind: 'ready', brief, fromCache: false });
       } catch (e) {
@@ -276,15 +340,30 @@ export function CompanyPanel({ ticker, excd, name, manager, quoteState, trKey }:
     <ScrollView className="flex-1" contentContainerStyle={{ paddingBottom: 24 }}>
       <Panel title="기업 정보" headerRight={headerRight}>
         {state.kind === 'idle' || state.kind === 'loading' ? (
-          <View className="px-5 pb-4">
-            <View className="mb-3 flex-row items-center">
-              <ActivityIndicator size="small" color="#3182f6" />
-              <Text className="ml-2 text-sm text-[#8b95a1]">기업 정보를 정리하고 최근 기사를 읽고 있어요 (10초 안팎)</Text>
-            </View>
-            <SkeletonLine width="90%" />
-            <SkeletonLine width="70%" />
-            <SkeletonLine width="80%" />
-          </View>
+          (() => {
+            const progress = state.kind === 'loading' ? state.progress : null;
+            const partial = progress?.stage === 'generate' && progress.text ? parsePartialCompanyBrief(progress.text) : null;
+            return (
+              <>
+                <ProgressSteps progress={progress} />
+                {partial ? (
+                  // 모델이 쓰는 대로 섹션에 글자가 차오른다 — 목록(호재/악재 등)은 완성 후 NewsAnalysisPanel에서.
+                  <>
+                    <Section title="어떤 회사인가요" body={partial.about} writing={partial.writing === 'about'} />
+                    <Section title="주력 사업·수익원" body={partial.business} writing={partial.writing === 'business'} />
+                    <Section title="현재 상황" body={partial.situation} writing={partial.writing === 'situation'} />
+                    <Section title="최근 뉴스 종합" body={partial.newsDigest} writing={partial.writing === 'newsDigest'} />
+                  </>
+                ) : (
+                  <View className="px-5 pb-4">
+                    <SkeletonLine width="90%" />
+                    <SkeletonLine width="70%" />
+                    <SkeletonLine width="80%" />
+                  </View>
+                )}
+              </>
+            );
+          })()
         ) : state.kind === 'error' ? (
           <View className="px-5 pb-4">
             <Text className="text-[15px] font-semibold text-[#191f28]">기업 정보를 불러오지 못했어요</Text>

@@ -9,6 +9,8 @@
 //   [3] 최신 기사 N건의 본문(/api/simple/article로 추출) — 사용자는 뉴스 "목록"이 아니라 "읽고 분석한 결과"를 원한다.
 // (Gemini google_search 그라운딩은 무료 할당량 밖(429)이라 2026-08-19 쓰지 않기로 확정 — tools 미전송.)
 // 결과는 종목+거래일(ET) 단위로 AsyncStorage에 캐시 — 탭을 열 때마다 호출하지 않는다("새로고침"으로만 재호출).
+// 2026-08-19 스트리밍: 프록시 응답을 expo/fetch로 조각마다 받아 onProgress로 흘리고(단계 search→articles→generate),
+// 화면은 parsePartialCompanyBrief로 JSON 조각에서 미완성 문장을 뽑아 타이핑처럼 그린다(bitcoin-simulation AI 질문과 같은 체감).
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { OverseasPriceDetail } from '../../kis/priceDetail';
 import { etDateOf } from '../scalper/autopilot';
@@ -278,14 +280,123 @@ export function parseCompanyBrief(
   return { ...empty, rawText: cleaned };
 }
 
-export interface FetchCompanyBriefDeps {
-  fetchImpl?: typeof fetch;
-  now?: () => number;
-  endpoint?: string;
+/**
+ * 진행 단계(2026-08-19 스트리밍) — 화면이 "지금 뭘 하고 있나"를 보여주기 위한 통지.
+ *   search   → Yahoo 검색(뉴스·프로필) 중
+ *   articles → 기사 본문 읽는 중(total = 읽을 건수)
+ *   generate → 모델이 쓰는 중. text는 지금까지 받은 원문 누적(JSON 조각) — 화면은 parsePartialCompanyBrief로
+ *              섹션별 미완성 문장을 뽑아 타이핑처럼 그린다.
+ */
+export type CompanyBriefProgress =
+  | { stage: 'search' }
+  | { stage: 'articles'; total: number }
+  | { stage: 'generate'; text: string };
+
+/** 스트리밍 중 보여줄 수 있는 텍스트 필드 — 목록(호재/악재/지켜볼 점)은 완성 후에만. */
+export interface PartialCompanyBrief {
+  about: string;
+  business: string;
+  situation: string;
+  newsDigest: string;
+  /** 지금 글자가 차오르고 있는 필드(닫는 따옴표가 아직 없는 마지막 문자열). 없으면 null. */
+  writing: 'about' | 'business' | 'situation' | 'newsDigest' | null;
+}
+
+const PARTIAL_KEYS = ['about', 'business', 'situation', 'newsDigest'] as const;
+
+/** JSON 문자열 리터럴 본문(따옴표 안, 이스케이프 그대로) → 실제 문자열. 끝이 잘린 이스케이프는 떼고 시도한다. */
+function unescapeJsonFragment(raw: string): string {
+  let s = raw;
+  // 끝이 홀수 개 백슬래시로 끝나면(이스케이프 도중 잘림) 마지막 하나를 뗀다.
+  const trailing = /\\+$/.exec(s)?.[0].length ?? 0;
+  if (trailing % 2 === 1) s = s.slice(0, -1);
+  // \uXXXX 도중 잘림도 뗀다.
+  s = s.replace(/\\u[0-9a-fA-F]{0,3}$/, '');
+  try {
+    return JSON.parse(`"${s}"`) as string;
+  } catch {
+    return s.replace(/\\n/g, '\n').replace(/\\"/g, '"');
+  }
 }
 
 /**
- * Yahoo 검색(뉴스·프로필) → 최신 기사 본문 N건 병렬 → 프록시 호출.
+ * 스트리밍 도중의 JSON 조각에서 텍스트 필드를 **미완성 상태로도** 뽑는다(타이핑 표시용).
+ * `"key":"...` 뒤를 이스케이프를 존중하며 닫는 따옴표(또는 끝)까지 읽는다. 없는 필드는 빈 문자열.
+ */
+export function parsePartialCompanyBrief(text: string): PartialCompanyBrief {
+  const out: PartialCompanyBrief = { about: '', business: '', situation: '', newsDigest: '', writing: null };
+  let lastOpenPos = -1;
+  for (const key of PARTIAL_KEYS) {
+    const m = new RegExp(`"${key}"\\s*:\\s*"`).exec(text);
+    if (!m) continue;
+    const start = m.index + m[0].length;
+    let i = start;
+    let closed = false;
+    while (i < text.length) {
+      const ch = text[i];
+      if (ch === '\\') {
+        i += 2;
+        continue;
+      }
+      if (ch === '"') {
+        closed = true;
+        break;
+      }
+      i += 1;
+    }
+    out[key] = unescapeJsonFragment(text.slice(start, Math.min(i, text.length)));
+    if (!closed && m.index > lastOpenPos) {
+      lastOpenPos = m.index;
+      out.writing = key;
+    }
+  }
+  return out;
+}
+
+export interface FetchCompanyBriefDeps {
+  /**
+   * HTTP 구현. 미주입이면 프록시 호출에는 expo/fetch(응답 body 스트리밍 지원)를, 그 외엔 전역 fetch를 쓴다.
+   * RN 기본 fetch는 body.getReader()가 없어 스트리밍이 안 된다 — 그 경우 text()로 폴백(타이핑 표시만 없어진다).
+   */
+  fetchImpl?: typeof fetch;
+  now?: () => number;
+  endpoint?: string;
+  /** 진행 단계 통지(선택) — 화면 진행 표시·타이핑 표시용. */
+  onProgress?: (progress: CompanyBriefProgress) => void;
+}
+
+/** 스트리밍 가능한 fetch — expo/fetch가 있으면 그것, 없으면(테스트·웹) 전역 fetch. */
+async function loadStreamingFetch(): Promise<typeof fetch> {
+  try {
+    const mod = (await import('expo/fetch')) as { fetch?: unknown };
+    if (typeof mod.fetch === 'function') return mod.fetch as typeof fetch;
+  } catch {
+    /* expo 런타임 아님 */
+  }
+  return fetch;
+}
+
+/** 응답 본문을 조각마다 onChunk(누적 텍스트)로 알리며 끝까지 읽는다. 스트리밍 미지원이면 text() 한 번. */
+async function readBodyStreaming(res: Response, onChunk?: (accumulated: string) => void): Promise<string> {
+  const body = res.body as { getReader?: () => { read: () => Promise<{ done: boolean; value?: Uint8Array }> } } | null;
+  if (!body?.getReader || typeof TextDecoder === 'undefined') return res.text();
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let acc = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      acc += decoder.decode(value, { stream: true });
+      onChunk?.(acc);
+    }
+  }
+  acc += decoder.decode();
+  return acc;
+}
+
+/**
+ * Yahoo 검색(뉴스·프로필) → 최신 기사 본문 N건 병렬 → 프록시 호출(스트리밍, 조각마다 onProgress).
  * Yahoo/기사 실패는 삼키고 있는 재료로 진행, 프록시가 200이 아니면 본문을 메시지로 throw.
  */
 export async function fetchCompanyBrief(
@@ -293,21 +404,26 @@ export async function fetchCompanyBrief(
   deps: FetchCompanyBriefDeps = {},
 ): Promise<CompanyBrief> {
   const fetchImpl = deps.fetchImpl ?? fetch;
+  const streamFetch = deps.fetchImpl ?? (await loadStreamingFetch());
   const nowMs = (deps.now ?? Date.now)();
+  deps.onProgress?.({ stage: 'search' });
   const yahoo = await fetchYahooSearch(input.ticker, { fetchImpl }).catch(() => null);
+  const toRead = yahoo ? Math.min(yahoo.news.length, ARTICLE_READ_COUNT) : 0;
+  deps.onProgress?.({ stage: 'articles', total: toRead });
   const articles = yahoo ? await fetchYahooArticles(yahoo.news, ARTICLE_READ_COUNT, { fetchImpl }) : [];
   const full: CompanyBriefInput = { ...input, yahoo, articles };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const res = await fetchImpl(deps.endpoint ?? COMPANY_BRIEF_ENDPOINT, {
+    deps.onProgress?.({ stage: 'generate', text: '' });
+    const res = await streamFetch(deps.endpoint ?? COMPANY_BRIEF_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(buildCompanyBriefRequestBody(full, nowMs)),
       signal: controller.signal,
     });
-    const text = await res.text();
-    if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
+    if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+    const text = await readBodyStreaming(res, (acc) => deps.onProgress?.({ stage: 'generate', text: acc }));
     return parseCompanyBrief(text, nowMs, yahoo, articles);
   } finally {
     clearTimeout(timer);

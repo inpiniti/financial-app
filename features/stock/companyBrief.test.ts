@@ -6,6 +6,8 @@ import {
   describePriceDetail,
   fetchCompanyBrief,
   parseCompanyBrief,
+  parsePartialCompanyBrief,
+  type CompanyBriefProgress,
 } from './companyBrief';
 import {
   buildArticleUrl,
@@ -145,6 +147,47 @@ describe('companyBrief', () => {
     expect(brief.news.map((n) => n.read)).toEqual([true, false]);
     // 프록시로 보낸 프롬프트에 읽은 본문이 들어갔는지
     expect(brief.positives[0].refs).toEqual([1]);
+  });
+
+  it('parsePartial — 스트리밍 조각에서 미완성 문자열 필드를 뽑고 지금 쓰는 필드를 가리킨다', () => {
+    expect(parsePartialCompanyBrief('{"abo')).toEqual({ about: '', business: '', situation: '', newsDigest: '', writing: null });
+    const p1 = parsePartialCompanyBrief('{"about":"애플은 \\"아이폰\\"을 만드는');
+    expect(p1.about).toBe('애플은 "아이폰"을 만드는');
+    expect(p1.writing).toBe('about');
+    const p2 = parsePartialCompanyBrief('{"about":"A","business":"B\\nC","situation":"지금');
+    expect(p2).toMatchObject({ about: 'A', business: 'B\nC', situation: '지금', writing: 'situation' });
+    // 이스케이프 도중 잘린 조각(백슬래시 하나·\\u 미완)도 깨지지 않는다.
+    expect(parsePartialCompanyBrief('{"about":"끝\\').about).toBe('끝');
+    expect(parsePartialCompanyBrief('{"about":"끝\\u00').about).toBe('끝');
+    // 전부 닫힌 완성본은 writing null.
+    expect(parsePartialCompanyBrief('{"about":"A","newsDigest":"D"}').writing).toBeNull();
+  });
+
+  it('fetch — 진행 단계(search→articles→generate) 통지, 응답 body 스트림이면 조각마다 누적 텍스트로 알린다', async () => {
+    const progress: CompanyBriefProgress[] = [];
+    const chunks = ['{"about":"애', '플","newsDigest":', '"D"}'];
+    const fetchImpl = (async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes('/api/yahoo/')) return new Response(JSON.stringify(yahooJson), { status: 200 });
+      if (u.includes('/api/simple/article')) return new Response(JSON.stringify({ text: 'body' }), { status: 200 });
+      const enc = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        start(c) {
+          for (const ch of chunks) c.enqueue(enc.encode(ch));
+          c.close();
+        },
+      });
+      return new Response(stream, { status: 200 });
+    }) as typeof fetch;
+    const brief = await fetchCompanyBrief(
+      { ticker: 'AAPL', market: 'NAS', detail: null },
+      { fetchImpl, now: () => 5, onProgress: (p) => progress.push(p) },
+    );
+    expect(brief).toMatchObject({ about: '애플', newsDigest: 'D' });
+    expect(progress.map((p) => p.stage)).toEqual(['search', 'articles', 'generate', 'generate', 'generate', 'generate']);
+    expect(progress[1]).toEqual({ stage: 'articles', total: 2 });
+    const texts = progress.filter((p): p is Extract<CompanyBriefProgress, { stage: 'generate' }> => p.stage === 'generate').map((p) => p.text);
+    expect(texts).toEqual(['', '{"about":"애', '{"about":"애플","newsDigest":', '{"about":"애플","newsDigest":"D"}']);
   });
 
   it('cacheKey — 종목+ET 거래일, v2', () => {
