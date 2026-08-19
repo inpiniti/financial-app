@@ -1,31 +1,48 @@
-// 종목 상세화면 "기업" 탭 — 기업 소개·현재 상황·최근 뉴스 요약(2026-08-19, 호가 탭 대체).
-// AI 호출은 bitcoin-simulation 프로젝트의 Vercel Edge 프록시(/api/simple/gemini, gemini-3.5-flash-lite 고정)를 통해
-// 한다 — 앱에는 Gemini 키가 실리지 않는다. 프록시는 contents/systemInstruction/generationConfig를 그대로 전달하고
+// 종목 상세화면 "기업" 탭 — 기업 소개·현재 상황·최근 뉴스 분석(2026-08-19, 호가 탭 대체).
+// AI 호출은 bitcoin-simulation 프로젝트의 Vercel Edge 프록시(/api/simple/gemini, gemini-3.5-flash-lite 우선·3.1 폴백)를
+// 통해 한다 — 앱에는 Gemini 키가 실리지 않는다. 프록시는 contents/systemInstruction/generationConfig를 그대로 전달하고
 // 응답 텍스트를 plain text 스트림으로 돌려준다.
 //
 // 모델 자체는 인터넷이 없고 생소한 종목을 모를 수 있으므로, 앱이 재료를 모아 프롬프트에 넣는다:
-//   KIS 현재가상세(시총·PER·52주·업종코드 등) + Yahoo 검색(yahooSearch: 정식명·섹터·업종·최근 뉴스 헤드라인).
+//   [1] KIS 현재가상세(시총·PER·52주·업종코드 등)
+//   [2] Yahoo 검색(yahooSearch: 정식명·섹터·업종·최근 뉴스 헤드라인)
+//   [3] 최신 기사 N건의 본문(/api/simple/article로 추출) — 사용자는 뉴스 "목록"이 아니라 "읽고 분석한 결과"를 원한다.
 // (Gemini google_search 그라운딩은 무료 할당량 밖(429)이라 2026-08-19 쓰지 않기로 확정 — tools 미전송.)
 // 결과는 종목+거래일(ET) 단위로 AsyncStorage에 캐시 — 탭을 열 때마다 호출하지 않는다("새로고침"으로만 재호출).
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { OverseasPriceDetail } from '../../kis/priceDetail';
 import { etDateOf } from '../scalper/autopilot';
-import { fetchYahooSearch, type YahooSearchResult } from './yahooSearch';
+import {
+  fetchYahooArticles,
+  fetchYahooSearch,
+  type YahooArticleBody,
+  type YahooSearchResult,
+} from './yahooSearch';
 
 /** bitcoin-simulation Vercel 배포 도메인 — 사용자 확정(2026-08-19). */
 export const COMPANY_BRIEF_ENDPOINT = 'https://simulation-inpiniti.vercel.app/api/simple/gemini';
-const STORAGE_PREFIX = 'stock:companyBrief:v1:';
-const REQUEST_TIMEOUT_MS = 40_000;
+/** 스키마가 바뀌면 버전을 올린다(옛 캐시 무시). v2: 뉴스 목록 → 뉴스 분석(digest/호재/악재/지켜볼 점). */
+const STORAGE_PREFIX = 'stock:companyBrief:v2:';
+const REQUEST_TIMEOUT_MS = 60_000;
+/** 본문까지 읽는 기사 수 — 최신순 상위 N건. */
+export const ARTICLE_READ_COUNT = 5;
 
+/** 근거 기사 — 모델이 index로 가리킨 원본. */
 export interface CompanyNewsItem {
   title: string;
-  /** 원문 링크(Yahoo 검색 결과의 link) — 모델이 재료 목록의 번호로 매칭해 준다. 없으면 빈 문자열. */
   link: string;
-  /** 출처(매체명). 없으면 빈 문자열. */
   source: string;
-  /** 날짜(YYYY-MM-DD, ET). 없으면 빈 문자열. */
+  /** YYYY-MM-DD(ET). 없으면 빈 문자열. */
   date: string;
-  summary: string;
+  /** 본문까지 읽었는지(헤드라인만 있었으면 false). */
+  read: boolean;
+}
+
+/** 호재/악재 한 줄 — 어느 기사(1-based 번호, 원본 news 배열 index+1)에 근거하는지. */
+export interface CompanyPoint {
+  text: string;
+  /** 근거 기사 번호(1부터). 없으면 빈 배열. */
+  refs: number[];
 }
 
 export interface CompanyBrief {
@@ -33,8 +50,15 @@ export interface CompanyBrief {
   about: string;
   /** 주력 사업·수익원. */
   business: string;
-  /** 오늘/최근 주가·실적 상황 요약. */
+  /** 시세+뉴스 근거 현재 상황 요약. */
   situation: string;
+  /** 최근 뉴스를 읽고 종합한 3~5문장. */
+  newsDigest: string;
+  positives: CompanyPoint[];
+  negatives: CompanyPoint[];
+  /** 앞으로 지켜볼 일정·이슈. */
+  watch: string[];
+  /** 근거 기사(프롬프트에 넣은 순서 그대로, 번호 = index+1). */
   news: CompanyNewsItem[];
   /** 생성 시각(epoch ms). */
   generatedAt: number;
@@ -49,6 +73,8 @@ export interface CompanyBriefInput {
   detail: OverseasPriceDetail | null;
   /** Yahoo 검색 결과 — 조회 실패면 null(뉴스 없이 진행). */
   yahoo: YahooSearchResult | null;
+  /** yahoo.news와 같은 인덱스의 본문(못 읽었으면 null). 길이는 ARTICLE_READ_COUNT 이하. */
+  articles: Array<YahooArticleBody | null>;
 }
 
 /** 캐시 키 — 종목 + 거래일(ET). 거래일이 바뀌면 자연히 새로 만든다. */
@@ -112,26 +138,32 @@ export function describeYahooProfile(yahoo: YahooSearchResult | null): string {
   return lines.length ? lines.join('\n') : '(프로필 없음)';
 }
 
-/** Yahoo 뉴스 → 번호 매긴 헤드라인 목록(모델이 index로 되돌려 준다). */
-export function describeYahooNews(yahoo: YahooSearchResult | null): string {
+/**
+ * Yahoo 뉴스 → 번호 매긴 기사 블록. 본문이 있으면 헤드라인 아래에 본문을 붙이고, 없으면 "(본문 없음 — 헤드라인만)".
+ * 번호(1부터)는 응답의 refs가 가리키는 값이다.
+ */
+export function describeYahooNews(yahoo: YahooSearchResult | null, articles: Array<YahooArticleBody | null>): string {
   const news = yahoo?.news ?? [];
   if (!news.length) return '(최근 뉴스 없음)';
   return news
     .map((item, i) => {
       const date = item.publishedAt ? etDateOf(item.publishedAt) : '날짜 미상';
-      return `${i + 1}. [${date}] ${item.title}${item.publisher ? ` — ${item.publisher}` : ''}`;
+      const head = `${i + 1}. [${date}] ${item.title}${item.publisher ? ` — ${item.publisher}` : ''}`;
+      const body = articles[i]?.text;
+      return body ? `${head}\n본문:\n${body}` : `${head}\n(본문 없음 — 헤드라인만)`;
     })
-    .join('\n');
+    .join('\n\n');
 }
 
 const SYSTEM_INSTRUCTION =
-  '너는 한국어로 답하는 주식 리서치 보조원이다. 인터넷 검색은 할 수 없으니 사용자가 준 재료(시세·프로필·뉴스 헤드라인)와 ' +
+  '너는 한국어로 답하는 주식 리서치 보조원이다. 인터넷 검색은 할 수 없으니 사용자가 준 재료(시세·프로필·기사 본문)와 ' +
   '네가 확실히 아는 지식만 쓴다. 모르는 내용은 지어내지 말고 빈 문자열이나 빈 배열로 둔다. ' +
   '반드시 아래 JSON 스키마 하나만 출력한다(마크다운 코드펜스·설명 금지). ' +
-  'news는 재료로 준 헤드라인 목록에서만 고른다 — 각 항목에 재료 번호(index, 1부터)를 그대로 넣고 title은 한국어로 번역, ' +
-  'summary는 헤드라인에서 알 수 있는 범위로 1문장(모르면 빈 문자열). ' +
-  '문체는 "~해요"체, 각 필드는 간결하게(about·business·situation 각각 3문장 이내, news 최대 5건). ' +
-  '스키마: {"about":string,"business":string,"situation":string,"news":[{"index":number,"title":string,"summary":string}]}';
+  '기사 관련 필드(newsDigest·positives·negatives·watch)는 재료로 준 기사 본문/헤드라인에서만 근거를 찾고, ' +
+  'positives/negatives의 각 항목에는 근거 기사 번호(refs, 1부터)를 넣는다. 재료가 없으면 빈 값. ' +
+  '문체는 "~해요"체. 길이: about·business·situation 각 3문장 이내, newsDigest 3~5문장, positives/negatives 각 최대 3개(한 줄), watch 최대 3개(한 줄). ' +
+  '스키마: {"about":string,"business":string,"situation":string,"newsDigest":string,' +
+  '"positives":[{"text":string,"refs":number[]}],"negatives":[{"text":string,"refs":number[]}],"watch":string[]}';
 
 export function buildCompanyBriefPrompt(input: CompanyBriefInput, nowMs: number): string {
   const label = input.name ? `${input.name} (${input.ticker}, ${input.market})` : `${input.ticker} (${input.market})`;
@@ -145,24 +177,26 @@ export function buildCompanyBriefPrompt(input: CompanyBriefInput, nowMs: number)
     '[재료 2] 종목 프로필(Yahoo Finance):',
     describeYahooProfile(input.yahoo),
     '',
-    '[재료 3] 최근 뉴스 헤드라인(Yahoo Finance, 최신순):',
-    describeYahooNews(input.yahoo),
+    '[재료 3] 최근 기사(Yahoo Finance, 최신순 — 번호가 refs 값):',
+    describeYahooNews(input.yahoo, input.articles),
     '',
     '요청:',
     '1) about — 이 회사가 어떤 회사인지(국가·상장 시장·설립 배경 등). 확실히 아는 범위만.',
     '2) business — 주력 사업과 주요 수익원. 모르면 섹터·업종만으로 짧게.',
-    '3) situation — 재료 1의 시세와 재료 3의 헤드라인을 근거로 현재 상황을 요약. 재료에 없는 수치는 만들지 말 것.',
-    '4) news — 재료 3에서 투자자에게 의미 있는 순으로 최대 5건 고르고 index를 붙일 것. 목록이 비었으면 빈 배열.',
+    '3) situation — 재료 1의 시세와 재료 3을 근거로 현재 상황을 요약. 재료에 없는 수치는 만들지 말 것.',
+    '4) newsDigest — 재료 3의 기사들을 읽고 "무슨 일이 있었는지" 종합. 헤드라인 나열이 아니라 맥락·인과로 3~5문장.',
+    '5) positives / negatives — 투자자 관점의 호재·악재를 각각 최대 3개, 각 항목에 근거 기사 번호(refs).',
+    '6) watch — 앞으로 지켜볼 일정·이슈(실적 발표, 제품 출시, 규제·소송, 가이던스 등) 최대 3개. 기사에 없으면 빈 배열.',
   ].join('\n');
 }
 
-/** 프록시로 보낼 요청 바디 — tools 없음(일반 생성). */
+/** 프록시로 보낼 요청 바디 — tools 없음(일반 생성), JSON 모드. */
 export function buildCompanyBriefRequestBody(input: CompanyBriefInput, nowMs: number): unknown {
   return {
     contents: [{ role: 'user', parts: [{ text: buildCompanyBriefPrompt(input, nowMs) }] }],
     systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
     // JSON 모드 — 자유 텍스트에서 가끔 나오던 구문 깨짐(`"title":,`) 방지. tools와 함께는 못 쓰지만 지금은 tools 없음.
-    generationConfig: { temperature: 0.3, maxOutputTokens: 2048, responseMimeType: 'application/json' },
+    generationConfig: { temperature: 0.3, maxOutputTokens: 4096, responseMimeType: 'application/json' },
   };
 }
 
@@ -170,48 +204,78 @@ function str(v: unknown): string {
   return typeof v === 'string' ? v.trim() : '';
 }
 
+function strList(v: unknown, max: number): string[] {
+  return (Array.isArray(v) ? v : []).map(str).filter(Boolean).slice(0, max);
+}
+
+function pointList(v: unknown, max: number, newsCount: number): CompanyPoint[] {
+  return (Array.isArray(v) ? v : [])
+    .map((raw) => {
+      const o = (raw ?? {}) as Record<string, unknown>;
+      const refs = (Array.isArray(o.refs) ? o.refs : [])
+        .map((x) => Number(x))
+        .filter((x) => Number.isInteger(x) && x >= 1 && x <= newsCount);
+      return { text: str(o.text), refs: Array.from(new Set(refs)) };
+    })
+    .filter((p) => p.text)
+    .slice(0, max);
+}
+
+/** 근거 기사 목록 — 프롬프트에 넣은 순서 그대로(번호 = index+1). */
+export function buildNewsRefs(yahoo: YahooSearchResult | null, articles: Array<YahooArticleBody | null>): CompanyNewsItem[] {
+  return (yahoo?.news ?? []).map((item, i) => ({
+    title: item.title,
+    link: item.link,
+    source: item.publisher,
+    date: item.publishedAt ? etDateOf(item.publishedAt) : '',
+    read: Boolean(articles[i]?.text),
+  }));
+}
+
 /**
  * 모델 응답 텍스트 → CompanyBrief. 코드펜스·앞뒤 잡음을 걷어내고 첫 `{`~마지막 `}`를 JSON으로 시도한다.
- * news는 index(1부터)로 Yahoo 원본 헤드라인을 찾아 매체·날짜·링크를 채운다 — 모델이 이 값들을 지어내지 않게 한다.
- * 실패하면 rawText로만 채운 결과를 돌려준다(빈 화면 대신 원문 표시).
+ * refs는 기사 번호 범위 밖이면 버린다. 실패하면 rawText로만 채운 결과를 돌려준다(빈 화면 대신 원문 표시).
  */
-export function parseCompanyBrief(text: string, nowMs: number, yahoo: YahooSearchResult | null = null): CompanyBrief {
-  const source = yahoo?.news ?? [];
+export function parseCompanyBrief(
+  text: string,
+  nowMs: number,
+  yahoo: YahooSearchResult | null = null,
+  articles: Array<YahooArticleBody | null> = [],
+): CompanyBrief {
+  const news = buildNewsRefs(yahoo, articles);
+  const empty: CompanyBrief = {
+    about: '',
+    business: '',
+    situation: '',
+    newsDigest: '',
+    positives: [],
+    negatives: [],
+    watch: [],
+    news,
+    generatedAt: nowMs,
+  };
   const cleaned = text.replace(/```(?:json)?/gi, '').trim();
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
   if (start >= 0 && end > start) {
     try {
       const obj = JSON.parse(cleaned.slice(start, end + 1)) as Record<string, unknown>;
-      const newsRaw = Array.isArray(obj.news) ? obj.news : [];
-      const news: CompanyNewsItem[] = newsRaw
-        .map((item) => {
-          const o = (item ?? {}) as Record<string, unknown>;
-          const idx = Number(o.index) - 1;
-          const src = Number.isInteger(idx) && idx >= 0 && idx < source.length ? source[idx] : null;
-          return {
-            title: str(o.title) || src?.title || '',
-            source: src?.publisher ?? '',
-            date: src?.publishedAt ? etDateOf(src.publishedAt) : '',
-            summary: str(o.summary),
-            link: src?.link ?? '',
-          };
-        })
-        .filter((item) => item.title)
-        .slice(0, 5);
       const brief: CompanyBrief = {
+        ...empty,
         about: str(obj.about),
         business: str(obj.business),
         situation: str(obj.situation),
-        news,
-        generatedAt: nowMs,
+        newsDigest: str(obj.newsDigest),
+        positives: pointList(obj.positives, 3, news.length),
+        negatives: pointList(obj.negatives, 3, news.length),
+        watch: strList(obj.watch, 3),
       };
-      if (brief.about || brief.business || brief.situation || news.length) return brief;
+      if (brief.about || brief.business || brief.situation || brief.newsDigest) return brief;
     } catch {
       /* fall through */
     }
   }
-  return { about: '', business: '', situation: '', news: [], generatedAt: nowMs, rawText: cleaned };
+  return { ...empty, rawText: cleaned };
 }
 
 export interface FetchCompanyBriefDeps {
@@ -221,17 +285,18 @@ export interface FetchCompanyBriefDeps {
 }
 
 /**
- * Yahoo 검색(뉴스·프로필) → 프록시 호출. Yahoo 실패는 삼키고 뉴스 없이 진행,
- * 프록시가 200이 아니면 본문을 메시지로 throw. 응답은 plain text(스트림 합침).
+ * Yahoo 검색(뉴스·프로필) → 최신 기사 본문 N건 병렬 → 프록시 호출.
+ * Yahoo/기사 실패는 삼키고 있는 재료로 진행, 프록시가 200이 아니면 본문을 메시지로 throw.
  */
 export async function fetchCompanyBrief(
-  input: Omit<CompanyBriefInput, 'yahoo'>,
+  input: Omit<CompanyBriefInput, 'yahoo' | 'articles'>,
   deps: FetchCompanyBriefDeps = {},
 ): Promise<CompanyBrief> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const nowMs = (deps.now ?? Date.now)();
   const yahoo = await fetchYahooSearch(input.ticker, { fetchImpl }).catch(() => null);
-  const full: CompanyBriefInput = { ...input, yahoo };
+  const articles = yahoo ? await fetchYahooArticles(yahoo.news, ARTICLE_READ_COUNT, { fetchImpl }) : [];
+  const full: CompanyBriefInput = { ...input, yahoo, articles };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
@@ -243,7 +308,7 @@ export async function fetchCompanyBrief(
     });
     const text = await res.text();
     if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
-    return parseCompanyBrief(text, nowMs, yahoo);
+    return parseCompanyBrief(text, nowMs, yahoo, articles);
   } finally {
     clearTimeout(timer);
   }
@@ -254,7 +319,9 @@ export async function loadCachedCompanyBrief(ticker: string, market: string, now
     const raw = await AsyncStorage.getItem(companyBriefCacheKey(ticker, market, nowMs));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as CompanyBrief;
-    return parsed && typeof parsed === 'object' && Array.isArray(parsed.news) ? parsed : null;
+    return parsed && typeof parsed === 'object' && Array.isArray(parsed.news) && Array.isArray(parsed.positives)
+      ? parsed
+      : null;
   } catch {
     return null;
   }

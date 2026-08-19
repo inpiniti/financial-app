@@ -86,3 +86,53 @@ export async function fetchYahooSearch(ticker: string, deps: FetchYahooSearchDep
     clearTimeout(timer);
   }
 }
+
+// ---- 기사 본문 (bitcoin-simulation /api/simple/article) ----
+
+export const ARTICLE_ENDPOINT = 'https://simulation-inpiniti.vercel.app/api/simple/article';
+const ARTICLE_TIMEOUT_MS = 20_000;
+/** 기사당 본문 최대 글자수 — 5건×3,000자 ≈ 4~5K 토큰, 3.5-flash-lite TPM(250K) 안에서 넉넉하다. */
+export const ARTICLE_MAX_CHARS = 3000;
+
+export interface YahooArticleBody {
+  url: string;
+  title: string;
+  text: string;
+  truncated: boolean;
+}
+
+export function buildArticleUrl(link: string, base = ARTICLE_ENDPOINT, max = ARTICLE_MAX_CHARS): string {
+  return `${base}?url=${encodeURIComponent(link)}&max=${max}`;
+}
+
+/** 본문 1건 — 실패·빈 본문이면 null(호출 측은 헤드라인만으로 진행). */
+export async function fetchYahooArticle(
+  link: string,
+  deps: { fetchImpl?: typeof fetch; base?: string } = {},
+): Promise<YahooArticleBody | null> {
+  if (!link) return null;
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ARTICLE_TIMEOUT_MS);
+  try {
+    const res = await fetchImpl(buildArticleUrl(link, deps.base), { signal: controller.signal });
+    if (!res.ok) return null;
+    const json = (await res.json()) as Partial<YahooArticleBody>;
+    const text = typeof json.text === 'string' ? json.text.trim() : '';
+    if (!text) return null;
+    return { url: s(json.url) || link, title: s(json.title), text, truncated: json.truncated === true };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 상위 n건 본문을 병렬로 — 결과 배열은 news와 같은 인덱스(없으면 null). */
+export async function fetchYahooArticles(
+  news: YahooNewsItem[],
+  n: number,
+  deps: { fetchImpl?: typeof fetch; base?: string } = {},
+): Promise<Array<YahooArticleBody | null>> {
+  return Promise.all(news.slice(0, n).map((item) => fetchYahooArticle(item.link, deps)));
+}

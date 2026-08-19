@@ -7,7 +7,13 @@ import {
   fetchCompanyBrief,
   parseCompanyBrief,
 } from './companyBrief';
-import { buildYahooSearchUrl, parseYahooSearch, type YahooSearchResult } from './yahooSearch';
+import {
+  buildArticleUrl,
+  buildYahooSearchUrl,
+  parseYahooSearch,
+  type YahooArticleBody,
+  type YahooSearchResult,
+} from './yahooSearch';
 import type { OverseasPriceDetail } from '../../kis/priceDetail';
 
 const detail = {
@@ -43,9 +49,12 @@ const yahooJson = {
 };
 
 describe('yahooSearch', () => {
-  it('URL — 프록시 베이스 + 대문자 심볼', () => {
+  it('URL — 프록시 베이스 + 대문자 심볼 / 기사 URL 인코딩', () => {
     expect(buildYahooSearchUrl('aapl')).toBe(
       'https://simulation-inpiniti.vercel.app/api/yahoo/v1/finance/search?q=AAPL&newsCount=8&quotesCount=5&enableFuzzyQuery=false',
+    );
+    expect(buildArticleUrl('https://finance.yahoo.com/m/a?b=1')).toBe(
+      'https://simulation-inpiniti.vercel.app/api/simple/article?url=https%3A%2F%2Ffinance.yahoo.com%2Fm%2Fa%3Fb%3D1&max=3000',
     );
   });
 
@@ -59,6 +68,10 @@ describe('yahooSearch', () => {
 
 describe('companyBrief', () => {
   const yahoo: YahooSearchResult = parseYahooSearch(yahooJson, 'AAPL');
+  const articles: Array<YahooArticleBody | null> = [
+    { url: 'https://x/new', title: 'New news', text: 'Body of the new article.', truncated: false },
+    null,
+  ];
 
   it('describePriceDetail — 값 있는 줄만, PBR 0은 생략', () => {
     const s = describePriceDetail(detail);
@@ -68,56 +81,75 @@ describe('companyBrief', () => {
     expect(describePriceDetail(null)).toBe('(시세 데이터 없음)');
   });
 
-  it('프롬프트 — 시세·프로필·번호 매긴 헤드라인 포함, 요청 바디에 tools 없음', () => {
-    const input = { ticker: 'AAPL', market: 'NAS', name: 'Apple', detail, yahoo };
+  it('프롬프트 — 시세·프로필·번호 매긴 기사(본문 있음/없음) 포함, 요청 바디에 tools 없음·JSON 모드', () => {
+    const input = { ticker: 'AAPL', market: 'NAS', name: 'Apple', detail, yahoo, articles };
     const prompt = buildCompanyBriefPrompt(input, 0);
     expect(prompt).toContain('Apple (AAPL, NAS)');
     expect(prompt).toContain('정식 명칭 Apple Inc.');
-    expect(prompt).toContain('1. [2026-08-18] New news — B');
-    const body = buildCompanyBriefRequestBody(input, 0) as Record<string, unknown>;
+    expect(prompt).toContain('1. [2026-08-18] New news — B\n본문:\nBody of the new article.');
+    expect(prompt).toContain('2. [2026-08-17] Old news — A\n(본문 없음 — 헤드라인만)');
+    const body = buildCompanyBriefRequestBody(input, 0) as { tools?: unknown; generationConfig: { responseMimeType: string } };
     expect(body.tools).toBeUndefined();
-    expect(body.systemInstruction).toBeTruthy();
+    expect(body.generationConfig.responseMimeType).toBe('application/json');
   });
 
-  it('parse — index로 원본 매체·날짜·링크 채움, 코드펜스 허용, 5건 제한', () => {
-    const news = [
-      { index: 2, title: '옛 뉴스', summary: 'x' },
-      { index: 1, title: '새 뉴스', summary: '' },
-      { index: 99, title: '없는 번호', summary: '' },
-      ...Array.from({ length: 5 }, (_, i) => ({ index: 1, title: `n${i}`, summary: '' })),
-    ];
-    const text = '```json\n' + JSON.stringify({ about: 'a', business: 'b', situation: 'c', news }) + '\n```';
-    const brief = parseCompanyBrief(text, 123, yahoo);
-    expect(brief.about).toBe('a');
-    expect(brief.news).toHaveLength(5);
-    expect(brief.news[0]).toEqual({ title: '옛 뉴스', source: 'A', date: '2026-08-17', summary: 'x', link: 'https://x/old' });
-    expect(brief.news[1].link).toBe('https://x/new');
-    expect(brief.news[2]).toMatchObject({ title: '없는 번호', source: '', link: '' });
+  it('parse — 분석 필드·refs 범위 검증·근거 기사 목록(read 표시), 코드펜스 허용', () => {
+    const payload = {
+      about: 'a',
+      business: 'b',
+      situation: 'c',
+      newsDigest: 'd',
+      positives: [{ text: '좋아요', refs: [1, 1, 9] }, { text: '', refs: [] }],
+      negatives: [{ text: '나빠요', refs: [2] }],
+      watch: ['실적 발표', '', '가이던스', 'x', 'y'],
+    };
+    const brief = parseCompanyBrief('```json\n' + JSON.stringify(payload) + '\n```', 123, yahoo, articles);
+    expect(brief.newsDigest).toBe('d');
+    expect(brief.positives).toEqual([{ text: '좋아요', refs: [1] }]);
+    expect(brief.negatives).toEqual([{ text: '나빠요', refs: [2] }]);
+    expect(brief.watch).toEqual(['실적 발표', '가이던스', 'x']);
+    expect(brief.news).toEqual([
+      { title: 'New news', link: 'https://x/new', source: 'B', date: '2026-08-18', read: true },
+      { title: 'Old news', link: 'https://x/old', source: 'A', date: '2026-08-17', read: false },
+    ]);
     expect(brief.rawText).toBeUndefined();
+    expect(brief.generatedAt).toBe(123);
   });
 
-  it('parse — JSON 아니면 rawText로 폴백', () => {
-    const brief = parseCompanyBrief('그냥 텍스트 답변', 1);
+  it('parse — JSON 아니면 rawText로 폴백(근거 기사는 유지)', () => {
+    const brief = parseCompanyBrief('그냥 텍스트 답변', 1, yahoo, []);
     expect(brief.rawText).toBe('그냥 텍스트 답변');
-    expect(brief.news).toEqual([]);
+    expect(brief.news).toHaveLength(2);
+    expect(brief.positives).toEqual([]);
   });
 
-  it('fetch — Yahoo 실패해도 프록시는 호출하고 결과를 돌려준다', async () => {
+  it('fetch — Yahoo 검색 → 기사 본문 N건 → 프록시. Yahoo/기사 실패해도 프록시는 호출', async () => {
     const calls: string[] = [];
     const fetchImpl = (async (url: string | URL | Request) => {
       const u = String(url);
       calls.push(u);
-      if (u.includes('/api/yahoo/')) return new Response('nope', { status: 500 });
-      return new Response('{"about":"A","business":"B","situation":"C","news":[]}', { status: 200 });
+      if (u.includes('/api/yahoo/')) return new Response(JSON.stringify(yahooJson), { status: 200 });
+      if (u.includes('/api/simple/article')) {
+        return u.includes('new')
+          ? new Response(JSON.stringify({ text: 'body' }), { status: 200 })
+          : new Response('nope', { status: 500 });
+      }
+      return new Response(JSON.stringify({ about: 'A', newsDigest: 'D', positives: [{ text: 'p', refs: [1] }] }), {
+        status: 200,
+      });
     }) as typeof fetch;
-    const brief = await fetchCompanyBrief({ ticker: 'ZZZZ', market: 'NAS', detail: null }, { fetchImpl, now: () => 5 });
-    expect(calls).toHaveLength(2);
-    expect(brief).toMatchObject({ about: 'A', news: [], generatedAt: 5 });
+    const brief = await fetchCompanyBrief({ ticker: 'AAPL', market: 'NAS', detail: null }, { fetchImpl, now: () => 5 });
+    expect(calls.filter((u) => u.includes('/api/simple/article'))).toHaveLength(2);
+    expect(calls.at(-1)).toContain('/api/simple/gemini');
+    expect(brief).toMatchObject({ about: 'A', newsDigest: 'D', generatedAt: 5 });
+    expect(brief.news.map((n) => n.read)).toEqual([true, false]);
+    // 프록시로 보낸 프롬프트에 읽은 본문이 들어갔는지
+    expect(brief.positives[0].refs).toEqual([1]);
   });
 
-  it('cacheKey — 종목+ET 거래일', () => {
+  it('cacheKey — 종목+ET 거래일, v2', () => {
     // 2026-08-19 03:00 UTC = 08-18 23:00 ET
     const key = companyBriefCacheKey('aapl', 'NAS', Date.UTC(2026, 7, 19, 3));
-    expect(key).toBe('stock:companyBrief:v1:NAS:AAPL:2026-08-18');
+    expect(key).toBe('stock:companyBrief:v2:NAS:AAPL:2026-08-18');
   });
 });

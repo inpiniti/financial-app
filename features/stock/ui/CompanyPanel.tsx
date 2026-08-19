@@ -11,11 +11,13 @@ import { inquireOverseasPriceDetail, type OverseasPriceDetail } from '../../../k
 import { useKisSession } from '../../inquiry/useKisSession';
 import type { ScalperManager } from '../../scalper/scalperManager';
 import { formatHHMM } from '../../scalper/ui/format';
+import { pnlColor } from '../../../lib/format';
 import {
   fetchCompanyBrief,
   loadCachedCompanyBrief,
   saveCachedCompanyBrief,
   type CompanyBrief,
+  type CompanyPoint,
 } from '../companyBrief';
 import type { StockMarketCode } from '../marketCodes';
 import type { QuoteFeedState } from '../useQuoteFeed';
@@ -48,6 +50,120 @@ function Section({ title, body }: { title: string; body: string }) {
 
 function SkeletonLine({ width }: { width: number | `${number}%` }) {
   return <View className="mb-2 h-[14px] rounded-full bg-[#f7f9fc]" style={{ width }} />;
+}
+
+/** 호재/악재 한 줄 — 앞의 색 점 + 문장 + 근거 기사 번호(회색). */
+function PointRow({ point, color }: { point: CompanyPoint; color: string }) {
+  return (
+    <View className="flex-row items-start px-5 py-[7px]">
+      <View className="mr-2.5 mt-[8px] h-[6px] w-[6px] rounded-full" style={{ backgroundColor: color }} />
+      <Text className="flex-1 text-[15px] leading-[22px] text-[#191f28]">
+        {point.text}
+        {point.refs.length ? <Text className="text-xs text-[#8b95a1]"> [{point.refs.join(',')}]</Text> : null}
+      </Text>
+    </View>
+  );
+}
+
+function SubLabel({ children }: { children: string }) {
+  return <Text className="px-5 pb-1 pt-3 text-xs font-semibold text-[#8b95a1]">{children}</Text>;
+}
+
+/**
+ * 뉴스 분석 패널 — 사용자는 뉴스 "목록"이 아니라 읽고 분석한 결과를 원한다(2026-08-19).
+ * 종합 → 호재/악재(근거 번호) → 지켜볼 점 → 근거 기사(접힘, 탭하면 원문).
+ */
+function NewsAnalysisPanel({ brief }: { brief: CompanyBrief }) {
+  const [showSources, setShowSources] = useState(false);
+  const readCount = brief.news.filter((item) => item.read).length;
+  const hasAnalysis = Boolean(brief.newsDigest) || brief.positives.length > 0 || brief.negatives.length > 0;
+
+  return (
+    <Panel
+      title="최근 뉴스 분석"
+      headerRight={brief.news.length ? `기사 ${brief.news.length}건 · 본문 ${readCount}건 읽음` : undefined}
+    >
+      {!hasAnalysis ? (
+        <View className="px-5 pb-4">
+          <Text className="text-sm text-[#8b95a1]">
+            {brief.news.length ? '기사에서 분석할 만한 내용을 찾지 못했어요' : '최근 뉴스를 찾지 못했어요'}
+          </Text>
+        </View>
+      ) : (
+        <>
+          {brief.newsDigest ? (
+            <View className="px-5 pb-2">
+              <Text className="text-[15px] leading-[22px] text-[#191f28]">{brief.newsDigest}</Text>
+            </View>
+          ) : null}
+          {brief.positives.length ? (
+            <>
+              <SubLabel>호재</SubLabel>
+              {brief.positives.map((p, i) => (
+                <PointRow key={`p${i}`} point={p} color={pnlColor(1)} />
+              ))}
+            </>
+          ) : null}
+          {brief.negatives.length ? (
+            <>
+              <SubLabel>악재</SubLabel>
+              {brief.negatives.map((p, i) => (
+                <PointRow key={`n${i}`} point={p} color={pnlColor(-1)} />
+              ))}
+            </>
+          ) : null}
+          {brief.watch.length ? (
+            <>
+              <SubLabel>지켜볼 점</SubLabel>
+              {brief.watch.map((w, i) => (
+                <PointRow key={`w${i}`} point={{ text: w, refs: [] }} color="#8b95a1" />
+              ))}
+            </>
+          ) : null}
+          <View style={{ height: 8 }} />
+        </>
+      )}
+
+      {brief.news.length ? (
+        <>
+          <Pressable
+            onPress={() => setShowSources((v) => !v)}
+            className="flex-row items-center px-5 py-3"
+            style={({ pressed }) => ({ backgroundColor: pressed ? '#f7f9fc' : 'transparent' })}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: showSources }}
+          >
+            <Ionicons name={showSources ? 'chevron-up' : 'chevron-down'} size={14} color="#3182f6" />
+            <Text className="ml-1 text-sm font-semibold text-[#3182f6]">
+              근거 기사 {brief.news.length}건 {showSources ? '접기' : '보기'}
+            </Text>
+          </Pressable>
+          {showSources
+            ? brief.news.map((item, idx) => (
+                <Pressable
+                  key={`${item.link}-${idx}`}
+                  className="flex-row items-start px-5 py-[10px]"
+                  disabled={!item.link}
+                  onPress={() => void Linking.openURL(item.link)}
+                  style={({ pressed }) => ({ backgroundColor: pressed ? '#f7f9fc' : 'transparent' })}
+                  accessibilityRole={item.link ? 'link' : undefined}
+                >
+                  <Text className="mr-2 w-5 text-sm text-[#8b95a1]">{idx + 1}</Text>
+                  <View className="flex-1">
+                    <Text className="text-sm text-[#191f28]" numberOfLines={2}>
+                      {item.title}
+                    </Text>
+                    <Text className="mt-0.5 text-xs text-[#8b95a1]">
+                      {[item.source, item.date, item.read ? '본문 읽음' : '헤드라인만'].filter(Boolean).join(' · ')}
+                    </Text>
+                  </View>
+                </Pressable>
+              ))
+            : null}
+        </>
+      ) : null}
+    </Panel>
+  );
 }
 
 /** 실시간 구독 진단 한 줄 — 옛 QuotePanel의 SubscriptionLine 축약. */
@@ -163,7 +279,7 @@ export function CompanyPanel({ ticker, excd, name, manager, quoteState, trKey }:
           <View className="px-5 pb-4">
             <View className="mb-3 flex-row items-center">
               <ActivityIndicator size="small" color="#3182f6" />
-              <Text className="ml-2 text-sm text-[#8b95a1]">기업 정보와 최근 뉴스를 정리하고 있어요</Text>
+              <Text className="ml-2 text-sm text-[#8b95a1]">기업 정보를 정리하고 최근 기사를 읽고 있어요 (10초 안팎)</Text>
             </View>
             <SkeletonLine width="90%" />
             <SkeletonLine width="70%" />
@@ -206,32 +322,7 @@ export function CompanyPanel({ ticker, excd, name, manager, quoteState, trKey }:
       </Panel>
 
       {state.kind === 'ready' && !state.brief.rawText ? (
-        <Panel title="최근 뉴스" headerRight={state.brief.news.length ? `${state.brief.news.length}건` : undefined}>
-          {state.brief.news.length === 0 ? (
-            <View className="px-5 pb-4">
-              <Text className="text-sm text-[#8b95a1]">최근 1~2주 내 찾은 뉴스가 없어요</Text>
-            </View>
-          ) : (
-            state.brief.news.map((item, idx) => (
-              <Pressable
-                key={`${item.title}-${idx}`}
-                className="px-5 py-[13px]"
-                disabled={!item.link}
-                onPress={() => void Linking.openURL(item.link)}
-                style={({ pressed }) => ({ backgroundColor: pressed ? '#f7f9fc' : 'transparent' })}
-                accessibilityRole={item.link ? 'link' : undefined}
-              >
-                <Text className="text-[15px] font-bold text-[#191f28]">{item.title}</Text>
-                {item.source || item.date ? (
-                  <Text className="mt-0.5 text-xs text-[#8b95a1]">
-                    {[item.source, item.date].filter(Boolean).join(' · ')}
-                  </Text>
-                ) : null}
-                {item.summary ? <Text className="mt-1 text-sm leading-5 text-[#4e5968]">{item.summary}</Text> : null}
-              </Pressable>
-            ))
-          )}
-        </Panel>
+        <NewsAnalysisPanel brief={state.brief} />
       ) : null}
 
       <Panel style={{ marginBottom: 0 }}>
