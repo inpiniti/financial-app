@@ -1,5 +1,5 @@
 // 종목 상세화면 — 2026-08-07 종목상세화면 plan. 어느 리스트(자동 단타·보유·미체결·순위)에서
-// 종목을 탭하든 이 화면 하나로 온다(바텀시트 난립 제거). 탭: 차트(기본)/커뮤니티/호가.
+// 종목을 탭하든 이 화면 하나로 온다(바텀시트 난립 제거). 탭: 차트(기본)/커뮤니티/기업(2026-08-19 호가 탭 대체 — AI 기업요약).
 // 실시간 구독은 화면 진입 시 획득, 이탈 시 해제 — useQuoteFeed(acquireFeed/releaseFeed refcount) 참고.
 import { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
@@ -10,19 +10,19 @@ import { useScalperManager } from '../../features/scalper/ui/managerProvider';
 import { ChartPanel } from '../../features/stock/ui/ChartPanel';
 import { CommentsPanel } from '../../features/stock/ui/CommentsPanel';
 import { PriceHeader } from '../../features/stock/ui/PriceHeader';
-import { QuotePanel } from '../../features/stock/ui/QuotePanel';
+import { CompanyPanel } from '../../features/stock/ui/CompanyPanel';
 import { toStockMarketCode } from '../../features/stock/marketCodes';
 import { useQuoteFeed } from '../../features/stock/useQuoteFeed';
 
-type DetailTab = 'chart' | 'comments' | 'quote';
+type DetailTab = 'chart' | 'comments' | 'company';
 
 const TAB_ITEMS: Array<{ key: DetailTab; label: string }> = [
   { key: 'chart', label: '차트' },
   { key: 'comments', label: '커뮤니티' },
-  { key: 'quote', label: '호가' },
+  { key: 'company', label: '기업' },
 ];
 
-/** 차트/커뮤니티/호가 밑줄 탭 — 선택된 탭은 진한 글자 + 하단 2px 바(토스식). */
+/** 차트/커뮤니티/기업 밑줄 탭 — 선택된 탭은 진한 글자 + 하단 2px 바(토스식). */
 function DetailTabs({ value, onChange }: { value: DetailTab; onChange: (next: DetailTab) => void }) {
   return (
     <View className="mb-2 flex-row bg-white px-2">
@@ -93,7 +93,7 @@ export default function StockDetailScreen() {
 
   const [tab, setTab] = useState<DetailTab>('chart');
 
-  // 진입~이탈 동안 체결가+호가 구독 유지 — market이 없으면(null) 아무것도 구독하지 않는다.
+  // 진입~이탈 동안 체결가 구독 유지(PriceHeader 실시간가·기업 탭 하단 구독 진단) — market이 없으면(null) 아무것도 구독하지 않는다.
   const { state: quoteState, trKey } = useQuoteFeed(manager, ticker, market);
 
   const title = name ?? ticker;
@@ -128,7 +128,14 @@ export default function StockDetailScreen() {
         ) : tab === 'comments' ? (
           <CommentsPanel ticker={ticker} />
         ) : (
-          <QuotePanel manager={manager} state={quoteState} trKey={trKey} />
+          <CompanyPanel
+            ticker={ticker}
+            excd={market}
+            name={name}
+            manager={manager}
+            quoteState={quoteState}
+            trKey={trKey}
+          />
         )}
       </View>
     </View>
