@@ -30,6 +30,8 @@ import {
 } from '../../core/conditional';
 import { TrendExitRule } from '../../core/trend/exitRule';
 import { TREND_MODE } from './trendMode';
+import { CircuitExitRule, type CircuitEvent } from '../../core/circuit';
+import { CIRCUIT_MODE } from './circuitMode';
 import type { Signal } from '../../core/detector';
 import { Execution, type ExecutionResult } from '../../core/execution';
 import { Grid, REBRACKET_RETRY_MS, type BuyLegStatus, type GridPollResult } from '../../core/grid';
@@ -322,6 +324,24 @@ export function validateConfig(config: AutoPilotConfig): string | null {
   return null;
 }
 
+/** 미국 정규장(ET 09:30~16:00, LULD 적용 시간)인가 — 서킷 감지 게이트(2026-08-19). 서머타임은 Intl이 처리한다. */
+export function isUsRegularSession(epochMs: number): boolean {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(epochMs));
+  const h = Number(parts.find((p) => p.type === 'hour')?.value ?? NaN) % 24;
+  const m = Number(parts.find((p) => p.type === 'minute')?.value ?? NaN);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return false;
+  const mins = h * 60 + m;
+  return mins >= 9 * 60 + 30 && mins < 16 * 60;
+}
+
+/** 외부(수동) 청산 인지용 잔고 재확인 주기(ms) — 서킷 도메인 문서 §6. */
+export const MANUAL_EXIT_CHECK_MS = 120_000;
+
 /** 미국 장 기준일(America/New_York 날짜, YYYY-MM-DD) — "오늘"의 기준(사용자 확정 §4-7). */
 export function etDateOf(epochMs: number): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -390,6 +410,13 @@ interface ConditionalState {
   faultText: string | null;
   /** 진행 중 매도가 손절선(틱 판정)에서 시작됐는가 — 정산 기록의 exitReason(STOP_LOSS)용. 정산 시 지운다. */
   stopLossHit?: boolean;
+  /** 진행 중 매도가 서킷 규칙(하킷 2연속, 정지 중 지정가)에서 시작됐는가 — exitReason(CIRCUIT)용. */
+  circuitHit?: boolean;
+  /** 서킷 감지 규칙(추세 모드에서 grid를 감싼 데코레이터) — heartbeat 호출용. 변곡점 모드면 undefined. */
+  circuit?: CircuitExitRule;
+  /** 외부(수동) 청산 인지 — 다음 잔고 재확인 시각(ms)과 연속 "잔고 없음" 관측 수(2회 연속이어야 MANUAL). */
+  manualCheckAt?: number;
+  manualMisses?: number;
 }
 
 interface PendingBuy {
@@ -1542,7 +1569,18 @@ export class AutoPilot {
       if (this.trendEnabled()) {
         // 추세 → 그리드 → 매매 — 규칙은 추세 도메인(TrendExitRule): 분봉5선 꺾임에 전량 매도, 물타기 없음.
         const rule = new TrendExitRule(seed, { stopLossPct: this.trendConfig!.stopLossPct });
-        active.cond = { grid: rule, exec: null, execSide: null, starting: false, faultText: null };
+        // 서킷 데코레이터(2026-08-19) — CIRCUIT_MODE=false면 관측(이벤트)만, true면 서킷 상태에서 ma5 무시·정지 중 지정가 매도.
+        const circuit = new CircuitExitRule(rule, { act: CIRCUIT_MODE });
+        active.cond = {
+          grid: circuit,
+          circuit,
+          exec: null,
+          execSide: null,
+          starting: false,
+          faultText: null,
+          manualCheckAt: this.deps.clock.now() + MANUAL_EXIT_CHECK_MS,
+          manualMisses: 0,
+        };
         const stop = rule.stopLossPrice;
         this.event(
           `${active.ticker} 추세 관리 ${active.adopted ? '등록' : '인계'} · ${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} — 종가가 분봉5선 아래로 닫히면 전량 매도해요(문턱 없음)${
@@ -1605,6 +1643,9 @@ export class AutoPilot {
         }
       }
       if (this.stopRequested || this.faulted || active.gridFaulted || !this.actives.has(active.ticker)) return;
+      // 서킷 매도(정지 중 지정가): 시작가는 결정의 limitPrice, 추격은 정지 뒤 첫 체결이 관측된 뒤에만(chaseGate).
+      const limit = decision.side === 'sell' && decision.limitPrice !== undefined ? decision.limitPrice : null;
+      const chaseAfter = decision.side === 'sell' ? (decision.chaseAfterTradeAt ?? null) : null;
       const exec = new Execution({
         port: createExecutionPort(active.broker, active.ticker),
         clock: this.deps.clock,
@@ -1612,18 +1653,23 @@ export class AutoPilot {
         qty: decision.qty,
         // 취소선 — 조건부 그리드의 문턱 부정을 술어로 주입한다(매매는 판단하지 않는다).
         shouldAbort: (p) => c.grid.shouldAbort(decision.side, p),
+        chaseGate:
+          chaseAfter === null ? undefined : () => (active.slot?.getView().lastTradeAt ?? 0) > chaseAfter,
       });
-      await exec.start(price);
+      await exec.start(limit ?? price);
       if (exec.state === 'FAULT') {
         // 발주 거절은 세션 간극·일시 오류가 흔하다 — 종목을 동결하지 않고 다음 변곡점에서 다시 시도한다.
         this.event(`${active.ticker} 매매 발주 실패 · ${exec.faultText ?? '주문 거절'} — 다음 변곡점에서 다시 시도해요`);
         c.stopLossHit = false; // 손절 매도가 발주에 실패하면 다음 틱이 다시 판정한다(플래그도 함께 되돌린다).
+        c.circuitHit = false;
         return;
       }
       c.exec = exec;
       c.execSide = decision.side;
       this.event(
-        `${active.ticker} ${decision.side === 'sell' ? '전량 매도' : '물타기 매수'} 매매 시작 · ${decision.qty}주 @ $${(exec.orderPrice ?? price).toFixed(2)} (현재가 추격)`,
+        `${active.ticker} ${decision.side === 'sell' ? '전량 매도' : '물타기 매수'} 매매 시작 · ${decision.qty}주 @ ${(exec.orderPrice ?? price).toFixed(2)} ${
+          limit !== null ? '(정지 중 지정가 · 재개 단일가에 소화, 미체결이면 재개 뒤 추격)' : '(현재가 추격)'
+        }`,
       );
       this.emit();
     } finally {
@@ -1636,6 +1682,7 @@ export class AutoPilot {
     const c = active.cond!;
     const exec = c.exec;
     if (!exec) {
+      await this.checkManualExit(active, c);
       this.emit();
       return;
     }
@@ -1651,6 +1698,7 @@ export class AutoPilot {
         c.exec = null;
         c.execSide = null;
         c.stopLossHit = false;
+        c.circuitHit = false;
         this.event(
           `${active.ticker} ${side === 'sell' ? '매도' : '매수'} 추격 취소 · 평단 대비 문턱이 깨져 다음 변곡점을 기다려요${
             r.result.filledQty > 0 ? ` (부분 체결 ${r.result.filledQty}주 반영)` : ''
@@ -1754,9 +1802,65 @@ export class AutoPilot {
       fees,
       entrySnapshot: pos?.entrySnapshot ?? { price: entryPrice, slope: 0, accel: 0, ts: now },
       exitSnapshot: null,
-      exitReason: active.cond?.stopLossHit ? 'STOP_LOSS' : 'SELL_SIGNAL',
+      exitReason: active.cond?.stopLossHit ? 'STOP_LOSS' : active.cond?.circuitHit ? 'CIRCUIT' : 'SELL_SIGNAL',
     };
-    if (active.cond) active.cond.stopLossHit = false;
+    if (active.cond) {
+      active.cond.stopLossHit = false;
+      active.cond.circuitHit = false;
+    }
+    active.pendingSettle = record;
+    this.deps.onTrade?.(record);
+    this.settle(active);
+  }
+
+  /**
+   * 외부(수동·한투앱) 청산 인지 — 매매가 없을 때 주기적으로 잔고를 재확인해, 2회 연속 "보유 없음"이면
+   * MANUAL 사유로 정산한다(서킷 도메인 문서 §6). 1회로 끊지 않는 이유: 진입 직후 잔고 반영 지연·조회 일시 실패.
+   * 체결가는 주문체결내역(TTTS3035R)이 일부 계좌에서 APTR0058로 거절되므로(kis/nccs.ts) 마지막 현재가로 기록한다.
+   */
+  private async checkManualExit(active: ActiveCycle, c: ConditionalState): Promise<void> {
+    if (c.manualCheckAt === undefined || active.gridFaulted || c.starting || this.stopRequested) return;
+    const now = this.deps.clock.now();
+    if (now < c.manualCheckAt) return;
+    c.manualCheckAt = now + MANUAL_EXIT_CHECK_MS;
+    let pos: ConditionalPosition | null = null;
+    try {
+      pos = await active.broker.fetchPosition();
+    } catch {
+      return; // 조회 실패는 판단하지 않는다(다음 주기).
+    }
+    if (pos !== null && pos.qty > 0) {
+      c.manualMisses = 0;
+      if (pos.avgPrice > 0 && pos.qty !== c.grid.view.qty) c.grid.setPosition(pos); // 외부 부분 매도·추가 매수 반영.
+      return;
+    }
+    c.manualMisses = (c.manualMisses ?? 0) + 1;
+    if (c.manualMisses < 2) return;
+    if (c.exec !== null || c.starting || !this.actives.has(active.ticker)) return;
+    const v = c.grid.view;
+    const exitPrice = active.slot?.getView().price ?? v.avgPrice;
+    const at = this.deps.clock.now();
+    const grossPnl = (exitPrice - v.avgPrice) * v.qty;
+    const feeRate = this.deps.feeRate ?? 0;
+    const fees = feeRate * (v.avgPrice * v.qty + exitPrice * v.qty);
+    const cyclePos = active.cycle?.position ?? null;
+    const record: TradeRecord = {
+      ticker: active.ticker,
+      qty: v.qty,
+      entryPrice: v.avgPrice,
+      entryTs: cyclePos?.entryTs ?? at,
+      exitPrice,
+      exitTs: at,
+      pnl: grossPnl - fees,
+      grossPnl,
+      fees,
+      entrySnapshot: cyclePos?.entrySnapshot ?? { price: v.avgPrice, slope: 0, accel: 0, ts: at },
+      exitSnapshot: null,
+      exitReason: 'MANUAL',
+    };
+    this.event(
+      `${active.ticker} 잔고에서 사라졌어요 — 앱 밖(수동) 매도로 보고 정산해요 · 체결가 미확인(현재가 ${exitPrice.toFixed(2)} 기준 기록)`,
+    );
     active.pendingSettle = record;
     this.deps.onTrade?.(record);
     this.settle(active);
@@ -1836,7 +1940,7 @@ export class AutoPilot {
       this.cycles += 1;
       this.cumPnl += record.pnl;
       this.event(
-        `${record.ticker} ${record.exitReason === 'SELL_SIGNAL' ? '청산' : record.exitReason === 'STOP_LOSS' ? '손절 청산' : '수동 청산'} · 손익 ${record.pnl.toFixed(2)}`,
+        `${record.ticker} ${exitReasonLabel(record.exitReason)} · 손익 ${record.pnl.toFixed(2)}`,
       );
       void this.persist();
     }
@@ -1919,7 +2023,27 @@ export class AutoPilot {
         if (active.cond) {
           const c = active.cond;
           const exec = c.exec;
-          const price = active.slot?.getView().price ?? null;
+          const view = active.slot?.getView() ?? null;
+          const price = view?.price ?? null;
+          // 서킷 관측(정지·재개·서킷 상태) — 매매 유무와 무관하게 매초. 결정은 매매가 없을 때만 받는다.
+          if (c.circuit && view && !active.gridFaulted) {
+            const nowMs = this.deps.clock.now();
+            const hb = c.circuit.heartbeat({
+              nowMs,
+              price: view.price,
+              lastTradeAt: view.lastTradeAt,
+              regularSession: isUsRegularSession(nowMs),
+            });
+            for (const ev of hb.events) this.event(`${active.ticker} ${circuitEventText(ev)}`);
+            if (hb.events.some((ev) => ev.kind === 'HALT')) c.manualCheckAt = 0; // 정지 감지 → 잔고 재확인 앞당김(수동 매도 인지).
+            if (hb.decision && price !== null && exec === null && !c.starting && this.running && !this.paused && !this.stopRequested) {
+              c.starting = true;
+              c.circuitHit = hb.reason === 'CIRCUIT';
+              c.stopLossHit = hb.reason === 'STOP_LOSS';
+              void this.startConditionalExec(active, c, hb.decision, price);
+              continue;
+            }
+          }
           if (exec !== null && !active.gridFaulted && price !== null) await exec.onPrice(price);
           // 틱 판정(추세 손절선) — 매매가 없을 때만. 신호 경로(handleConditionalSignal)와 같은 게이트·점유 규칙.
           else if (exec === null && !c.starting && !active.gridFaulted && price !== null && this.running && !this.paused && !this.stopRequested) {
@@ -2004,5 +2128,47 @@ function faultKindLabel(fault: AdapterFault): string {
       return '취소 실패';
     default:
       return '브로커 오류';
+  }
+}
+
+/** 정산 이벤트 문구 — 청산 사유별. */
+function exitReasonLabel(reason: TradeRecord['exitReason']): string {
+  switch (reason) {
+    case 'SELL_SIGNAL':
+      return '청산';
+    case 'STOP_LOSS':
+      return '손절 청산';
+    case 'CIRCUIT':
+      return '서킷 청산';
+    case 'MANUAL':
+      return '수동 청산(앱 밖)';
+    default:
+      return '수동 청산';
+  }
+}
+
+/** 서킷 관측 이벤트 문구 — 관측 단계(CIRCUIT_MODE=false)의 핵심 산출물이라 수치를 다 적는다(plan §5 미결 검증용). */
+function circuitEventText(ev: CircuitEvent): string {
+  switch (ev.kind) {
+    case 'HALT': {
+      const r = ev.record;
+      const dir = r.dir > 0 ? '상킷' : r.dir < 0 ? '하킷' : '보합';
+      const win = r.windowSec === null ? '첫 정지' : `재개 창 ${r.windowSec.toFixed(0)}초`;
+      return `정지 감지 #${ev.count} · ${dir} · 직전가 ${r.price.toFixed(2)} · ${win} · 직전 3분 체결 ${ev.activeTicks}건 · 하킷 연속 ${ev.consecutiveDown}${
+        ev.inCircuit ? ' · 서킷 상태(ma5 청산 보류)' : ''
+      }`;
+    }
+    case 'RESUME':
+      return `재개 · 첫 체결 ${ev.price.toFixed(2)} (갭 ${(ev.gapPct * 100).toFixed(1)}%) · 정지 ${Math.round(ev.haltedMs / 1000)}초${
+        ev.inCircuit ? ' · 서킷 상태 유지' : ''
+      }`;
+    case 'CIRCUIT_RELEASED':
+      return '서킷 상태 해제 · 재개 뒤 5분 정지 없음 — ma5 청산으로 돌아가요';
+    case 'SELL':
+      return `${ev.reason === 'CIRCUIT' ? '하킷 2연속' : '정지 직전가가 손절선 이하'} → ${
+        ev.acted ? '정지 중 지정가 매도' : '(관측 모드) 매도 조건 충족 — 주문은 내지 않아요'
+      } · 지정가 ${ev.limitPrice.toFixed(2)} (직전가 ${ev.haltPrice.toFixed(2)} −12%)`;
+    default:
+      return '서킷 이벤트';
   }
 }

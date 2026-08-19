@@ -315,3 +315,46 @@ describe('Execution — 장애 허용·종료', () => {
     expect(b.exec.state).toBe('CANCELLED'); // 거절이어도 종료 — 잔여 주문은 호출부가 안내
   });
 });
+
+describe('Execution — 추격 게이트(chaseGate, 서킷 정지 중 지정가 유지)', () => {
+  it('게이트가 닫혀 있으면 현재가가 달라도 정정하지 않고, 열리면 그때부터 추격한다', async () => {
+    const port = new FakePort();
+    const clock = fakeClock(0);
+    let open = false;
+    const exec = new Execution({
+      port,
+      clock,
+      side: 'sell',
+      qty: 10,
+      shouldAbort: () => false,
+      chaseGate: () => open,
+    });
+    await exec.start(2.16); // 정지 중 지정가(직전가 2.45 −12%)
+    expect(port.placed).toEqual([{ side: 'sell', qty: 10, price: 2.16, odno: 'O1' }]);
+    clock.advance(1000);
+    await exec.onPrice(2.45); // 정지 중 낡은 현재가 — 끌려 올라가면 안 된다
+    expect(port.amended).toHaveLength(0);
+    expect(exec.orderPrice).toBe(2.16);
+    open = true; // 재개 첫 체결 관측
+    clock.advance(1000);
+    await exec.onPrice(2.41);
+    expect(port.amended).toEqual([{ from: 'O1', to: 'O2', qty: 10, price: 2.41 }]);
+  });
+
+  it('게이트가 닫혀 있어도 취소선 판정은 그대로 동작한다', async () => {
+    const port = new FakePort();
+    const clock = fakeClock(0);
+    const exec = new Execution({
+      port,
+      clock,
+      side: 'sell',
+      qty: 10,
+      shouldAbort: (p) => p < 1,
+      chaseGate: () => false,
+    });
+    await exec.start(2.16);
+    clock.advance(1000);
+    await exec.onPrice(0.9);
+    expect(exec.state).toBe('CANCELLED');
+  });
+});

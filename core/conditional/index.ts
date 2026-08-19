@@ -30,8 +30,15 @@ export interface ConditionalGridDeps {
   config: ConditionalGridConfig;
 }
 
-/** 매매 지시 — side와 수량만. 실행(체결까지)은 core/execution 몫이다. */
-export type ConditionalDecision = { side: 'sell'; qty: number } | { side: 'buy'; qty: number };
+/**
+ * 매매 지시 — side와 수량. 실행(체결까지)은 core/execution 몫이다.
+ * 매도는 선택적으로 시작 지정가와 "추격 시작 조건"을 실을 수 있다(서킷 도메인, 2026-08-19):
+ *  · limitPrice — 현재가 대신 이 값으로 발주(정지 중 재개 단일가 소화용).
+ *  · chaseAfterTradeAt — 이 시각보다 뒤의 체결이 관측되기 전엔 정정(추격)하지 않는다(정지 중 낡은 현재가로 끌려 올라가지 않게).
+ */
+export type ConditionalDecision =
+  | { side: 'sell'; qty: number; limitPrice?: number; chaseAfterTradeAt?: number }
+  | { side: 'buy'; qty: number };
 
 export interface ConditionalGridView {
   qty: number;

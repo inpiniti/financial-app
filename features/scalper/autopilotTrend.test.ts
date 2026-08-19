@@ -268,3 +268,97 @@ describe('추세 → 그리드 → 매매 — 입양·Stop', () => {
     expect(broker.placed).toHaveLength(1);
   });
 });
+
+// ---- 서킷(LULD 정지) 관측·외부 청산 기록 (2026-08-19 서킷 도메인 문서) ----
+// CIRCUIT_MODE=false(관측 단계): 정지·재개·서킷 상태 이벤트만 남기고 주문은 내지 않는다.
+
+/** 정규장(ET 10:00) 시각으로 시계를 옮긴다 — 서킷 감지는 정규장 게이트 뒤에 있다. */
+const ET_REGULAR = Date.UTC(2026, 7, 18, 14, 0, 0); // 2026-08-18 10:00 ET(EDT)
+
+/** 1초 간격 체결 n건(슬롯 시계 기준). */
+async function trades(h: Harness, n: number, price: number, barMinute: number): Promise<void> {
+  for (let i = 0; i < n; i++) {
+    h.clock.advance(1000);
+    h.slots.get('A')!.pushTick(price, barMinute * M + i * 1000, { volume: 100 });
+    await fireTimers(h);
+  }
+}
+
+/** 무체결 n초 — 매초 리프라이스 틱만 돈다. */
+async function quiet(h: Harness, seconds: number): Promise<void> {
+  for (let i = 0; i < seconds; i++) {
+    h.clock.advance(1000);
+    await fireTimers(h);
+  }
+}
+
+describe('서킷 관측 — 정지·재개·서킷 상태 이벤트(주문 없음)', () => {
+  it('활발한 뒤 45초 무체결 → 정지 감지 #1, 재개 뒤 창 3초 재정지 → #2 서킷 상태, 주문은 나가지 않는다', async () => {
+    const h = makeHarness();
+    await enter(h);
+    const broker = h.brokers.get('A')!;
+    broker.position = { qty: h.pilot.getView().grids[0].holdingQty, avgPrice: 223 };
+    h.clock.set(ET_REGULAR);
+    await trades(h, 40, 230, 123);
+    await quiet(h, 46);
+    expect(h.events.some((e) => e.includes("정지 감지 #1") && e.includes("첫 정지"))).toBe(true);
+    // 300초 정지 뒤 재개(위 갭) → 3초 거래 → 다시 정지
+    h.clock.advance(300_000);
+    await trades(h, 3, 250, 123);
+    expect(h.events.some((e) => e.includes('재개 · 첫 체결 250.00'))).toBe(true);
+    await quiet(h, 46);
+    expect(h.events.some((e) => e.includes('정지 감지 #2') && e.includes('재개 창 2초') && e.includes('서킷 상태'))).toBe(true);
+    // 관측 모드 — 매도 주문 없음, 관리 유지
+    expect(broker.placed).toHaveLength(1);
+    expect(h.pilot.getView().activeTickers).toEqual(['A']);
+  });
+
+  it('정규장 밖(프리마켓)에서는 무체결이어도 정지를 감지하지 않는다', async () => {
+    const h = makeHarness();
+    await enter(h);
+    h.brokers.get('A')!.position = { qty: 1, avgPrice: 223 };
+    h.clock.set(Date.UTC(2026, 7, 18, 12, 0, 0)); // 08:00 ET
+    await trades(h, 40, 230, 123);
+    await quiet(h, 60);
+    expect(h.events.some((e) => e.includes('정지 감지'))).toBe(false);
+  });
+});
+
+describe('외부(수동) 청산 기록 — 잔고 재확인', () => {
+  it('보유 중 잔고가 2회 연속(2분 간격) 비어 있으면 MANUAL로 정산하고 관리를 놓는다', async () => {
+    const h = makeHarness();
+    await enter(h);
+    const broker = h.brokers.get('A')!;
+    broker.position = null; // 앱 밖에서 팔림(잔고 없음)
+    h.clock.advance(120_000);
+    await h.pilot.pollCycle();
+    await flush();
+    expect(h.trades).toHaveLength(0); // 1회로는 끊지 않는다
+    h.clock.advance(120_000);
+    await h.pilot.pollCycle();
+    await flush();
+    expect(h.trades).toHaveLength(1);
+    expect(h.trades[0].exitReason).toBe('MANUAL');
+    expect(h.events.some((e) => e.includes('앱 밖(수동) 매도'))).toBe(true);
+    expect(h.pilot.getView().activeTickers).toEqual([]);
+  });
+
+  it('잔고가 살아 있으면 정산하지 않는다(외부 부분 매도는 수량만 반영)', async () => {
+    const h = makeHarness();
+    await enter(h);
+    const broker = h.brokers.get('A')!;
+    const qty = h.pilot.getView().grids[0].holdingQty;
+    broker.position = { qty, avgPrice: 223 };
+    h.clock.advance(120_000);
+    await h.pilot.pollCycle();
+    h.clock.advance(120_000);
+    await h.pilot.pollCycle();
+    await flush();
+    expect(h.trades).toHaveLength(0);
+    broker.position = { qty: Math.max(1, qty - 1), avgPrice: 223 };
+    h.clock.advance(120_000);
+    await h.pilot.pollCycle();
+    await flush();
+    expect(h.pilot.getView().grids[0].holdingQty).toBe(Math.max(1, qty - 1));
+  });
+});

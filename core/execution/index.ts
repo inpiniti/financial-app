@@ -87,6 +87,11 @@ export interface ExecutionDeps {
   /** 재정정 최소 간격(ms, 기본 1000) — KIS REST 유량 방어. 현재가가 틱마다 바뀌어도 이 간격으로만 정정한다. */
   minReorderIntervalMs?: number;
   /**
+   * 추격 게이트(선택) — false를 돌려주는 동안은 현재가가 바뀌어도 정정하지 않는다(취소선 판정은 그대로).
+   * 서킷 도메인이 "정지 중 지정가는 재개 첫 체결 전까지 그대로 둔다"를 주입한다. 미지정이면 항상 추격.
+   */
+  chaseGate?: () => boolean;
+  /**
    * 정정 거절 라운드 한도(기본 3) — 거절 1회마다 추격을 동결하고 폴이 "주문 생존(listed 잔량)"을
    * 실측한 뒤에만 재개하므로, 한도 도달 = 살아 있는 주문의 정정이 3라운드 연속 거절(진짜 API 장애).
    * 이미 체결된 주문의 거절(APBK0124)은 폴의 체결 확정(DONE)으로 흡수돼 여기 오지 않는다.
@@ -110,6 +115,7 @@ export class Execution {
   readonly side: 'buy' | 'sell';
   readonly qty: number;
   private readonly shouldAbort: (price: number) => boolean;
+  private readonly chaseGate: (() => boolean) | null;
   private readonly minReorderIntervalMs: number;
   private readonly amendFailLimit: number;
   private readonly fillFailLimit: number;
@@ -155,6 +161,7 @@ export class Execution {
     this.side = deps.side;
     this.qty = deps.qty;
     this.shouldAbort = deps.shouldAbort;
+    this.chaseGate = deps.chaseGate ?? null;
     this.minReorderIntervalMs = deps.minReorderIntervalMs ?? 1000;
     this.amendFailLimit = deps.amendFailLimit ?? 3;
     this.fillFailLimit = deps.fillFailLimit ?? 3;
@@ -213,6 +220,7 @@ export class Execution {
         return;
       }
       if (this.cancelAmbiguous || this.amendAmbiguous) return; // 취소/정정 거절 후 — 폴이 수량을 확정할 때까지 손대지 않는다.
+      if (this.chaseGate !== null && !this.chaseGate()) return; // 추격 게이트 닫힘(정지 중 지정가 유지).
       const target = roundGridPrice(price);
       if (target === this.leg.price) return;
       if (this.clock.now() - this.lastOrderAt < this.minReorderIntervalMs) return;

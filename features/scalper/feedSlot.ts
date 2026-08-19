@@ -129,6 +129,11 @@ export interface FeedSlotView {
   readonly accel: number | null;
   readonly lastSignal: Signal | null;
   readonly lastTickAt: number | null;
+  /**
+   * 마지막 **체결** 틱 시각(서킷 감지용, 2026-08-19) — 체결량(EVOL)이 0인 틱은 호가만 바뀐 것으로 보고 갱신하지 않는다.
+   * 체결량 필드가 없으면 체결로 간주(fail-open). lastTickAt과 달리 정지 중엔 멈춰 있어야 한다.
+   */
+  readonly lastTradeAt: number | null;
   readonly bid1: number | null;
   readonly ask1: number | null;
   /** 당일 고가·저가(체결가 틱의 HIGH/LOW, 마지막 수신값). 아직 없으면 null. */
@@ -168,6 +173,7 @@ export class FeedSlot {
 
   private price: number | null = null;
   private lastTickAt: number | null = null;
+  private lastTradeAt: number | null = null;
   private slope: number | null = null;
   private accel: number | null = null;
   private lastSignal: Signal | null = null;
@@ -215,6 +221,7 @@ export class FeedSlot {
   pushTick(price: number, tsMs: number, extras?: TickExtras): DetectorResult | null {
     this.price = price;
     this.lastTickAt = this.clock.now();
+    if (extras?.volume === undefined || extras.volume > 0) this.lastTradeAt = this.lastTickAt;
     if (extras?.dayHigh !== undefined) this.dayHigh = extras.dayHigh;
     if (extras?.dayLow !== undefined) this.dayLow = extras.dayLow;
     this.meter.record(this.lastTickAt);
@@ -442,6 +449,7 @@ export class FeedSlot {
       accel: this.accel,
       lastSignal: this.lastSignal,
       lastTickAt: this.lastTickAt,
+      lastTradeAt: this.lastTradeAt,
       bid1: this.bid1,
       ask1: this.ask1,
       dayHigh: this.dayHigh,
