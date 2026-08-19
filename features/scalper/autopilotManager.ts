@@ -249,9 +249,7 @@ export class AutoPilotManager {
       fetchBuyableUsd: deps.fetchBuyableUsd
         ? (t, price) => deps.fetchBuyableUsd!(t, price, MARKET_TO_EXCHANGE[this.marketOf(t)])
         : undefined,
-      gridConfig: deps.gridConfig,
-      inflectionConfig: deps.inflection,
-      trendConfig: deps.trend,
+      positionManagement: { grid: deps.gridConfig, inflection: deps.inflection, trend: deps.trend },
       clock: deps.clock,
       scheduler,
       storage: deps.storage,

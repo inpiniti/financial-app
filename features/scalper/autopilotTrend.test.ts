@@ -44,9 +44,11 @@ function makeHarness(opts: { autoFill?: boolean; positions?: Record<string, { qt
       return b;
     },
     // 롤백 대비 실배선처럼 셋 다 주입 — 추세가 우선해야 한다(OCO 다리·물타기가 나가면 안 된다).
-    gridConfig: { buyWidth: 0.05, sellWidth: 0.02, buyMultiplier: 1 },
-    inflectionConfig: { sellProfitPct: 0.02, buyDropPct: 0.03 },
-    trendConfig: TREND_CONFIG,
+    positionManagement: {
+      grid: { buyWidth: 0.05, sellWidth: 0.02, buyMultiplier: 1 },
+      inflection: { sellProfitPct: 0.02, buyDropPct: 0.03 },
+      trend: TREND_CONFIG,
+    },
     clock,
     scheduler,
     storage: new FakeStore(),

@@ -16,6 +16,7 @@ import {
   validateConfig,
   type AutoPilotConfig,
   type AutoPilotDeps,
+  type GridExitConfig,
 } from './autopilot';
 import { FeedSlot } from './feedSlot';
 import { FakeBroker, FakeStore, fakeClock, flush, noopScheduler } from './fakes';
@@ -55,7 +56,7 @@ function makeHarness(
     autoFill?: boolean;
     config?: AutoPilotConfig | null;
     fetchBuyableUsd?: AutoPilotDeps['fetchBuyableUsd'];
-    gridConfig?: AutoPilotDeps['gridConfig'];
+    gridConfig?: GridExitConfig;
     /** 그리드 매수 다리 지연(ms). 기본 0 — 기존 시나리오는 즉시 발주를 전제한다. */
     gridBuyLegDelayMs?: number;
     /** 티커별 잔고 심 — makeBroker가 브로커를 만들 때마다 심어 준다(입양 테스트용). */
@@ -87,7 +88,7 @@ function makeHarness(
       return b;
     },
     fetchBuyableUsd: opts.fetchBuyableUsd,
-    gridConfig: opts.gridConfig,
+    positionManagement: opts.gridConfig ? { grid: opts.gridConfig } : undefined,
     gridBuyLegDelayMs: opts.gridBuyLegDelayMs ?? 0,
     clock,
     scheduler: noopScheduler(),

@@ -30,8 +30,7 @@ function makeHarness() {
       brokers.set(t, b);
       return b;
     },
-    gridConfig: { buyWidth: 0.05, sellWidth: 0.02, buyMultiplier: 1 },
-    trendConfig: TREND_CONFIG,
+    positionManagement: { grid: { buyWidth: 0.05, sellWidth: 0.02, buyMultiplier: 1 }, trend: TREND_CONFIG },
     clock,
     scheduler,
     storage: new FakeStore(),

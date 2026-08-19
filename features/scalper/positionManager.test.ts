@@ -5,7 +5,16 @@ import { describe, expect, it } from 'vitest';
 import type { CircuitExitRule, CircuitHeartbeatResult } from '../../core/circuit';
 import type { ConditionalDecision, ConditionalGridView, ConditionalPosition } from '../../core/conditional';
 import { FakeBroker, fakeClock, flush } from './fakes';
-import { PositionManager, type PositionManagerDeps, type PositionRule, type PriceView } from './positionManager';
+import {
+  RulePositionManager,
+  TREND_CONFIG,
+  makePositionManager,
+  resolvePositionMode,
+  type PositionManagerDeps,
+  type PositionRule,
+  type PriceView,
+  type RulePositionManagerOptions,
+} from './positionManager';
 
 /** 스크립트 규칙 — 테스트가 다음 decide/onPrice 결과를 직접 꽂는다. */
 class FakeRule implements PositionRule {
@@ -36,25 +45,38 @@ class FakeRule implements PositionRule {
   }
 }
 
-function harness(opts: Partial<PositionManagerDeps> & { autoFill?: boolean; qty?: number; avgPrice?: number } = {}) {
+type HarnessOpts = Partial<PositionManagerDeps> &
+  Partial<Pick<RulePositionManagerOptions, 'manualExitCheckMs' | 'stopLossPct'>> & {
+    circuit?: CircuitExitRule;
+    autoFill?: boolean;
+    qty?: number;
+    avgPrice?: number;
+  };
+
+function harness(opts: HarnessOpts = {}) {
   const clock = fakeClock(1_000);
   const broker = new FakeBroker({ autoFill: opts.autoFill ?? true });
   const rule = new FakeRule(opts.qty, opts.avgPrice);
   broker.position = { qty: rule.view.qty, avgPrice: rule.view.avgPrice };
   const events: string[] = [];
   let priceView: PriceView | null = { price: 100, lastTradeAt: 1_000 };
-  const pm = new PositionManager({
-    ticker: 'A',
+  const { circuit, manualExitCheckMs, stopLossPct, autoFill: _af, qty: _q, avgPrice: _a, ...depOverrides } = opts;
+  const pm = RulePositionManager.withRule(
+    {
+      ticker: 'A',
+      broker,
+      clock,
+      price: () => priceView,
+      regularSession: () => true,
+      entry: { entryTs: 500, entrySnapshot: { price: 100, slope: 0.1, accel: 0, ts: 500 } },
+      adopted: false,
+      feeRate: 0.001,
+      onEvent: (t: string) => events.push(t),
+      ...depOverrides,
+    },
     rule,
-    broker,
-    clock,
-    price: () => priceView,
-    regularSession: () => true,
-    entry: { entryTs: 500, entrySnapshot: { price: 100, slope: 0.1, accel: 0, ts: 500 } },
-    feeRate: 0.001,
-    onEvent: (t) => events.push(t),
-    ...opts,
-  });
+    { label: '테스트 규칙', gauge: 'orders', circuit, manualExitCheckMs, stopLossPct },
+  );
   return { pm, rule, broker, clock, events, setPrice: (p: number | null) => (priceView = p === null ? null : { price: p, lastTradeAt: clock.now() }) };
 }
 
@@ -252,5 +274,117 @@ describe('PositionManager — 매수(물타기)·부분 체결·수동청산', (
     await flush();
     expect(h.broker.placed).toHaveLength(0);
     expect(h.pm.busy).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 모드 팩토리 · 어댑터
+// ---------------------------------------------------------------------------
+
+describe('resolvePositionMode — 모드 판정 한 곳(추세 > 변곡점 > OCO, 주입 = 활성)', () => {
+  it('셋 다 주입되면 추세, 추세 없으면 변곡점, 둘 다 없으면 OCO, 아무것도 없으면 null', () => {
+    const grid = { buyWidth: 0.05, sellWidth: 0.02, buyMultiplier: 1 };
+    const inflection = { sellProfitPct: 0.02, buyDropPct: 0.03 };
+    expect(resolvePositionMode({ grid, inflection, trend: TREND_CONFIG })).toBe('trend');
+    expect(resolvePositionMode({ grid, inflection })).toBe('inflection');
+    expect(resolvePositionMode({ grid })).toBe('oco');
+    expect(resolvePositionMode({})).toBeNull();
+    expect(resolvePositionMode(undefined)).toBeNull();
+  });
+});
+
+function adapterDeps(broker: FakeBroker, clock: ReturnType<typeof fakeClock>, events: string[], extra: Partial<PositionManagerDeps> = {}): PositionManagerDeps {
+  return {
+    ticker: 'A',
+    broker,
+    clock,
+    price: () => ({ price: 100, lastTradeAt: clock.now(), dayLow: 95, dayHigh: 108 }),
+    regularSession: () => true,
+    entry: null,
+    adopted: true,
+    onEvent: (t) => events.push(t),
+    ...extra,
+  };
+}
+
+describe('makePositionManager — 규칙형 어댑터(추세·변곡점)', () => {
+  it('추세: arm이 규칙+서킷을 조립하고 인계 문구(손절선)를 내며, 게이지는 오늘 고저(dayRange)', async () => {
+    const clock = fakeClock(1_000);
+    const broker = new FakeBroker({ autoFill: true });
+    const events: string[] = [];
+    const pm = makePositionManager('trend', { trend: TREND_CONFIG }, adapterDeps(broker, clock, events));
+    expect(pm.label).toBe('추세 관리');
+    expect(await pm.arm(null)).toEqual({ ok: false, reason: '포지션을 확인할 수 없어 추세 관리를 시작하지 못했어요' });
+    expect(await pm.arm({ qty: 10, avgPrice: 100 })).toEqual({ ok: true });
+    expect(events.at(-1)).toContain('추세 관리 등록 · 10주 · 평단 100.00');
+    expect(events.at(-1)).toContain('손절선 93.00(−7%)');
+    const g = pm.gaugeView();
+    expect(g.rangeKind).toBe('dayRange');
+    expect([g.buyPrice, g.sellPrice, g.holdingQty]).toEqual([95, 108, 10]);
+    expect(pm.restingOrders).toBe(false);
+  });
+
+  it('변곡점: 조건부 그리드 규칙 — 게이지는 조건선(orders), 인계 문구에 매도선·매수선', async () => {
+    const clock = fakeClock(1_000);
+    const broker = new FakeBroker({ autoFill: true });
+    const events: string[] = [];
+    const pm = makePositionManager('inflection', { inflection: { sellProfitPct: 0.02, buyDropPct: 0.03 } }, adapterDeps(broker, clock, events));
+    expect(pm.label).toBe('변곡점 그리드');
+    expect(await pm.arm({ qty: 10, avgPrice: 100 })).toEqual({ ok: true });
+    expect(events.at(-1)).toContain('변곡점 그리드 등록 · 10주 · 평단 100.00 · 매도선 102.00(+2.0%) · 매수선 97.00(−3.0%)');
+    const g = pm.gaugeView();
+    expect(g.rangeKind).toBe('orders');
+    expect([g.buyPrice, g.sellPrice]).toEqual([97, 102]);
+  });
+});
+
+describe('OcoGridPositionManager — OCO 매도그리드 어댑터(롤백 보존)', () => {
+  const grid = { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1 };
+
+  it('arm — 두 지정가(매도 +10%·매수 −10%)를 걸고 restingOrders=true, 게이지는 주문선', async () => {
+    const clock = fakeClock(1_000);
+    const broker = new FakeBroker({ autoFill: false });
+    const events: string[] = [];
+    const pm = makePositionManager('oco', { grid }, adapterDeps(broker, clock, events, { buyLegDelayMs: 0 }));
+    expect(pm.label).toBe('그리드');
+    expect(pm.restingOrders).toBe(false);
+    expect(await pm.arm({ qty: 5, avgPrice: 100 })).toEqual({ ok: true });
+    expect(pm.restingOrders).toBe(true);
+    expect(broker.placed.map((p) => [p.side, p.qty, p.price]).sort()).toEqual([
+      ['buy', 5, 90],
+      ['sell', 5, 110],
+    ]);
+    expect(events.at(-1)).toContain('그리드 관리 등록 · 5주 · 평단 $100.00');
+    const g = pm.gaugeView();
+    expect([g.buyPrice, g.sellPrice, g.gridActive, g.rangeKind]).toEqual([90, 110, true, undefined]);
+    expect(await pm.poll()).toEqual({ kind: 'holding' });
+  });
+
+  it('매도 다리 체결 → poll이 sold(TradeRecord, SELL_SIGNAL)를 돌려준다', async () => {
+    const clock = fakeClock(1_000);
+    const broker = new FakeBroker({ autoFill: false });
+    const events: string[] = [];
+    const pm = makePositionManager('oco', { grid }, adapterDeps(broker, clock, events, { buyLegDelayMs: 0, feeRate: 0 }));
+    await pm.arm({ qty: 5, avgPrice: 100 });
+    const sell = broker.placed.find((p) => p.side === 'sell')!;
+    broker.fill(sell.odno, 110);
+    broker.position = null;
+    const r = await pm.poll();
+    expect(r.kind).toBe('sold');
+    if (r.kind !== 'sold') return;
+    expect(r.record.exitReason).toBe('SELL_SIGNAL');
+    expect(r.record.grossPnl).toBeCloseTo(50);
+  });
+
+  it('잔고가 없어 arm이 FAULT면 실패 사유를 돌려주고(격리 아님), 신호·틱은 무시한다', async () => {
+    const clock = fakeClock(1_000);
+    const broker = new FakeBroker({ autoFill: false });
+    const pm = makePositionManager('oco', { grid }, adapterDeps(broker, clock, [], { buyLegDelayMs: 0 }));
+    const r = await pm.arm(null); // seed 없음 + broker.position null → Grid FAULT
+    expect(r.ok).toBe(false);
+    expect(pm.isolated).toBe(false);
+    pm.onSignal('SELL', 120);
+    await pm.tick({ canStart: true });
+    expect(broker.placed).toHaveLength(0);
   });
 });

@@ -45,8 +45,7 @@ function makeHarness(opts: { fetchBuyableUsd?: AutoPilotDeps['fetchBuyableUsd'] 
     },
     fetchBuyableUsd: opts.fetchBuyableUsd,
     // 롤백 대비 실배선처럼 gridConfig도 함께 주입한다 — 조합이 우선해야 한다(OCO 두 다리가 나가면 안 된다).
-    gridConfig: { buyWidth: 0.05, sellWidth: 0.02, buyMultiplier: 1 },
-    inflectionConfig: INFLECTION,
+    positionManagement: { grid: { buyWidth: 0.05, sellWidth: 0.02, buyMultiplier: 1 }, inflection: INFLECTION },
     clock,
     scheduler,
     storage: new FakeStore(),
