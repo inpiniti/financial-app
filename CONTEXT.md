@@ -40,6 +40,7 @@
 | 용어 | 정의 |
 |---|---|
 | **오토파일럿** | 단타 중앙 관리자. 상태 IDLE/SCANNING/ENTERING/HOLDING/EXITING/PAUSED/FAULT(활성 종목 사이클에서 파생). 모드 스위치·동시 종목·FAULT 격리·청산 사유. → `docs/domain/오토파일럿/` |
+| **포지션 관리자** | 종목 1개의 진입 후 관리 모듈 — 규칙(추세 청산·서킷 / 변곡점 조건부 그리드)+매매+수동청산 인지+정산 기록 합성을 안에 두고, 오토파일럿에는 신호·틱·폴·해제만 열어 결과값(`holding`/`sold`/`isolated`)을 돌려준다. 청산 사유는 매도를 시작한 자리에서 정한다. → `features/scalper/positionManager.ts` |
 | **사이클(Run)** | 종목 1개의 매수→청산→종료 1회. WATCH_BUY/BUYING/HOLDING/SELLING/DONE/FAULT. |
 | **청산 사유** | SELL_SIGNAL(신호) · STOP(사용자) · STOP_LOSS(추세 손절선) · CIRCUIT(서킷) · MANUAL(앱 밖 매도를 잔고로 인지). |
 | **트레이딩 리스트** | 신호 감지기를 상시 부착하는 최대 30종목. 순위 원천에서 채운다. |

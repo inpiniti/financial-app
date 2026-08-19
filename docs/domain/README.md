@@ -17,7 +17,7 @@
 | [추세](./추세/) | **현행 (진입·청산 신호)** | `core/trend`, `features/scalper/trendMode.ts` | 분봉 SMA 4선 상승여부 진입 · ma5 꺾임 청산. `TREND_MODE=true` |
 | [그리드](./그리드/) | **현행 (포지션 규칙)** | `core/grid`(OCO 매도그리드), `core/conditional`(조건부 그리드) | 평단±폭 물타기·익절, 비대칭 폭, 고정 수량 물타기, 급락 방어 앵커 |
 | [매매](./매매/) | **현행 (체결 실행)** | `core/execution`, `core/reprice` | 현재가 추격 지정가·정정, 취소선은 판단이 주입, 매도 리프라이스 |
-| [오토파일럿](./오토파일럿/) | **현행 (조율자)** | `features/scalper/autopilot*.ts`, `core/cycle` | SCANNING→ENTERING→HOLDING→EXITING 상태, 모드 스위치, FAULT 격리, 청산 사유 |
+| [오토파일럿](./오토파일럿/) | **현행 (조율자)** | `features/scalper/autopilot*.ts`, `positionManager.ts`, `core/cycle` | SCANNING→ENTERING→HOLDING→EXITING 상태, 모드 스위치, FAULT 격리, 청산 사유 |
 | [순위](./순위/) | 현행 | `core/ranking`, `features/scalper/watchlist.ts` | 트레이딩 리스트 원천(토스8·한투7) 선택, 합≤30 |
 | [서킷](./서킷/) | 관측 단계 (`CIRCUIT_MODE=false`) | `core/circuit`, `features/scalper/circuitMode.ts` | LULD 정지 감지, 하킷 2연속 재개 단일가 매도(예정) |
 | [켈리](./켈리/) | 현행 (참고 지표) | `core/kelly` | 실거래 승률·손익비로 포지션 사이징 제안 |
