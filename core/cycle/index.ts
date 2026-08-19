@@ -146,8 +146,49 @@ export interface RunCycleOptions {
 }
 
 /** 수수료율 정리 — 유한한 양수만 유효, 그 외는 0(끔). NaN이 손익을 오염시키지 않게 막는 유일 지점. */
-function normalizeFeeRate(rate: number | undefined): number {
+export function normalizeFeeRate(rate: number | undefined): number {
   return typeof rate === 'number' && Number.isFinite(rate) && rate > 0 ? rate : 0;
+}
+
+/** 정산 기록 합성 입력 — 진입 쪽(우리가 산 포지션이면 실측, 입양이면 없음)과 청산 쪽. */
+export interface TradeRecordInput {
+  ticker: string;
+  qty: number;
+  entryPrice: number;
+  exitPrice: number;
+  exitReason: ExitReason;
+  /** 진입 시각·스냅샷 — 사이클이 있으면 실측, 입양(잔고에서 주워 온) 포지션이면 null → 청산 시각·가격으로 폴백. */
+  entry?: { entryTs: number; entrySnapshot: SignalSnapshot } | null;
+  exitSnapshot?: SignalSnapshot | null;
+  /** 편도 수수료율(소수). 유한한 양수 외는 0. */
+  feeRate?: number;
+  /** 청산 시각(ms) — 호출자의 시계에서 읽어 넘긴다. */
+  now: number;
+}
+
+/**
+ * 거래 기록(TradeRecord) 합성 — 손익·수수료 규칙의 **유일한** 자리.
+ * grossPnl = (청산가 − 진입가) × 수량, fees = 편도 요율 × (매수 대금 + 매도 대금)(증권사 과금 구조), pnl = gross − fees.
+ * 사이클 정산·OCO 그리드 정산·조건부 그리드 정산·수동청산 정산이 모두 이 함수를 쓴다.
+ */
+export function makeTradeRecord(input: TradeRecordInput): TradeRecord {
+  const { ticker, qty, entryPrice, exitPrice, exitReason, now } = input;
+  const grossPnl = (exitPrice - entryPrice) * qty;
+  const fees = normalizeFeeRate(input.feeRate) * (entryPrice * qty + exitPrice * qty);
+  return {
+    ticker,
+    qty,
+    entryPrice,
+    entryTs: input.entry?.entryTs ?? now,
+    exitPrice,
+    exitTs: now,
+    pnl: grossPnl - fees,
+    grossPnl,
+    fees,
+    entrySnapshot: input.entry?.entrySnapshot ?? { price: entryPrice, slope: 0, accel: 0, ts: now },
+    exitSnapshot: input.exitSnapshot ?? null,
+    exitReason,
+  };
 }
 
 export class RunCycle {
@@ -386,23 +427,17 @@ export class RunCycle {
   private emitTrade(fill: FillResult): void {
     const pos = this._position!;
     const exitPrice = fill.price ?? this.pendingSnapshot?.price ?? pos.entryPrice;
-    const grossPnl = (exitPrice - pos.entryPrice) * pos.qty;
-    // 편도 요율을 매수·매도 **대금 각각**에 적용한다(증권사 과금 구조와 동일).
-    const fees = this.feeRate * (pos.entryPrice * pos.qty + exitPrice * pos.qty);
-    const record: TradeRecord = {
+    const record = makeTradeRecord({
       ticker: pos.ticker,
       qty: pos.qty,
       entryPrice: pos.entryPrice,
-      entryTs: pos.entryTs,
       exitPrice,
-      exitTs: this.clock.now(),
-      pnl: grossPnl - fees,
-      grossPnl,
-      fees,
-      entrySnapshot: pos.entrySnapshot,
+      entry: pos,
       exitSnapshot: this.pendingSnapshot,
       exitReason: this.exitReason,
-    };
+      feeRate: this.feeRate,
+      now: this.clock.now(),
+    });
     this.onTrade?.(record);
   }
 

@@ -21,7 +21,7 @@
 // 관리 중 그리드의 fault는 **그 그리드만 격리**한다(gridFaulted) — 사용자가 화면을 안 보고 있어도
 // 한 종목 오류로 나머지 종목 관리와 폴 타이머가 멈추지 않게 한다.
 
-import { RunCycle, type SignalSnapshot, type TradeRecord } from '../../core/cycle';
+import { RunCycle, makeTradeRecord, type SignalSnapshot, type TradeRecord } from '../../core/cycle';
 import {
   ConditionalGrid,
   type ConditionalDecision,
@@ -1511,28 +1511,16 @@ export class AutoPilot {
    * (RunCycle은 HOLDING에 파킹돼 있었을 뿐 — 실제 매도는 그리드가 냈으므로 cycle.stop()을 부르지 않는다.)
    */
   private settleGrid(active: ActiveCycle, result: Extract<GridPollResult, { kind: 'sold' }>): void {
-    const pos = active.cycle?.position ?? null;
-    const entryPrice = result.avgPrice;
-    const exitPrice = result.exitPrice;
-    const qty = result.qty;
-    const grossPnl = (exitPrice - entryPrice) * qty;
-    const feeRate = this.deps.feeRate ?? 0;
-    const fees = feeRate * (entryPrice * qty + exitPrice * qty);
-    const now = this.deps.clock.now();
-    const record: TradeRecord = {
+    const record = makeTradeRecord({
       ticker: active.ticker,
-      qty,
-      entryPrice,
-      entryTs: pos?.entryTs ?? now,
-      exitPrice,
-      exitTs: now,
-      pnl: grossPnl - fees,
-      grossPnl,
-      fees,
-      entrySnapshot: pos?.entrySnapshot ?? { price: entryPrice, slope: 0, accel: 0, ts: now },
-      exitSnapshot: null,
+      qty: result.qty,
+      entryPrice: result.avgPrice,
+      exitPrice: result.exitPrice,
+      entry: active.cycle?.position ?? null,
       exitReason: 'SELL_SIGNAL',
-    };
+      feeRate: this.deps.feeRate,
+      now: this.deps.clock.now(),
+    });
     active.pendingSettle = record;
     this.deps.onTrade?.(record);
     this.settle(active);
@@ -1782,28 +1770,16 @@ export class AutoPilot {
         return;
       }
     }
-    const qty = result.filledQty > 0 ? result.filledQty : v.qty;
-    const entryPrice = v.avgPrice;
-    const exitPrice = result.fillPrice ?? active.slot?.getView().price ?? v.sellLine;
-    const grossPnl = (exitPrice - entryPrice) * qty;
-    const feeRate = this.deps.feeRate ?? 0;
-    const fees = feeRate * (entryPrice * qty + exitPrice * qty);
-    const now = this.deps.clock.now();
-    const pos = active.cycle?.position ?? null;
-    const record: TradeRecord = {
+    const record = makeTradeRecord({
       ticker: active.ticker,
-      qty,
-      entryPrice,
-      entryTs: pos?.entryTs ?? now,
-      exitPrice,
-      exitTs: now,
-      pnl: grossPnl - fees,
-      grossPnl,
-      fees,
-      entrySnapshot: pos?.entrySnapshot ?? { price: entryPrice, slope: 0, accel: 0, ts: now },
-      exitSnapshot: null,
+      qty: result.filledQty > 0 ? result.filledQty : v.qty,
+      entryPrice: v.avgPrice,
+      exitPrice: result.fillPrice ?? active.slot?.getView().price ?? v.sellLine,
+      entry: active.cycle?.position ?? null,
       exitReason: active.cond?.stopLossHit ? 'STOP_LOSS' : active.cond?.circuitHit ? 'CIRCUIT' : 'SELL_SIGNAL',
-    };
+      feeRate: this.deps.feeRate,
+      now: this.deps.clock.now(),
+    });
     if (active.cond) {
       active.cond.stopLossHit = false;
       active.cond.circuitHit = false;
@@ -1839,25 +1815,16 @@ export class AutoPilot {
     if (c.exec !== null || c.starting || !this.actives.has(active.ticker)) return;
     const v = c.grid.view;
     const exitPrice = active.slot?.getView().price ?? v.avgPrice;
-    const at = this.deps.clock.now();
-    const grossPnl = (exitPrice - v.avgPrice) * v.qty;
-    const feeRate = this.deps.feeRate ?? 0;
-    const fees = feeRate * (v.avgPrice * v.qty + exitPrice * v.qty);
-    const cyclePos = active.cycle?.position ?? null;
-    const record: TradeRecord = {
+    const record = makeTradeRecord({
       ticker: active.ticker,
       qty: v.qty,
       entryPrice: v.avgPrice,
-      entryTs: cyclePos?.entryTs ?? at,
       exitPrice,
-      exitTs: at,
-      pnl: grossPnl - fees,
-      grossPnl,
-      fees,
-      entrySnapshot: cyclePos?.entrySnapshot ?? { price: v.avgPrice, slope: 0, accel: 0, ts: at },
-      exitSnapshot: null,
+      entry: active.cycle?.position ?? null,
       exitReason: 'MANUAL',
-    };
+      feeRate: this.deps.feeRate,
+      now: this.deps.clock.now(),
+    });
     this.event(
       `${active.ticker} 잔고에서 사라졌어요 — 앱 밖(수동) 매도로 보고 정산해요 · 체결가 미확인(현재가 ${exitPrice.toFixed(2)} 기준 기록)`,
     );

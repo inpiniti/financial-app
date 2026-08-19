@@ -16,3 +16,17 @@ KIS Open API로 미국주식 단타를 자동 매매하는 Expo(React Native) �
 - 커밋은 `main` 직행, 메시지는 `✨ Feat:` / `📝 Docs:` / `🐛 Fix:` 접두 + 한 줄 요약(한국어). 작업이 끝난 뒤 한 번에.
 - 시각 표기: 거래일은 ET, 문서 날짜는 `YYYY-MM-DD` 파일명 접두.
 - 테스트: `npm test`(vitest). 도메인 규칙 변경은 `core/<module>` 테스트를 함께 바꾼다.
+
+## Agent skills
+
+### Issue tracker
+
+이슈·스펙·티켓은 GitHub Issues(`inpiniti/financial-app`)에 `gh` CLI로 기록한다. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+기본 5개 라벨(`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`)을 그대로 쓴다. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+단일 컨텍스트 — 루트 `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
