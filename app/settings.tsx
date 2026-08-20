@@ -89,6 +89,8 @@ export default function SettingsScreen() {
   const [startAmountUsd, setStartAmountUsd] = useState(String(DEFAULT_APP_SETTINGS.startAmountUsd));
   // 진입 수량(2026-08-18) — 0/빈 칸 = 미설정(진입금액으로 계산). 지정하면 가격과 무관하게 이 수량만 산다.
   const [entryQty, setEntryQty] = useState('');
+  // 리스트 가격 상한(2026-08-20 풀데이 시뮬) — 수량 모드에서만 쓰는 상한. 0/빈 칸 = 진입금액이 상한(옛 동작).
+  const [maxPriceUsd, setMaxPriceUsd] = useState(String(DEFAULT_APP_SETTINGS.maxPriceUsd));
   const [minTickRate, setMinTickRate] = useState(String(DEFAULT_APP_SETTINGS.minTickRate));
   const [maxConcurrentGrids, setMaxConcurrentGrids] = useState(String(DEFAULT_APP_SETTINGS.maxConcurrentGrids));
   // 순위 선택(2026-08-18 순위 도메인) — 트레이딩 리스트 원천별 켬·개수·(한투) 기간창.
@@ -112,6 +114,7 @@ export default function SettingsScreen() {
       };
       setStartAmountUsd(appSettings.startAmountUsd > 0 ? String(appSettings.startAmountUsd) : '');
       setEntryQty(appSettings.entryQty > 0 ? String(appSettings.entryQty) : '');
+      setMaxPriceUsd(appSettings.maxPriceUsd > 0 ? String(appSettings.maxPriceUsd) : '');
       setMinTickRate(String(appSettings.minTickRate));
       setMaxConcurrentGrids(String(appSettings.maxConcurrentGrids));
       setRankingDraft(draftFromSelection(appSettings.rankingSelection));
@@ -134,6 +137,13 @@ export default function SettingsScreen() {
     const parsedEntryQty = entryQty.trim() === '' ? 0 : Number(entryQty);
     if (!Number.isFinite(parsedEntryQty) || !Number.isInteger(parsedEntryQty) || parsedEntryQty < 0) {
       Alert.alert('알림', '진입 수량은 1 이상의 정수로 입력하거나, 비워 두면 진입금액으로 계산해요.');
+      return;
+    }
+
+    // 가격 상한 — 빈 칸/0은 옛 동작(진입금액이 상한). 지정하면 0보다 큰 금액, 진입금액과 같은 상한 캡.
+    const parsedMaxPriceUsd = maxPriceUsd.trim() === '' ? 0 : Number(maxPriceUsd);
+    if (!Number.isFinite(parsedMaxPriceUsd) || parsedMaxPriceUsd < 0 || parsedMaxPriceUsd > START_AMOUNT_MAX_USD) {
+      Alert.alert('알림', `가격 상한은 비우거나 0보다 크고 ${START_AMOUNT_MAX_USD.toLocaleString('en-US')} 이하인 달러 금액으로 입력해 주세요.`);
       return;
     }
 
@@ -172,6 +182,7 @@ export default function SettingsScreen() {
         ...savedRollbackRef.current,
         startAmountUsd: parsedStartAmountUsd,
         entryQty: parsedEntryQty,
+        maxPriceUsd: parsedMaxPriceUsd,
         minTickRate: parsedMinTickRate,
         maxConcurrentGrids: parsedMaxGrids,
         rankingSelection,
@@ -224,8 +235,25 @@ export default function SettingsScreen() {
               className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
             />
             <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
-              수량을 정하면 종목 가격과 상관없이 딱 이 수량만 사요($0.01짜리도 $9짜리도 같은 수량). 이때 진입금액은
-              "이 가격 이하 종목만"이라는 상한으로 쓰이고, 물타기도 이 수량씩 해요.
+              수량을 정하면 종목 가격과 상관없이 딱 이 수량만 사요($0.01짜리도 $9짜리도 같은 수량). 물타기도 이
+              수량씩 해요.
+            </Text>
+
+            <Text className="mb-1 text-xs text-[#8b95a1]">
+              가격 상한 (USD) — 수량을 정했을 때, 이 가격 이하 종목만 감시해요
+            </Text>
+            <TextInput
+              value={maxPriceUsd}
+              onChangeText={setMaxPriceUsd}
+              keyboardType="decimal-pad"
+              placeholder="비우면 진입금액이 상한이에요"
+              placeholderTextColor="#8b95a1"
+              className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
+            />
+            <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
+              상한이 낮으면 리스트가 초저가 급등주로만 채워져요. 수량 1주 운용이면 상한을 올려도(기본 $
+              {DEFAULT_APP_SETTINGS.maxPriceUsd}) 종목당 리스크는 1주 가격이에요. 수량을 비워 두면(금액 모드) 이
+              값과 무관하게 진입금액이 상한이에요.
             </Text>
 
             <Text className="mb-1 text-xs text-[#8b95a1]">

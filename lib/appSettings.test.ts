@@ -5,6 +5,10 @@ describe('DEFAULT_APP_SETTINGS', () => {
   it('기본 모드는 LIVE다 (PRD §9-6 확정)', () => {
     expect(DEFAULT_APP_SETTINGS.environment).toBe('live');
   });
+
+  it('리스트 가격 상한 기본은 $200 — 수량 모드에서 진입금액 겸용 상한을 대체한다(2026-08-20 풀데이 시뮬)', () => {
+    expect(DEFAULT_APP_SETTINGS.maxPriceUsd).toBe(200);
+  });
 });
 
 describe('snapToStep — 슬라이더 격자 스냅', () => {

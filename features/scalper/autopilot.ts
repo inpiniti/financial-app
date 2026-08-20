@@ -22,7 +22,11 @@
 // 한 종목 오류로 나머지 종목 관리와 폴 타이머가 멈추지 않게 한다.
 
 import { RunCycle, type SignalSnapshot, type TradeRecord } from '../../core/cycle';
-import { entryChaseExceeded, TREND_ENTRY_GATE_QUOTE_FRESH_MS } from '../../core/trend/entryGate';
+import {
+  entryChaseExceeded,
+  TREND_ENTRY_GATE_QUOTE_FRESH_MS,
+  TREND_MIN_BAND_WIDTH_PCT,
+} from '../../core/trend/entryGate';
 import type { ConditionalPosition } from '../../core/conditional';
 import type { Signal } from '../../core/detector';
 import { isDaytimeSessionOpen } from './daySession';
@@ -65,6 +69,9 @@ export const AUTOPILOT_STORAGE_KEY = 'scalper:autopilot';
 /** 감시 대상 수(자격자 중 상위 N) · 재평가 주기 · 히스테리시스 배율. */
 export const WATCH_COUNT = 3;
 export const RESELECT_INTERVAL_MS = 30_000;
+
+/** BUY 폐기 이벤트 스로틀(종목당) — 신호가 3분마다 재발화해도 로그는 10분에 1번. */
+export const BUY_DROP_LOG_THROTTLE_MS = 600_000;
 export const HYSTERESIS_RATIO = 1.2;
 /** 동시에 열 수 있는 그리드(포지션) 최대 개수의 기본값 — 설정 미지정 시. */
 export const DEFAULT_MAX_GRIDS = 1;
@@ -99,6 +106,11 @@ export interface AutoPilotConfig {
    * 미지정(undefined·0)이면 floor(startAmountUsd ÷ 현재가). 옛 저장값 호환을 위해 선택 키.
    */
   entryQty?: number;
+  /**
+   * 리스트 가격 상한(USD) — 수량 모드(entryQty>0)에서 "이 가격 이하 종목만 감시"에 쓴다(2026-08-20 풀데이 시뮬:
+   * 진입금액 겸용 상한이 MRNA류 유동성 급등주를 배제). 미지정·0이면 진입금액이 상한(옛 동작). 옛 저장값 호환 선택 키.
+   */
+  maxPriceUsd?: number;
   minTickRate: number;
   /** 동시에 열 수 있는 그리드(포지션) 최대 개수. 미지정이면 DEFAULT_MAX_GRIDS. */
   maxConcurrentGrids?: number;
@@ -564,6 +576,7 @@ export class AutoPilot {
       prev &&
       prev.startAmountUsd === config.startAmountUsd &&
       (prev.entryQty ?? 0) === (config.entryQty ?? 0) &&
+      (prev.maxPriceUsd ?? 0) === (config.maxPriceUsd ?? 0) &&
       prev.minTickRate === config.minTickRate &&
       (prev.maxConcurrentGrids ?? DEFAULT_MAX_GRIDS) === (config.maxConcurrentGrids ?? DEFAULT_MAX_GRIDS)
     ) {
@@ -907,6 +920,18 @@ export class AutoPilot {
    * 슬롯 점유는 pendingBuys 등록(동기)으로 **먼저** 확정한다 — 프리플라이트가 async라
    * 그 사이에 들어온 다른 신호가 같은 슬롯을 중복 점유하면 maxGrids를 넘겨 진입한다.
    */
+  /** BUY 폐기 로그 시각(종목별) — 신호가 매 봉 재발화하므로 스로틀 없이는 이벤트가 스팸이 된다. */
+  private readonly buyDropLoggedAt = new Map<string, number>();
+
+  /** BUY 신호 폐기 — 사유를 이벤트로 남긴다(종목당 10분에 1번). 2026-08-20 분석: 무음 폐기가 원인 파악을 이틀 늦췄다. */
+  private dropBuySignal(ticker: string, reason: string): void {
+    const now = this.deps.clock.now();
+    const last = this.buyDropLoggedAt.get(ticker);
+    if (last !== undefined && now - last < BUY_DROP_LOG_THROTTLE_MS) return;
+    this.buyDropLoggedAt.set(ticker, now);
+    this.event(`${ticker} BUY 무시 · ${reason}`);
+  }
+
   private handleBuySignal(ctx: SlotSignalContext): void {
     if (this.stopRequested || !this.running || this.faulted || this.paused) return;
     if (this.actives.has(ctx.ticker) || this.pendingBuys.has(ctx.ticker)) return; // 이미 보유·진입 중
@@ -914,10 +939,30 @@ export class AutoPilot {
     if (this.deps.clock.now() < this.cashCooldownUntil) return;
     if (this.actives.size + this.pendingBuys.size >= this.maxGrids) return; // 그리드 슬롯 만석
 
+    if (this.positionMode === 'trend') {
+      // 챱 차단(2026-08-20 지표 검증) — 신호봉 밴드폭이 문턱 미만이면 "4선 상승"은 노이즈다
+      // (풀데이 재현: 밴드폭<2% 신호 95건 합계 −75%, 승률 ~7%, 큰 승리 0건). 판정 불가(null)는 통과.
+      if (ctx.bandWidthPct != null && ctx.bandWidthPct < TREND_MIN_BAND_WIDTH_PCT) {
+        this.dropBuySignal(ctx.ticker, `밴드폭 ${ctx.bandWidthPct.toFixed(2)}% < ${TREND_MIN_BAND_WIDTH_PCT}% — 무추세(챱)`);
+        return;
+      }
+      // 감시 요건(사용자 확정 2026-08-20) — "그리드로 넘길 땐 틱속도 빠른 것만". 절대 문턱(옛 속도 20)은
+      // 꼭대기 선택기가 됐으므로, 자격자 중 **상대 상위**(감시 = 틱속도 상위 watchCount종)로 거른다.
+      // 신호는 매 봉 재발화하므로 다음 재선정(30초 주기)에서 감시에 들면 늦어도 다음 봉에 들어간다.
+      if (!this.watchedTickers.includes(ctx.ticker)) {
+        this.dropBuySignal(ctx.ticker, `감시(틱속도 상위 ${this.watchCount}종) 밖`);
+        return;
+      }
+    }
+
     const rate = this.slotOf(ctx.ticker)?.tickRate(this.deps.clock.now()) ?? 0;
     // 감지기가 전 종목에 붙으면서(2026-08-10) 느린 종목의 신호가 흔해졌다 — 프리플라이트(REST 왕복)
     // 전에 여기서 거른다. commitBuy의 재검사(발주 직전)와 이중이지만 각자 다른 시점을 지킨다.
-    if (rate < (this.config?.minTickRate ?? DEFAULT_MIN_TICK_RATE)) return;
+    if (rate < (this.config?.minTickRate ?? DEFAULT_MIN_TICK_RATE)) {
+      // 2026-08-20까지는 무음 폐기였다 — 속도 필터가 ZNB +72% 신호를 버린 걸 이틀 뒤에야 알았다. 이벤트로 남긴다.
+      this.dropBuySignal(ctx.ticker, `속도 ${rate.toFixed(1)}틱/초 < 기준 ${this.config?.minTickRate ?? DEFAULT_MIN_TICK_RATE}`);
+      return;
+    }
     this.pendingBuys.set(ctx.ticker, { ctx, tickRate: rate });
     this.emit();
     void this.commitBuy(ctx.ticker);

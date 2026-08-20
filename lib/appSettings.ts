@@ -63,6 +63,14 @@ export interface AppSettings {
    * (예: 진입금액 10 · 수량 1 = $10 이하 종목을 1주씩). 0이면 옛 그대로 floor(진입금액 ÷ 현재가).
    */
   entryQty: number;
+  /**
+   * 리스트 가격 상한(USD) — **수량 모드(entryQty>0)일 때만** "이 가격 이하 종목만 감시"의 상한으로 쓴다.
+   * 기본 200. 0이면 옛 동작(진입금액이 상한 겸용)으로 폴백.
+   * 왜 분리했나(2026-08-20 풀데이 시뮬): 진입금액 $10~20이 상한을 겸하면서 리스트가 초저가 펌프로만 채워졌고,
+   * 그날 유일한 대형 수익원 MRNA($63→$176, 현행 규칙 재현 +86%)가 원천 배제됐다. 수량 1주 고정이면
+   * $200짜리도 1주 리스크는 감당 범위다. 금액 모드(entryQty=0)는 기존대로 진입금액이 상한(1주도 못 사는 종목 배제).
+   */
+  maxPriceUsd: number;
   /** 최소 속도(틱/초) — 이보다 조용한 종목은 감시하지 않는다. 기본 1(autopilot.DEFAULT_MIN_TICK_RATE와 같은 값). */
   minTickRate: number;
   /** 동시에 관리할 그리드(종목) 개수. 기본 1(autopilot.DEFAULT_MAX_GRIDS와 같은 값), 상한은 autopilot이 잘라낸다. */
@@ -87,6 +95,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   entryLadderCount: 4,
   startAmountUsd: 1,
   entryQty: 0,
+  maxPriceUsd: 200,
   minTickRate: 1,
   maxConcurrentGrids: 1,
   rankingSelection: DEFAULT_RANKING_SELECTION,
@@ -145,6 +154,7 @@ export async function loadAppSettings(): Promise<AppSettings> {
       entryLadderCount: parsed.entryLadderCount ?? DEFAULT_APP_SETTINGS.entryLadderCount,
       startAmountUsd: parsed.startAmountUsd ?? DEFAULT_APP_SETTINGS.startAmountUsd,
       entryQty: parsed.entryQty ?? DEFAULT_APP_SETTINGS.entryQty,
+      maxPriceUsd: parsed.maxPriceUsd ?? DEFAULT_APP_SETTINGS.maxPriceUsd,
       minTickRate: parsed.minTickRate ?? DEFAULT_APP_SETTINGS.minTickRate,
       maxConcurrentGrids: parsed.maxConcurrentGrids ?? DEFAULT_APP_SETTINGS.maxConcurrentGrids,
       // 순위 선택은 저장값이 없으면 기본 구성, 있으면 카탈로그 기준으로 정리(모르는 id 폐기·누락 원천 채움).

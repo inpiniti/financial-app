@@ -105,6 +105,39 @@ describe('추세 → 그리드 → 매매 — 진입·인계', () => {
     expect(h.events.some((e) => e.includes('변곡점 그리드 인계'))).toBe(false);
   });
 
+  it('챱 차단 — 4선이 상승이라도 밴드폭이 문턱 미만이면 진입하지 않는다', async () => {
+    const h = makeHarness();
+    // 아주 완만한 상승 — 4선은 strict 상승이지만 최근 20봉 밴드폭 ≈ 0.2% < 1.5%.
+    h.slots.get('A')!.seedTrend(Array.from({ length: 122 }, (_, i) => ({ minuteKey: i, close: 100 + i * 0.01 })));
+    h.pilot.start();
+    await tick(h, 101.22, 122);
+    await tick(h, 101.23, 123); // 키 122 닫힘 → BUY 신호 → 챱 차단
+    expect(h.pilot.getView().activeTickers).toEqual([]);
+    expect(h.events.some((e) => e.includes('BUY 무시') && e.includes('챱'))).toBe(true);
+  });
+
+  it('감시 요건 — 감시(틱속도 상위 N종)에 들지 않은 종목의 BUY는 버리고 사유를 남긴다', async () => {
+    const h = makeHarness();
+    h.slots.get('A')!.seedTrend(risingSeed());
+    h.pilot.start(); // start 시점 reselect는 틱이 없어 감시가 비어 있다 — 그 사이 신호가 오는 경우.
+    h.slots.get('A')!.pushTick(222, 122 * M); // reselect 없이 봉만 진행
+    h.slots.get('A')!.pushTick(223, 123 * M); // 키 122 닫힘 → BUY → 감시 밖
+    await flush();
+    expect(h.pilot.getView().activeTickers).toEqual([]);
+    expect(h.events.some((e) => e.includes('BUY 무시') && e.includes('감시'))).toBe(true);
+  });
+
+  it('BUY 폐기 이벤트는 종목당 10분에 1번만 남는다(스로틀)', async () => {
+    const h = makeHarness();
+    h.slots.get('A')!.seedTrend(Array.from({ length: 122 }, (_, i) => ({ minuteKey: i, close: 100 + i * 0.01 })));
+    h.pilot.start();
+    await tick(h, 101.22, 122);
+    await tick(h, 101.23, 123); // 챱 차단 1회 — 이벤트 1건
+    await tick(h, 101.24, 124); // 같은 사유 재발 — 스로틀로 이벤트 없음
+    await tick(h, 101.25, 125);
+    expect(h.events.filter((e) => e.includes('BUY 무시')).length).toBe(1);
+  });
+
   it('추격 진입 게이트 — 매도1호가가 신호가 +1%를 넘으면 진입하지 않는다', async () => {
     const h = makeHarness();
     h.slots.get('A')!.seedTrend(risingSeed());

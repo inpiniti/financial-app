@@ -216,11 +216,18 @@ export class AutoPilotManager {
       fetchSnapshot: deps.fetchSnapshot,
       scheduler,
       pollIntervalMs: deps.watchlistPollIntervalMs,
-      // 진입금액보다 비싼 종목은 1주도 못 사서 감시·WS 구독만 낭비 — 리스트 단계에서 거른다.
-      // setConfig는 IDLE에서만 통과하고 폴링은 start 직후 즉시 1회 돌므로, 시작 시점 금액이 곧바로 반영된다.
-      // 진입 수량(entryQty)을 지정해도 이 필터는 유지한다 — 그때 진입금액은 "이 가격 이하 종목만"이라는
-      // 상한 역할을 한다(사용자 확정 2026-08-18: 테스트 중이라 $10 이하 종목만 1주씩 같은 운용).
-      maxPriceUsd: () => this.pilot.getView().config?.startAmountUsd ?? null,
+      // 가격 상한 필터 — 금액 모드: 진입금액보다 비싼 종목은 1주도 못 사서 감시·WS 구독만 낭비라 리스트에서 거른다.
+      // 수량 모드(entryQty>0): 상한은 별도 설정(maxPriceUsd, 기본 $200) — 진입금액이 상한을 겸하던 옛 동작
+      // (2026-08-18 사용자 확정)이 초저가 펌프만 남기고 MRNA류 유동성 급등주를 배제해서 분리했다
+      // (2026-08-20 풀데이 시뮬, docs/분석/2026-08-20_풀데이-시뮬레이션-28종.md §4). maxPriceUsd=0이면 옛 동작 폴백.
+      // setConfig는 IDLE에서만 통과하고 폴링은 start 직후 즉시 1회 돌므로, 시작 시점 값이 곧바로 반영된다.
+      maxPriceUsd: () => {
+        const config = this.pilot.getView().config;
+        if (!config) return null;
+        const qtyMode = Number.isFinite(config.entryQty) && (config.entryQty ?? 0) >= 1;
+        const cap = config.maxPriceUsd ?? 0;
+        return qtyMode && Number.isFinite(cap) && cap > 0 ? cap : config.startAmountUsd;
+      },
       onChange: (entries, diff) => {
         // 구독·주문 거래소 판별용 — dropSlot/addSlot보다 먼저 최신화한다(추가 종목의 trKey가 이 맵을 읽는다).
         for (const entry of entries) {

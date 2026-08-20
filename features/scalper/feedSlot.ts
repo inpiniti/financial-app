@@ -13,6 +13,7 @@ import { TrendDetector, type DetectorResult, type Signal } from '../../core/dete
 import { LadderDetector } from '../../core/ladder';
 import { Resampler } from '../../core/resample';
 import { MinuteBarBuilder, TREND_BAR_MINUTES, type MinuteBar } from '../../core/trend/bars';
+import { bollingerBandWidthPct } from '../../core/trend/entryGate';
 import { evaluateTrend, type TrendEval } from '../../core/trend/signal';
 import { TREND_MODE } from './trendMode';
 import { TickRateMeter } from './tickRate';
@@ -106,6 +107,11 @@ export interface SlotSignalContext {
   readonly slope: number;
   readonly accel: number;
   readonly at: number;
+  /**
+   * 신호봉 기준 볼린저 밴드폭(%) — 추세 BUY에만 동봉(챱 차단 게이트용, 2026-08-20 지표 검증).
+   * 봉 부족 등 판정 불가면 null, 추세 외 신호(사다리 등)는 undefined.
+   */
+  readonly bandWidthPct?: number | null;
 }
 
 export interface FeedSlotView {
@@ -417,6 +423,8 @@ export class FeedSlot {
       slope: 0, // 추세 모드엔 SG 미분이 없다 — 스냅샷 필드 계약 유지용 0(사다리와 동일).
       accel: 0,
       at: this.lastTickAt ?? this.clock.now(),
+      // 챱 차단 게이트용(BUY에서만 소비) — 신호봉까지의 종가로 계산한 밴드폭.
+      bandWidthPct: ev.signal === 'BUY' ? bollingerBandWidthPct(this.bars.closes) : undefined,
     });
   }
 

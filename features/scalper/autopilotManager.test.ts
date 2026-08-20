@@ -88,6 +88,43 @@ function makeManager(
   return { manager, feed, store, clock, fetchSnapshot, keepAwake, scheduler };
 }
 
+describe('AutoPilotManager — 리스트 가격 상한(2026-08-20 분리)', () => {
+  const priced: RankingSnapshot = [
+    {
+      source: 'tossVolume',
+      count: 15,
+      rows: [
+        { symb: 'CHEAP', rate: '1', last: '5' },
+        { symb: 'EXPSV', rate: '1', last: '150' }, // MRNA류 — 진입금액($100)보다 비싸다
+      ],
+    },
+  ];
+
+  it('금액 모드(entryQty 미설정) — 진입금액이 상한이라 비싼 종목은 리스트에서 빠진다(옛 동작 유지)', async () => {
+    const { manager, fetchSnapshot } = makeManager();
+    fetchSnapshot.mockResolvedValue(priced);
+    manager.start();
+    await vi.waitFor(() => expect(manager.watchlist.size).toBe(1));
+    expect(manager.watchlist.list.map((e) => e.ticker)).toEqual(['CHEAP']);
+  });
+
+  it('수량 모드(entryQty ≥ 1) — 상한은 maxPriceUsd라 진입금액보다 비싼 종목도 리스트에 들어온다', async () => {
+    const { manager, fetchSnapshot } = makeManager();
+    fetchSnapshot.mockResolvedValue(priced);
+    manager.setConfig({ startAmountUsd: 100, entryQty: 1, maxPriceUsd: 200, minTickRate: 0.01 });
+    manager.start();
+    await vi.waitFor(() => expect(manager.watchlist.size).toBe(2));
+  });
+
+  it('수량 모드라도 maxPriceUsd가 0(미설정)이면 진입금액이 상한(폴백)', async () => {
+    const { manager, fetchSnapshot } = makeManager();
+    fetchSnapshot.mockResolvedValue(priced);
+    manager.setConfig({ startAmountUsd: 100, entryQty: 1, maxPriceUsd: 0, minTickRate: 0.01 });
+    manager.start();
+    await vi.waitFor(() => expect(manager.watchlist.size).toBe(1));
+  });
+});
+
 describe('AutoPilotManager — 배선(구독·라우팅·상호 배타)', () => {
   it('start → 리스트 12종 슬롯 + 체결가 12건, 호가 TR 구독은 없다(1호가는 체결가 틱에 실려 온다)', async () => {
     const { manager, feed } = makeManager();
