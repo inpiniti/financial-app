@@ -105,6 +105,29 @@ describe('추세 → 그리드 → 매매 — 진입·인계', () => {
     expect(h.events.some((e) => e.includes('변곡점 그리드 인계'))).toBe(false);
   });
 
+  it('추격 진입 게이트 — 매도1호가가 신호가 +1%를 넘으면 진입하지 않는다', async () => {
+    const h = makeHarness();
+    h.slots.get('A')!.seedTrend(risingSeed());
+    h.pilot.start();
+    await tick(h, 222, 122);
+    // 신호가는 봉을 닫는 새 틱(223) — ask1이 그보다 +3% 위(얇은 호가 추격 상황).
+    h.slots.get('A')!.pushQuote(222, 230);
+    await tick(h, 223, 123); // 키 122 닫힘 → BUY 신호 → 게이트가 막는다
+    expect(h.pilot.getView().activeTickers).toEqual([]);
+    expect(h.brokers.has('A')).toBe(false); // 브로커 생성(발주 준비) 전에 포기
+    expect(h.events.some((e) => e.includes('추격 상한'))).toBe(true);
+  });
+
+  it('추격 진입 게이트 — 매도1호가가 신호가 +1% 이내면 그대로 진입한다', async () => {
+    const h = makeHarness();
+    h.slots.get('A')!.seedTrend(risingSeed());
+    h.pilot.start();
+    await tick(h, 222, 122);
+    h.slots.get('A')!.pushQuote(222, 224); // +0.45% — 허용
+    await tick(h, 223, 123);
+    expect(h.pilot.getView().activeTickers).toEqual(['A']);
+  });
+
   it('추세 게이지 양끝은 오늘 최저·최고(틱 HIGH/LOW) — 평단을 항상 포함한다', async () => {
     const h = makeHarness();
     await enter(h);

@@ -22,6 +22,7 @@
 // 한 종목 오류로 나머지 종목 관리와 폴 타이머가 멈추지 않게 한다.
 
 import { RunCycle, type SignalSnapshot, type TradeRecord } from '../../core/cycle';
+import { entryChaseExceeded, TREND_ENTRY_GATE_QUOTE_FRESH_MS } from '../../core/trend/entryGate';
 import type { ConditionalPosition } from '../../core/conditional';
 import type { Signal } from '../../core/detector';
 import { isDaytimeSessionOpen } from './daySession';
@@ -962,6 +963,23 @@ export class AutoPilot {
 
     const slot = this.slotOf(ctx.ticker);
     if (!slot) return giveUp();
+
+    // 추격 진입 게이트(2026-08-20 둘째날 분석) — 신호가 대비 매도1호가가 +1%를 넘으면 사지 않는다.
+    // 실거래 이틀 66건에서 신호가보다 +1% 이상 뛰어 체결된 진입 23건 합계 −89%(승 4) — 얇은 호가 추격의 대가.
+    // 신선한 호가가 있을 때만 판정한다(없으면 기존 동작 그대로 — 게이트는 보조 방어선).
+    if (this.positionMode === 'trend') {
+      const gateQuote = slot.quote;
+      if (
+        gateQuote !== null &&
+        this.deps.clock.now() - gateQuote.at <= TREND_ENTRY_GATE_QUOTE_FRESH_MS &&
+        entryChaseExceeded(ctx.price, gateQuote.ask1)
+      ) {
+        this.event(
+          `${ctx.ticker} 진입 포기 · 매도1호가 $${gateQuote.ask1}가 신호가 $${ctx.price} 대비 +${((gateQuote.ask1 / ctx.price - 1) * 100).toFixed(1)}% — 추격 상한(+1%)을 넘었어요`,
+        );
+        return giveUp();
+      }
+    }
 
     const broker = this.deps.makeBroker(ctx.ticker);
     const adapter = new OrderPortAdapter({ broker, clock: this.deps.clock });
