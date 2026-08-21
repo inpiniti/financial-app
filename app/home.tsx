@@ -44,6 +44,20 @@ function HomeTopBar() {
           <Ionicons name="search-outline" size={22} color="#191f28" />
         </Pressable>
 
+        {/* 도움말(앱 사용법 챗봇) — 검색 바로 옆. 좌측이 두 개가 되어도 타이틀은 아래에서 절대 위치로 가운데 고정된다. */}
+        <Pressable
+          onPress={() => router.push('/help')}
+          hitSlop={8}
+          className="items-center justify-center px-3 active:opacity-60"
+          style={{ minHeight: 44, minWidth: 44, marginLeft: -8 }}
+          accessibilityRole="button"
+          accessibilityLabel="도움말 화면으로 이동"
+        >
+          <Ionicons name="chatbubble-ellipses-outline" size={22} color="#191f28" />
+        </Pressable>
+
+        <View className="flex-1" />
+
         <View className="flex-row items-center">
           <Pressable
             onPress={() => router.push('/account')}

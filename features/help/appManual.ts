@@ -1,0 +1,208 @@
+// 도움말 매뉴얼 — 앱 사용법 챗봇(features/help/helpChat.ts)과 도움말 화면(app/help.tsx)이 함께 쓰는 단일 출처.
+//
+// 왜 코드에 두나: RN 번들은 런타임에 docs/*.md를 읽을 수 없다. 그리고 docs/는 개발자용(도메인 규칙·ADR·분석 일지)이라
+// 사용자 질문("왜 안 사요?")에 필요한 내용과 다르다 — 사용자용 매뉴얼은 여기 하나만 둔다.
+//
+// ⚠ 규칙: **바뀌는 숫자는 이 문서에 적지 않는다.** 봉 주기·손절 %·상한 같은 값은 전부 코드 상수에서 보간하고,
+// 사용자의 실제 설정값은 describeUserSettings()가 대화마다 따로 붙인다. 문서에 숫자를 굳히면 규칙이 바뀐 날
+// 챗봇이 확신에 차서 틀린 값을 말한다(2026-08-21 검토 결론 — docs/features/2026-08-21_도움말-챗봇.md §3).
+import { TREND_BAR_MINUTES } from '../../core/trend/bars';
+import { TREND_ENTRY_CHASE_MAX_PCT } from '../../core/trend/entryGate';
+import { RANKING_TOTAL_MAX, rankingSourceLabelOf } from '../../core/ranking';
+import {
+  ABANDON_COOLDOWN_MS,
+  ABANDON_COOLDOWN_STREAK,
+  MAX_GRIDS_LIMIT,
+  WATCH_COUNT,
+} from '../scalper/autopilot';
+import { TREND_CONFIG } from '../scalper/positionManager';
+import { DEFAULT_APP_SETTINGS, type AppSettings } from '../../lib/appSettings';
+
+const pct = (ratio: number) => `${Number((ratio * 100).toFixed(2))}%`;
+
+const stopLossLine =
+  TREND_CONFIG.stopLossPct > 0
+    ? `평단보다 ${pct(TREND_CONFIG.stopLossPct)} 넘게 빠지면 봉이 닫히기 전이라도 바로 전량 매도해요.`
+    : '따로 손절선을 두지 않아요. 파는 기준은 4선이 꺾이는 것 하나뿐이라, 봉 도중에 급락하면 그 봉이 닫힐 때 팔아요.';
+
+/**
+ * 앱 사용 매뉴얼 본문. 사람이 그대로 읽어도 되는 글이면서, 챗봇 systemInstruction의 재료이기도 하다.
+ * 문체는 앱 UI와 같은 "~해요"체.
+ */
+export const APP_MANUAL = `# SEEDTICK 사용 설명서
+
+## 1. 이 앱이 하는 일
+한국투자증권(KIS) Open API로 **미국 주식을 자동으로 단타 매매**하는 앱이에요. 사람이 종목을 고르지 않아요 —
+거래가 활발한 종목을 순위에서 자동으로 모아 감시하다가, 정해진 신호가 뜨면 사고 신호가 꺼지면 팔아요.
+
+- **실계좌로 진짜 주문이 나가요.** 모의투자(PAPER)는 지원하지 않아요 — KIS 모의투자는 실시간 시세·순위를 주지 않아 이 앱이 동작할 수 없어요.
+- 소액 운용이 전제예요. 종목당 들어가는 금액은 설정에서 직접 정해요.
+- 매매 중에는 **화면을 켠 채로 두세요.** 앱이 꺼지거나 백그라운드로 내려가면 감시가 멈춰요. 매매 중에는 화면이 저절로 꺼지지 않게 잡아 둬요.
+
+## 2. 시작하기
+1. **계좌 승인** — 첫 화면에서 KIS 계좌번호를 넣어요. 등록되지 않은 계좌면 이름(또는 회사명)을 적어 등록을 신청하고, 승인되면 들어올 수 있어요.
+2. **계좌 연결** — 상단바 카드 아이콘(계좌)에서 KIS 앱키·앱시크릿·계좌번호를 저장해요. 여기서 잔고 요약도 볼 수 있어요.
+3. **설정** — 상단바 톱니 아이콘(설정)에서 진입금액(또는 수량)을 정해요. 진입금액이 없으면 자동 트레이딩이 시작되지 않아요.
+4. **시작** — 홈 트레이딩 탭에서 "자동 트레이딩 시작하기"를 눌러요.
+
+## 3. 화면 지도
+- **상단바** — 왼쪽 돋보기(검색)·말풍선(도움말, 지금 이 화면), 오른쪽 카드(계좌)·톱니(설정).
+- **홈 하단 메뉴 4칸**
+  - **트레이딩** — 자동 매매의 본 화면. 상태 배지, 오늘 성과, 시작·정지 버튼, 그리드 관리 게이지, 트레이딩 리스트, 오늘 거래 기록, 기록(이벤트 로그).
+  - **보유종목** — 계좌의 보유 종목과 미체결 주문. 당겨서 새로고침해요.
+  - **순위** — 토스·한투 순위를 둘러보는 곳이에요(매매와 무관).
+  - **손익** — 월 단위 기간손익(원화)과 일별 합계. 오늘은 KIS가 손익을 주지 않아 앱 기록으로 계산한 "오늘예상" 행이 맨 위에 붙어요. 아래에 켈리 섹션(참고 지표)이 있어요.
+- **검색** — 티커·종목명으로 찾아 종목 상세로 가요.
+- **종목 상세** — 탭 3개: **차트**(분·일·주·월봉, 4선 오버레이) · **커뮤니티**(토스 댓글) · **기업**(AI가 시세·프로필·최신 기사 본문을 읽고 정리한 요약).
+
+## 4. 매매 규칙 (핵심)
+진입도 청산도 **${TREND_BAR_MINUTES}분봉 이동평균 4선**(5선·20선·60선·120선) 하나로만 정해요. 이 값들은 설계 고정값이라 설정에서 바꿀 수 없어요.
+
+- **살 때** — 직전 봉에는 아니었는데 이번 봉에 네 선이 **모두 상승으로 바뀌는 그 봉**에 한 번만 사요. 네 선이 이미 올라 있는 동안에는 사지 않아요. 봉이 모자라 4선 중 하나라도 계산이 안 되면 사지 않아요.
+- **팔 때** — 봉이 닫힐 때 네 선 중 **하나라도** 직전 봉보다 낮거나 같으면 수익·손실과 상관없이 **전량** 매도해요. 매도 주문은 체결될 때까지 현재가를 따라가고 도중에 거두지 않아요.
+- **손절선** — ${stopLossLine}
+- **물타기** — 추세 규칙에서는 **하지 않아요.** 한 종목은 한 번 사고 한 번 팔아요.
+- **추격 방지** — 발주 직전에 매도1호가가 신호가보다 ${pct(TREND_ENTRY_CHASE_MAX_PCT)} 넘게 위에 있으면 사지 않고 포기해요. 호가가 얇은 종목을 급등 꼭대기에서 사는 걸 막는 장치예요.
+- **주문 방식** — 지정가를 미리 걸어두지 않아요. 봉이 닫힌 순간 현재가로 주문을 내고, 안 붙으면 정정으로 따라가요.
+- **봉 만드는 법** — 실시간 체결가를 ${TREND_BAR_MINUTES}분 단위로 묶어 봉을 만들어요. 감시를 시작할 때 최근 봉들을 한 번 불러와 채우기 때문에 바로 판정할 수 있어요.
+
+## 5. 자동 트레이딩이 도는 순서
+1. **리스트 채우기** — 설정에서 고른 순위 원천에서 종목을 모아 최대 ${RANKING_TOTAL_MAX}개의 트레이딩 리스트를 만들어요. 리스트는 주기적으로 다시 골라요.
+2. **감시** — 리스트 중 거래가 빠른 상위 ${WATCH_COUNT}종목에 실시간 감지기를 붙여요. **최소 속도**(틱/초)보다 조용한 종목은 감시하지 않아요.
+3. **진입** — 감시 종목에서 4선이 모두 상승으로 바뀌면 한 종목을 사요. 이미 보유 중인 종목은 다시 사지 않아요.
+4. **보유** — 산 종목은 "그리드 관리" 게이지에 나타나고, 봉이 닫힐 때마다 청산 조건을 봐요.
+5. **청산** — 팔고 나면 그 자리에 새 종목이 들어와요. 완료된 매매는 "오늘 거래 기록"에 쌓여요.
+
+**동시 그리드 수**만큼 종목을 한 번에 관리할 수 있어요(최대 ${MAX_GRIDS_LIMIT}개).
+
+## 6. 상태 배지 읽는 법
+- **대기 중(IDLE)** — 멈춰 있어요. 시작 버튼을 누르면 돌아요.
+- **변곡점 감시 중(SCANNING)** — 리스트를 보며 신호를 기다려요.
+- **매수 중(ENTERING)** — 주문을 내고 체결을 기다려요.
+- **보유 중(HOLDING)** — 산 종목을 들고 청산 조건을 보고 있어요.
+- **매도 중(EXITING)** — 청산 주문이 나갔어요.
+- **일시정지 — 현금 부족(PAUSED)** — 살 돈이 모자라 멈췄어요. 입금하고 "입금했어요 — 재개하기"를 눌러요.
+- **멈춤 — 확인 필요(FAULT)** — 문제가 생겨 그 종목 관리를 놓았어요. 화면의 사유를 확인하고 해제해요. 해제하면 계좌에 남은 물량은 앱이 더 이상 관리하지 않아요 — 다시 시작한 뒤 **"보유 종목 등록"**으로 그리드에 다시 태울 수 있어요.
+
+그 밖의 배지 — **주간거래**: 한국시간 10~16시에는 주간거래로 주문·시세가 나가요(일부 종목은 주간거래를 지원하지 않아 주문이 거절될 수 있어요). **시세 연결 중·재연결 중·끊김**: 실시간 시세 상태예요. 끊김이 이어지면 네트워크를 확인해요.
+
+## 7. 설정 항목
+- **진입금액(USD)** — 종목 하나를 살 때 쓰는 금액(기본 $${DEFAULT_APP_SETTINGS.startAmountUsd}). 비어 있으면 자동 트레이딩이 시작되지 않아요.
+- **수량(주)** — 정하면 종목 가격과 상관없이 딱 이 수량만 사요. 비우면 진입금액 ÷ 현재가로 계산해요.
+- **가격 상한(USD)** — 수량을 정했을 때만 써요. 이 가격 이하 종목만 감시해요(기본 $${DEFAULT_APP_SETTINGS.maxPriceUsd}). 상한이 낮으면 리스트가 초저가 급등주로만 채워져요. 수량을 비우면(금액 모드) 진입금액이 상한 역할을 해요.
+- **동시 그리드 수** — 한 번에 관리할 종목 개수(1~${MAX_GRIDS_LIMIT}, 기본 ${DEFAULT_APP_SETTINGS.maxConcurrentGrids}).
+- **최소 속도(틱/초)** — 이보다 조용한 종목은 감시하지 않아요(기본 ${DEFAULT_APP_SETTINGS.minTickRate}).
+- **매수 미체결 취소(초)** — 매수가 이 시간 안에 안 붙으면 취소하고 다시 기다려요. 0이면 꺼짐(체결까지 대기), 권장 2~3초. 일부라도 체결됐으면 취소하지 않아요.
+- **순위 원천** — 트레이딩 리스트를 어디서 채울지 골라요. 토스 8종·한투 7종이 있고 원천별로 켜고 개수를 정해요. 켠 개수의 합은 ${RANKING_TOTAL_MAX}개를 넘을 수 없어요. 목록에서 위에 있는 원천이 겹치는 종목을 먼저 가져가요.
+
+⚠ **진입금액·수량·최소 속도·동시 그리드 수는 정지 상태에서만 적용돼요.** 매매 중에 저장했다면 정지한 뒤 트레이딩 화면으로 돌아올 때 반영돼요.
+
+## 8. 기록에 뜨는 문구
+- "BUY 무시 · 속도 …" — 신호는 왔지만 그 종목이 최소 속도보다 조용해서 넘겼어요.
+- "진입 포기 · 진입금액이 1주 가격보다 작아요" — 금액 모드에서 1주도 못 사는 종목이에요.
+- "매수 취소 · 안 붙어서 다시 감시해요" — 미체결 취소가 작동했어요.
+- "매수 취소가 ${ABANDON_COOLDOWN_STREAK}번 이어져서 ${ABANDON_COOLDOWN_MS / 1000}초간 쉬어요" — 그 종목은 잠시 건너뛰어요.
+- "현금 부족으로 멈춰 있어요" — 입금 후 재개해요.
+
+**청산 사유**는 다섯 가지예요 — 신호(4선 꺾임) · 사용자 정지 · 손절선 · 서킷 · 앱 밖 매도(한투 앱 등에서 직접 판 걸 잔고로 알아챈 경우).
+
+## 9. 알아둘 것
+- **서킷(거래 정지)** — 지금은 감지해서 기록만 남기는 단계예요. 정지 종목을 자동으로 팔지는 않아요.
+- **켈리** — 지난 매매의 승률·손익비로 계산한 비중 제안이에요. **보여주기만 하고** 실제 매매에 쓰이지 않아요.
+- **차트·커뮤니티·기업 탭** — 볼 때만 조회해요(자동 새로고침 없음). 기업 탭 AI 요약은 종목·거래일 단위로 저장돼서, 다시 만들려면 새로고침을 눌러야 해요.
+- 앱은 종목을 추천하거나 가격을 예측하지 않아요. 예약 매매·백그라운드 매매도 없어요.
+
+## 10. 자주 묻는 질문
+**Q. 시작했는데 아무것도 안 사요.**
+순서대로 확인해요 — ① 상태가 "변곡점 감시 중"인가요? ② 리스트가 비어 있지 않나요(순위 원천을 하나도 안 켰을 수 있어요)? ③ 모든 종목이 최소 속도 미만이면 "…틱/초 미만이라 기다리고 있어요" 안내가 떠요. ④ 감시 중이어도 **4선이 모두 상승으로 바뀌는 봉**이 와야 사요 — 이미 오르고 있는 종목은 사지 않아요. ⑤ 금액 모드에서 진입금액이 1주 가격보다 작으면 넘겨요.
+
+**Q. 수익이 났는데 왜 팔았어요? 손실인데 왜 팔았어요?**
+목표 수익률이나 손실 한도로 팔지 않아요. 4선 중 하나라도 꺾이면 그때 팔아요.
+
+**Q. 물타기는 안 하나요?**
+추세 규칙에서는 하지 않아요.
+
+**Q. 앱을 꺼도 되나요?**
+안 돼요. 화면을 켜고 앱을 앞에 둔 상태에서만 감시와 매매가 돌아요.
+
+**Q. 한투 앱에서 직접 팔았어요.**
+앱이 잔고를 다시 확인해 "앱 밖 매도"로 사이클을 정리해요.
+
+**Q. 오늘 손익이 손익 탭과 거래 기록에서 달라요.**
+KIS가 당일 손익을 주지 않아서 오늘 값은 앱이 기록한 매매로 계산한 **예상치**예요. 확정 손익은 다음 날 기간손익에 반영돼요.
+`;
+
+/**
+ * 매뉴얼 §7이 설명해야 하는 설정 키 — 설정 화면에서 사용자가 직접 만지는 값들.
+ * 아래 HIDDEN과 합쳐 AppSettings 전체를 덮는다(appManual.test.ts가 검사) — 설정을 추가하면 둘 중 하나에
+ * 반드시 넣어야 하고, 사용자용이면 매뉴얼 문구까지 있어야 테스트가 통과한다. 문서가 조용히 낡는 걸 막는 장치다.
+ */
+export const USER_FACING_SETTING_KEYS = [
+  'startAmountUsd',
+  'entryQty',
+  'maxPriceUsd',
+  'maxConcurrentGrids',
+  'minTickRate',
+  'buyCancelAfterSec',
+  'rankingSelection',
+] as const satisfies readonly (keyof AppSettings)[];
+
+/** 화면에 없는 값 — 고정(environment)이거나 롤백 경로 보존용(그리드 폭·사다리)이라 매뉴얼에 적지 않는다. */
+export const HIDDEN_SETTING_KEYS = [
+  'environment',
+  'orderQty',
+  'gridBuyWidthPct',
+  'gridSellWidthPct',
+  'gridBuyMultiplier',
+  'entryLadderIntervalPct',
+  'entryLadderCount',
+] as const satisfies readonly (keyof AppSettings)[];
+
+/** 사용자의 현재 설정을 대화에 붙이는 블록 — 매뉴얼에 없는 "지금 내 값"을 답할 수 있게 한다. */
+export function describeUserSettings(settings: AppSettings): string {
+  const lines: string[] = [];
+  lines.push(
+    settings.entryQty > 0
+      ? `진입 방식: 수량 고정 ${settings.entryQty}주 (가격 상한 ${
+          settings.maxPriceUsd > 0 ? `$${settings.maxPriceUsd}` : '없음 — 진입금액이 상한'
+        })`
+      : `진입 방식: 금액 ${
+          settings.startAmountUsd > 0 ? `$${settings.startAmountUsd}` : '미설정(자동 트레이딩 시작 불가)'
+        } ÷ 현재가`,
+  );
+  lines.push(`동시 그리드 수: ${settings.maxConcurrentGrids}개`);
+  lines.push(`최소 속도: ${settings.minTickRate}틱/초`);
+  lines.push(
+    `매수 미체결 취소: ${
+      settings.buyCancelAfterSec > 0 ? `${settings.buyCancelAfterSec}초` : '꺼짐(체결될 때까지 대기)'
+    }`,
+  );
+  const sources = Object.entries(settings.rankingSelection)
+    .filter(([, sel]) => sel.enabled && sel.count > 0)
+    .map(([id, sel]) => `${rankingSourceLabelOf(id)} ${sel.count}개`);
+  lines.push(`순위 원천: ${sources.length ? sources.join(', ') : '없음 — 트레이딩 리스트가 비어요'}`);
+  return lines.join('\n');
+}
+
+/** 오토파일럿 현재 상황 — 화면이 넘겨주는 만큼만(없는 항목은 줄이 빠진다). */
+export interface HelpRuntimeState {
+  /** AutoPilotState 문자열(IDLE·SCANNING·…). 매니저가 아직 없으면 생략. */
+  state?: string | null;
+  /** 지금 보유 중인 종목. */
+  activeTickers?: readonly string[];
+  /** 트레이딩 리스트 종목 수. */
+  listCount?: number;
+  /** 오늘 완료된 사이클 수. */
+  cycles?: number;
+}
+
+export function describeRuntimeState(state: HelpRuntimeState): string {
+  const lines: string[] = [];
+  if (state.state) lines.push(`오토파일럿 상태: ${state.state}`);
+  if (typeof state.listCount === 'number') lines.push(`트레이딩 리스트: ${state.listCount}종목`);
+  if (state.activeTickers) {
+    lines.push(`보유 중: ${state.activeTickers.length ? state.activeTickers.join(', ') : '없음'}`);
+  }
+  if (typeof state.cycles === 'number') lines.push(`오늘 완료된 매매: ${state.cycles}회`);
+  return lines.join('\n');
+}

@@ -25,6 +25,7 @@ export default function RootLayout() {
         <Stack.Screen name="index" />
         <Stack.Screen name="home" />
         <Stack.Screen name="search" />
+        <Stack.Screen name="help" />
         <Stack.Screen name="account" />
         <Stack.Screen name="settings" />
         <Stack.Screen name="stock/[ticker]" />

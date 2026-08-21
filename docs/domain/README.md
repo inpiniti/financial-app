@@ -14,7 +14,7 @@
 
 | 도메인 | 상태 | 코드 | 한 줄 |
 |---|---|---|---|
-| [추세](./추세/) | **현행 (진입·청산 신호)** | `core/trend`, `features/scalper/trendMode.ts` | 분봉 SMA 4선 상승여부 진입 · ma5 꺾임 청산. `TREND_MODE=true` |
+| [추세](./추세/) | **현행 (진입·청산 신호)** | `core/trend`, `features/scalper/trendMode.ts` | 5분봉 SMA 4선 **순수 상태기계**(2026-08-21) — 4선 모두 상승으로 바뀌는 봉에 진입 · 하나라도 안 오르면 청산. `TREND_MODE=true` |
 | [그리드](./그리드/) | **현행 (포지션 규칙)** | `core/grid`(OCO 매도그리드), `core/conditional`(조건부 그리드) | 평단±폭 물타기·익절, 비대칭 폭, 고정 수량 물타기, 급락 방어 앵커 |
 | [매매](./매매/) | **현행 (체결 실행)** | `core/execution`, `core/reprice` | 현재가 추격 지정가·정정, 취소선은 판단이 주입, 매도 리프라이스 |
 | [오토파일럿](./오토파일럿/) | **현행 (조율자)** | `features/scalper/autopilot*.ts`, `positionManager.ts`, `core/cycle` | SCANNING→ENTERING→HOLDING→EXITING 상태, 모드 스위치, FAULT 격리, 청산 사유 |
@@ -30,6 +30,7 @@
 ## 3. 도메인이 아닌 것 (다른 곳에 있음)
 
 - 기업 탭(AI 요약) → `docs/features/2026-08-19_기업-탭-AI-요약.md`
+- 도움말(사용 설명서·사용법 챗봇) → `docs/features/2026-08-21_도움말-챗봇.md` (설명서 본문은 `features/help/appManual.ts`가 정본)
 - 로고 조회 → `docs/development/2026-08-01_로고-도메인-plan.md` (이름만 "도메인", 인프라 성격)
 - 접근 제어·둘러보기 → `docs/development/2026-08-12_계좌없이-둘러보기-앱심사대비-plan.md`
 - 거래 기록·분석 CSV → `docs/분석/`

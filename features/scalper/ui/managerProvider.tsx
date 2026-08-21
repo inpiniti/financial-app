@@ -67,6 +67,15 @@ let cached: ManagerBootstrap | null = null;
 let inFlight: Promise<ManagerBootstrap> | null = null;
 
 /**
+ * 이미 만들어져 있으면 그 매니저를, 없으면 null — **절대 새로 만들지 않는다**.
+ * 도움말 챗봇(features/help)처럼 "돌고 있으면 상태를 곁들이고 싶을 뿐"인 화면용이다. useScalperManager를
+ * 쓰면 그 화면에 들어가는 것만으로 KIS 세션·WS가 만들어진다 — 매매와 무관한 화면이 그러면 안 된다.
+ */
+export function peekManagerBootstrap(): ManagerBootstrap | null {
+  return cached;
+}
+
+/**
  * 현재 순위 계획(2026-08-18 순위 도메인) — 설정(rankingSelection)에서 만든다. 폴링(fetchSnapshot)이 매번 이 값을 읽고,
  * refreshLiveSettings가 저장값이 바뀌었을 때 갈아끼운다(매니저 싱글턴이라 부팅 값에 묶이지 않게 — 설정 문서 §6-2).
  */
