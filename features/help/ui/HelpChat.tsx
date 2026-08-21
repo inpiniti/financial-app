@@ -25,6 +25,20 @@ import { loadAppSettings, type AppSettings } from '../../../lib/appSettings';
 import { peekManagerBootstrap } from '../../scalper/ui/managerProvider';
 import { APP_MANUAL, type HelpRuntimeState } from '../appManual';
 import { SUGGESTED_QUESTIONS, askHelp, type HelpMessage } from '../helpChat';
+import { HELP_TOOL_DECLARATIONS, runHelpTool, type HelpAutopilotSnapshot } from '../tools';
+
+/** 도구 이름 → 화면에 띄울 말. 목록에 없는 도구는 "확인하고 있어요"로 뭉뚱그린다. */
+const TOOL_LABEL: Record<string, string> = {
+  getAutopilotStatus: '자동 트레이딩 상태를 보고 있어요…',
+  getWatchlist: '감시 중인 종목을 보고 있어요…',
+  getHoldings: '보유 종목을 확인하고 있어요…',
+  getPendingOrders: '미체결 주문을 확인하고 있어요…',
+  getTodayTrades: '오늘 매매 기록을 읽고 있어요…',
+  getQuote: '시세를 확인하고 있어요…',
+  searchStock: '종목을 찾고 있어요…',
+  getStockNews: '기사를 읽고 있어요…',
+  searchWeb: '인터넷에서 찾아보고 있어요…',
+};
 
 /**
  * 타이핑 표시 — **받는 속도와 그리는 속도를 분리한다.**
@@ -53,13 +67,14 @@ function UserBubble({ text }: { text: string }) {
   );
 }
 
-function ModelBubble({ bubble }: { bubble: Bubble }) {
+function ModelBubble({ bubble, note }: { bubble: Bubble; note?: string | null }) {
   const empty = bubble.text.trim() === '';
   return (
     <View className="mb-3 items-start px-5">
       <View className="max-w-[92%] rounded-2xl bg-white px-4 py-3">
         {empty && bubble.pending ? (
-          <Text className="text-[15px] leading-6 text-[#8b95a1]">설명서를 찾아보고 있어요…</Text>
+          // 도구를 부르는 중이면 무엇을 하고 있는지(note), 아니면 기본 안내.
+          <Text className="text-[15px] leading-6 text-[#8b95a1]">{note ?? '설명서를 찾아보고 있어요…'}</Text>
         ) : (
           <Text
             className="text-[15px] leading-6"
@@ -86,6 +101,34 @@ function readRuntimeState(): HelpRuntimeState | null {
   };
 }
 
+/** 도구(getAutopilotStatus·getWatchlist)가 읽는 스냅샷 — 돌고 있을 때만. */
+function readAutopilotSnapshot(): HelpAutopilotSnapshot | null {
+  const boot = peekManagerBootstrap();
+  if (!boot) return null;
+  const view = boot.autopilot.getView();
+  return {
+    state: view.state,
+    activeTickers: view.activeTickers,
+    cycles: view.cycles,
+    cumPnlUsd: view.cumPnl,
+    maxGrids: view.maxGrids,
+    list: boot.autopilot.getRows().map((row) => ({
+      ticker: row.entry.ticker,
+      name: row.entry.name,
+      price: row.view.price,
+      tickRate: row.view.tickRate ?? null,
+      trend: formatTrendForTool(row.view.trend),
+    })),
+  };
+}
+
+/** 추세 4선을 도구 결과에 넣을 한 줄로 — 화면 표기(5↑ 20↑ …)와 같은 읽기 방식. */
+function formatTrendForTool(trend: { up: { ma5: boolean | null; ma20: boolean | null; ma60: boolean | null; ma120: boolean | null }; bars: number } | null): string {
+  if (!trend) return '봉 부족';
+  const arrow = (up: boolean | null) => (up === null ? '·' : up ? '상승' : '하락');
+  return `5선 ${arrow(trend.up.ma5)}, 20선 ${arrow(trend.up.ma20)}, 60선 ${arrow(trend.up.ma60)}, 120선 ${arrow(trend.up.ma120)} (봉 ${trend.bars})`;
+}
+
 export function HelpChat() {
   const insets = useSafeAreaInsets();
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
@@ -94,6 +137,8 @@ export function HelpChat() {
   const [showManual, setShowManual] = useState(false);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [keyboardUp, setKeyboardUp] = useState(false);
+  // 도구를 부르는 동안 답변 버블에 띄울 안내("보유 종목을 확인하고 있어요…").
+  const [toolNote, setToolNote] = useState<string | null>(null);
   const scrollRef = useRef<ScrollView>(null);
   // 타이핑 표시용 — target은 지금까지 받은 전문, shown은 화면에 그린 글자 수, settled는 요청이 끝났는지.
   const targetRef = useRef('');
@@ -153,6 +198,7 @@ export function HelpChat() {
       targetRef.current = '';
       shownRef.current = 0;
       settledRef.current = false;
+      setToolNote(null);
       stopTyping();
       timerRef.current = setInterval(() => {
         const target = targetRef.current;
@@ -160,6 +206,7 @@ export function HelpChat() {
           const backlog = target.length - shownRef.current;
           shownRef.current = Math.min(target.length, shownRef.current + Math.max(1, Math.ceil(backlog / TYPE_CATCHUP)));
           patchLast({ text: target.slice(0, shownRef.current) });
+          setToolNote(null); // 글자가 나오기 시작하면 "확인하고 있어요" 안내는 물러난다.
         }
         // 다 받았고 다 그렸을 때만 끝낸다 — 응답이 먼저 끝나도 남은 글자는 계속 타이핑된다.
         if (settledRef.current && shownRef.current >= target.length) {
@@ -173,7 +220,13 @@ export function HelpChat() {
         const answer = await askHelp(
           history,
           { settings, runtime: readRuntimeState() },
-          { onProgress: (acc) => (targetRef.current = acc) },
+          {
+            onProgress: (acc) => (targetRef.current = acc),
+            tools: HELP_TOOL_DECLARATIONS,
+            runTool: (name, args) => runHelpTool(name, args, { autopilot: readAutopilotSnapshot }),
+            // 도구를 부르는 동안 답변 자리는 비어 있다 — 무엇을 하고 있는지 대신 보여 준다.
+            onToolStart: (names) => setToolNote(TOOL_LABEL[names[0]] ?? '확인하고 있어요…'),
+          },
         );
         targetRef.current = answer;
         settledRef.current = true;
@@ -274,7 +327,7 @@ export function HelpChat() {
             b.role === 'user' ? (
               <UserBubble key={i} text={b.text} />
             ) : (
-              <ModelBubble key={i} bubble={b} />
+              <ModelBubble key={i} bubble={b} note={i === bubbles.length - 1 ? toolNote : null} />
             ),
           )
         )}
