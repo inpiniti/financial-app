@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -20,11 +21,19 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ListRow } from '../../../components/ListRow';
 import { Panel } from '../../../components/Panel';
-import { EmptyState } from '../../inquiry/components';
 import { loadAppSettings, type AppSettings } from '../../../lib/appSettings';
 import { peekManagerBootstrap } from '../../scalper/ui/managerProvider';
 import { APP_MANUAL, type HelpRuntimeState } from '../appManual';
 import { SUGGESTED_QUESTIONS, askHelp, type HelpMessage } from '../helpChat';
+
+/**
+ * 타이핑 표시 — **받는 속도와 그리는 속도를 분리한다.**
+ * 프록시는 조각으로 흘려주지만(기업 탭과 같은 경로) 도움말 답변은 3~6문장이라 조각이 1초 안에 다 도착한다.
+ * 그대로 그리면 "한참 기다렸다 툭" 뜬다(2026-08-21 제보). 그래서 받은 글자를 목표로 두고 화면은 일정 속도로
+ * 따라 그린다 — 밀린 글자가 많을수록 빨리 따라잡되(backlog/CATCHUP), 최소 1글자씩은 항상 움직인다.
+ */
+const TYPE_TICK_MS = 24;
+const TYPE_CATCHUP = 12;
 
 /** 화면에 그리는 한 줄 — 답변은 스트리밍 중에도 그려야 해서 pending 플래그를 함께 둔다. */
 interface Bubble extends HelpMessage {
@@ -84,7 +93,39 @@ export function HelpChat() {
   const [busy, setBusy] = useState(false);
   const [showManual, setShowManual] = useState(false);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [keyboardUp, setKeyboardUp] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
+  // 타이핑 표시용 — target은 지금까지 받은 전문, shown은 화면에 그린 글자 수, settled는 요청이 끝났는지.
+  const targetRef = useRef('');
+  const shownRef = useRef(0);
+  const settledRef = useRef(true);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopTyping = useCallback(() => {
+    if (timerRef.current !== null) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  // 화면을 나가는 도중 인터벌이 살아 있으면 언마운트된 컴포넌트를 갱신한다.
+  useEffect(() => stopTyping, [stopTyping]);
+
+  // 키보드가 올라오면 홈 인디케이터 여백을 빼야 입력창이 키보드에 딱 붙는다.
+  useEffect(() => {
+    const show = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      () => setKeyboardUp(true),
+    );
+    const hide = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => setKeyboardUp(false),
+    );
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
 
   // 설정은 화면을 열 때 한 번 읽는다 — 답변에 "지금 내 값"을 넣기 위한 재료다.
   useEffect(() => {
@@ -107,14 +148,39 @@ export function HelpChat() {
       setBubbles((prev) => [...prev, { role: 'user', text }, { role: 'model', text: '', pending: true }]);
       const patchLast = (next: Partial<Bubble>) =>
         setBubbles((prev) => prev.map((b, i) => (i === prev.length - 1 ? { ...b, ...next } : b)));
+
+      // 타이핑 시작 — 조각이 오는 대로 targetRef만 키우고, 그리는 건 이 인터벌이 맡는다.
+      targetRef.current = '';
+      shownRef.current = 0;
+      settledRef.current = false;
+      stopTyping();
+      timerRef.current = setInterval(() => {
+        const target = targetRef.current;
+        if (shownRef.current < target.length) {
+          const backlog = target.length - shownRef.current;
+          shownRef.current = Math.min(target.length, shownRef.current + Math.max(1, Math.ceil(backlog / TYPE_CATCHUP)));
+          patchLast({ text: target.slice(0, shownRef.current) });
+        }
+        // 다 받았고 다 그렸을 때만 끝낸다 — 응답이 먼저 끝나도 남은 글자는 계속 타이핑된다.
+        if (settledRef.current && shownRef.current >= target.length) {
+          stopTyping();
+          patchLast({ pending: false });
+          setBusy(false);
+        }
+      }, TYPE_TICK_MS);
+
       try {
         const answer = await askHelp(
           history,
           { settings, runtime: readRuntimeState() },
-          { onProgress: (acc) => patchLast({ text: acc }) },
+          { onProgress: (acc) => (targetRef.current = acc) },
         );
-        patchLast({ text: answer, pending: false });
+        targetRef.current = answer;
+        settledRef.current = true;
       } catch (e) {
+        // 실패는 타이핑하지 않는다 — 기다린 사람에게 오류 문구를 한 글자씩 보여줄 이유가 없다.
+        stopTyping();
+        settledRef.current = true;
         patchLast({
           text: `지금은 답변을 가져오지 못했어요. 잠시 뒤에 다시 물어봐 주세요. (${
             e instanceof Error ? e.message : String(e)
@@ -122,11 +188,10 @@ export function HelpChat() {
           pending: false,
           failed: true,
         });
-      } finally {
         setBusy(false);
       }
     },
-    [bubbles, busy, settings],
+    [bubbles, busy, settings, stopTyping],
   );
 
   const canSend = input.trim().length > 0 && !busy;
@@ -157,23 +222,27 @@ export function HelpChat() {
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={insets.top + 44}
+      // ⚠ 0이어야 한다 — 이 뷰는 BackHeader **아래**에서 시작하고 자기 절대 좌표를 재서 키보드와의 겹침을 계산한다.
+      // 여기에 헤더 높이(insets.top+44)를 더했더니 입력창이 키보드보다 그만큼 떠올랐다(2026-08-21 제보).
+      keyboardVerticalOffset={0}
       className="flex-1 bg-[#f2f4f6]"
     >
       <ScrollView
         ref={scrollRef}
         className="flex-1"
         contentContainerStyle={{ paddingTop: 12, paddingBottom: 12 }}
-        onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
+        // 타이핑 중에는 애니메이션을 끈다 — 24ms마다 스크롤 애니메이션이 쌓이면 화면이 덜컹거린다.
+        onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: !busy })}
         keyboardShouldPersistTaps="handled"
       >
         {bubbles.length === 0 ? (
           <>
-            <EmptyState
-              icon="chatbubble-ellipses-outline"
-              title="앱 사용법을 물어보세요"
-              description="설명서와 지금 걸린 설정을 보고 답해요"
-            />
+            {/* 공용 EmptyState는 flex-1이라 추천 질문을 화면 밖으로 밀어낸다(2026-08-21 제보) — 여기서는 컴팩트한 인사 블록으로. */}
+            <View className="items-center px-8 pb-6 pt-8">
+              <Ionicons name="chatbubble-ellipses-outline" size={32} color="#8b95a1" style={{ marginBottom: 10 }} />
+              <Text className="mb-1 text-base font-semibold text-[#191f28]">앱 사용법을 물어보세요</Text>
+              <Text className="text-center text-sm text-[#8b95a1]">설명서와 지금 걸린 설정을 보고 답해요</Text>
+            </View>
             <Panel title="이런 걸 물어봐요">
               {SUGGESTED_QUESTIONS.map((q) => (
                 <ListRow
@@ -211,7 +280,7 @@ export function HelpChat() {
         )}
       </ScrollView>
 
-      <View className="bg-white px-5 pt-3" style={{ paddingBottom: insets.bottom + 12 }}>
+      <View className="bg-white px-5 pt-3" style={{ paddingBottom: keyboardUp ? 12 : insets.bottom + 12 }}>
         <View className="flex-row items-end" style={{ gap: 8 }}>
           <TextInput
             value={input}
