@@ -14,6 +14,7 @@ import { LadderDetector } from '../../core/ladder';
 import { Resampler } from '../../core/resample';
 import { MinuteBarBuilder, TREND_BAR_MINUTES, type MinuteBar } from '../../core/trend/bars';
 import { bollingerBandWidthPct } from '../../core/trend/entryGate';
+import { lateJoinEligible } from '../../core/trend/lateJoin';
 import { evaluateTrend, type TrendEval } from '../../core/trend/signal';
 import { TREND_MODE } from './trendMode';
 import { TickRateMeter } from './tickRate';
@@ -108,10 +109,15 @@ export interface SlotSignalContext {
   readonly accel: number;
   readonly at: number;
   /**
-   * 신호봉 기준 볼린저 밴드폭(%) — 추세 BUY에만 동봉(챱 차단 게이트용, 2026-08-20 지표 검증).
-   * 봉 부족 등 판정 불가면 null, 추세 외 신호(사다리 등)는 undefined.
+   * 신호봉 기준 볼린저 밴드폭(%) — 추세 BUY에만 동봉(2026-08-20 지표 검증. 챱 차단은 2026-08-21에 뺐고
+   * 지금은 진단·이벤트용). 봉 부족 등 판정 불가면 null, 추세 외 신호(사다리 등)는 undefined.
    */
   readonly bandWidthPct?: number | null;
+  /**
+   * 늦은 합류로 낸 BUY인가(2026-08-21) — 리스트 진입 시드 시점에 이미 4선 상승(지속 ≤2봉)이라 낸 1회 신호.
+   * 봉 마감이 아니라 시드에서 나온 신호라는 뜻이며, autopilot이 이벤트에 표시해 사후 분리 집계에 쓴다.
+   */
+  readonly lateJoin?: boolean;
 }
 
 export interface FeedSlotView {
@@ -200,6 +206,10 @@ export class FeedSlot {
   private readonly bars: MinuteBarBuilder;
   private trendEval: TrendEval | null = null;
   private trendListener: SlotSignalListener | null = null;
+  /** 늦은 합류(lateJoin) — 시드가 자격을 봤지만 리스너가 없어 못 낸 상태. */
+  private lateJoinPending = false;
+  /** 늦은 합류를 이미 냈다 — 종목당 1회(재시드·detach/attach 반복으로 되풀이 매수하지 않게). */
+  private lateJoinFired = false;
 
   constructor(options: FeedSlotOptions) {
     this.ticker = options.ticker;
@@ -324,6 +334,8 @@ export class FeedSlot {
       this.ladderState = null;
       this.onSignal = onSignal;
       this.lastSignal = null;
+      // 시드가 먼저 끝나고 리스너가 뒤에 붙는 순서(워밍업 큐는 비동기)에서도 늦은 합류를 놓치지 않는다.
+      this.emitLateJoin();
       return;
     }
     if (this.inflectionMode) {
@@ -397,13 +409,41 @@ export class FeedSlot {
   /**
    * 추세 워밍업 시드 — REST 분봉조회 결과(분 키·종가)를 넣는다. 매니저의 워밍업 큐가 부른다.
    * seed 마지막 키 이하의 라이브 봉은 폐기된다(core/trend/bars 정합 규칙). 반영 봉 수를 돌려준다.
-   * 시드 직후 4선을 다시 재 스냅샷을 갱신하되 **신호는 내지 않는다**(과거 봉으로 진입/청산하지 않는다 — 다음 마감부터).
+   * 시드 직후 4선을 다시 재 스냅샷을 갱신하되 **청산 신호는 내지 않는다**(과거 봉으로 팔지 않는다 — 다음 마감부터).
+   *
+   * 예외 — **늦은 합류**(2026-08-21, `core/trend/lateJoin.ts`): 시드 시점에 이미 4선이 상승 중이고 그 지속이
+   * 2봉 이하면 BUY를 **딱 한 번** 낸다. 급등해서 리스트에 새로 뜬 종목은 뜬 순간 이미 상승 중이라
+   * 플립 엣지만으로는 영영 못 사기 때문. 리스너가 아직 안 붙었으면 부착 시점으로 미룬다.
    */
   seedTrend(bars: readonly MinuteBar[]): number {
     if (!this.trendMode) return 0;
     const n = this.bars.seed(bars);
-    if (n > 0) this.trendEval = evaluateTrend(this.bars.closes);
+    if (n <= 0) return n;
+    this.trendEval = evaluateTrend(this.bars.closes);
+    if (!this.lateJoinFired && lateJoinEligible(this.bars.closes)) {
+      this.lateJoinPending = true;
+      this.emitLateJoin();
+    }
     return n;
+  }
+
+  /** 늦은 합류 BUY를 1회 발사 — 리스너가 붙어 있을 때만. 종목당 한 번(재시드·재부착에도 반복 없음). */
+  private emitLateJoin(): void {
+    if (!this.lateJoinPending || this.lateJoinFired || this.trendListener === null) return;
+    const price = this.price ?? this.bars.closes.at(-1);
+    if (price === undefined || !Number.isFinite(price) || price <= 0) return;
+    this.lateJoinPending = false;
+    this.lateJoinFired = true;
+    this.lastSignal = 'BUY';
+    this.trendListener('BUY', {
+      ticker: this.ticker,
+      price,
+      slope: 0,
+      accel: 0,
+      at: this.lastTickAt ?? this.clock.now(),
+      bandWidthPct: bollingerBandWidthPct(this.bars.closes),
+      lateJoin: true,
+    });
   }
 
   /** 추세 모드의 마지막 닫힌 봉 분 키(뷰·이음새 로그용). */

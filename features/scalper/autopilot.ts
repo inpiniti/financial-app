@@ -949,6 +949,11 @@ export class AutoPilot {
       this.dropBuySignal(ctx.ticker, `속도 ${rate.toFixed(1)}틱/초 < 기준 ${this.config?.minTickRate ?? DEFAULT_MIN_TICK_RATE}`);
       return;
     }
+    // 늦은 합류(2026-08-21) — 봉 마감이 아니라 리스트 진입 시드에서 나온 1회성 BUY. 성적을 사후에
+    // 분리 집계할 수 있게 이벤트로 표시한다(정규 플립 진입과 섞이면 예외의 가치를 못 잰다).
+    if (ctx.lateJoin === true) {
+      this.event(`${ctx.ticker} 늦은 합류 진입 · 리스트에 들어올 때 이미 4선 상승 중이었어요`);
+    }
     this.pendingBuys.set(ctx.ticker, { ctx, tickRate: rate });
     this.emit();
     void this.commitBuy(ctx.ticker);
