@@ -1,6 +1,9 @@
-// 도움말 챗봇의 웹 검색 — Google 뉴스 RSS(키·인증 불필요, 한국어·영어 모두).
+// 도움말 챗봇의 검색 — 둘로 나눠 둔다.
+//   ① searchWebPages — 일반 웹 검색. 프록시의 Tavily 엔드포인트(/api/simple/search), 키는 서버에만.
+//      무료 월 1,000회라 아껴 쓴다. 결과에 **본문 발췌**가 붙어 근거를 댈 수 있다.
+//   ② searchNews — 뉴스 검색. Google 뉴스 RSS, 키 없이 무제한. 뉴스 질문을 여기로 받으면 크레딧을 안 쓴다.
 //
-// 왜 이 경로인가(2026-08-21 실측):
+// 왜 뉴스는 RSS인가(2026-08-21 실측):
 //   · Gemini google_search 그라운딩 → 무료 할당량 밖(429). 2026-08-19에 이미 접었고 다시 확인해도 같다.
 //   · DuckDuckGo(html/lite)·SearXNG 공개 인스턴스 → 봇 차단(캡차 페이지). 스크래핑은 못 믿는다.
 //   · Google 뉴스 RSS → 키 없이 200, 한국어/영어 모두 최신 결과. 이게 유일하게 안정적인 무키 경로다.
@@ -10,6 +13,65 @@
 // (features/stock/yahooSearch.ts — 기업 탭이 쓰는 그것)를 쓴다.
 const NEWS_RSS_BASE = 'https://news.google.com/rss/search';
 const REQUEST_TIMEOUT_MS = 15_000;
+
+export interface SearchNewsDeps {
+  fetchImpl?: typeof fetch;
+}
+
+/**
+ * 일반 웹 검색 — 프록시의 Tavily 엔드포인트(키는 서버에만). 뉴스 RSS와 나눠 둔 이유는 **한도**다.
+ * Tavily 무료는 월 1,000회라 아껴야 하고, 뉴스 질문은 무제한인 RSS로 받으면 크레딧을 안 쓴다.
+ */
+export const WEB_SEARCH_ENDPOINT = 'https://simulation-inpiniti.vercel.app/api/simple/search';
+
+export interface WebHit {
+  title: string;
+  url: string;
+  /** Tavily가 뽑아 준 본문 발췌 — 검색 결과만으로도 근거를 댈 수 있다. */
+  content: string;
+  published: string;
+}
+
+export interface WebSearchResult {
+  query: string;
+  /** Tavily의 짧은 요약(없을 수 있다). */
+  answer: string;
+  results: WebHit[];
+  /** 실패했을 때 사람이 읽는 사유 — 챗봇이 그대로 안내한다. */
+  error?: string;
+}
+
+/**
+ * 일반 웹 검색. 실패는 throw하지 않고 error 문구를 담아 돌려준다(대화가 끊기지 않게).
+ * 키 미설정(503)·한도 초과(429)는 프록시가 message로 알려 주므로 그대로 싣는다.
+ */
+export async function searchWebPages(
+  query: string,
+  limit = 5,
+  deps: SearchNewsDeps & { endpoint?: string } = {},
+): Promise<WebSearchResult> {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const empty = { query, answer: '', results: [] as WebHit[] };
+  try {
+    const url = `${deps.endpoint ?? WEB_SEARCH_ENDPOINT}?q=${encodeURIComponent(query)}&max=${limit}`;
+    const res = await fetchImpl(url, { signal: controller.signal });
+    const json = (await res.json().catch(() => null)) as Partial<WebSearchResult> & { message?: string };
+    if (!res.ok) {
+      return { ...empty, error: json?.message || `검색 서버 오류(${res.status})예요.` };
+    }
+    return {
+      query,
+      answer: typeof json?.answer === 'string' ? json.answer : '',
+      results: Array.isArray(json?.results) ? (json.results as WebHit[]) : [],
+    };
+  } catch {
+    return { ...empty, error: '검색을 못 했어요(네트워크).' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export const NEWS_RESULT_MAX = 8;
 
@@ -79,10 +141,6 @@ export function parseNewsRss(xml: string, limit = NEWS_RESULT_MAX): NewsHit[] {
     if (hits.length >= limit) break;
   }
   return hits;
-}
-
-export interface SearchNewsDeps {
-  fetchImpl?: typeof fetch;
 }
 
 /** 검색 → 결과 목록. 실패(네트워크·차단)는 빈 배열 — 챗봇은 "못 찾았어요"로 답하면 된다. */

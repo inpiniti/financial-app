@@ -37,7 +37,10 @@ const TOOL_LABEL: Record<string, string> = {
   getQuote: '시세를 확인하고 있어요…',
   searchStock: '종목을 찾고 있어요…',
   getStockNews: '기사를 읽고 있어요…',
+  searchNews: '뉴스를 찾아보고 있어요…',
   searchWeb: '인터넷에서 찾아보고 있어요…',
+  getAccountBinding: '계좌 연결 상태를 보고 있어요…',
+  getRawApiResponse: '원본 응답을 가져오고 있어요…',
 };
 
 /**

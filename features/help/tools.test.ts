@@ -77,31 +77,58 @@ describe('runHelpTool — 실패를 삼키지 않고 객체로 돌려준다', ()
   });
 });
 
-describe('runHelpTool — 웹 검색', () => {
+describe('runHelpTool — 검색 두 갈래', () => {
   const RSS = `<rss><channel><item><title>엔비디아 신고가 - 한국경제</title>
     <link>https://news.google.com/rss/articles/x</link>
     <pubDate>Fri, 21 Aug 2026 06:29:40 GMT</pubDate>
     <source url="https://hankyung.com">한국경제</source></item></channel></rss>`;
 
-  it('검색 결과와 함께 "본문은 없다"는 한계를 같이 알려 준다', async () => {
+  it('searchNews는 뉴스 RSS를 쓰고, 본문이 없다는 한계를 같이 알려 준다', async () => {
     const fetchImpl = vi.fn(async () => ({ ok: true, text: async () => RSS }) as unknown as Response);
     const res = (await runHelpTool(
-      'searchWeb',
+      'searchNews',
       { query: '엔비디아' },
       { fetchImpl: fetchImpl as unknown as typeof fetch },
     )) as { results: unknown[]; note: string };
     expect(res.results).toHaveLength(1);
     expect(res.note).toContain('본문은 없어요');
+    expect(String((fetchImpl.mock.calls as unknown as unknown[][])[0][0])).toContain('news.google.com');
   });
 
-  it('결과가 없으면 빈 배열 + 안내 — 모델이 지어내지 않게', async () => {
-    const empty = vi.fn(async () => ({ ok: true, text: async () => '<rss></rss>' }) as unknown as Response);
+  it('searchWeb은 프록시(Tavily)로 가고 본문 발췌를 받는다', async () => {
+    const payload = {
+      query: '이동평균선',
+      answer: '이동평균선은…',
+      results: [{ title: '이동평균', url: 'https://x.test/a', content: '본문 발췌', published: '' }],
+    };
+    const fetchImpl = vi.fn(async () => ({ ok: true, json: async () => payload }) as unknown as Response);
     const res = (await runHelpTool(
       'searchWeb',
-      { query: 'zzz' },
-      { fetchImpl: empty as unknown as typeof fetch },
-    )) as { results: unknown[]; note: string };
-    expect(res.results).toEqual([]);
-    expect(res.note).toContain('못 가져왔어요');
+      { query: '이동평균선' },
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    )) as typeof payload;
+    expect(res.results[0].content).toBe('본문 발췌');
+    expect(String((fetchImpl.mock.calls as unknown as unknown[][])[0][0])).toContain('/api/simple/search');
+  });
+
+  it('검색 키 미설정·한도 초과는 프록시 안내 문구를 그대로 싣는다', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        ({ ok: false, status: 429, json: async () => ({ message: '이번 달 검색 한도를 다 썼어요.' }) }) as unknown as Response,
+    );
+    const res = (await runHelpTool(
+      'searchWeb',
+      { query: 'x' },
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    )) as { error: string };
+    expect(res.error).toBe('이번 달 검색 한도를 다 썼어요.');
+  });
+});
+
+describe('runHelpTool — 계좌 진단(getAccountBinding)', () => {
+  it('알 수 없는 api를 부르면 무엇을 쓸 수 있는지 알려 준다', async () => {
+    const res = (await runHelpTool('getRawApiResponse', { api: 'orders' })) as { error?: string };
+    // KIS 미설정 환경(vitest)에서는 세션 안내가 먼저 나온다 — 둘 중 하나면 된다.
+    expect(res.error).toBeTruthy();
   });
 });

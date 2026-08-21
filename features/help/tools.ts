@@ -12,7 +12,7 @@
 import { searchStocks } from '../../lib/tossSearch';
 import { readTodayTrades } from '../scalper/tradeStore';
 import { fetchYahooArticles, fetchYahooSearch } from '../stock/yahooSearch';
-import { searchNews, type NewsLang } from './webSearch';
+import { searchNews, searchWebPages, type NewsLang } from './webSearch';
 
 /** UI가 넘겨주는 "지금 앱 상태" 스냅샷 — 오토파일럿이 안 돌면 null. */
 export interface HelpAutopilotSnapshot {
@@ -101,9 +101,9 @@ export const HELP_TOOL_DECLARATIONS = [
     },
   },
   {
-    name: 'searchWeb',
+    name: 'searchNews',
     description:
-      '인터넷에서 최신 뉴스를 검색한다(Google 뉴스). 제목·언론사·날짜까지만 돌려주고 본문은 없다. 앱 밖의 일(시장 상황, 회사 소식, 일반 뉴스)을 물어볼 때 쓴다. 종목 기사 본문이 필요하면 getStockNews를 쓴다.',
+      '최신 뉴스를 검색한다(Google 뉴스). 제목·언론사·날짜까지만 주고 본문은 없다. **뉴스성 질문은 무조건 이걸 먼저 쓴다**(횟수 제한이 없다). 종목 기사 본문이 필요하면 getStockNews를 쓴다.',
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -111,6 +111,38 @@ export const HELP_TOOL_DECLARATIONS = [
         lang: { type: 'STRING', description: '"ko"(한국 뉴스) 또는 "en"(영어 뉴스). 기본 ko' },
       },
       required: ['query'],
+    },
+  },
+  {
+    name: 'searchWeb',
+    description:
+      '인터넷을 검색해 웹페이지의 제목·주소·본문 발췌를 가져온다. 뉴스가 아닌 것(개념 설명, 사용법, 문서, 자료 확인)에 쓴다. **월 사용 횟수가 제한돼 있으니 뉴스성 질문에는 쓰지 말고 searchNews를 쓴다.**',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        query: { type: 'STRING', description: '검색어' },
+        limit: { type: 'NUMBER', description: '가져올 결과 수(1~10, 기본 5)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'getAccountBinding',
+    description:
+      '지금 앱이 어느 계좌에 묶여 있는지 진단한다 — 로그인(승인) 계좌와 KIS 설정에 저장된 계좌가 같은지, 앱키·시크릿이 있는지, 거래 환경이 무엇인지. 계좌가 이상하게 물려 있다고 할 때 쓴다. 계좌번호는 일부를 가려서 돌려준다.',
+    parameters: { type: 'OBJECT', properties: {} },
+  },
+  {
+    name: 'getRawApiResponse',
+    description:
+      '한국투자증권 API의 **원본 응답 JSON**을 가공 없이 돌려준다. 사용자가 "응답 원본을 보여 달라", "무슨 값이 오는지 보자"고 할 때 쓴다. api는 balance(잔고) · unfilled(미체결) · priceDetail(시세, ticker 필요) 중 하나.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        api: { type: 'STRING', description: 'balance | unfilled | priceDetail' },
+        ticker: { type: 'STRING', description: 'priceDetail일 때 티커' },
+      },
+      required: ['api'],
     },
   },
 ] as const;
@@ -147,6 +179,27 @@ const num = (v: unknown): number => {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 };
+
+/** 계좌번호는 앞 4자리만 — 진단에는 충분하고, 외부 프록시로 전체가 나가지 않는다. */
+function mask(accountNo: string | null | undefined): string | null {
+  if (!accountNo) return null;
+  const digits = accountNo.replace(/\D/g, '');
+  if (digits.length <= 4) return `${digits}…`;
+  return `${digits.slice(0, 4)}${'*'.repeat(Math.max(0, digits.length - 6))}${digits.slice(-2)}`;
+}
+
+/** 원본 JSON 상한 — 잔고가 크면 프롬프트를 통째로 먹는다. 넘치면 잘라내고 잘렸다고 알린다. */
+const RAW_MAX_CHARS = 6000;
+
+function capRaw(value: unknown): unknown {
+  const text = JSON.stringify(value);
+  if (text.length <= RAW_MAX_CHARS) return value;
+  return {
+    truncated: true,
+    note: `원본이 너무 길어(${text.length}자) 앞부분만 보여요. 필요한 항목을 콕 집어 물어보면 그 값만 찾아 줄게요.`,
+    raw: `${text.slice(0, RAW_MAX_CHARS)}…`,
+  };
+}
 
 /**
  * 도구 실행 — 이름이 모르는 것이거나 실행이 실패해도 **throw 하지 않는다.**
@@ -300,7 +353,7 @@ export async function runHelpTool(
           })),
         };
       }
-      case 'searchWeb': {
+      case 'searchNews': {
         const query = String(args.query ?? '').trim();
         if (!query) return { error: '검색어가 필요해요' };
         const lang: NewsLang = args.lang === 'en' ? 'en' : 'ko';
@@ -311,6 +364,89 @@ export async function runHelpTool(
           note: '제목·언론사·날짜까지만 있어요. 기사 본문은 없어요.',
           results: hits,
         };
+      }
+      case 'searchWeb': {
+        const query = String(args.query ?? '').trim();
+        if (!query) return { error: '검색어가 필요해요' };
+        const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 10);
+        const found = await searchWebPages(query, limit, { fetchImpl: deps.fetchImpl });
+        if (found.error) return { query, results: [], error: found.error };
+        if (found.results.length === 0) return { query, results: [], note: '검색 결과가 없어요' };
+        return found;
+      }
+      case 'getAccountBinding': {
+        // 계좌가 이상하게 물렸을 때의 첫 진단 — 로그인(게이트) 계좌와 KIS 설정 계좌가 다른 경우가 대표적이다.
+        const [{ loadKisSettings }, { loadApprovedAccountNo }, { loadAppSettings }] = await Promise.all([
+          import('../../lib/kisSettings'),
+          import('../../lib/gateStorage'),
+          import('../../lib/appSettings'),
+        ]);
+        const [kis, approved, appSettings] = await Promise.all([
+          loadKisSettings(),
+          loadApprovedAccountNo(),
+          loadAppSettings(),
+        ]);
+        const kisAccountNo = kis ? `${kis.cano}-${kis.acntPrdtCd}` : null;
+        const approvedDigits = (approved ?? '').replace(/\D/g, '');
+        const kisDigits = kisAccountNo ? kisAccountNo.replace(/\D/g, '') : '';
+        return {
+          로그인계좌: mask(approved),
+          KIS설정계좌: mask(kisAccountNo),
+          // 숫자만 비교한다 — 게이트는 "12345678-01", 설정은 8+2로 쪼개 저장돼 표기가 다를 수 있다.
+          두계좌가같은가: Boolean(approvedDigits) && approvedDigits === kisDigits,
+          앱키저장됨: Boolean(kis?.appKey),
+          앱시크릿저장됨: Boolean(kis?.appSecret),
+          거래환경: appSettings.environment,
+          note: '계좌번호는 앞 4자리만 보여요. 전체는 상단바 계좌 화면에서 볼 수 있어요.',
+        };
+      }
+      case 'getRawApiResponse': {
+        const api = String(args.api ?? '').trim();
+        const session = await loadKisSession();
+        if (!session) return NEEDS_KIS;
+        if (api === 'balance') {
+          const { inquireOverseasBalance } = await import('../../kis/balance');
+          return capRaw(
+            await inquireOverseasBalance(
+              session.environment,
+              session.credentials,
+              session.accessToken,
+              { account: session.account },
+              { fetchImpl: deps.fetchImpl },
+            ),
+          );
+        }
+        if (api === 'unfilled') {
+          const { inquireOverseasUnfilled } = await import('../../kis/nccs');
+          return capRaw(
+            await inquireOverseasUnfilled(
+              session.environment,
+              session.credentials,
+              session.accessToken,
+              { account: session.account, ovrsExcgCd: 'NASD' },
+              { fetchImpl: deps.fetchImpl },
+            ),
+          );
+        }
+        if (api === 'priceDetail') {
+          const ticker = String(args.ticker ?? '').trim().toUpperCase();
+          if (!ticker) return { error: 'priceDetail은 ticker가 필요해요' };
+          const [{ inquireOverseasPriceDetail }, { toStockMarketCode }] = await Promise.all([
+            import('../../kis/priceDetail'),
+            import('../stock/marketCodes'),
+          ]);
+          const hits = await searchStocks(ticker, { fetchImpl: deps.fetchImpl }).catch(() => []);
+          const market = hits.find((h) => h.symbol.toUpperCase() === ticker)?.market;
+          return capRaw(
+            await inquireOverseasPriceDetail(
+              session.credentials,
+              session.accessToken,
+              { excd: toStockMarketCode(market) ?? 'NAS', symb: ticker },
+              { fetchImpl: deps.fetchImpl },
+            ),
+          );
+        }
+        return { error: `모르는 api예요: ${api} (balance · unfilled · priceDetail 중 하나)` };
       }
       default:
         return { error: `모르는 도구예요: ${name}` };

@@ -103,6 +103,8 @@ export function systemInstructionHead(hasState: boolean): string {
     // 화면은 마크다운을 렌더하지 않는 RN <Text>다 — **굵게**가 별표 그대로 보인다(2026-08-21 실측).
     '답하는 방식: 한국어 "~해요"체, 3~6문장 또는 짧은 목록으로 간결하게.',
     '서식은 쓰지 않는다 — 표·코드블록·제목(#)·굵게(**)를 쓰지 말고, 목록이 필요하면 "- "로 시작하는 줄만 쓴다.',
+    // 원본 확인은 디버깅 용도다 — 요약해 버리면 "무슨 값이 오는지" 볼 수가 없다(2026-08-21 제보).
+    '예외: 사용자가 원본·응답 값·JSON을 보여 달라고 하면 요약하지 말고 도구가 준 값을 **그대로** 적어 준다. 이때는 길어도 되고, 값을 임의로 줄이거나 바꾸지 않는다.',
     '무엇을 눌러야 하는지 물으면 화면 이름과 버튼 이름을 그대로 짚어 준다.',
   ].join('\n');
 }
@@ -206,6 +208,8 @@ async function readBodyStreaming(res: Response, onChunk?: (accumulated: string) 
  */
 export function stripMarkdown(text: string): string {
   return text
+    // 코드펜스는 줄만 지우고 안쪽은 남긴다 — 원본 JSON을 보여 달라고 했을 때 내용이 사라지면 안 된다.
+    .replace(/^\s*```[a-zA-Z]*\s*$/gm, '')
     .replace(/\*\*(.+?)\*\*/g, '$1')
     .replace(/(^|\s)\*(?!\s)(.+?)(?<!\s)\*(?=\s|$)/g, '$1$2')
     .replace(/^#{1,6}\s+/gm, '')
