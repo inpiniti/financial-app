@@ -137,6 +137,38 @@ describe('추세 → 그리드 → 매매 — 진입·인계', () => {
     expect(h.pilot.getView().activeTickers).toEqual(['A']);
   });
 
+  it('늦은 합류 — 리스트 진입 시드에 이미 4선 상승이면 봉 마감을 기다리지 않고 진입한다', async () => {
+    const h = makeHarness();
+    h.pilot.start();
+    // 마지막 봉이 막 플립한 시드(allUp 지속 1봉) — 리스트에 늦게 들어온 급등주 상황.
+    h.slots.get('A')!.seedTrend(
+      Array.from({ length: 122 }, (_, i) => ({ minuteKey: i, close: i < 121 ? 100 : 100.5 })),
+    );
+    await flush();
+    await h.pilot.pollCycle();
+    await flush();
+    await h.pilot.pollCycle();
+    await flush();
+    expect(h.pilot.getView().activeTickers).toEqual(['A']);
+    expect(h.events.some((e) => e.includes('늦은 합류 진입'))).toBe(true);
+  });
+
+  it('늦은 합류는 틱속도 문턱을 건너뛴다 — 갓 구독한 슬롯은 틱/초가 0으로 잡히기 때문', async () => {
+    const h = makeHarness();
+    h.pilot.setConfig({ startAmountUsd: 10_000, minTickRate: 1_000 }); // 정규 신호라면 전부 막힐 문턱
+    h.pilot.start();
+    h.slots.get('A')!.seedTrend(
+      Array.from({ length: 122 }, (_, i) => ({ minuteKey: i, close: i < 121 ? 100 : 100.5 })),
+    );
+    await flush();
+    await h.pilot.pollCycle();
+    await flush();
+    await h.pilot.pollCycle();
+    await flush();
+    expect(h.pilot.getView().activeTickers).toEqual(['A']);
+    expect(h.events.some((e) => e.includes('BUY 무시') && e.includes('속도'))).toBe(false);
+  });
+
   it('BUY 폐기 이벤트는 종목당 10분에 1번만 남는다(스로틀) — 남은 폐기 사유는 틱속도', async () => {
     const h = makeHarness();
     h.pilot.setConfig({ startAmountUsd: 10_000, minTickRate: 1_000 }); // 어떤 틱속도로도 못 넘는 문턱
