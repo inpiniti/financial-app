@@ -363,8 +363,12 @@ describe('FeedSlot — 조합 모드(inflection): 청크 1초·버퍼 21 강제 
 
 describe('FeedSlot — 추세 모드(trend): 1분봉 합성 + 4선 신호, 리샘플·SG 미사용', () => {
   const M = 60_000;
-  /** 오름차순 122봉 시드(키 0..121) — 4선 2봉 연속 상승·종가>ma60. */
-  const risingSeed = (n = 122) => Array.from({ length: n }, (_, i) => ({ minuteKey: i, close: 100 + i }));
+  /**
+   * 오름차순 시드(키 0..n−1) — 마지막 봉에만 눌림을 넣어 **다음 봉이 4선 상승 플립**이 되게 한다.
+   * 2026-08-21 순수 상태기계: BUY는 플립 엣지라 계속 오르기만 하는 시드로는 신호가 나지 않는다.
+   */
+  const risingSeed = (n = 122) =>
+    Array.from({ length: n }, (_, i) => ({ minuteKey: i, close: 100 + i - (i === n - 1 ? 6 : 0) }));
 
   function makeTrendSlot(clock = fakeClock(1000)) {
     const slot = new FeedSlot({ ticker: 'AAPL', clock, chunkSeconds: 5, bufferSize: 7, trend: true, trendBarMinutes: 1, inflection: true });
@@ -385,7 +389,8 @@ describe('FeedSlot — 추세 모드(trend): 1분봉 합성 + 4선 신호, 리�
     expect(slot.seedTrend(risingSeed())).toBe(122);
     const view = slot.getView().trend!;
     expect(view.bars).toBe(122);
-    expect(view.signal).toBe('BUY'); // 스냅샷은 판정 결과를 담지만 리스너가 없어 아무 데도 안 흘렀다.
+    // 시드 마지막 봉은 눌림(allUp 깨짐)이라 스냅샷 판정은 SELL — 리스너가 없어 아무 데도 안 흘렀다.
+    expect(view.signal).toBe('SELL');
     expect(slot.watched).toBe(false);
     expect(slot.trendLastBarKey).toBe(121);
   });
@@ -399,7 +404,7 @@ describe('FeedSlot — 추세 모드(trend): 1분봉 합성 + 4선 신호, 리�
     slot.pushTick(222, 122 * M); // 키 122 진행 중 — 마감 없음
     slot.pushTick(223, 122 * M + 30_000);
     expect(got).toHaveLength(0);
-    slot.pushTick(224, 123 * M); // 키 122 닫힘(close 223) → 4선 상승 유지 → BUY
+    slot.pushTick(224, 123 * M); // 키 122 닫힘(close 223) → 눌림 뒤 4선 상승 플립 → BUY
     expect(got).toEqual([{ signal: 'BUY', price: 224 }]);
     expect(slot.getView().lastSignal).toBe('BUY');
     expect(slot.getView().trend?.bars).toBe(123);

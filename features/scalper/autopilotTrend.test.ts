@@ -11,8 +11,16 @@ const M = 60_000;
 const TINY_RATE = 0.01;
 const CONFIG: AutoPilotConfig = { startAmountUsd: 10_000, minTickRate: TINY_RATE };
 
-/** 오름차순 122봉 시드(키 0..121, 종가 100..221) — 4선 2봉 연속 상승·종가>ma60. */
-const risingSeed = () => Array.from({ length: 122 }, (_, i) => ({ minuteKey: i, close: 100 + i }));
+/**
+ * 오름차순 122봉 시드(키 0..121) — **마지막 봉(121)에만 눌림**을 넣어 다음 봉이 "4선 상승 플립"이 되게 한다.
+ * 2026-08-21 순수 상태기계: BUY는 allUp(t) ∧ ¬allUp(t−1)인 엣지라, 계속 오르기만 하는 시드로는 신호가 나지 않는다.
+ * 눌림 폭(6·step)은 ma5만 꺾고(close[121] < close[116]) ma20/60/120은 상승을 유지한다.
+ */
+const flipSeed = (step = 1) =>
+  Array.from({ length: 122 }, (_, i) => ({ minuteKey: i, close: 100 + i * step - (i === 121 ? 6 * step : 0) }));
+
+/** 종가 100..221(마지막 봉만 215로 눌림) — 다음 봉이 닫히면 플립 BUY. */
+const risingSeed = () => flipSeed(1);
 
 interface Harness {
   pilot: AutoPilot;
@@ -105,36 +113,43 @@ describe('추세 → 그리드 → 매매 — 진입·인계', () => {
     expect(h.events.some((e) => e.includes('변곡점 그리드 인계'))).toBe(false);
   });
 
-  it('챱 차단 — 4선이 상승이라도 밴드폭이 문턱 미만이면 진입하지 않는다', async () => {
+  it('챱 차단 없음(2026-08-21) — 밴드폭이 아주 좁은 완만한 상승도 플립이면 진입한다', async () => {
     const h = makeHarness();
-    // 아주 완만한 상승 — 4선은 strict 상승이지만 최근 20봉 밴드폭 ≈ 0.2% < 1.5%.
-    h.slots.get('A')!.seedTrend(Array.from({ length: 122 }, (_, i) => ({ minuteKey: i, close: 100 + i * 0.01 })));
+    // 아주 완만한 상승 — 최근 20봉 밴드폭 ≈ 0.2%. 옛 규칙(밴드폭 <1.5% 차단)이면 막혔다.
+    h.slots.get('A')!.seedTrend(flipSeed(0.01));
     h.pilot.start();
     await tick(h, 101.22, 122);
-    await tick(h, 101.23, 123); // 키 122 닫힘 → BUY 신호 → 챱 차단
-    expect(h.pilot.getView().activeTickers).toEqual([]);
-    expect(h.events.some((e) => e.includes('BUY 무시') && e.includes('챱'))).toBe(true);
+    await tick(h, 101.23, 123); // 키 122 닫힘 → 플립 BUY
+    expect(h.pilot.getView().activeTickers).toEqual(['A']);
+    expect(h.events.some((e) => e.includes('BUY 무시'))).toBe(false);
   });
 
-  it('감시 요건 — 감시(틱속도 상위 N종)에 들지 않은 종목의 BUY는 버리고 사유를 남긴다', async () => {
+  it('감시 요건 없음(2026-08-21) — 감시 목록 밖이어도 BUY면 진입한다', async () => {
     const h = makeHarness();
     h.slots.get('A')!.seedTrend(risingSeed());
-    h.pilot.start(); // start 시점 reselect는 틱이 없어 감시가 비어 있다 — 그 사이 신호가 오는 경우.
-    h.slots.get('A')!.pushTick(222, 122 * M); // reselect 없이 봉만 진행
-    h.slots.get('A')!.pushTick(223, 123 * M); // 키 122 닫힘 → BUY → 감시 밖
+    h.pilot.start(); // start 시점 reselect는 틱이 없어 감시가 비어 있다.
+    h.slots.get('A')!.pushTick(222, 122 * M); // reselect 없이 봉만 진행 — 감시 목록은 빈 채
+    h.slots.get('A')!.pushTick(223, 123 * M); // 키 122 닫힘 → 플립 BUY
     await flush();
-    expect(h.pilot.getView().activeTickers).toEqual([]);
-    expect(h.events.some((e) => e.includes('BUY 무시') && e.includes('감시'))).toBe(true);
+    expect(h.pilot.getView().watched).toEqual([]);
+    await h.pilot.pollCycle();
+    await flush();
+    expect(h.pilot.getView().activeTickers).toEqual(['A']);
   });
 
-  it('BUY 폐기 이벤트는 종목당 10분에 1번만 남는다(스로틀)', async () => {
+  it('BUY 폐기 이벤트는 종목당 10분에 1번만 남는다(스로틀) — 남은 폐기 사유는 틱속도', async () => {
     const h = makeHarness();
-    h.slots.get('A')!.seedTrend(Array.from({ length: 122 }, (_, i) => ({ minuteKey: i, close: 100 + i * 0.01 })));
+    h.pilot.setConfig({ startAmountUsd: 10_000, minTickRate: 1_000 }); // 어떤 틱속도로도 못 넘는 문턱
+    h.slots.get('A')!.seedTrend(risingSeed());
     h.pilot.start();
-    await tick(h, 101.22, 122);
-    await tick(h, 101.23, 123); // 챱 차단 1회 — 이벤트 1건
-    await tick(h, 101.24, 124); // 같은 사유 재발 — 스로틀로 이벤트 없음
-    await tick(h, 101.25, 125);
+    await tick(h, 222, 122);
+    await tick(h, 223, 123); // 플립 BUY → 속도 미달로 폐기 — 이벤트 1건
+    expect(h.pilot.getView().activeTickers).toEqual([]);
+    expect(h.events.some((e) => e.includes('BUY 무시') && e.includes('속도'))).toBe(true);
+    // 눌림 → 재플립으로 BUY를 한 번 더 만든다(엣지라 같은 상승 중에는 재발화하지 않는다).
+    await tick(h, 215, 124); // 키 123 닫힘(223) — 아직 상승
+    await tick(h, 224, 125); // 키 124 닫힘(215) — 눌림(allUp 깨짐)
+    await tick(h, 225, 126); // 키 125 닫힘(224) — 다시 플립 → BUY → 같은 사유 재폐기(스로틀)
     expect(h.events.filter((e) => e.includes('BUY 무시')).length).toBe(1);
   });
 
@@ -175,14 +190,14 @@ describe('추세 → 그리드 → 매매 — 진입·인계', () => {
     expect(h.pilot.getView().grids[0].buyPrice).toBe(g0.avgPrice);
   });
 
-  it('보유 중 BUY 신호(봉 마감마다 반복)는 무시한다 — 물타기 없음, 평단 아래여도', async () => {
+  it('보유 중 상승이 이어져도 BUY는 재발화하지 않는다(엣지) — 물타기 없음', async () => {
     const h = makeHarness();
     await enter(h);
     const broker = h.brokers.get('A')!;
-    // 상승은 유지(4선 모두 ↑)하되 진입가보다 낮은 가격대로 — 그래도 BUY 신호만 나오고 주문은 없어야 한다.
+    // 상승 유지(4선 모두 ↑) — 옛 규칙은 봉마다 BUY를 재발화했지만 이제 플립이 아니라 신호가 없다.
     await tick(h, 224, 124);
     await tick(h, 225, 125);
-    expect(h.slots.get('A')!.getView().lastSignal).toBe('BUY');
+    expect(h.slots.get('A')!.getView().trend?.signal ?? null).toBeNull();
     expect(broker.placed).toHaveLength(1);
     expect(h.pilot.getView().grids[0].holdingQty).toBe(broker.placed[0].qty);
   });
@@ -205,43 +220,25 @@ describe('추세 → 그리드 → 매매 — 청산(분봉5선 꺾임, 무조�
     expect(h.pilot.getView().activeTickers).toEqual([]);
   });
 
-  it('손절선(−5%) — 봉 마감 전 틱에서 즉시 전량 매도, exitReason=STOP_LOSS', async () => {
+  it('손절선 없음(2026-08-21) — 봉 안 급락에도 즉시 매도하지 않고 봉 마감 SELL을 기다린다', async () => {
     const h = makeHarness();
     await enter(h);
     const broker = h.brokers.get('A')!;
     const g = h.pilot.getView().grids[0];
-    const stop = g.avgPrice * (1 - TREND_CONFIG.stopLossPct);
-    expect(h.events.some((e) => e.includes('손절선'))).toBe(true);
-    // 같은 분(키 123 진행 중) 안에서 −4%는 아직 아무 일도 없다 — 봉도 안 닫혔고 손절선 미달.
-    h.slots.get('A')!.pushTick(g.avgPrice * 0.96, 123 * M + 5_000);
-    await fireTimers(h); // 리프라이스 틱(1초) — 손절 판정 경로
-    expect(broker.placed).toHaveLength(1);
-    // −5% 아래 틱 → 봉 마감 없이 즉시 매도.
-    h.slots.get('A')!.pushTick(stop * 0.999, 123 * M + 10_000);
+    expect(TREND_CONFIG.stopLossPct).toBe(0);
+    expect(h.events.some((e) => e.includes('손절선'))).toBe(false);
+    // 같은 분(키 123 진행 중) 안에서 −30%가 나도 주문은 없다 — 파는 기준은 4선 꺾임 하나뿐.
+    h.slots.get('A')!.pushTick(g.avgPrice * 0.7, 123 * M + 10_000);
     await fireTimers(h);
+    expect(broker.placed).toHaveLength(1);
+    // 그 급락 봉이 닫히면 그때 SELL이 나간다.
+    await tick(h, g.avgPrice * 0.7, 124);
     expect(broker.placed).toHaveLength(2);
     expect(broker.placed[1].side).toBe('sell');
-    expect(broker.placed[1].qty).toBe(g.holdingQty);
-    expect(h.events.some((e) => e.includes('손절선 도달'))).toBe(true);
     await h.pilot.pollCycle();
     await flush();
     expect(h.trades).toHaveLength(1);
-    expect(h.trades[0].exitReason).toBe('STOP_LOSS');
-    expect(h.pilot.getView().activeTickers).toEqual([]);
-  });
-
-  it('손절 매도가 진행 중이면 봉 마감 SELL은 겹쳐 나가지 않는다(주문은 항상 1개)', async () => {
-    const h = makeHarness();
-    await enter(h);
-    const broker = h.brokers.get('A')!;
-    broker.autoFill = false;
-    const g = h.pilot.getView().grids[0];
-    h.slots.get('A')!.pushTick(g.avgPrice * 0.9, 123 * M + 10_000);
-    await fireTimers(h);
-    expect(broker.placed).toHaveLength(2);
-    await tick(h, g.avgPrice * 0.9, 124); // 키 123 닫힘(급락) → 다음 봉에서 SELL이 떠도
-    await tick(h, g.avgPrice * 0.9, 125);
-    expect(broker.placed).toHaveLength(2); // 매도 주문은 여전히 하나
+    expect(h.trades[0].exitReason).not.toBe('STOP_LOSS');
   });
 
   it('매도 추격에는 취소선이 없다 — 미체결 중 가격이 더 빠져도 취소하지 않는다', async () => {
@@ -265,17 +262,16 @@ describe('추세 → 그리드 → 매매 — 청산(분봉5선 꺾임, 무조�
     expect(broker.amended.length).toBeGreaterThan(0);
   });
 
-  it('매도 정산 뒤 4선이 다시 2봉 연속 상승하면 재진입한다 — buy/sell/buy', async () => {
+  it('매도 정산 뒤 4선이 다시 플립하면 재진입한다 — buy/sell/buy', async () => {
     const h = makeHarness();
     await enter(h);
     const broker = h.brokers.get('A')!;
     await tick(h, 150, 124);
     await tick(h, 151, 125); // SELL·정산
     expect(h.trades).toHaveLength(1);
-    await tick(h, 400, 126); // 키 125 닫힘(151) — ma5 아직 하락(SELL, 미보유라 무시)
-    await tick(h, 401, 127); // 키 126 닫힘(400) — 4선 ↑ 첫 봉(prevAllUp=false)
+    await tick(h, 400, 126); // 키 125 닫힘(151) — 아직 하락(SELL, 미보유라 무시)
     expect(h.pilot.getView().activeTickers).toEqual([]);
-    await tick(h, 402, 128); // 키 127 닫힘(401) — 2봉 연속 ↑ → BUY → 재진입
+    await tick(h, 401, 127); // 키 126 닫힘(400) — 4선 ↑ 플립 → BUY → 재진입(옛 규칙보다 한 봉 빠르다)
     expect(h.pilot.getView().activeTickers).toEqual(['A']);
     // 사이클마다 브로커가 새로 만들어진다 — 첫 브로커엔 buy/sell, 재진입 브로커엔 buy.
     expect(broker.placed.map((p) => p.side)).toEqual(['buy', 'sell']);

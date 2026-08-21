@@ -61,9 +61,12 @@ export interface TrendGridConfig {
 
 /**
  * 추세 설정의 단일 출처 — managerProvider가 주입한다.
- * 손절 −5%(2026-08-18 EJH −13% 사고 뒤) → −7%(2026-08-19 첫날 재현: −5%는 꼬리에 찍혀 반등을 놓치는 비용, −7%부터 그 비용이 사라지며 최악 −13%로 자름).
+ * 손절 −5%(2026-08-18 EJH −13% 사고 뒤) → −7%(2026-08-19 첫날 재현) → **0(끔, 2026-08-21 사용자 확정)**.
+ * 순수 상태기계 전환(docs/분석/2026-08-21_4선-상태기계-검증.md): 5분봉 3일 재현에서 손절 유무 차이가 +$95.53 vs +$97.34로
+ * 미미했고, 08-18에는 손절이 노이즈에 찍혀 오히려 −$10 손해였다 → "규칙은 4선 상태기계 하나"로 단순화.
+ * ⚠ 대가: 봉 마감 전 수직 붕괴를 못 받는다(무손절 재현 최악 1건 −39%). 되돌리려면 이 값만 0.07로.
  */
-export const TREND_CONFIG: TrendGridConfig = { kind: 'trend', stopLossPct: 0.07 };
+export const TREND_CONFIG: TrendGridConfig = { kind: 'trend', stopLossPct: 0 };
 
 /** 조건부 그리드 문턱 — 문서 §5 고정값(+2%/−3%)을 managerProvider가 주입한다. */
 export interface InflectionGridConfig {

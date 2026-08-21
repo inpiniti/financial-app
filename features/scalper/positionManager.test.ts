@@ -317,7 +317,9 @@ describe('makePositionManager — 규칙형 어댑터(추세·변곡점)', () =>
     expect(await pm.arm(null)).toEqual({ ok: false, reason: '포지션을 확인할 수 없어 추세 관리를 시작하지 못했어요' });
     expect(await pm.arm({ qty: 10, avgPrice: 100 })).toEqual({ ok: true });
     expect(events.at(-1)).toContain('추세 관리 등록 · 10주 · 평단 100.00');
-    expect(events.at(-1)).toContain('손절선 93.00(−7%)');
+    // 2026-08-21 순수 상태기계 — TREND_CONFIG.stopLossPct=0이라 인계 문구에 손절선이 없다.
+    expect(events.at(-1)).not.toContain('손절선');
+    // 손절선 자체는 규칙이 여전히 지원한다(주입하면 문구에 나온다) — 아래 별도 테스트가 동작을 지킨다.
     const g = pm.gaugeView();
     expect(g.rangeKind).toBe('dayRange');
     expect([g.buyPrice, g.sellPrice, g.holdingQty]).toEqual([95, 108, 10]);

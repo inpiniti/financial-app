@@ -22,11 +22,7 @@
 // 한 종목 오류로 나머지 종목 관리와 폴 타이머가 멈추지 않게 한다.
 
 import { RunCycle, type SignalSnapshot, type TradeRecord } from '../../core/cycle';
-import {
-  entryChaseExceeded,
-  TREND_ENTRY_GATE_QUOTE_FRESH_MS,
-  TREND_MIN_BAND_WIDTH_PCT,
-} from '../../core/trend/entryGate';
+import { entryChaseExceeded, TREND_ENTRY_GATE_QUOTE_FRESH_MS } from '../../core/trend/entryGate';
 import type { ConditionalPosition } from '../../core/conditional';
 import type { Signal } from '../../core/detector';
 import { isDaytimeSessionOpen } from './daySession';
@@ -939,21 +935,11 @@ export class AutoPilot {
     if (this.deps.clock.now() < this.cashCooldownUntil) return;
     if (this.actives.size + this.pendingBuys.size >= this.maxGrids) return; // 그리드 슬롯 만석
 
-    if (this.positionMode === 'trend') {
-      // 챱 차단(2026-08-20 지표 검증) — 신호봉 밴드폭이 문턱 미만이면 "4선 상승"은 노이즈다
-      // (풀데이 재현: 밴드폭<2% 신호 95건 합계 −75%, 승률 ~7%, 큰 승리 0건). 판정 불가(null)는 통과.
-      if (ctx.bandWidthPct != null && ctx.bandWidthPct < TREND_MIN_BAND_WIDTH_PCT) {
-        this.dropBuySignal(ctx.ticker, `밴드폭 ${ctx.bandWidthPct.toFixed(2)}% < ${TREND_MIN_BAND_WIDTH_PCT}% — 무추세(챱)`);
-        return;
-      }
-      // 감시 요건(사용자 확정 2026-08-20) — "그리드로 넘길 땐 틱속도 빠른 것만". 절대 문턱(옛 속도 20)은
-      // 꼭대기 선택기가 됐으므로, 자격자 중 **상대 상위**(감시 = 틱속도 상위 watchCount종)로 거른다.
-      // 신호는 매 봉 재발화하므로 다음 재선정(30초 주기)에서 감시에 들면 늦어도 다음 봉에 들어간다.
-      if (!this.watchedTickers.includes(ctx.ticker)) {
-        this.dropBuySignal(ctx.ticker, `감시(틱속도 상위 ${this.watchCount}종) 밖`);
-        return;
-      }
-    }
+    // 2026-08-21 순수 상태기계 전환(사용자 확정) — 추세 전용 진입 필터를 전부 걷어냈다.
+    // 걷어낸 것: 챱 차단(밴드폭 하한, 2026-08-20) · 감시 요건(틱속도 상위 watchCount종, 2026-08-20).
+    // 근거: docs/분석/2026-08-21_4선-상태기계-검증.md — 규칙은 "4선 상태기계 하나"로 단순화하고,
+    // 필터의 가치는 869일 백테스트로 판정한다(하루치 in-sample 캘리브레이션이 반복해서 뒤집혔다).
+    // 되돌리려면 이 자리에 필터를 다시 넣으면 된다(TREND_MIN_BAND_WIDTH_PCT·watchedTickers 그대로 있다).
 
     const rate = this.slotOf(ctx.ticker)?.tickRate(this.deps.clock.now()) ?? 0;
     // 감지기가 전 종목에 붙으면서(2026-08-10) 느린 종목의 신호가 흔해졌다 — 프리플라이트(REST 왕복)

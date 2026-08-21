@@ -2,12 +2,20 @@
 // 도메인 문서: docs/domain/추세/2026-08-18_추세-그리드-매매-조합-plan.md
 //
 //  up_N(t) = ma_N(t) > ma_N(t−1)  (strict — 보합은 상승도 하락도 아님)
-//  BUY : allUp(t) ∧ allUp(t−1) AND close(t) > ma60(t)   — 4선 중 하나라도 null이면 신호 없음(fail-closed)
-//  SELL: close(t) < ma5(t)                                — ma5 null이면 신호 없음
-//        (2026-08-19 변경: 옛 규칙 "ma5(t) < ma5(t−1)"(기울기)는 가격이 이미 밀린 뒤 1~2봉 늦게 울렸다 —
-//         첫날 42건 재현에서 "종가<ma5"(위치)가 1·3·5분봉 모두 승률·합계 우위. up.ma5는 뷰용으로 계속 계산한다.)
-// 상태 기반: 봉 마감마다 조건이 참이면 매번 발화한다(엣지 아님). 보유/미보유 거름은 호출부(autopilot).
-// "2봉 연속"은 배열에서 ma[i]/ma[i−1]/ma[i−2]로 계산 — 내부 카운터가 없어 attach/detach·seed 순서에 흔들리지 않는다.
+//  BUY : allUp(t) ∧ ¬allUp(t−1)   — "상상상상으로 바뀌는 그 봉"(플립)에만. 4선 중 하나라도 null이면 신호 없음(fail-closed)
+//  SELL: ¬allUp(t)                — 4선 중 하나라도 안 오르면 즉시. null이면 신호 없음(fail-closed)
+//
+// 2026-08-21 순수 상태기계로 전환(docs/분석/2026-08-21_4선-상태기계-검증.md, 사용자 확정):
+//  · 옛 규칙은 BUY = allUp 2봉 연속 ∧ 종가>ma60 / SELL = 종가<ma5 였다.
+//  · 2봉 확인은 저점→체결 지연을 4봉으로 늘려 "다리의 69% 지점(머리)" 매수를 만들었고,
+//    종가<ma5 청산은 강추세 중 눌림 한 봉에도 팔아 승자를 잘랐다. 진입·청산을 같은 상태의 양 끝으로
+//    대칭화하니(플립 진입 / 깨짐 청산) 3일 재현 모두 우위 — 5분봉 3일 합 +$95.53 vs 옛 규칙 +$1.12.
+//  · 가짜 플립 보험은 확인봉이 아니라 "깨지면 다음 봉에 바로 나감"이 대신한다.
+// aboveMa60·prevAllUp은 뷰·진단용으로 계속 계산한다(판정에는 aboveMa60을 쓰지 않는다).
+// SELL은 상태 기반(조건이 참인 봉마다 매번 발화), BUY는 **엣지**(플립 봉 1회)다 — 보유/미보유 거름은 호출부(autopilot).
+//  ⚠ BUY가 엣지라 그 봉에 슬롯 만석·현금 부족·쿨다운이면 진입 기회는 다음 플립까지 사라진다(옛 규칙은 매 봉 재시도).
+//    재현 시뮬도 같은 의미론이었다(보유 중 신호 무시 → 청산 뒤 새 플립에서만 재진입).
+// 플립 판정은 배열에서 ma[i]/ma[i−1]/ma[i−2]로 계산 — 내부 카운터가 없어 attach/detach·seed 순서에 흔들리지 않는다.
 
 import { smaSeries, type TrendLines, TREND_PERIODS } from './index';
 
@@ -73,10 +81,11 @@ export function evaluateTrend(closes: readonly number[]): TrendEval {
   const aboveMa60 = lines.ma60 === null || !Number.isFinite(close) ? null : close > lines.ma60;
 
   let signal: TrendSignal | null = null;
-  // SELL 우선 — 종가가 ma5 아래(strict). 다른 선이 상승 중이어도 판다.
-  if (lines.ma5 !== null && Number.isFinite(close) && close < lines.ma5) {
+  // SELL 우선 — 4선 중 하나라도 상승이 아니면 즉시 청산. 판정 불가(null)면 신호 없음(fail-closed).
+  if (curAll === false) {
     signal = 'SELL';
-  } else if (curAll === true && prevAllUp === true && aboveMa60 === true) {
+  } else if (curAll === true && prevAllUp === false) {
+    // BUY는 "플립하는 그 봉"에만 — allUp이 이어지는 동안에는 재발화하지 않는다.
     signal = 'BUY';
   }
   return { signal, lines, up, prevAllUp, aboveMa60, bars: n };

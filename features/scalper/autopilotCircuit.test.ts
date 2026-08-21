@@ -11,7 +11,9 @@ import { FakeBroker, FakeStore, fakeClock, flush, noopScheduler } from './fakes'
 
 const M = 60_000;
 const CONFIG: AutoPilotConfig = { startAmountUsd: 10_000, minTickRate: 0.01 };
-const risingSeed = () => Array.from({ length: 122 }, (_, i) => ({ minuteKey: i, close: 100 + i }));
+/** 마지막 봉만 눌림 — 다음 봉이 닫히면 4선 상승 플립(BUY). 2026-08-21 순수 상태기계. */
+const risingSeed = () =>
+  Array.from({ length: 122 }, (_, i) => ({ minuteKey: i, close: 100 + i - (i === 121 ? 6 : 0) }));
 const ET_REGULAR = Date.UTC(2026, 7, 18, 14, 0, 0);
 
 function makeHarness() {

@@ -307,29 +307,32 @@ export default function SettingsScreen() {
 
             <View className="mb-1 flex-row items-center justify-between">
               <Text className="text-xs text-[#8b95a1]">진입</Text>
-              <Text className="text-sm font-semibold text-[#191f28]">4선 상승 2봉 연속 · 종가 &gt; 분봉60선</Text>
+              <Text className="text-sm font-semibold text-[#191f28]">4선이 모두 상승으로 바뀌는 봉</Text>
             </View>
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              네 선이 모두 직전 봉보다 올라간 상태가 두 봉 연속이고, 그 봉의 종가가 분봉60선 위에 있을 때 사요. 봉이 모자라
-              4선 중 하나라도 계산이 안 되면 사지 않아요. 물타기는 하지 않아요.
+              직전 봉에는 아니었는데 이번 봉에 네 선이 모두 올라섰을 때, 그 순간 한 번만 사요. 이미 네 선이 올라 있는 동안에는
+              사지 않아요. 봉이 모자라 4선 중 하나라도 계산이 안 되면 사지 않아요. 물타기는 하지 않아요.
             </Text>
 
             <View className="mb-1 flex-row items-center justify-between">
               <Text className="text-xs text-[#8b95a1]">매도</Text>
-              <Text className="text-sm font-semibold text-[#191f28]">종가가 분봉5선 아래면 즉시 전량</Text>
+              <Text className="text-sm font-semibold text-[#191f28]">4선 중 하나라도 꺾이면 즉시 전량</Text>
             </View>
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              봉이 닫힐 때 종가가 분봉5선보다 낮으면 수익·손실과 상관없이 전량 매도해요. 매도 주문은 체결될 때까지 현재가를
-              따라가고, 도중에 거두지 않아요. 다시 4선이 서면 다시 사요.
+              봉이 닫힐 때 네 선 중 하나라도 직전 봉보다 낮거나 같으면 수익·손실과 상관없이 전량 매도해요. 매도 주문은 체결될
+              때까지 현재가를 따라가고, 도중에 거두지 않아요. 다시 네 선이 모두 서는 봉에 다시 사요.
             </Text>
 
             <View className="mb-1 flex-row items-center justify-between">
               <Text className="text-xs text-[#8b95a1]">손절선</Text>
-              <Text className="text-sm font-semibold text-[#191f28]">평단 대비 −{Math.round(TREND_CONFIG.stopLossPct * 100)}% 즉시 전량</Text>
+              <Text className="text-sm font-semibold text-[#191f28]">
+                {TREND_CONFIG.stopLossPct > 0 ? `평단 대비 −${Math.round(TREND_CONFIG.stopLossPct * 100)}% 즉시 전량` : '없음'}
+              </Text>
             </View>
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              봉이 닫히기 전이라도 현재가가 평단보다 {Math.round(TREND_CONFIG.stopLossPct * 100)}% 넘게 빠지면 바로 전량 매도해요. 봉 안에서 급락하는 종목을
-              받아내는 바닥이에요 — 평소엔 분봉5선 청산이 먼저 나가요.
+              {TREND_CONFIG.stopLossPct > 0
+                ? `봉이 닫히기 전이라도 현재가가 평단보다 ${Math.round(TREND_CONFIG.stopLossPct * 100)}% 넘게 빠지면 바로 전량 매도해요.`
+                : '따로 손절선을 두지 않아요. 파는 기준은 4선이 꺾이는 것 하나뿐이라, 봉이 닫히기 전에 급락하면 그 봉이 닫힐 때 팔아요.'}
             </Text>
 
             <View className="mb-1 flex-row items-center justify-between">
