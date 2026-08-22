@@ -8,6 +8,8 @@ import { Pressable, Text, View, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Line, Polyline, Rect, Text as SvgText } from 'react-native-svg';
 import { computeTrendSeries } from '../../../core/trend';
+import { TREND_BAR_MINUTES, barKeyOf } from '../../../core/trend/bars';
+import { evaluateTrend, evaluateTrendLive } from '../../../core/trend/signal';
 import { getAccessToken } from '../../../kis/token';
 import type { MinuteChartExchangeCode } from '../../../kis/minuteChart';
 import { inquireOverseasPeriodChart, type PeriodChartPeriod } from '../../../kis/periodChart';
@@ -27,6 +29,13 @@ export interface ChartPanelProps {
 type ChartMode = 'minute' | 'daily' | 'weekly' | 'monthly';
 type MinuteInterval = 1 | 3 | 5;
 
+/**
+ * 자동매매 엔진이 실제로 쓰는 봉 주기 — 차트 기본값을 여기에 맞춘다(2026-08-22).
+ * 8-18~21 실거래에서 "차트는 꺾였는데 앱은 안 판다"의 큰 몫이 **차트 1분봉 vs 엔진 5분봉**이었다.
+ * 눈으로 보는 ma5(최근 5분)와 엔진의 ma5(최근 25분)는 애초에 다른 선이다.
+ */
+const ENGINE_INTERVAL: MinuteInterval = TREND_BAR_MINUTES as MinuteInterval;
+
 const MODE_OPTIONS: Array<{ value: ChartMode; label: string }> = [
   { value: 'minute', label: '분봉' },
   { value: 'daily', label: '일봉' },
@@ -38,7 +47,10 @@ const MINUTE_INTERVAL_OPTIONS: Array<{ value: MinuteInterval; label: string }> =
   { value: 1, label: '1분' },
   { value: 3, label: '3분' },
   { value: 5, label: '5분' },
-];
+].map((o) => (o.value === ENGINE_INTERVAL ? { ...o, label: `${o.label}(엔진)` } : o)) as Array<{
+  value: MinuteInterval;
+  label: string;
+}>;
 
 const PERIOD_BY_MODE: Record<Exclude<ChartMode, 'minute'>, PeriodChartPeriod> = {
   daily: 'D',
@@ -66,6 +78,11 @@ interface ChartCandle {
   low: number;
   close: number;
   volume: number;
+  /**
+   * 아직 안 끝난 봉인가 — 토스는 현재 진행 중인 봉도 내려준다. 차트는 그걸 그대로 그리는데
+   * 엔진은 닫힌 봉만 보므로, 그 차이를 화면에서 눈에 보이게 한다(2026-08-22).
+   */
+  inProgress?: boolean;
 }
 
 type LoadState =
@@ -223,11 +240,39 @@ function CandleChart({
 
           return (
             <View key={candle.key}>
-              <Line x1={cx} x2={cx} y1={yHigh} y2={yLow} stroke={color} strokeWidth={1} />
-              <Rect x={cx - bodyWidth / 2} y={bodyTop} width={bodyWidth} height={bodyHeight} fill={color} />
+              <Line
+                x1={cx}
+                x2={cx}
+                y1={yHigh}
+                y2={yLow}
+                stroke={color}
+                strokeWidth={1}
+                strokeDasharray={candle.inProgress ? '2,2' : undefined}
+              />
+              {/* 아직 안 끝난 봉은 속을 비운다 — "이 봉은 확정이 아니다"를 한눈에. */}
+              <Rect
+                x={cx - bodyWidth / 2}
+                y={bodyTop}
+                width={bodyWidth}
+                height={bodyHeight}
+                fill={candle.inProgress ? 'none' : color}
+                stroke={candle.inProgress ? color : undefined}
+                strokeWidth={candle.inProgress ? 1 : undefined}
+                strokeDasharray={candle.inProgress ? '2,2' : undefined}
+              />
             </View>
           );
         })}
+
+        {/* 확정/미확정 경계 — 이 선 왼쪽까지가 엔진이 판정에 쓰는 봉이다. */}
+        {(() => {
+          const idx = shown.findIndex((c) => c.inProgress === true);
+          if (idx <= 0) return null;
+          const x = idx * slotWidth;
+          return (
+            <Line x1={x} x2={x} y1={0} y2={priceHeight} stroke="#d1d6db" strokeWidth={1} strokeDasharray="3,3" />
+          );
+        })()}
 
         {/* 추세 4선 오버레이(분봉) */}
         {trendLines.map((l) =>
@@ -299,10 +344,61 @@ function CandleChart({
   );
 }
 
+const UP_MARK = { true: '상', false: '하', null: '?' } as const;
+
+/** 4선 상승 플래그를 "상상상상"처럼 한 덩어리로. 판정 불가는 '?'. */
+function upText(up: { ma5: boolean | null; ma20: boolean | null; ma60: boolean | null; ma120: boolean | null }): string {
+  return [up.ma5, up.ma20, up.ma60, up.ma120].map((v) => UP_MARK[String(v) as 'true' | 'false' | 'null']).join('');
+}
+
+/**
+ * 엔진 판정 요약 — "그래프와 감지가 일치하는가"를 화면에서 바로 확인하는 자리(2026-08-22).
+ *
+ * 같은 봉 데이터로 두 번 잰다:
+ *  · 마감 기준  = 닫힌 봉만 (진입 BUY가 쓰는 기준)
+ *  · 실시간 기준 = 진행 중 봉 포함 (청산 SELL이 쓰는 기준 · 차트에 그려진 4선과 같은 것)
+ * 둘이 다르면 그게 곧 "눈에는 보이는데 아직 안 판" 구간이다.
+ */
+function EngineVerdict({ candles, interval }: { candles: ChartCandle[]; interval: MinuteInterval }) {
+  const closed = candles.filter((c) => c.inProgress !== true).map((c) => c.close);
+  const cur = candles.find((c) => c.inProgress === true);
+  const closedEval = evaluateTrend(closed);
+  const liveEval = cur ? evaluateTrendLive(closed, cur.close) : null;
+  const ready = closedEval.up.ma120 !== null;
+  const matched = interval === ENGINE_INTERVAL;
+
+  return (
+    <View className="mt-2 bg-white py-1">
+      <View className="flex-row items-center justify-between px-5 py-[13px]">
+        <Text className="text-sm text-[#4e5968]">봉 마감 기준 4선</Text>
+        <Text className="text-sm font-semibold text-[#191f28]">
+          {upText(closedEval.up)} · {closed.length}봉
+        </Text>
+      </View>
+      <View className="flex-row items-center justify-between px-5 py-[13px]">
+        <Text className="text-sm text-[#4e5968]">진행 중 봉 포함</Text>
+        <Text
+          className="text-sm font-semibold"
+          style={{ color: liveEval?.signal === 'SELL' ? '#3182f6' : '#191f28' }}
+        >
+          {liveEval ? `${upText(liveEval.up)}${liveEval.signal === 'SELL' ? ' · 매도' : ''}` : '진행 중 봉 없음'}
+        </Text>
+      </View>
+      <Text className="px-5 pb-3 pt-1 text-xs leading-5 text-[#8b95a1]">
+        {!matched
+          ? `엔진은 ${ENGINE_INTERVAL}분봉으로 판정해요. 지금 보는 ${interval}분봉과는 4선이 다른 선이라 신호도 다르게 보여요.`
+          : !ready
+            ? `120선을 재려면 ${121 - closed.length}봉이 더 필요해요. 그때까지 이 종목은 사지도 팔지도 않아요.`
+            : '점선 왼쪽까지가 확정된 봉이에요. 매수는 봉이 닫혀야 하고, 매도는 진행 중 봉이 꺾이면 바로 나가요.'}
+      </Text>
+    </View>
+  );
+}
+
 export function ChartPanel({ ticker, excd }: ChartPanelProps) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const [mode, setMode] = useState<ChartMode>('minute');
-  const [minuteInterval, setMinuteInterval] = useState<MinuteInterval>(1);
+  const [minuteInterval, setMinuteInterval] = useState<MinuteInterval>(ENGINE_INTERVAL);
   const [session, setSession] = useState<Session | null>(null);
   const [state, setState] = useState<LoadState>({ kind: 'sessionLoading' });
   const [sessionReloadKey, setSessionReloadKey] = useState(0);
@@ -357,6 +453,8 @@ export function ChartPanel({ ticker, excd }: ChartPanelProps) {
           }
           // 최신순으로 오므로 오름차순으로 뒤집는다. 표시 80봉 + 4선(120선) 워밍업 몫으로 넉넉히 받는다.
           const result = await fetchTossMinuteCandles(code, minuteInterval, 300);
+          // 지금 진행 중인 봉의 키 — 이 키 이상은 아직 안 끝난 봉이다(엔진은 여기를 빼고 판정한다).
+          const nowBarKey = barKeyOf(Date.now(), minuteInterval);
           candles = result
             .slice()
             .reverse()
@@ -368,6 +466,7 @@ export function ChartPanel({ ticker, excd }: ChartPanelProps) {
               low: c.low,
               close: c.close,
               volume: c.volume,
+              inProgress: c.minuteKey >= nowBarKey,
             }));
         } else {
           const result = await inquireOverseasPeriodChart(session.environment, session.credentials, session.accessToken, {
@@ -452,8 +551,11 @@ export function ChartPanel({ ticker, excd }: ChartPanelProps) {
             <Text className="text-center text-sm text-[#8b95a1]">장 시작 후에 데이터가 쌓여요</Text>
           </View>
         ) : (
-          <View className="px-4">
-            <CandleChart candles={state.candles} width={svgWidth} height={chartHeight} trendOverlay={mode === 'minute'} />
+          <View>
+            <View className="px-4">
+              <CandleChart candles={state.candles} width={svgWidth} height={chartHeight} trendOverlay={mode === 'minute'} />
+            </View>
+            {mode === 'minute' && <EngineVerdict candles={state.candles} interval={minuteInterval} />}
           </View>
         )}
       </View>

@@ -132,3 +132,86 @@ describe('runHelpTool — 계좌 진단(getAccountBinding)', () => {
     expect(res.error).toBeTruthy();
   });
 });
+
+describe('runHelpTool — 분봉·차트 조회(2026-08-22)', () => {
+  /** 토스 자동완성 + c-chart를 한 벌로 흉내낸다. n봉을 1분 간격 오름차순으로 만든 뒤 최신순으로 준다. */
+  function tossFetch(closes: number[], lastMinuteKey: number) {
+    return vi.fn(async (url: string | URL, init?: { method?: string }) => {
+      if (init?.method === 'POST') {
+        return {
+          json: async () => ({
+            result: [{ data: { items: [{ symbol: 'AAA', market: 'NSQ', productCode: 'US1' }] } }],
+          }),
+        } as unknown as Response;
+      }
+      const candles = closes
+        .map((close, i) => {
+          const key = lastMinuteKey - (closes.length - 1 - i);
+          return { dt: new Date(key * 60_000).toISOString(), open: close, high: close, low: close, close, volume: 1 };
+        })
+        .reverse(); // 토스는 최신순
+      expect(String(url)).toContain('c-chart');
+      return { json: async () => ({ result: { candles } }) } as unknown as Response;
+    });
+  }
+
+  it('분봉을 가져와 4선 판정까지 계산한다 — 닫힌 봉 기준과 진행 중 봉 포함 기준을 둘 다 준다', async () => {
+    const nowMs = 1_800_000_000_000;
+    const nowKey = Math.floor(nowMs / 60_000);
+    // 122봉 오름차순(전부 상승) + 진행 중 봉 하나를 급락으로.
+    const closes = [...Array.from({ length: 122 }, (_, i) => 100 + i), 1];
+    const fetchImpl = tossFetch(closes, nowKey);
+    const res = (await runHelpTool(
+      'getMinuteCandles',
+      { ticker: 'AAA', intervalMin: 1 },
+      { fetchImpl: fetchImpl as unknown as typeof fetch, now: () => nowMs },
+    )) as Record<string, any>;
+    expect(res.error).toBeUndefined();
+    expect(res.closedBars).toBe(122);
+    expect(res.inProgressBar.close).toBe(1);
+    expect(res.closedVerdict.up.ma5).toBe('상승'); // 닫힌 봉만 보면 아직 상승
+    expect(res.closedVerdict.signal).toBeNull();
+    expect(res.liveVerdict.up.ma5).toBe('하락'); // 진행 중 봉을 넣으면 이미 꺾였다
+    expect(res.liveVerdict.signal).toBe('SELL');
+    expect(res.recentCandles).toHaveLength(12);
+  });
+
+  it('토스에서 종목을 못 찾으면 error 객체', async () => {
+    const fetchImpl = vi.fn(async () => ({ json: async () => ({ result: [] }) }) as unknown as Response);
+    const res = (await runHelpTool(
+      'getMinuteCandles',
+      { ticker: 'ZZZ' },
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    )) as { error?: string };
+    expect(res.error).toContain('찾지 못했어요');
+  });
+
+  it('티커가 없으면 error 객체', async () => {
+    expect(await runHelpTool('getMinuteCandles', {})).toEqual({ error: '티커가 필요해요' });
+    expect(await runHelpTool('getPeriodChart', {})).toEqual({ error: '티커가 필요해요' });
+  });
+});
+
+describe('runHelpTool — 이벤트 로그(getEvents)', () => {
+  it('돌고 있으면 최신순 이벤트를 시각과 함께 준다 — "왜 안 샀어?"의 1차 증거', async () => {
+    const snap: HelpAutopilotSnapshot = {
+      ...SNAPSHOT,
+      events: [
+        { at: Date.UTC(2026, 7, 22, 13, 5, 4), text: 'ABC 진입 포기 · 속도 0.3틱/초' },
+        { at: Date.UTC(2026, 7, 22, 13, 4, 0), text: '감시 교체 · ABC, DEF' },
+      ],
+    };
+    const res = (await runHelpTool('getEvents', { limit: 1 }, { autopilot: () => snap })) as {
+      count: number;
+      events: Array<{ time: string; text: string }>;
+    };
+    expect(res.count).toBe(2);
+    expect(res.events).toHaveLength(1);
+    expect(res.events[0]).toEqual({ time: '13:05:04', text: 'ABC 진입 포기 · 속도 0.3틱/초' });
+  });
+
+  it('안 돌고 있으면 시작 안내', async () => {
+    const res = (await runHelpTool('getEvents', {})) as { running: boolean };
+    expect(res.running).toBe(false);
+  });
+});

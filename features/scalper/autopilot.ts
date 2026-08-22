@@ -944,21 +944,10 @@ export class AutoPilot {
     const rate = this.slotOf(ctx.ticker)?.tickRate(this.deps.clock.now()) ?? 0;
     // 감지기가 전 종목에 붙으면서(2026-08-10) 느린 종목의 신호가 흔해졌다 — 프리플라이트(REST 왕복)
     // 전에 여기서 거른다. commitBuy의 재검사(발주 직전)와 이중이지만 각자 다른 시점을 지킨다.
-    //
-    // ★ 늦은 합류는 이 검사를 건너뛴다(2026-08-21). 틱/초 = 최근 10초 창의 틱 수 ÷ 10이라
-    //   **방금 구독한 슬롯은 창이 안 차 실제보다 낮게 나온다** — 앱을 시작하면 30종목이 동시에
-    //   새 구독이라 첫 10초는 전 종목이 "느린 종목"으로 잡히고, 늦은 합류는 정확히 그 시점(시드 직후)에
-    //   발사되므로 측정 아티팩트로 전멸한다. 유동성 방어는 추격 게이트(얇은 호가면 ask1이 튄다)가 맡고,
-    //   늦은 합류는 종목당 1회뿐이라 노출도 제한적이다.
-    if (ctx.lateJoin !== true && rate < (this.config?.minTickRate ?? DEFAULT_MIN_TICK_RATE)) {
+    if (rate < (this.config?.minTickRate ?? DEFAULT_MIN_TICK_RATE)) {
       // 2026-08-20까지는 무음 폐기였다 — 속도 필터가 ZNB +72% 신호를 버린 걸 이틀 뒤에야 알았다. 이벤트로 남긴다.
       this.dropBuySignal(ctx.ticker, `속도 ${rate.toFixed(1)}틱/초 < 기준 ${this.config?.minTickRate ?? DEFAULT_MIN_TICK_RATE}`);
       return;
-    }
-    // 늦은 합류(2026-08-21) — 봉 마감이 아니라 리스트 진입 시드에서 나온 1회성 BUY. 성적을 사후에
-    // 분리 집계할 수 있게 이벤트로 표시한다(정규 플립 진입과 섞이면 예외의 가치를 못 잰다).
-    if (ctx.lateJoin === true) {
-      this.event(`${ctx.ticker} 늦은 합류 진입 · 리스트에 들어올 때 이미 4선 상승 중이었어요`);
     }
     this.pendingBuys.set(ctx.ticker, { ctx, tickRate: rate });
     this.emit();
@@ -1034,9 +1023,8 @@ export class AutoPilot {
     }
 
     // 진입 직전 속도 재검사 — 감시 선정과 신호 사이에 유동성이 죽었으면 포기.
-    // 늦은 합류는 여기서도 면제(위 handleBuySignal의 같은 이유 — 갓 구독한 슬롯의 측정 아티팩트).
     const rateNow = slot.tickRate(this.deps.clock.now());
-    if (ctx.lateJoin !== true && rateNow < config.minTickRate) {
+    if (rateNow < config.minTickRate) {
       this.event(
         `${ctx.ticker} 진입 포기 · 속도가 ${rateNow.toFixed(1)}틱/초로 떨어져 기준(${config.minTickRate})에 못 미쳐요`,
       );

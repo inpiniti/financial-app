@@ -411,14 +411,42 @@ describe('FeedSlot — 추세 모드(trend): 1분봉 합성 + 4선 신호, 리�
     expect(slot.warmedUp).toBe(false); // 리샘플은 안 돈다.
   });
 
-  it('분봉5선이 꺾이면 SELL — 봉 마감 시점에', () => {
+  it('분봉5선이 꺾이면 SELL — 봉 마감을 기다리지 않고 진행 중 봉에서 바로(2026-08-22)', () => {
     const { slot } = makeTrendSlot();
     slot.seedTrend(risingSeed());
     const signals: string[] = [];
     slot.attachDetector((s) => signals.push(s));
-    slot.pushTick(150, 122 * M); // 급락 봉(키 122)
-    slot.pushTick(151, 123 * M); // 키 122 닫힘 → ma5 하락 → SELL
+    slot.pushTick(150, 122 * M); // 급락 — 키 122는 아직 진행 중인데 4선이 이미 꺾였다 → 즉시 SELL
     expect(signals).toEqual(['SELL']);
+    expect(slot.getView().trendLive?.signal).toBe('SELL');
+    slot.pushTick(151, 123 * M); // 키 122 닫힘 → 마감 판정으로 한 번 더(보유 중이면 이미 팔린 뒤라 무해)
+    expect(signals).toEqual(['SELL', 'SELL']);
+  });
+
+  it('진행 중 봉 SELL은 같은 봉에서 한 번만 낸다', () => {
+    const { slot, clock } = makeTrendSlot();
+    slot.seedTrend(risingSeed());
+    const signals: string[] = [];
+    slot.attachDetector((s) => signals.push(s));
+    slot.pushTick(150, 122 * M);
+    clock.advance(5_000); // 스로틀(1초)을 넘겨도
+    slot.pushTick(140, 122 * M + 5_000); // 같은 진행 봉이면 재발화하지 않는다.
+    expect(signals).toEqual(['SELL']);
+  });
+
+  it('진행 중 봉으로는 BUY를 내지 않는다 — 진입은 봉 마감 확정에서만(가짜 플립 방지)', () => {
+    const { slot, clock } = makeTrendSlot();
+    slot.pushTick(1, 120 * M);
+    slot.pushTick(2, 121 * M);
+    slot.seedTrend(risingSeed().slice(0, 122)); // 키 0..121 — 마지막 봉이 아직 allUp이 아닌 상태
+    const signals: string[] = [];
+    slot.attachDetector((s) => signals.push(s));
+    slot.pushTick(300, 122 * M); // 진행 중 봉이 급등해 4선이 다 상승해도
+    clock.advance(5_000);
+    slot.pushTick(310, 122 * M + 5_000);
+    expect(signals).toEqual([]); // BUY는 나오지 않는다.
+    slot.pushTick(311, 123 * M); // 봉이 닫혀야 비로소 BUY.
+    expect(signals).toEqual(['BUY']);
   });
 
   it('detach → attach 뒤에도 봉 링이 유지된다(매도 직후 122봉 재대기 금지)', () => {
@@ -433,54 +461,6 @@ describe('FeedSlot — 추세 모드(trend): 1분봉 합성 + 4선 신호, 리�
     slot.attachDetector((s) => signals.push(s));
     slot.pushTick(223, 123 * M); // 키 122 닫힘 — 링이 살아 있어 바로 판정.
     expect(signals).toEqual(['BUY']);
-  });
-
-  // 늦은 합류(2026-08-21) — 리스트 진입 시드 시점에 이미 4선 상승(지속 ≤2봉)이면 1회 BUY.
-  /** 평평하다가 마지막 `up`개 봉만 오르는 시드 — allUp 지속 = up. */
-  const lateSeed = (up: number) =>
-    Array.from({ length: 121 + up }, (_, i) => ({ minuteKey: i, close: i < 121 ? 100 : 100 + (i - 120) * 0.5 }));
-
-  it('늦은 합류 — 시드 시점에 이미 4선 상승(1봉)이면 즉시 BUY 1회', () => {
-    const { slot } = makeTrendSlot();
-    const got: { signal: string; lateJoin?: boolean }[] = [];
-    slot.attachDetector((signal, ctx) => got.push({ signal, lateJoin: ctx.lateJoin }));
-    slot.seedTrend(lateSeed(1));
-    expect(got).toEqual([{ signal: 'BUY', lateJoin: true }]);
-  });
-
-  it('늦은 합류 — 리스너가 아직 없으면 부착 시점에 낸다(워밍업 큐가 비동기라 순서가 뒤집힌다)', () => {
-    const { slot } = makeTrendSlot();
-    slot.seedTrend(lateSeed(2));
-    const got: string[] = [];
-    slot.attachDetector((s) => got.push(s));
-    expect(got).toEqual(['BUY']);
-  });
-
-  it('늦은 합류 — 종목당 1회. 재시드·detach/attach에도 되풀이하지 않는다', () => {
-    const { slot } = makeTrendSlot();
-    const got: string[] = [];
-    slot.attachDetector((s) => got.push(s));
-    slot.seedTrend(lateSeed(1));
-    slot.detachDetector();
-    slot.attachDetector((s) => got.push(s));
-    slot.seedTrend(lateSeed(1));
-    expect(got).toEqual(['BUY']);
-  });
-
-  it('늦은 합류 — 3봉 이상 달린 뒤면 안 산다(머리 매수 방지)', () => {
-    const { slot } = makeTrendSlot();
-    const got: string[] = [];
-    slot.attachDetector((s) => got.push(s));
-    slot.seedTrend(lateSeed(3));
-    expect(got).toEqual([]);
-  });
-
-  it('늦은 합류 — 상승 중이 아닌 시드는 아무 신호도 내지 않는다(과거 봉으로 팔지 않는다)', () => {
-    const { slot } = makeTrendSlot();
-    const got: string[] = [];
-    slot.attachDetector((s) => got.push(s));
-    slot.seedTrend(risingSeed()); // 마지막 봉이 눌림 = allUp 아님
-    expect(got).toEqual([]);
   });
 
   it('시드가 늦게 와도 같은 분 이하의 라이브 봉은 폐기되고 시드가 정본이 된다', () => {

@@ -21,6 +21,11 @@ export interface HelpAutopilotSnapshot {
   cycles: number;
   cumPnlUsd: number;
   maxGrids: number;
+  /**
+   * 최근 이벤트 로그(최신순) — "왜 안 샀는지/왜 안 팔았는지"의 1차 증거. 진입 포기·감시 교체·시드
+   * 실패가 전부 여기 남는다(2026-08-22 추가 — 실거래 진단이 매번 이 로그를 못 읽어서 막혔다).
+   */
+  events?: Array<{ at: number; text: string }>;
   /** 트레이딩 리스트 — 티커·이름·현재가·속도·추세 4선 방향. */
   list: Array<{
     ticker: string;
@@ -144,6 +149,52 @@ export const HELP_TOOL_DECLARATIONS = [
       },
       required: ['api'],
     },
+  },
+  {
+    name: 'getMinuteCandles',
+    description:
+      '미국 종목의 분봉(1·3·5·15분)을 토스 차트에서 가져오고, 그 봉으로 추세 4선(5·20·60·120선) 판정까지 계산해 돌려준다. ' +
+      '기본은 자동매매 엔진이 실제로 쓰는 봉 주기다. "지금 4선이 어때?", "왜 매도 신호가 안 나?", ' +
+      '"차트랑 앱 판정이 왜 달라?" 같은 질문에 쓴다. 닫힌 봉 기준(매수 판정)과 진행 중 봉 포함 기준(매도 판정)을 둘 다 준다.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        ticker: { type: 'STRING', description: '티커. 예: ADXN' },
+        intervalMin: { type: 'NUMBER', description: '봉 주기(분). 1·3·5·15. 기본은 엔진과 같은 주기' },
+        count: { type: 'NUMBER', description: '가져올 봉 수(1~300, 기본 130). 4선을 재려면 121봉 이상 필요' },
+      },
+      required: ['ticker'],
+    },
+  },
+  {
+    name: 'getPeriodChart',
+    description:
+      '미국 종목의 일봉·주봉·월봉(최근 100건)을 조회한다. 며칠~몇 달 흐름을 볼 때 쓴다(분 단위는 getMinuteCandles).',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        ticker: { type: 'STRING', description: '티커' },
+        period: { type: 'STRING', description: 'D(일) · W(주) · M(월). 기본 D' },
+      },
+      required: ['ticker'],
+    },
+  },
+  {
+    name: 'getEvents',
+    description:
+      '자동 트레이딩이 남긴 최근 이벤트 로그를 최신순으로 돌려준다(진입 포기 사유·감시 교체·추세 시드 결과·현금 부족 등). ' +
+      '"왜 안 샀어?", "왜 안 팔았어?", "아까 무슨 일 있었어?"처럼 지난 동작의 이유를 물으면 반드시 이걸 먼저 본다.',
+    parameters: {
+      type: 'OBJECT',
+      properties: { limit: { type: 'NUMBER', description: '가져올 개수(1~50, 기본 20)' } },
+    },
+  },
+  {
+    name: 'getSettings',
+    description:
+      '지금 저장돼 있는 트레이딩 설정값을 돌려준다(진입금액·동시 그리드 수·최소 틱속도·손절선·리스트 원천·모의/실전 등). ' +
+      '"내 설정 어떻게 돼 있어?", "왜 이 값으로 사?" 같은 질문에 쓴다. 값을 바꾸는 건 도구가 아니라 설정 화면에서 한다.',
+    parameters: { type: 'OBJECT', properties: {} },
   },
 ] as const;
 
@@ -447,6 +498,126 @@ export async function runHelpTool(
           );
         }
         return { error: `모르는 api예요: ${api} (balance · unfilled · priceDetail 중 하나)` };
+      }
+      case 'getMinuteCandles': {
+        const ticker = String(args.ticker ?? '').trim().toUpperCase();
+        if (!ticker) return { error: '티커가 필요해요' };
+        const [{ fetchTossMinuteCandles, resolveTossProductCode }, { TREND_BAR_MINUTES, barKeyOf }, signal] =
+          await Promise.all([
+            import('../../lib/tossMinuteChart'),
+            import('../../core/trend/bars'),
+            import('../../core/trend/signal'),
+          ]);
+        const intervalMin = Math.max(1, Math.floor(num(args.intervalMin) || TREND_BAR_MINUTES));
+        const count = Math.max(1, Math.min(300, Math.floor(num(args.count) || 130)));
+        // 거래소는 종목 검색으로 — 못 찾으면 나스닥으로 시도(getQuote와 같은 관례).
+        const hits = await searchStocks(ticker, { fetchImpl: deps.fetchImpl }).catch(() => []);
+        const market = hits.find((h) => h.symbol.toUpperCase() === ticker)?.market ?? 'NAS';
+        const code = await resolveTossProductCode(ticker, market, { fetchImpl: deps.fetchImpl });
+        if (!code) return { error: `토스에서 ${ticker}를 찾지 못했어요` };
+        // 응답은 최신순 — 오름차순으로 뒤집어 4선 계산 순서(과거→최신)에 맞춘다.
+        const candles = (await fetchTossMinuteCandles(code, intervalMin, count, { fetchImpl: deps.fetchImpl }))
+          .slice()
+          .reverse();
+        if (candles.length === 0) return { ticker, intervalMin, bars: 0, note: '아직 봉이 없어요' };
+        const nowBarKey = barKeyOf(deps.now ? deps.now() : Date.now(), intervalMin);
+        const closed = candles.filter((c) => c.minuteKey < nowBarKey);
+        const cur = candles.find((c) => c.minuteKey >= nowBarKey) ?? null;
+        const closedEval = signal.evaluateTrend(closed.map((c) => c.close));
+        const liveEval = cur ? signal.evaluateTrendLive(closed.map((c) => c.close), cur.close) : null;
+        const arrows = (up: { ma5: boolean | null; ma20: boolean | null; ma60: boolean | null; ma120: boolean | null }) => ({
+          ma5: up.ma5 === null ? '판정불가' : up.ma5 ? '상승' : '하락',
+          ma20: up.ma20 === null ? '판정불가' : up.ma20 ? '상승' : '하락',
+          ma60: up.ma60 === null ? '판정불가' : up.ma60 ? '상승' : '하락',
+          ma120: up.ma120 === null ? '판정불가' : up.ma120 ? '상승' : '하락',
+        });
+        return {
+          ticker,
+          intervalMin,
+          engineIntervalMin: TREND_BAR_MINUTES,
+          note:
+            intervalMin === TREND_BAR_MINUTES
+              ? '자동매매 엔진과 같은 봉 주기예요.'
+              : `엔진은 ${TREND_BAR_MINUTES}분봉으로 판정해요 — 이 결과는 참고용이에요.`,
+          closedBars: closed.length,
+          inProgressBar: cur ? { time: cur.dt, close: cur.close, volume: cur.volume } : null,
+          // 매수(BUY) 판정 기준 — 닫힌 봉만.
+          closedVerdict: { up: arrows(closedEval.up), signal: closedEval.signal, lines: closedEval.lines },
+          // 매도(SELL) 판정 기준 — 진행 중 봉 포함(차트에 그려지는 4선과 같은 것).
+          liveVerdict: liveEval ? { up: arrows(liveEval.up), signal: liveEval.signal } : null,
+          // 최근 12봉만 — 전부 넣으면 프롬프트를 통째로 먹는다.
+          recentCandles: candles.slice(-12).map((c) => ({
+            time: c.dt,
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            close: c.close,
+            volume: c.volume,
+            inProgress: c.minuteKey >= nowBarKey,
+          })),
+        };
+      }
+      case 'getPeriodChart': {
+        const ticker = String(args.ticker ?? '').trim().toUpperCase();
+        if (!ticker) return { error: '티커가 필요해요' };
+        const session = await loadKisSession();
+        if (!session) return NEEDS_KIS;
+        const raw = String(args.period ?? 'D').trim().toUpperCase();
+        const period = raw === 'W' || raw === 'M' ? raw : 'D';
+        const [{ inquireOverseasPeriodChart }, { toStockMarketCode }] = await Promise.all([
+          import('../../kis/periodChart'),
+          import('../stock/marketCodes'),
+        ]);
+        const hits = await searchStocks(ticker, { fetchImpl: deps.fetchImpl }).catch(() => []);
+        const market = hits.find((h) => h.symbol.toUpperCase() === ticker)?.market;
+        const res = await inquireOverseasPeriodChart(
+          session.environment,
+          session.credentials,
+          session.accessToken,
+          { excd: toStockMarketCode(market) ?? 'NAS', symb: ticker, period },
+          { fetchImpl: deps.fetchImpl },
+        );
+        return {
+          ticker,
+          period,
+          count: res.candles.length,
+          // 최근 30건만 — 100건 전부는 프롬프트에 과하다.
+          candles: res.candles.slice(-30).map((c) => ({
+            date: c.ymd,
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            close: c.close,
+            volume: c.volume,
+          })),
+        };
+      }
+      case 'getEvents': {
+        const snap = deps.autopilot?.() ?? null;
+        if (!snap) return NOT_RUNNING;
+        const limit = Math.max(1, Math.min(50, Math.floor(num(args.limit) || 20)));
+        const events = snap.events ?? [];
+        return {
+          count: events.length,
+          // 이미 최신순으로 온다 — 시각은 사람이 읽는 HH:MM:SS(UTC)로 줄인다.
+          events: events.slice(0, limit).map((e) => ({
+            time: new Date(e.at).toISOString().slice(11, 19),
+            text: e.text,
+          })),
+        };
+      }
+      case 'getSettings': {
+        const [{ loadAppSettings }, { loadKisSettings }] = await Promise.all([
+          import('../../lib/appSettings'),
+          import('../../lib/kisSettings'),
+        ]);
+        const app = await loadAppSettings();
+        const kis = await loadKisSettings();
+        // 앱키·앱시크릿은 절대 내보내지 않는다 — 연결 여부만.
+        const safe = { ...(app as unknown as Record<string, unknown>) };
+        delete safe.appKey;
+        delete safe.appSecret;
+        return { settings: capRaw(safe), kisConnected: kis !== null, account: mask(kis ? `${kis.cano}` : null) };
       }
       default:
         return { error: `모르는 도구예요: ${name}` };

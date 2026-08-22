@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { evaluateTrend } from './signal';
+import { evaluateTrend, evaluateTrendLive } from './signal';
 
 /** 1..n 오름차순 — 4선 모두 매 봉 상승. */
 const asc = (n: number): number[] => Array.from({ length: n }, (_, i) => i + 1);
@@ -84,5 +84,34 @@ describe('evaluateTrend — 청산(SELL: 4선 중 하나라도 안 오름, 2026-
     expect(r.signal).toBeNull();
     expect(r.up.ma5).toBeNull();
     expect(r.aboveMa60).toBeNull();
+  });
+});
+
+describe('evaluateTrendLive — 진행 중(미완성) 봉 포함 재판정 (2026-08-22)', () => {
+  it('닫힌 봉으로는 아직 상승인데 진행 중 봉이 꺾이면 SELL — 봉 마감을 기다리지 않는다', () => {
+    const closed = asc(122); // 122봉 전부 상승 = allUp, 신호 없음
+    expect(evaluateTrend(closed).signal).toBeNull();
+    // 진행 중 봉이 급락하면 ma5가 꺾인다 → 그 자리에서 SELL.
+    const live = evaluateTrendLive(closed, 1);
+    expect(live.up.ma5).toBe(false);
+    expect(live.signal).toBe('SELL');
+    expect(live.bars).toBe(123); // 진행 중 봉을 포함해 잰 값이다
+  });
+
+  it('진행 중 봉이 BUY 조건이어도 BUY는 내지 않는다 — 진입은 봉 마감 확정에서만', () => {
+    const closed = flat(122); // 보합 = allUp 아님
+    const live = evaluateTrendLive(closed, 500); // 이 한 봉으로 4선이 다 상승 = 플립
+    expect(evaluateTrend([...closed, 500]).signal).toBe('BUY'); // 마감 기준이면 BUY지만
+    expect(live.signal).toBeNull(); // 진행 중 봉으로는 내지 않는다
+    expect(live.up).toEqual({ ma5: true, ma20: true, ma60: true, ma120: true }); // 값 자체는 그대로 보여 준다
+  });
+
+  it('진행 중 종가가 비유한·0 이하면 판정하지 않는다(fail-closed)', () => {
+    expect(evaluateTrendLive(asc(122), 0).signal).toBeNull();
+    expect(evaluateTrendLive(asc(122), Number.NaN).up.ma5).toBeNull();
+  });
+
+  it('봉이 모자라 4선을 못 재면 SELL도 내지 않는다', () => {
+    expect(evaluateTrendLive([10, 10, 10, 10, 10], 1).signal).toBeNull();
   });
 });

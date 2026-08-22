@@ -90,13 +90,24 @@ function isFeedFailureEvent(event: FeedEvent | null): event is FeedEvent {
   return event !== null && (event.text.startsWith('연결 오류') || event.text.startsWith('구독 실패'));
 }
 
-/** 추세 스냅샷 한 줄 — "추세 5↑ 20↑ 60↑ 120↓ · 종가>60선 · 봉 87/122". 봉이 없으면 "추세 봉 0/122". */
-function formatTrendLine(trend: TrendEval | null): string {
+const trendArrows = (up: TrendEval['up']): string =>
+  `5${arrowOf(up.ma5)} 20${arrowOf(up.ma20)} 60${arrowOf(up.ma60)} 120${arrowOf(up.ma120)}`;
+
+const arrowOf = (up: boolean | null) => (up === null ? '·' : up ? '↑' : '↓');
+
+/**
+ * 추세 스냅샷 한 줄 — "추세 5↑ 20↑ 60↑ 120↓ · 종가>60선 · 봉 87/122". 봉이 없으면 "추세 봉 0/122".
+ *
+ * 2026-08-22: 진행 중(미완성) 봉 판정이 마감 판정과 다르면 **그 차이를 같이 적는다** — 매도는 진행 중 봉
+ * 기준으로 나가므로(차트에 그려진 4선과 같은 것), 화면이 마감 기준만 보여 주면 또 어긋나 보인다.
+ */
+function formatTrendLine(trend: TrendEval | null, live: TrendEval | null): string {
   if (trend === null) return '추세 봉 0/122';
-  const arrow = (up: boolean | null) => (up === null ? '·' : up ? '↑' : '↓');
-  const lines = `5${arrow(trend.up.ma5)} 20${arrow(trend.up.ma20)} 60${arrow(trend.up.ma60)} 120${arrow(trend.up.ma120)}`;
+  const closedArrows = trendArrows(trend.up);
+  const liveArrows = live === null ? null : trendArrows(live.up);
+  const now = liveArrows !== null && liveArrows !== closedArrows ? ` · 지금 ${liveArrows}` : '';
   const above = trend.aboveMa60 === null ? '' : trend.aboveMa60 ? ' · 종가>60선' : ' · 종가≤60선';
-  return `추세 ${lines}${above} · 봉 ${Math.min(trend.bars, 122)}/122`;
+  return `추세 ${closedArrows}${now}${above} · 봉 ${Math.min(trend.bars, 122)}/122`;
 }
 
 /** 리스트 행의 우측 상태 표시 — 보유 > 감시 > 핀(정리 대기) 순으로 하나만. */
@@ -171,9 +182,10 @@ function SlotRow({
               {`기울기/10초 ${formatSlopeRateSeries(item.view.slopeRateSeries)}`}
             </Text>
             {TREND_MODE ? (
-              // 추세 모드(2026-08-18) — 봉 마감마다 갱신되는 4선 방향·위치·봉 수. 진입 조건이 왜 안 켜지는지 한눈에.
+              // 추세 모드(2026-08-18) — 4선 방향·위치·봉 수. 진입 조건이 왜 안 켜지는지 한눈에.
+              // "지금"은 진행 중 봉까지 넣은 판정(2026-08-22) — 매도는 이 기준으로 나간다.
               <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
-                {formatTrendLine(item.view.trend)}
+                {formatTrendLine(item.view.trend, item.view.trendLive)}
               </Text>
             ) : null}
           </View>

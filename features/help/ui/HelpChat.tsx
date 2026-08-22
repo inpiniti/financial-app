@@ -26,6 +26,7 @@ import { peekManagerBootstrap } from '../../scalper/ui/managerProvider';
 import { APP_MANUAL, type HelpRuntimeState } from '../appManual';
 import { SUGGESTED_QUESTIONS, askHelp, type HelpMessage } from '../helpChat';
 import { HELP_TOOL_DECLARATIONS, runHelpTool, type HelpAutopilotSnapshot } from '../tools';
+import { clearHelpChat, readHelpChat, writeHelpChat } from '../chatStore';
 
 /** 도구 이름 → 화면에 띄울 말. 목록에 없는 도구는 "확인하고 있어요"로 뭉뚱그린다. */
 const TOOL_LABEL: Record<string, string> = {
@@ -41,6 +42,10 @@ const TOOL_LABEL: Record<string, string> = {
   searchWeb: '인터넷에서 찾아보고 있어요…',
   getAccountBinding: '계좌 연결 상태를 보고 있어요…',
   getRawApiResponse: '원본 응답을 가져오고 있어요…',
+  getMinuteCandles: '분봉과 추세 4선을 보고 있어요…',
+  getPeriodChart: '일봉을 보고 있어요…',
+  getEvents: '자동 트레이딩 기록을 되짚어 보고 있어요…',
+  getSettings: '지금 걸린 설정을 확인하고 있어요…',
 };
 
 /**
@@ -115,6 +120,8 @@ function readAutopilotSnapshot(): HelpAutopilotSnapshot | null {
     cycles: view.cycles,
     cumPnlUsd: view.cumPnl,
     maxGrids: view.maxGrids,
+    // 진입 포기 사유·감시 교체·시드 결과 — "왜 안 샀어?"의 1차 증거(2026-08-22).
+    events: boot.autopilot.recentEvents.map((e) => ({ at: e.at, text: e.text })),
     list: boot.autopilot.getRows().map((row) => ({
       ticker: row.entry.ticker,
       name: row.entry.name,
@@ -140,6 +147,8 @@ export function HelpChat() {
   const [showManual, setShowManual] = useState(false);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [keyboardUp, setKeyboardUp] = useState(false);
+  /** 저장된 대화를 아직 읽는 중인가 — 다 읽기 전에 저장하면 빈 배열로 덮어쓴다. */
+  const [restored, setRestored] = useState(false);
   // 도구를 부르는 동안 답변 버블에 띄울 안내("보유 종목을 확인하고 있어요…").
   const [toolNote, setToolNote] = useState<string | null>(null);
   const scrollRef = useRef<ScrollView>(null);
@@ -180,6 +189,54 @@ export function HelpChat() {
     loadAppSettings()
       .then(setSettings)
       .catch(() => setSettings(null));
+  }, []);
+
+  // 지난 대화 복원(2026-08-22) — 화면을 나갔다 와도 이어서 물을 수 있게. 읽기 실패는 빈 대화로 넘긴다.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { default: AsyncStorage } = await import('@react-native-async-storage/async-storage');
+        const saved = await readHelpChat(AsyncStorage);
+        if (!cancelled && saved.length > 0) setBubbles(saved.map(({ role, text }) => ({ role, text })));
+      } catch {
+        // 저장소를 못 읽어도 대화는 시작할 수 있어야 한다.
+      } finally {
+        if (!cancelled) setRestored(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 대화가 끝날 때마다(타이핑 완료 = busy 해제) 저장한다 — 한 글자씩 쓰면 저장소가 24ms마다 돈다.
+  // 성공한 말풍선만 남긴다(pending·failed는 다음 세션 맥락으로 쓸모가 없다 — send의 history 규칙과 같다).
+  useEffect(() => {
+    if (!restored || busy) return;
+    const keep = bubbles.filter((b) => !b.pending && !b.failed).map(({ role, text }) => ({ role, text }));
+    if (keep.length === 0) return;
+    void (async () => {
+      try {
+        const { default: AsyncStorage } = await import('@react-native-async-storage/async-storage');
+        await writeHelpChat(AsyncStorage, keep);
+      } catch {
+        // 저장 실패는 조용히 넘긴다 — 대화 자체를 막을 이유가 없다.
+      }
+    })();
+  }, [bubbles, busy, restored]);
+
+  /** 대화 지우기 — 화면과 저장소를 함께 비운다. */
+  const clearChat = useCallback(() => {
+    setBubbles([]);
+    void (async () => {
+      try {
+        const { default: AsyncStorage } = await import('@react-native-async-storage/async-storage');
+        await clearHelpChat(AsyncStorage);
+      } catch {
+        // 무시 — 화면은 이미 비었다.
+      }
+    })();
   }, []);
 
   const send = useCallback(
@@ -337,6 +394,18 @@ export function HelpChat() {
       </ScrollView>
 
       <View className="bg-white px-5 pt-3" style={{ paddingBottom: keyboardUp ? 12 : insets.bottom + 12 }}>
+        {bubbles.length > 0 && !busy && (
+          <Pressable
+            onPress={clearChat}
+            className="mb-2 flex-row items-center self-end active:opacity-60"
+            style={{ minHeight: 32, gap: 4 }}
+            accessibilityRole="button"
+            accessibilityLabel="대화 지우기"
+          >
+            <Ionicons name="trash-outline" size={14} color="#8b95a1" />
+            <Text className="text-xs text-[#8b95a1]">대화 지우기</Text>
+          </Pressable>
+        )}
         <View className="flex-row items-end" style={{ gap: 8 }}>
           <TextInput
             value={input}

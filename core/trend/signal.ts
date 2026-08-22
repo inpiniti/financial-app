@@ -90,3 +90,37 @@ export function evaluateTrend(closes: readonly number[]): TrendEval {
   }
   return { signal, lines, up, prevAllUp, aboveMa60, bars: n };
 }
+
+/**
+ * 진행 중(미완성) 봉을 마지막 봉으로 덧붙여 다시 잰 판정 — **SELL만** 돌려준다(BUY는 null로 지운다).
+ *
+ * 왜 필요한가(2026-08-22, 사용자 관찰): 차트는 아직 안 닫힌 마지막 봉까지 그려 4선을 얹는다. 그래서 눈으로는
+ * "지금 꺾였다"가 보이는데, 엔진은 `evaluateTrend(닫힌 봉)`만 보므로 최대 한 봉(5분) 뒤에야 같은 사실을 안다.
+ * 8-18~21 실거래에서 이 지연이 "150% → 70% → 20%에 매도"의 큰 몫이었다 — 그래프와 감지를 일치시킨다.
+ *
+ * 왜 SELL만인가(사용자 확정): BUY까지 진행 중 봉으로 내면 봉 중간에 잠깐 4선이 상승했다가 되돌리는
+ * **가짜 플립**마다 진입해 왕복 비용을 계속 문다. 진입은 봉 마감 확정(플립 엣지) 그대로 두고,
+ * 청산만 눈과 같은 속도로 앞당긴다(청산 위험 최소화 > 진입 빈도).
+ *
+ * closedCloses = 닫힌 봉 종가(오름차순), provisionalClose = 진행 중 봉의 현재 종가.
+ * 반환값의 lines·up·bars는 "진행 중 봉 포함" 기준이다(화면에 엔진이 보는 값을 그대로 띄우는 용도).
+ */
+export function evaluateTrendLive(
+  closedCloses: readonly number[],
+  provisionalClose: number,
+): TrendEval {
+  if (!Number.isFinite(provisionalClose) || provisionalClose <= 0) {
+    return { signal: null, lines: { ma5: null, ma20: null, ma60: null, ma120: null }, up: { ...NULL_UP }, prevAllUp: null, aboveMa60: null, bars: closedCloses.length };
+  }
+  const ev = evaluateTrend([...closedCloses, provisionalClose]);
+  return ev.signal === 'SELL' ? ev : { ...ev, signal: null };
+}
+
+/**
+ * 진행 중 봉 재판정 주기(ms) — 틱마다 130봉×4선을 다시 재면 30종목에서 낭비가 크다. 1초면
+ * "사람 눈이 차트에서 알아채는 속도"보다 충분히 빠르다. 0으로 두면 매 틱(테스트용).
+ */
+export const TREND_LIVE_EVAL_MS = 1_000;
+
+/** 진행 중 봉 SELL 스위치 — false로 두면 봉 마감 판정만 하던 2026-08-21 동작으로 한 줄 롤백. */
+export const TREND_LIVE_SELL = true;
