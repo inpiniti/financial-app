@@ -30,7 +30,7 @@
 ## 3. 도메인이 아닌 것 (다른 곳에 있음)
 
 - 기업 탭(AI 요약) → `docs/features/2026-08-19_기업-탭-AI-요약.md`
-- 도움말(사용 설명서·사용법 챗봇) → `docs/features/2026-08-21_도움말-챗봇.md` (설명서 본문은 `features/help/appManual.ts`가 정본)
+- 대화(사용 설명서·챗봇, 옛 이름 "도움말") → `docs/features/2026-08-21_대화-챗봇.md` (설명서 본문은 `features/help/appManual.ts`가 정본)
 - 로고 조회 → `docs/development/2026-08-01_로고-도메인-plan.md` (이름만 "도메인", 인프라 성격)
 - 접근 제어·둘러보기 → `docs/development/2026-08-12_계좌없이-둘러보기-앱심사대비-plan.md`
 - 거래 기록·분석 CSV → `docs/분석/`

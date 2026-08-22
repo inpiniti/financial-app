@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Keyboard,
   KeyboardAvoidingView,
   Platform,
@@ -26,7 +27,15 @@ import { peekManagerBootstrap } from '../../scalper/ui/managerProvider';
 import { APP_MANUAL, type HelpRuntimeState } from '../appManual';
 import { SUGGESTED_QUESTIONS, askHelp, type HelpMessage } from '../helpChat';
 import { HELP_TOOL_DECLARATIONS, runHelpTool, type HelpAutopilotSnapshot } from '../tools';
-import { clearHelpChat, readHelpChat, writeHelpChat } from '../chatStore';
+import {
+  deleteChat,
+  listChats,
+  migrateLegacyChat,
+  newChatId,
+  readChat,
+  saveChat,
+  type ChatSummary,
+} from '../chatStore';
 
 /** 도구 이름 → 화면에 띄울 말. 목록에 없는 도구는 "확인하고 있어요"로 뭉뚱그린다. */
 const TOOL_LABEL: Record<string, string> = {
@@ -139,12 +148,36 @@ function formatTrendForTool(trend: { up: { ma5: boolean | null; ma20: boolean | 
   return `5선 ${arrow(trend.up.ma5)}, 20선 ${arrow(trend.up.ma20)}, 60선 ${arrow(trend.up.ma60)}, 120선 ${arrow(trend.up.ma120)} (봉 ${trend.bars})`;
 }
 
+/**
+ * 대화 목록의 시각 — 오늘이면 "오후 3:12", 어제면 "어제", 그 전이면 "8월 20일".
+ * 기기 로컬 시각 기준(사용자가 그 대화를 한 시각이 곧 기기 시각이다).
+ */
+function formatChatTime(ms: number): string {
+  const d = new Date(ms);
+  const now = new Date();
+  const sameDay = (x: Date, y: Date) =>
+    x.getFullYear() === y.getFullYear() && x.getMonth() === y.getMonth() && x.getDate() === y.getDate();
+  if (sameDay(d, now)) {
+    const h = d.getHours();
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    return `${h < 12 ? '오전' : '오후'} ${h % 12 === 0 ? 12 : h % 12}:${mm}`;
+  }
+  const yesterday = new Date(now.getTime() - 86_400_000);
+  if (sameDay(d, yesterday)) return '어제';
+  return `${d.getMonth() + 1}월 ${d.getDate()}일`;
+}
+
 export function HelpChat() {
   const insets = useSafeAreaInsets();
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [showManual, setShowManual] = useState(false);
+  /** 대화 목록 화면을 보고 있는가(2026-08-22) — 설명서와 같은 방식으로 전체 화면을 갈아 끼운다. */
+  const [showChatList, setShowChatList] = useState(false);
+  /** 지금 보고 있는 대화의 id. 복원이 끝나기 전엔 null. */
+  const [chatId, setChatId] = useState<string | null>(null);
+  const [chats, setChats] = useState<readonly ChatSummary[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [keyboardUp, setKeyboardUp] = useState(false);
   /** 저장된 대화를 아직 읽는 중인가 — 다 읽기 전에 저장하면 빈 배열로 덮어쓴다. */
@@ -157,6 +190,11 @@ export function HelpChat() {
   const shownRef = useRef(0);
   const settledRef = useRef(true);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /**
+   * 마지막으로 저장한 내용의 지문("<id>:<말풍선 JSON>") — 지난 대화를 **열어보기만** 했을 때
+   * 다시 저장돼 updatedAt이 밀리는(= 목록 순서가 바뀌는) 걸 막는다.
+   */
+  const savedFingerprintRef = useRef<string | null>(null);
 
   const stopTyping = useCallback(() => {
     if (timerRef.current !== null) {
@@ -191,16 +229,31 @@ export function HelpChat() {
       .catch(() => setSettings(null));
   }, []);
 
-  // 지난 대화 복원(2026-08-22) — 화면을 나갔다 와도 이어서 물을 수 있게. 읽기 실패는 빈 대화로 넘긴다.
+  // 화면을 열 때 한 번 — 옛 단일 대화를 이관하고, 목록을 읽어 **가장 최근 대화를 이어서** 연다.
+  // 대화가 하나도 없으면 빈 새 대화로 시작한다(id는 여기서 미리 잡아 둔다 — 저장은 첫 답변 뒤).
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const { default: AsyncStorage } = await import('@react-native-async-storage/async-storage');
-        const saved = await readHelpChat(AsyncStorage);
-        if (!cancelled && saved.length > 0) setBubbles(saved.map(({ role, text }) => ({ role, text })));
+        await migrateLegacyChat(AsyncStorage, Date.now());
+        const list = await listChats(AsyncStorage);
+        if (cancelled) return;
+        setChats(list);
+        const latest = list[0];
+        if (latest) {
+          const saved = await readChat(AsyncStorage, latest.id);
+          if (cancelled) return;
+          const keep = saved.map(({ role, text }) => ({ role, text }));
+          savedFingerprintRef.current = `${latest.id}:${JSON.stringify(keep)}`;
+          setChatId(latest.id);
+          setBubbles(keep);
+        } else {
+          setChatId(newChatId(Date.now()));
+        }
       } catch {
         // 저장소를 못 읽어도 대화는 시작할 수 있어야 한다.
+        if (!cancelled) setChatId(newChatId(Date.now()));
       } finally {
         if (!cancelled) setRestored(true);
       }
@@ -213,31 +266,81 @@ export function HelpChat() {
   // 대화가 끝날 때마다(타이핑 완료 = busy 해제) 저장한다 — 한 글자씩 쓰면 저장소가 24ms마다 돈다.
   // 성공한 말풍선만 남긴다(pending·failed는 다음 세션 맥락으로 쓸모가 없다 — send의 history 규칙과 같다).
   useEffect(() => {
-    if (!restored || busy) return;
+    if (!restored || busy || chatId === null) return;
     const keep = bubbles.filter((b) => !b.pending && !b.failed).map(({ role, text }) => ({ role, text }));
     if (keep.length === 0) return;
+    const fingerprint = `${chatId}:${JSON.stringify(keep)}`;
+    if (savedFingerprintRef.current === fingerprint) return; // 바뀐 게 없다 — 열어보기만 했다.
+    savedFingerprintRef.current = fingerprint;
     void (async () => {
       try {
         const { default: AsyncStorage } = await import('@react-native-async-storage/async-storage');
-        await writeHelpChat(AsyncStorage, keep);
+        setChats(await saveChat(AsyncStorage, chatId, keep, Date.now()));
       } catch {
         // 저장 실패는 조용히 넘긴다 — 대화 자체를 막을 이유가 없다.
       }
     })();
-  }, [bubbles, busy, restored]);
+  }, [bubbles, busy, restored, chatId]);
 
-  /** 대화 지우기 — 화면과 저장소를 함께 비운다. */
-  const clearChat = useCallback(() => {
+  /** 새 대화 — 화면을 비우고 새 id를 잡는다. 지금 대화는 이미 저장돼 있으니 목록에 남는다. */
+  const startNewChat = useCallback(() => {
+    if (busy) return;
+    savedFingerprintRef.current = null;
     setBubbles([]);
-    void (async () => {
-      try {
-        const { default: AsyncStorage } = await import('@react-native-async-storage/async-storage');
-        await clearHelpChat(AsyncStorage);
-      } catch {
-        // 무시 — 화면은 이미 비었다.
-      }
-    })();
-  }, []);
+    setChatId(newChatId(Date.now()));
+    setShowChatList(false);
+  }, [busy]);
+
+  /** 목록에서 대화 하나를 연다. */
+  const openChat = useCallback(
+    (id: string) => {
+      if (busy) return;
+      setShowChatList(false);
+      void (async () => {
+        try {
+          const { default: AsyncStorage } = await import('@react-native-async-storage/async-storage');
+          const saved = await readChat(AsyncStorage, id);
+          const keep = saved.map(({ role, text }) => ({ role, text }));
+          // 방금 읽은 그대로는 저장하지 않는다 — 지문을 미리 맞춰 둔다.
+          savedFingerprintRef.current = `${id}:${JSON.stringify(keep)}`;
+          setChatId(id);
+          setBubbles(keep);
+        } catch {
+          // 못 읽으면 그 대화는 열지 않는다(현재 대화 유지).
+        }
+      })();
+    },
+    [busy],
+  );
+
+  /** 대화 하나 지우기 — 확인 뒤 저장소에서 지우고, 보고 있던 대화면 새 대화로 넘어간다. */
+  const removeChat = useCallback(
+    (chat: ChatSummary) => {
+      Alert.alert('이 대화를 지울까요?', chat.title, [
+        { text: '아니요', style: 'cancel' },
+        {
+          text: '지우기',
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              try {
+                const { default: AsyncStorage } = await import('@react-native-async-storage/async-storage');
+                const rest = await deleteChat(AsyncStorage, chat.id);
+                setChats(rest);
+                if (chat.id === chatId) {
+                  setBubbles([]);
+                  setChatId(newChatId(Date.now()));
+                }
+              } catch {
+                // 무시 — 다음 시도에서 다시 지울 수 있다.
+              }
+            })();
+          },
+        },
+      ]);
+    },
+    [chatId],
+  );
 
   const send = useCallback(
     async (question: string) => {
@@ -309,6 +412,70 @@ export function HelpChat() {
 
   const canSend = input.trim().length > 0 && !busy;
 
+  if (showChatList) {
+    return (
+      <View className="flex-1 bg-[#f2f4f6]">
+        <ScrollView className="flex-1" contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}>
+          <Panel
+            title="대화 목록"
+            headerRight={chats.length > 0 ? `${chats.length}개` : undefined}
+          >
+            {chats.length === 0 ? (
+              <View className="px-5 py-8">
+                <Text className="text-center text-sm text-[#8b95a1]">아직 저장된 대화가 없어요</Text>
+              </View>
+            ) : (
+              chats.map((chat) => (
+                <ListRow
+                  key={chat.id}
+                  title={
+                    <Text
+                      className="text-[15px] leading-6"
+                      style={{ color: chat.id === chatId ? '#3182f6' : '#191f28', fontWeight: chat.id === chatId ? '700' : '400' }}
+                      numberOfLines={1}
+                    >
+                      {chat.title}
+                    </Text>
+                  }
+                  subtitle={`${formatChatTime(chat.updatedAt)} · ${chat.messageCount}개`}
+                  onPress={() => openChat(chat.id)}
+                  trailing={
+                    <Pressable
+                      onPress={() => removeChat(chat)}
+                      hitSlop={12}
+                      className="p-1 active:opacity-60"
+                      accessibilityRole="button"
+                      accessibilityLabel={`${chat.title} 대화 지우기`}
+                    >
+                      <Ionicons name="trash-outline" size={18} color="#8b95a1" />
+                    </Pressable>
+                  }
+                />
+              ))
+            )}
+          </Panel>
+          <View className="px-5" style={{ gap: 10 }}>
+            <Pressable
+              onPress={startNewChat}
+              className="flex-row items-center justify-center rounded-2xl bg-[#3182f6] py-4 active:opacity-80"
+              style={{ minHeight: 52, gap: 6 }}
+            >
+              <Ionicons name="add" size={18} color="#ffffff" />
+              <Text className="text-base font-semibold text-white">새 대화 시작하기</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setShowChatList(false)}
+              className="items-center py-3 active:opacity-60"
+              style={{ minHeight: 44 }}
+            >
+              <Text className="text-sm font-semibold text-[#4e5968]">돌아가기</Text>
+            </Pressable>
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
+
   if (showManual) {
     return (
       <View className="flex-1 bg-[#f2f4f6]">
@@ -340,6 +507,34 @@ export function HelpChat() {
       keyboardVerticalOffset={0}
       className="flex-1 bg-[#f2f4f6]"
     >
+      {/* 대화 도구줄 — 목록 열기 / 새 대화. 답변을 받는 중에는 눌러도 대화가 바뀌지 않게 흐리게 둔다. */}
+      <View className="flex-row items-center justify-between bg-white px-5 py-2">
+        <Pressable
+          onPress={() => setShowChatList(true)}
+          disabled={busy}
+          className="flex-row items-center active:opacity-60"
+          style={{ minHeight: 36, gap: 5, opacity: busy ? 0.4 : 1 }}
+          accessibilityRole="button"
+          accessibilityLabel="대화 목록 열기"
+        >
+          <Ionicons name="list-outline" size={16} color="#4e5968" />
+          <Text className="text-sm font-semibold text-[#4e5968]">
+            대화 목록{chats.length > 0 ? ` ${chats.length}` : ''}
+          </Text>
+        </Pressable>
+        <Pressable
+          onPress={startNewChat}
+          disabled={busy || bubbles.length === 0}
+          className="flex-row items-center active:opacity-60"
+          style={{ minHeight: 36, gap: 5, opacity: busy || bubbles.length === 0 ? 0.4 : 1 }}
+          accessibilityRole="button"
+          accessibilityLabel="새 대화 시작"
+        >
+          <Ionicons name="create-outline" size={16} color="#3182f6" />
+          <Text className="text-sm font-semibold text-[#3182f6]">새 대화</Text>
+        </Pressable>
+      </View>
+
       <ScrollView
         ref={scrollRef}
         className="flex-1"
@@ -394,18 +589,6 @@ export function HelpChat() {
       </ScrollView>
 
       <View className="bg-white px-5 pt-3" style={{ paddingBottom: keyboardUp ? 12 : insets.bottom + 12 }}>
-        {bubbles.length > 0 && !busy && (
-          <Pressable
-            onPress={clearChat}
-            className="mb-2 flex-row items-center self-end active:opacity-60"
-            style={{ minHeight: 32, gap: 4 }}
-            accessibilityRole="button"
-            accessibilityLabel="대화 지우기"
-          >
-            <Ionicons name="trash-outline" size={14} color="#8b95a1" />
-            <Text className="text-xs text-[#8b95a1]">대화 지우기</Text>
-          </Pressable>
-        )}
         <View className="flex-row items-end" style={{ gap: 8 }}>
           <TextInput
             value={input}
