@@ -13,6 +13,7 @@ import { getSupabaseClient, isSupabaseConfigured } from '../../lib/supabase';
 import { fetchTradeReturns, type TradeResultsSelectClient, type TradeStrategy } from '../scalper/tradeResults';
 
 const STRATEGY_OPTIONS: { value: TradeStrategy; label: string }[] = [
+  { value: 'model', label: '모델' },
   { value: 'trend', label: '추세' },
   { value: 'inflection', label: '변곡점 조합' },
   { value: 'ladder', label: '사다리' },
@@ -53,7 +54,7 @@ function ValueRow({ title, value, badge }: { title: string; value: string; badge
 }
 
 export function KellySection() {
-  const [strategy, setStrategy] = useState<TradeStrategy>('trend');
+  const [strategy, setStrategy] = useState<TradeStrategy>('model');
   const [limitText, setLimitText] = useState('');
   const [state, setState] = useState<State>({ kind: 'idle' });
 

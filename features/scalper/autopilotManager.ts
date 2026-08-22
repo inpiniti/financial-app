@@ -18,15 +18,19 @@ import {
   type GridExitConfig,
   type TradingSettings,
   type InflectionGridConfig,
+  type ModelGridConfig,
   type TrendGridConfig,
 } from './autopilot';
 import { isDaytimeSessionOpen } from './daySession';
 import { FeedSlot, INFLECTION_ENTRY, LADDER_ENTRY, type FeedSlotView, type LadderEntryOptions } from './feedSlot';
+import { MODEL_BAR_MINUTES, MODEL_MODE } from './modelMode';
+import { ModelScanner } from './modelScanner';
 import { TREND_MODE } from './trendMode';
 import type { TradeStrategy } from './tradeResults';
 import type { TradeRecord } from '../../core/cycle';
 import { ScalperWatchlist, type RankingSnapshot, type WatchEntry, type WatchMarket } from './watchlist';
 import type { MinuteBar } from '../../core/trend/bars';
+import { loadModel, type OhlcvBar } from '../../core/model';
 import {
   buildDaytimeQuoteTrKey,
   buildFreeQuoteTrKey,
@@ -95,6 +99,17 @@ export interface AutoPilotManagerDeps {
    * FeedSlot.seedTrend에 넣는다. 미주입이면 WS 봉만으로 서서히 채운다(2시간 뒤에야 4선 완성).
    */
   fetchMinuteBars?: (ticker: string, market: WatchMarket) => Promise<MinuteBar[]>;
+  /**
+   * 모델 → 매매 → 그리드(2026-08-22) — 주입되고 modelMode.MODEL_MODE=true면 신호는 ModelScanner가
+   * 토스 5분봉으로 내고(FeedSlot은 판정하지 않는다), 포지션 관리는 ModelExitRule(+5%/−2%/120분)이 맡는다.
+   * 추세·조합·사다리보다 우선한다. 미주입이면 기존 동작 — 회귀 안전.
+   * ⚠ 이 주입만으로는 신호가 안 난다 — `fetchModelBars`·`fetchModelDailyCloses`도 함께 있어야 스캐너가 돈다.
+   */
+  model?: ModelGridConfig;
+  /** 모델 봉 조회 — 토스 5분봉 OHLCV(원시가) count개, 오름차순·진행 중 봉 제외. 실패는 throw. */
+  fetchModelBars?: (ticker: string, market: WatchMarket, count: number) => Promise<OhlcvBar[]>;
+  /** 모델 전일 종가 조회 — 토스 일봉(원시가) 최근 몇 개. 거래일당 1회만 부른다. */
+  fetchModelDailyCloses?: (ticker: string, market: WatchMarket) => Promise<Array<{ date: string; close: number }>>;
   /**
    * 거래 결과 외부 기록(docs/domain/켈리 §4 — Supabase trade_results). 정산마다 로컬 tradeStore append 뒤에
    * **await 없이** 부른다. 실패는 여기서 이벤트로만 남기고 매매는 계속(fail-open). 미주입이면 로컬 기록만.
@@ -204,6 +219,11 @@ export class AutoPilotManager {
   private sessionTimer: unknown = null;
   /** 직전 세션 판정(주간거래 여부) — 바뀐 순간에만 구독 키를 회전한다. */
   private lastDaytime: boolean;
+  /**
+   * 모델 감지기 — 봉 마감마다 리스트 전 종목을 훑어 BUY를 낸다(모델 모드에서만 만든다).
+   * 신호는 슬롯의 emitSignal로 흘려 넣어 오토파일럿의 기존 BUY 경로(슬롯 리스너)를 그대로 탄다.
+   */
+  private readonly modelScanner: ModelScanner | null;
 
   constructor(deps: AutoPilotManagerDeps) {
     this.deps = deps;
@@ -256,7 +276,12 @@ export class AutoPilotManager {
       fetchBuyableUsd: deps.fetchBuyableUsd
         ? (t, price) => deps.fetchBuyableUsd!(t, price, MARKET_TO_EXCHANGE[this.marketOf(t)])
         : undefined,
-      positionManagement: { grid: deps.gridConfig, inflection: deps.inflection, trend: deps.trend },
+      positionManagement: {
+        grid: deps.gridConfig,
+        inflection: deps.inflection,
+        trend: deps.trend,
+        model: deps.model,
+      },
       clock: deps.clock,
       scheduler,
       storage: deps.storage,
@@ -290,6 +315,37 @@ export class AutoPilotManager {
       onEvent: (e) => this.pushEvent(e),
       onFault: (fault: InstanceFault) => this.pushEvent({ at: fault.at, text: fault.text }),
     });
+
+    // 모델 감지 — 스위치 AND 설정 주입 AND 봉 조회기가 모두 있어야 돈다(하나라도 없으면 신호가 없다).
+    this.modelScanner =
+      MODEL_MODE && deps.model !== undefined && deps.fetchModelBars !== undefined
+        ? new ModelScanner({
+            model: loadModel(),
+            clock: deps.clock,
+            scheduler,
+            barMinutes: MODEL_BAR_MINUTES,
+            tickers: () => [...this.slots.keys()],
+            fetchBars: (ticker, count) => deps.fetchModelBars!(ticker, this.marketOf(ticker), count),
+            fetchDailyCloses: (ticker) =>
+              deps.fetchModelDailyCloses
+                ? deps.fetchModelDailyCloses(ticker, this.marketOf(ticker))
+                : Promise.resolve([]),
+            onSignal: (ticker, ev, bar) => {
+              const slot = this.slots.get(ticker);
+              if (!slot) return;
+              slot.setModelProb(ev.prob);
+              // 신호 봉 종가는 예비값 — 슬롯에 살아 있는 체결가가 있으면 그쪽이 진입가가 된다.
+              const fired = slot.emitSignal('BUY', bar.close, this.deps.clock.now());
+              this.pushEvent({
+                at: this.deps.clock.now(),
+                text: `${ticker} 모델 BUY · 확률 ${((ev.prob ?? 0) * 100).toFixed(1)}% ≥ 임계 ${(
+                  ev.threshold * 100
+                ).toFixed(1)}%${fired ? '' : ' (감지기 미부착 — 무시)'}`,
+              });
+            },
+            onEvent: (text) => this.pushEvent({ at: this.deps.clock.now(), text }),
+          })
+        : null;
 
     this.pilot.subscribe((view) => {
       this.reconcileTickHolds(view);
@@ -332,6 +388,7 @@ export class AutoPilotManager {
     this.deps.realtime.connect();
     this.watchlist.start();
     this.pilot.start();
+    this.modelScanner?.start();
     void this.checkHoldings();
     // 세션 전환(정규장↔주간거래) 감시 — 전환 시 살아 있는 구독의 trKey를 새 세션 키로 회전한다.
     if (this.sessionTimer === null) {
@@ -342,6 +399,12 @@ export class AutoPilotManager {
   stop(): void {
     this.pilot.stop();
     this.watchlist.stop();
+    this.modelScanner?.stop();
+  }
+
+  /** 모델 경로가 실제로 도는가 — 스위치 AND 설정 주입. 워밍업·전략 태그가 이 하나를 읽는다. */
+  private get modelActive(): boolean {
+    return MODEL_MODE && this.deps.model !== undefined;
   }
 
   /** 앱 재시작 복원 — 금액 상태 로드(+보유 감지는 start 시점에 다시 한다). */
@@ -404,6 +467,7 @@ export class AutoPilotManager {
     }
     this.pilot.dispose();
     this.watchlist.stop();
+    this.modelScanner?.stop();
     this.tickHolds.clear(); // 홀드 가드보다 먼저 비워야 아래 dropSlot이 실제로 구독을 정리한다.
     this.prevActive.clear();
     for (const ticker of [...this.slots.keys()]) this.dropSlot(ticker);
@@ -480,6 +544,7 @@ export class AutoPilotManager {
 
   /** 현재 배선의 진입·청산 규칙 태그(거래 결과 기록용) — 스위치·주입 조합을 그대로 읽는다. */
   strategyTag(): TradeStrategy {
+    if (this.modelActive) return 'model';
     if (TREND_MODE && this.deps.trend !== undefined) return 'trend';
     if (INFLECTION_ENTRY && this.deps.inflection !== undefined) return 'inflection';
     if (LADDER_ENTRY && this.entryLadder !== undefined) return 'ladder';
@@ -537,12 +602,14 @@ export class AutoPilotManager {
       ladder: this.entryLadder,
       inflection: this.deps.inflection !== undefined,
       trend: this.deps.trend !== undefined,
+      model: this.deps.model !== undefined,
     });
     this.slots.set(ticker, slot);
     const trKey = this.marketTrKeyOf(ticker); // 체결가 — 전 종목(정규장 D 또는 주간거래 R).
     this.tickTrKeys.set(ticker, trKey);
     this.deps.realtime.subscribe(trKey);
-    this.enqueueTrendWarmup(ticker);
+    // 모델 모드는 봉을 스캐너가 토스에서 직접 읽는다 — 추세 워밍업(분봉 시드)은 돌리지 않는다.
+    if (!this.modelActive) this.enqueueTrendWarmup(ticker);
   }
 
   // ---- 추세 워밍업 큐(REST 분봉조회 → FeedSlot.seedTrend) — 직렬 1개, 티커 중복 제거, 실패 1회 재시도 ----
@@ -616,6 +683,7 @@ export class AutoPilotManager {
     const qi = this.trendWarmupQueue.indexOf(ticker);
     if (qi >= 0) this.trendWarmupQueue.splice(qi, 1);
     this.trendWarmupAttempts.delete(ticker);
+    this.modelScanner?.drop(ticker);
     const tickTrKey = this.tickTrKeys.get(ticker);
     this.tickTrKeys.delete(ticker);
     // 상세화면이 같은 키를 잡고 있으면 실제 해제는 건너뛴다 — 그쪽 releaseFeed가 마지막에 정리한다.

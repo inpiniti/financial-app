@@ -7,10 +7,10 @@ import {
   describeUserSettings,
 } from './appManual';
 import { DEFAULT_APP_SETTINGS, type AppSettings } from '../../lib/appSettings';
-import { TREND_BAR_MINUTES } from '../../core/trend/bars';
 import { RANKING_TOTAL_MAX, tossSourceId } from '../../core/ranking';
 import { MAX_GRIDS_LIMIT } from '../scalper/autopilot';
-import { TREND_CONFIG } from '../scalper/positionManager';
+import { MODEL_CONFIG } from '../scalper/positionManager';
+import { MODEL_BAR_MINUTES } from '../scalper/modelMode';
 
 /**
  * 이 파일의 목적은 "문서가 조용히 낡는 것"을 막는 것이다 — 챗봇이 낡은 값을 확신에 차서 말하면
@@ -18,7 +18,7 @@ import { TREND_CONFIG } from '../scalper/positionManager';
  */
 describe('APP_MANUAL — 코드 상수와 어긋나지 않는다', () => {
   it('봉 주기·동시 그리드 상한·리스트 상한은 코드 값 그대로 들어간다', () => {
-    expect(APP_MANUAL).toContain(`${TREND_BAR_MINUTES}분봉 이동평균 4선`);
+    expect(APP_MANUAL).toContain(`${MODEL_BAR_MINUTES}분봉이 하나 닫힐 때마다`);
     expect(APP_MANUAL).toContain(`최대 ${MAX_GRIDS_LIMIT}개`);
     expect(APP_MANUAL).toContain(`${RANKING_TOTAL_MAX}개의 트레이딩 리스트`);
   });
@@ -29,15 +29,14 @@ describe('APP_MANUAL — 코드 상수와 어긋나지 않는다', () => {
     expect(APP_MANUAL).toContain(`기본 ${DEFAULT_APP_SETTINGS.minTickRate}`);
   });
 
-  it('손절선 문구는 TREND_CONFIG.stopLossPct를 따라간다 (지금은 끔)', () => {
-    if (TREND_CONFIG.stopLossPct > 0) {
-      expect(APP_MANUAL).toContain(`${Number((TREND_CONFIG.stopLossPct * 100).toFixed(2))}% 넘게 빠지면`);
-    } else {
-      expect(APP_MANUAL).toContain('따로 손절선을 두지 않아요');
-    }
+  it('청산 3선(익절·손절·시간)은 MODEL_CONFIG 값을 그대로 따라간다', () => {
+    const pct = (r: number) => `${Number((r * 100).toFixed(2))}%`;
+    expect(APP_MANUAL).toContain(`**${pct(MODEL_CONFIG.takeProfitPct)} 오르면** 전량 매도(익절)`);
+    expect(APP_MANUAL).toContain(`**${pct(MODEL_CONFIG.stopLossPct)} 떨어지면** 전량 매도(손절)`);
+    expect(APP_MANUAL).toContain(`**${MODEL_CONFIG.timeoutMinutes}분이 지나면**`);
   });
 
-  it('물타기를 하지 않는다는 사실이 적혀 있다 — 추세 규칙의 오해가 가장 잦은 지점', () => {
+  it('물타기를 하지 않는다는 사실이 적혀 있다 — 오해가 가장 잦은 지점', () => {
     expect(APP_MANUAL).toContain('물타기');
     expect(APP_MANUAL).toContain('하지 않아요');
   });

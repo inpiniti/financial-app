@@ -35,9 +35,15 @@ import {
 import { planFromSelection, rankingPlanKey, type KisMetric, type KisWindow, type RankingPlan } from '../../../core/ranking';
 import { buildRankingSnapshot } from '../rankingSnapshot';
 import type { OverseasExchangeCode } from '../../../kis/trId';
-import { INFLECTION_THRESHOLDS, TREND_CONFIG } from '../autopilot';
+import { INFLECTION_THRESHOLDS, MODEL_CONFIG, TREND_CONFIG } from '../autopilot';
 import { MINUTE_BAR_RING_SIZE, TREND_BAR_MINUTES, type MinuteBar } from '../../../core/trend/bars';
-import { fetchTossMinuteBars, resolveTossProductCode } from '../../../lib/tossMinuteChart';
+import {
+  fetchTossDailyCloses,
+  fetchTossMinuteBars,
+  fetchTossOhlcvBars,
+  resolveTossProductCode,
+} from '../../../lib/tossMinuteChart';
+import { MODEL_BAR_MINUTES } from '../modelMode';
 import { getSupabaseClient, isSupabaseConfigured } from '../../../lib/supabase';
 import { loadApprovedAccountNo } from '../../../lib/gateStorage';
 import { TradeResultRecorder, toTradeResultRow, type TradeResultsInsertClient } from '../tradeResults';
@@ -227,6 +233,23 @@ async function buildManager(): Promise<ManagerBootstrap> {
     return fetchTossMinuteBars(code, MINUTE_BAR_RING_SIZE, { intervalMin: TREND_BAR_MINUTES });
   };
 
+  // 모델 봉·전일 종가(2026-08-22) — 같은 토스 c-chart지만 **OHLCV·원시가**다(학습 데이터와 같은 규약).
+  // productCode 캐시는 추세 경로와 공유한다(코드는 불변).
+  const resolveCode = async (ticker: string, market: WatchMarket): Promise<string> => {
+    let code = tossCodeCache.get(ticker);
+    if (!code) {
+      const resolved = await resolveTossProductCode(ticker, market);
+      if (!resolved) throw new Error('토스 종목코드를 못 찾았어요');
+      tossCodeCache.set(ticker, resolved);
+      code = resolved;
+    }
+    return code;
+  };
+  const fetchModelBars = async (ticker: string, market: WatchMarket, count: number) =>
+    fetchTossOhlcvBars(await resolveCode(ticker, market), count, { intervalMin: MODEL_BAR_MINUTES });
+  const fetchModelDailyCloses = async (ticker: string, market: WatchMarket) =>
+    fetchTossDailyCloses(await resolveCode(ticker, market), 5);
+
   // 거래 결과 외부 기록(docs/domain/켈리 §4) — Supabase env와 게이트 계좌번호가 있을 때만. 없으면 로컬 기록만.
   // 매매·켈리 계산과 무관한 "기록만"이다. 정산 시점 계좌 총평가(USD 근사)를 함께 남긴다 — 실패면 null.
   const approvedAccountNo = await loadApprovedAccountNo();
@@ -286,7 +309,13 @@ async function buildManager(): Promise<ManagerBootstrap> {
     // 변곡점+그리드 조합(2026-08-15 도메인 문서) — 문턱은 문서 §5 고정값(+2%/−3%), 설정 탭 없음.
     // 끄려면 feedSlot.INFLECTION_ENTRY·autopilot.INFLECTION_GRID를 false로(한 줄 롤백) 하거나 이 주입을 뺀다.
     inflection: INFLECTION_THRESHOLDS,
-    // 추세 → 그리드 → 매매(2026-08-18 도메인 문서) — 위 변곡점 조합·사다리보다 우선한다(단일 스위치 trendMode.TREND_MODE).
+    // 모델 → 매매 → 그리드(2026-08-22) — **현행**. 위 추세·조합·사다리보다 우선한다(단일 스위치 modelMode.MODEL_MODE).
+    // 신호: ModelScanner가 토스 5분봉으로 LightGBM 확률을 내 임계값(학습 상위 1%)을 넘으면 BUY.
+    // 청산: +5%/−2%/120분(MODEL_CONFIG). 끄려면 MODEL_MODE=false(한 줄 롤백 → 추세) 또는 이 주입 세 줄을 뺀다.
+    model: MODEL_CONFIG,
+    fetchModelBars,
+    fetchModelDailyCloses,
+    // 추세 → 그리드 → 매매(2026-08-18 도메인 문서) — 모델 롤백용 보존. 모델이 켜져 있는 동안은 쓰이지 않는다.
     // 끄려면 TREND_MODE=false(한 줄 롤백 → 변곡점 조합) 또는 이 주입 두 줄을 뺀다.
     trend: TREND_CONFIG,
     fetchMinuteBars,

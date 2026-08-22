@@ -21,6 +21,7 @@ import {
   TREND_LIVE_SELL,
   type TrendEval,
 } from '../../core/trend/signal';
+import { MODEL_MODE } from './modelMode';
 import { TREND_MODE } from './trendMode';
 import { TickRateMeter } from './tickRate';
 import { SlopeMeter } from './slopeRate';
@@ -88,6 +89,13 @@ export interface FeedSlotOptions {
   trend?: boolean;
   /** 추세 봉 주기(분) — 기본 TREND_BAR_MINUTES(3). 테스트 하네스가 1분봉으로 고정할 때 쓴다. */
   trendBarMinutes?: number;
+  /**
+   * 모델 모드(2026-08-22) — true고 MODEL_MODE=true면 슬롯은 **스스로 판정하지 않는다**.
+   * 봉·4선·리샘플·SG·사다리를 전부 끄고 틱/초·기울기·호가만 유지하며, 신호는 ModelScanner가
+   * `emitSignal`로 밀어 넣는다(모델 Feature는 토스 5분봉으로 계산하므로 WS 봉이 필요 없다).
+   * 추세·조합·사다리보다 우선한다. 미주입(기존 하네스·테스트)이면 기존 동작 그대로 — 회귀 안전.
+   */
+  model?: boolean;
 }
 
 /** 변곡점 신호 콜백 — attach 시 등록. */
@@ -162,6 +170,11 @@ export interface FeedSlotView {
   readonly trendLive: TrendEval | null;
   /** 진행 중(미완성) 봉의 현재 종가 — 없으면 null. 화면이 "지금 그리는 봉"을 표시할 때 쓴다. */
   readonly trendInProgressClose: number | null;
+  /**
+   * 마지막 모델 판정 확률(모델 모드에서만, 0~1) — "지금 사면 −2% 전에 +5%에 닿을" 확률.
+   * 아직 판정 전이거나 다른 모드면 null. 화면·진단 전용.
+   */
+  readonly modelProb: number | null;
 }
 
 export class FeedSlot {
@@ -204,6 +217,8 @@ export class FeedSlot {
 
   /** 변곡점+그리드 조합 모드인가 — 생성 시 확정(INFLECTION_ENTRY AND inflection 주입). */
   private readonly inflectionMode: boolean;
+  /** 모델 모드인가 — 생성 시 확정(MODEL_MODE AND model 주입). 추세·조합·사다리보다 우선. */
+  private readonly modelMode: boolean;
   /** 추세 모드인가 — 생성 시 확정(TREND_MODE AND trend 주입). 조합·사다리보다 우선. */
   private readonly trendMode: boolean;
   /**
@@ -219,13 +234,16 @@ export class FeedSlot {
   /** 진행 중 봉 SELL을 이미 낸 봉 키 — 같은 봉에서 되풀이 발화하지 않게. */
   private liveSellBarKey: number | null = null;
   private trendListener: SlotSignalListener | null = null;
+  /** 마지막 모델 판정 확률(모델 모드에서만) — 스캐너가 밀어 넣는다. 화면·진단 전용, 판정에는 쓰지 않는다. */
+  private modelProb: number | null = null;
 
   constructor(options: FeedSlotOptions) {
     this.ticker = options.ticker;
     this.clock = options.clock;
-    this.trendMode = TREND_MODE && options.trend === true;
+    this.modelMode = MODEL_MODE && options.model === true;
+    this.trendMode = !this.modelMode && TREND_MODE && options.trend === true;
     this.bars = new MinuteBarBuilder(undefined, options.trendBarMinutes ?? TREND_BAR_MINUTES);
-    this.inflectionMode = !this.trendMode && INFLECTION_ENTRY && options.inflection === true;
+    this.inflectionMode = !this.modelMode && !this.trendMode && INFLECTION_ENTRY && options.inflection === true;
     this.meter = new TickRateMeter(options.tickRateWindowMs ?? FEED_RATE_WINDOW_MS, FEED_SERIES_HISTORY_MS);
     this.slopeMeter = new SlopeMeter(options.slopeWindowMs ?? FEED_RATE_WINDOW_MS, FEED_SERIES_HISTORY_MS);
     this.resampler = new Resampler({
@@ -251,6 +269,11 @@ export class FeedSlot {
     if (extras?.dayLow !== undefined) this.dayLow = extras.dayLow;
     this.meter.record(this.lastTickAt);
     this.slopeMeter.record(this.lastTickAt, price);
+
+    if (this.modelMode) {
+      // 모델 모드 — 판정은 ModelScanner(토스 5분봉)가 한다. 여기서는 틱/초·기울기·호가만 유지한다.
+      return null;
+    }
 
     if (this.trendMode) {
       // 추세 모드 — 봉(TREND_BAR_MINUTES분) 마감마다 4선을 다시 재고 신호를 낸다(리샘플·SG·사다리 미사용).
@@ -336,6 +359,16 @@ export class FeedSlot {
    * 버퍼는 이미 차 있으므로 다음 청크 마감부터 바로 판정한다(워밍업 공백 없음 — plan §2-1).
    */
   attachDetector(onSignal: SlotSignalListener): void {
+    if (this.modelMode) {
+      // 모델 모드 — 감지기 객체가 없다. 리스너만 등록하고 신호는 ModelScanner가 emitSignal로 민다.
+      this.trendListener = onSignal;
+      this.detector = null;
+      this.ladder = null;
+      this.ladderState = null;
+      this.onSignal = onSignal;
+      this.lastSignal = null;
+      return;
+    }
     if (this.trendMode) {
       // 추세 모드 — 감지기 객체가 없다. 봉·4선은 상시 쌓이므로 리스너만 등록하면 다음 봉 마감부터 신호가 나온다.
       this.trendListener = onSignal;
@@ -419,6 +452,31 @@ export class FeedSlot {
    * seed 마지막 키 이하의 라이브 봉은 폐기된다(core/trend/bars 정합 규칙). 반영 봉 수를 돌려준다.
    * 시드 직후 4선을 다시 재 스냅샷을 갱신하되 **신호는 내지 않는다**(과거 봉으로 진입/청산하지 않는다 — 다음 마감부터).
    */
+  /**
+   * 외부 판정기(ModelScanner)가 낸 신호를 이 슬롯의 리스너로 흘린다 — 모델 모드에서만.
+   * 진입가는 **슬롯의 최신 체결가**를 우선한다(신호 봉 종가는 최대 몇 초 낡았다). 둘 다 없으면 흘리지 않는다.
+   * 실제로 리스너를 부르면 true.
+   */
+  emitSignal(signal: Signal, fallbackPrice: number, at?: number): boolean {
+    if (!this.modelMode || this.trendListener === null) return false;
+    const price = this.price !== null && this.price > 0 ? this.price : fallbackPrice;
+    if (!Number.isFinite(price) || price <= 0) return false;
+    this.lastSignal = signal;
+    this.trendListener(signal, {
+      ticker: this.ticker,
+      price,
+      slope: 0, // 모델 모드엔 SG 미분이 없다 — 스냅샷 필드 계약 유지용 0(추세·사다리와 동일).
+      accel: 0,
+      at: at ?? this.clock.now(),
+    });
+    return true;
+  }
+
+  /** 마지막 모델 판정 확률(화면·진단용) — 스캐너가 매 봉 갱신한다. */
+  setModelProb(prob: number | null): void {
+    this.modelProb = prob === null || !Number.isFinite(prob) ? null : prob;
+  }
+
   seedTrend(bars: readonly MinuteBar[]): number {
     if (!this.trendMode) return 0;
     const n = this.bars.seed(bars);
@@ -523,6 +581,7 @@ export class FeedSlot {
       trend: this.trendEval,
       trendLive: this.trendLiveEval,
       trendInProgressClose: this.trendMode ? (this.bars.inProgress?.close ?? null) : null,
+      modelProb: this.modelMode ? this.modelProb : null,
     };
   }
 }

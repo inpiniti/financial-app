@@ -23,10 +23,12 @@ import { ConditionalGrid, type ConditionalDecision, type ConditionalGridView, ty
 import type { Signal } from '../../core/detector';
 import { Execution, type ClockLike, type ExecutionResult } from '../../core/execution';
 import { Grid, REBRACKET_RETRY_MS, type BuyLegStatus, type GridPollResult } from '../../core/grid';
+import { ModelExitRule, MODEL_EXIT_CONFIG, type ModelExitConfig } from '../../core/model/exitRule';
 import { TrendExitRule } from '../../core/trend/exitRule';
 import { CIRCUIT_MODE } from './circuitMode';
 import { createExecutionPort } from './executionPort';
 import { createGridOrderPort } from './gridOrderPort';
+import { MODEL_MODE } from './modelMode';
 import { TREND_MODE } from './trendMode';
 import type { ScalperBroker } from './types';
 
@@ -68,6 +70,17 @@ export interface TrendGridConfig {
  */
 export const TREND_CONFIG: TrendGridConfig = { kind: 'trend', stopLossPct: 0 };
 
+/**
+ * 모델 청산 설정(2026-08-22) — **주입 자체가 활성화 신호**다(MODEL_MODE AND 주입).
+ * 값은 백테스트 기하 그대로다. 바꾸면 FINAL TEST 숫자(PF 1.301)가 그 설정에 대한 근거가 아니게 된다.
+ */
+export interface ModelGridConfig extends ModelExitConfig {
+  readonly kind?: 'model';
+}
+
+/** 모델 설정의 단일 출처 — managerProvider가 주입한다. 근거: financial-analyze docs/analysis/2026-08-21_final-test-결과.md */
+export const MODEL_CONFIG: ModelGridConfig = { kind: 'model', ...MODEL_EXIT_CONFIG };
+
 /** 조건부 그리드 문턱 — 문서 §5 고정값(+2%/−3%)을 managerProvider가 주입한다. */
 export interface InflectionGridConfig {
   /** 매도 수익 문턱(소수, 0.02=+2%). */
@@ -98,18 +111,21 @@ export interface PositionManagementConfig {
   grid?: GridExitConfig;
   /** 변곡점 조건부 그리드 문턱(롤백 보존). */
   inflection?: InflectionGridConfig;
-  /** 추세 청산 규칙(현행). */
+  /** 추세 청산 규칙(롤백 보존). */
   trend?: TrendGridConfig;
+  /** 모델 청산 규칙(현행) — +5%/−2%/120분. */
+  model?: ModelGridConfig;
 }
 
-export type PositionMode = 'trend' | 'inflection' | 'oco';
+export type PositionMode = 'model' | 'trend' | 'inflection' | 'oco';
 
 /**
- * 모드 판정 — **유일한** 자리. 우선순위 추세 > 변곡점 조합 > OCO 그리드, 각각 스위치 상수 AND 설정 주입.
+ * 모드 판정 — **유일한** 자리. 우선순위 모델 > 추세 > 변곡점 조합 > OCO 그리드, 각각 스위치 상수 AND 설정 주입.
  * null이면 진입 후 관리자가 없다(RunCycle의 옛 SELL 신호 청산 경로 — 하네스 하위호환).
  */
 export function resolvePositionMode(cfg: PositionManagementConfig | undefined): PositionMode | null {
   if (!cfg) return null;
+  if (MODEL_MODE && cfg.model !== undefined) return 'model';
   if (TREND_MODE && cfg.trend !== undefined) return 'trend';
   if (INFLECTION_GRID && cfg.inflection !== undefined) return 'inflection';
   if (GRID_EXIT && cfg.grid !== undefined) return 'oco';
@@ -232,6 +248,45 @@ export function makePositionManager(
   deps: PositionManagerDeps,
 ): PositionManager {
   switch (mode) {
+    case 'model': {
+      const model = cfg.model!;
+      const up = (model.takeProfitPct * 100).toFixed(0);
+      const dn = (model.stopLossPct * 100).toFixed(0);
+      return new RulePositionManager(deps, {
+        label: '모델 관리',
+        gauge: 'orders', // 게이지 양끝이 실제 청산선(+5%/−2%)이다 — 추세와 달리 그릴 선이 있다.
+        manualExitCheckMs: MANUAL_EXIT_CHECK_MS,
+        build: (seed) => {
+          // 청산은 백테스트 기하 그대로 — 상단 +5% / 하단 −2% / 120분. 물타기 없음.
+          // 진입 시각은 우리가 산 포지션이면 실측(entry.entryTs), 입양이면 인계 시각(그때부터 120분).
+          const entryAtMs = deps.entry?.entryTs ?? deps.clock.now();
+          const rule = new ModelExitRule(seed, { ...model, entryAtMs, clock: deps.clock });
+          // 서킷 데코레이터 — CIRCUIT_MODE=false면 관측(이벤트)만.
+          const circuit = new CircuitExitRule(rule, { act: CIRCUIT_MODE });
+          const v = rule.view;
+          return {
+            rule: circuit,
+            circuit,
+            priceExit: () => {
+              const kind = rule.exitKind;
+              if (kind === 'TAKE_PROFIT') {
+                return { reason: 'TAKE_PROFIT' as ExitReason, text: `익절선 도달 · +${up}% — 전량 매도해요` };
+              }
+              if (kind === 'TIMEOUT') {
+                return {
+                  reason: 'TIMEOUT' as ExitReason,
+                  text: `${model.timeoutMinutes}분 경과 · 어느 장벽에도 안 닿아 시간 청산해요`,
+                };
+              }
+              return { reason: 'STOP_LOSS' as ExitReason, text: `손절선 도달 · −${dn}% — 전량 매도해요` };
+            },
+            armText: `${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} · 익절 ${v.sellLine.toFixed(2)}(+${up}%) · 손절 ${v.buyLine.toFixed(
+              2,
+            )}(−${dn}%) · ${model.timeoutMinutes}분 시간청산 — 물타기 없어요`,
+          };
+        },
+      });
+    }
     case 'trend': {
       const trend = cfg.trend!;
       return new RulePositionManager(deps, {
@@ -288,8 +343,17 @@ export interface RulePositionManagerOptions {
   manualExitCheckMs?: number;
   /** 손절 % — 손절 틱 이벤트 문구용(없으면 0). */
   stopLossPct?: number;
-  /** seed(수량·평단)로 규칙을 조립한다 — arm 때 한 번. armText는 인계 이벤트 본문(종목·등록/인계 접두는 관리자가 붙인다). */
-  build: (seed: ConditionalPosition) => { rule: PositionRule; circuit?: CircuitExitRule; armText: string };
+  /**
+   * seed(수량·평단)로 규칙을 조립한다 — arm 때 한 번. armText는 인계 이벤트 본문(종목·등록/인계 접두는 관리자가 붙인다).
+   * priceExit은 **틱 판정(onPrice)이 매도를 결정했을 때** 청산 사유·문구를 정한다. 미지정이면 추세의
+   * 손절선 문구(STOP_LOSS)를 쓴다 — 추세엔 틱 판정이 손절선 하나뿐이라 분기가 필요 없었다.
+   */
+  build: (seed: ConditionalPosition) => {
+    rule: PositionRule;
+    circuit?: CircuitExitRule;
+    priceExit?: (price: number) => { reason: ExitReason; text: string };
+    armText: string;
+  };
 }
 
 export class RulePositionManager implements PositionManager {
@@ -300,6 +364,8 @@ export class RulePositionManager implements PositionManager {
   private readonly opts: RulePositionManagerOptions;
   private rule: PositionRule | null = null;
   private circuit: CircuitExitRule | undefined;
+  /** 틱 판정 매도의 사유·문구 결정자(모드별) — build가 준다. 없으면 추세의 손절선 문구. */
+  private priceExit: ((price: number) => { reason: ExitReason; text: string }) | undefined;
 
   private exec: Execution | null = null;
   private execSide: 'buy' | 'sell' | null = null;
@@ -336,6 +402,7 @@ export class RulePositionManager implements PositionManager {
     const built = this.opts.build(seed);
     this.rule = built.rule;
     this.circuit = built.circuit;
+    this.priceExit = built.priceExit;
     this.manualCheckAt =
       this.opts.manualExitCheckMs === undefined ? undefined : this.deps.clock.now() + this.opts.manualExitCheckMs;
     this.event(`${this.label} ${this.deps.adopted ? '등록' : '인계'} · ${built.armText}`);
@@ -433,14 +500,17 @@ export class RulePositionManager implements PositionManager {
       if (price !== null) await this.exec.onPrice(price);
       return;
     }
-    // 틱 판정(추세 손절선) — 매매가 없을 때만. 신호 경로(onSignal)와 같은 게이트·점유 규칙.
+    // 틱 판정 — 매매가 없을 때만. 신호 경로(onSignal)와 같은 게이트·점유 규칙.
+    // 추세는 손절선 하나, 모델은 익절·손절·시간 세 갈래다(사유·문구는 build가 준 priceExit이 정한다).
     if (!this.busy && canStart && price !== null) {
       const decision = this.rule.onPrice?.(price) ?? null;
       if (decision) {
-        this.event(
-          `손절선 도달 · 현재가 ${price.toFixed(2)} ≤ 평단 대비 −${((this.opts.stopLossPct ?? 0) * 100).toFixed(0)}% — 봉 마감을 기다리지 않고 전량 매도해요`,
-        );
-        this.begin(decision, price, 'STOP_LOSS');
+        const exit = this.priceExit?.(price) ?? {
+          reason: 'STOP_LOSS' as ExitReason,
+          text: `손절선 도달 · 현재가 ${price.toFixed(2)} ≤ 평단 대비 −${((this.opts.stopLossPct ?? 0) * 100).toFixed(0)}% — 봉 마감을 기다리지 않고 전량 매도해요`,
+        };
+        this.event(exit.text);
+        this.begin(decision, price, exit.reason);
       }
     }
   }

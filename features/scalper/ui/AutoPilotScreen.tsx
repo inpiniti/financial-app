@@ -20,6 +20,8 @@ import type { FeedEvent, ScalperManager } from '../scalperManager';
 import type { FeedStatus } from '../types';
 import { isDaytimeSessionOpen } from '../daySession';
 import { rankingSourceLabelOf } from '../../../core/ranking';
+import { MODEL_MODE } from '../modelMode';
+import { loadModel } from '../../../core/model';
 import { TREND_MODE } from '../trendMode';
 import type { TrendEval } from '../../../core/trend/signal';
 import { AdoptSheet } from './AdoptSheet';
@@ -29,7 +31,7 @@ import { GridGauge } from './GridGauge';
 
 const STATE_BADGE: Record<AutoPilotState, { label: string; bg: string; fg: string }> = {
   IDLE: { label: '대기 중', bg: '#f2f4f6', fg: '#8b95a1' },
-  SCANNING: { label: '변곡점 감시 중', bg: '#eaf2ff', fg: '#3182f6' },
+  SCANNING: { label: '감시 중', bg: '#eaf2ff', fg: '#3182f6' },
   ENTERING: { label: '매수 중', bg: '#fff4e5', fg: '#ff9500' },
   HOLDING: { label: '보유 중', bg: '#e6f4ea', fg: '#03b26c' },
   EXITING: { label: '매도 중', bg: '#fff4e5', fg: '#ff9500' },
@@ -110,6 +112,16 @@ function formatTrendLine(trend: TrendEval | null, live: TrendEval | null): strin
   return `추세 ${closedArrows}${now}${above} · 봉 ${Math.min(trend.bars, 122)}/122`;
 }
 
+/**
+ * 모델 판정 한 줄 — "모델 12.4% / 기준 37.7%". 아직 판정 전이면 "모델 판정 대기".
+ * 확률이 기준값에 얼마나 못 미치는지가 "왜 안 사요?"의 답이다(대부분의 봉은 한참 아래에 있다).
+ */
+function formatModelLine(prob: number | null): string {
+  const thr = `${(loadModel().threshold * 100).toFixed(1)}%`;
+  if (prob === null) return `모델 판정 대기 · 기준 ${thr}`;
+  return `모델 ${(prob * 100).toFixed(1)}% / 기준 ${thr}`;
+}
+
 /** 리스트 행의 우측 상태 표시 — 보유 > 감시 > 핀(정리 대기) 순으로 하나만. */
 function SlotBadge({ row, activeTickers }: { row: AutoPilotSlotRow; activeTickers: readonly string[] }) {
   if (activeTickers.includes(row.entry.ticker)) {
@@ -181,8 +193,13 @@ function SlotRow({
             <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
               {`기울기/10초 ${formatSlopeRateSeries(item.view.slopeRateSeries)}`}
             </Text>
-            {TREND_MODE ? (
-              // 추세 모드(2026-08-18) — 4선 방향·위치·봉 수. 진입 조건이 왜 안 켜지는지 한눈에.
+            {MODEL_MODE ? (
+              // 모델 모드(2026-08-22) — 마지막 봉의 판정 확률과 임계값. 왜 안 사는지 한눈에.
+              <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
+                {formatModelLine(item.view.modelProb)}
+              </Text>
+            ) : TREND_MODE ? (
+              // 추세 모드(2026-08-18, 롤백 보존) — 4선 방향·위치·봉 수.
               // "지금"은 진행 중 봉까지 넣은 판정(2026-08-22) — 매도는 이 기준으로 나간다.
               <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
                 {formatTrendLine(item.view.trend, item.view.trendLive)}

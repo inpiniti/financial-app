@@ -8,6 +8,7 @@
 // 종목 식별자는 토스 productCode(US20100629001 등)라 티커→코드 해석이 한 번 필요하다 — 자동완성 검색의
 // symbol 정확 일치로 푼다(resolveTossProductCode). 호출부가 캐시한다(코드는 바뀌지 않는다).
 import type { MinuteBar } from '../core/trend/bars';
+import type { OhlcvBar as ModelOhlcvBar } from '../core/model/bars';
 import { TOSS_MARKET_TO_APP, type TossAppMarket } from './tossSearch';
 
 type FetchLike = typeof fetch;
@@ -47,11 +48,22 @@ export interface TossMinuteCandle {
   volume: number;
 }
 
-/** 차트 URL 조립 — min:{interval}, count는 1..TOSS_CHART_MAX_COUNT로 자른다. (min:3·5·15도 실호출 확인) */
-export function buildTossChartUrl(productCode: string, count: number, intervalMin = 1): string {
+/**
+ * 차트 URL 조립 — min:{interval}, count는 1..TOSS_CHART_MAX_COUNT로 자른다. (min:3·5·15도 실호출 확인)
+ * adjusted=false면 **원시가**(분할·병합 조정 없는 당시 실제 가격) — 모델 경로가 쓴다. 학습 데이터가
+ * `useAdjustedRate=false`로 모였고(financial-analyze src/tossChart.ts), 실시간 체결가(한투)도 원시가라
+ * 그쪽과 눈금을 맞춘다. 추세 경로는 기존대로 조정가(true).
+ */
+export function buildTossChartUrl(productCode: string, count: number, intervalMin = 1, adjusted = true): string {
   const n = Math.max(1, Math.min(TOSS_CHART_MAX_COUNT, Math.floor(count)));
   const iv = Math.max(1, Math.floor(intervalMin));
-  return `${TOSS_CHART_URL}/${encodeURIComponent(productCode)}/min:${iv}?count=${n}&useAdjustedRate=true`;
+  return `${TOSS_CHART_URL}/${encodeURIComponent(productCode)}/min:${iv}?count=${n}&useAdjustedRate=${adjusted}`;
+}
+
+/** 일봉 URL — day:1. 모델 경로의 전일 종가(원시가)용. */
+export function buildTossDayChartUrl(productCode: string, count: number, adjusted = false): string {
+  const n = Math.max(1, Math.min(TOSS_CHART_MAX_COUNT, Math.floor(count)));
+  return `${TOSS_CHART_URL}/${encodeURIComponent(productCode)}/day:1?count=${n}&useAdjustedRate=${adjusted}`;
 }
 
 /** 응답 → OHLCV 봉(원문 순서 그대로 = 최신순). dt 파싱 불가·종가 0 이하는 버린다. */
@@ -171,4 +183,84 @@ export async function resolveTossProductCode(
     if (m && fallback === null) fallback = code;
   }
   return fallback;
+}
+
+// ── 모델 경로(2026-08-22) ───────────────────────────────────────────────────
+// 왜 여기 따로 있나: 모델 Feature는 종가만이 아니라 OHLCV 전부와 **원시가**가 필요하다(core/model/bars.ts 주석).
+// 추세용 fetchTossMinuteBars(종가·조정가)는 그대로 두고 모델용 조회를 나란히 둔다.
+
+/** 응답 → 모델용 OHLCV 봉(오름차순). 진행 중(미완성) 봉은 뺀다 — beforeMinuteKey 이상은 버린다. */
+export function parseTossOhlcvBars(body: unknown, beforeMinuteKey?: number): ModelOhlcvBar[] {
+  const out: ModelOhlcvBar[] = [];
+  for (const c of parseTossMinuteCandles(body)) {
+    if (beforeMinuteKey !== undefined && c.minuteKey >= beforeMinuteKey) continue;
+    out.push({
+      minuteKey: c.minuteKey,
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      volume: c.volume,
+    });
+  }
+  return out.sort((a, b) => a.minuteKey - b.minuteKey);
+}
+
+export interface FetchTossOhlcvOptions extends TossMinuteChartDeps {
+  /** 지금(epoch ms) — 진행 중 봉 컷오프 기준. 기본 Date.now(). */
+  nowMs?: number;
+  /** 봉 주기(분, min:N). 기본 5(모델 채택값). */
+  intervalMin?: number;
+}
+
+/** 모델용 N분봉 count개(오름차순, 원시가, 진행 중 봉 제외). */
+export async function fetchTossOhlcvBars(
+  productCode: string,
+  count: number,
+  deps: FetchTossOhlcvOptions = {},
+): Promise<ModelOhlcvBar[]> {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const iv = Math.max(1, Math.floor(deps.intervalMin ?? 5));
+  const res = await fetchImpl(buildTossChartUrl(productCode, count, iv, false), {
+    method: 'GET',
+    headers: { accept: 'application/json' },
+  });
+  const nowKey = Math.floor((deps.nowMs ?? Date.now()) / (60_000 * iv)) * iv;
+  return parseTossOhlcvBars(await res.json(), nowKey);
+}
+
+/** 일봉 종가 하나 — 거래일(ET, 원문 dt의 날짜 부분)과 원시 종가. */
+export interface TossDailyClose {
+  date: string;
+  close: number;
+}
+
+/** 응답 → 일봉 종가(날짜 오름차순). 종가 0 이하·날짜 파싱 불가는 버린다. */
+export function parseTossDailyCloses(body: unknown): TossDailyClose[] {
+  const candles = (body as { result?: { candles?: unknown } } | null)?.result?.candles;
+  if (!Array.isArray(candles)) return [];
+  const byDate = new Map<string, number>();
+  for (const raw of candles as Array<{ dt?: string; close?: number }>) {
+    if (typeof raw?.dt !== 'string' || raw.dt.length < 10) continue;
+    const close = Number(raw.close);
+    if (!Number.isFinite(close) || close <= 0) continue;
+    byDate.set(raw.dt.slice(0, 10), close);
+  }
+  return [...byDate.entries()]
+    .map(([date, close]) => ({ date, close }))
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
+
+/** 최근 일봉 종가 count개(날짜 오름차순, 원시가). 오늘(진행 중) 일봉도 섞여 오므로 호출부가 날짜로 거른다. */
+export async function fetchTossDailyCloses(
+  productCode: string,
+  count = 5,
+  deps: TossMinuteChartDeps = {},
+): Promise<TossDailyClose[]> {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const res = await fetchImpl(buildTossDayChartUrl(productCode, count), {
+    method: 'GET',
+    headers: { accept: 'application/json' },
+  });
+  return parseTossDailyCloses(await res.json());
 }

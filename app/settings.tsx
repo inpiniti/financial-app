@@ -11,8 +11,8 @@ import Slider from '@react-native-community/slider';
 import { BackHeader } from '../components/BackHeader';
 import { Panel } from '../components/Panel';
 import { DEFAULT_APP_SETTINGS, loadAppSettings, saveAppSettings, snapToStep } from '../lib/appSettings';
-import { MAX_GRIDS_LIMIT, TREND_CONFIG } from '../features/scalper/autopilot';
-import { TREND_BAR_MINUTES } from '../core/trend/bars';
+import { MAX_GRIDS_LIMIT, MODEL_CONFIG } from '../features/scalper/autopilot';
+import { MODEL_BAR_MINUTES } from '../features/scalper/modelMode';
 import {
   RankingSelectionPanel,
   draftFromSelection,
@@ -297,57 +297,49 @@ export default function SettingsScreen() {
         </Panel>
 
         <RankingSelectionPanel draft={rankingDraft} onChange={setRankingDraft} />
-
-        <Panel title="추세 (고정값)">
+        <Panel title="모델 (고정값)">
           <View className="px-5 pb-5">
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              진입과 매도는 {TREND_BAR_MINUTES}분봉 이동평균 4선(분봉5선·20선·60선·120선)으로만 움직여요. 아래 값은 설계 고정값이라
-              여기서 바꿀 수 없어요.
+              진입은 예측 모델이, 매도는 정해진 세 가격선이 정해요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
             </Text>
 
             <View className="mb-1 flex-row items-center justify-between">
               <Text className="text-xs text-[#8b95a1]">진입</Text>
-              <Text className="text-sm font-semibold text-[#191f28]">4선이 모두 상승으로 바뀌는 봉</Text>
+              <Text className="text-sm font-semibold text-[#191f28]">모델 확률 ≥ 상위 1% 기준값</Text>
             </View>
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              직전 봉에는 아니었는데 이번 봉에 네 선이 모두 올라섰을 때, 그 순간 한 번만 사요. 이미 네 선이 올라 있는 동안에는
-              사지 않아요. 봉이 모자라 4선 중 하나라도 계산이 안 되면 사지 않아요. 물타기는 하지 않아요.
+              {MODEL_BAR_MINUTES}분봉이 닫힐 때마다 리스트 전 종목에 대해 "지금 사면 −{Math.round(MODEL_CONFIG.stopLossPct * 100)}%
+              전에 +{Math.round(MODEL_CONFIG.takeProfitPct * 100)}%에 닿을 확률"을 계산해요(지표 33개). 3년 반치 과거에서 상위 1%에
+              해당하는 값을 넘어야 사요 — 신호가 드문 게 정상이에요. 정규장·그날 거래대금 $2M 이상·주가 $1 초과만 봐요. 물타기는 하지 않아요.
             </Text>
 
             <View className="mb-1 flex-row items-center justify-between">
               <Text className="text-xs text-[#8b95a1]">매도</Text>
-              <Text className="text-sm font-semibold text-[#191f28]">4선 중 하나라도 꺾이면 즉시 전량</Text>
-            </View>
-            <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              봉이 닫힐 때 네 선 중 하나라도 직전 봉보다 낮거나 같으면 수익·손실과 상관없이 전량 매도해요. 매도 주문은 체결될
-              때까지 현재가를 따라가고, 도중에 거두지 않아요. 다시 네 선이 모두 서는 봉에 다시 사요.
-            </Text>
-
-            <View className="mb-1 flex-row items-center justify-between">
-              <Text className="text-xs text-[#8b95a1]">손절선</Text>
               <Text className="text-sm font-semibold text-[#191f28]">
-                {TREND_CONFIG.stopLossPct > 0 ? `평단 대비 −${Math.round(TREND_CONFIG.stopLossPct * 100)}% 즉시 전량` : '없음'}
+                +{Math.round(MODEL_CONFIG.takeProfitPct * 100)}% / −{Math.round(MODEL_CONFIG.stopLossPct * 100)}% /{' '}
+                {MODEL_CONFIG.timeoutMinutes}분
               </Text>
             </View>
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              {TREND_CONFIG.stopLossPct > 0
-                ? `봉이 닫히기 전이라도 현재가가 평단보다 ${Math.round(TREND_CONFIG.stopLossPct * 100)}% 넘게 빠지면 바로 전량 매도해요.`
-                : '따로 손절선을 두지 않아요. 파는 기준은 4선이 꺾이는 것 하나뿐이라, 봉이 닫히기 전에 급락하면 그 봉이 닫힐 때 팔아요.'}
+              평단 기준 세 선 중 먼저 닿는 것으로 전량 매도해요 — 익절 +{Math.round(MODEL_CONFIG.takeProfitPct * 100)}%, 손절 −
+              {Math.round(MODEL_CONFIG.stopLossPct * 100)}%, 시간 청산 {MODEL_CONFIG.timeoutMinutes}분. 봉 마감을 기다리지 않고
+              체결가가 닿는 순간 판단해요. 매도 주문은 체결될 때까지 현재가를 따라가고 도중에 거두지 않아요.
             </Text>
 
             <View className="mb-1 flex-row items-center justify-between">
               <Text className="text-xs text-[#8b95a1]">봉</Text>
-              <Text className="text-sm font-semibold text-[#191f28]">{TREND_BAR_MINUTES}분봉 · 체결가 합성</Text>
+              <Text className="text-sm font-semibold text-[#191f28]">{MODEL_BAR_MINUTES}분봉 · 토스 차트</Text>
             </View>
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              실시간 체결가를 {TREND_BAR_MINUTES}분 단위로 묶어 봉을 만들고, 봉이 닫힐 때마다 4선을 다시 재요. 감시를 시작할 때 최근 130봉을
-              한 번 불러와 채우므로 바로 판정할 수 있어요.
+              모델을 학습시킬 때 쓴 것과 같은 원천(토스 {MODEL_BAR_MINUTES}분봉)에서 그대로 받아와요. 봉이 닫히고 몇 초 뒤에 한 번씩
+              읽어 판정해요.
             </Text>
 
             <View className="rounded-2xl bg-[#f2f4f6] px-4 py-3">
               <Text className="text-xs leading-5 text-[#4e5968]">
-                주문은 미리 걸어두지 않고 봉이 닫힌 순간 <Text className="font-semibold text-[#191f28]">현재가</Text>로
-                내요. 진입 주문이 체결되기 전에 매도 신호가 오면 그 봉의 매도는 건너뛰고, 다음 봉에서 다시 판단해요.
+                검증: 한 번도 안 본 2026-05~08 구간 3,116거래 · 승률 39% ·{' '}
+                <Text className="font-semibold text-[#191f28]">거래당 평균 +0.42%</Text>(비용 포함) · 4개월 전부 플러스.
+                다만 12연패 구간이 있었어요 — 한 번 −{Math.round(MODEL_CONFIG.stopLossPct * 100)}%를 감당할 금액으로만 하세요.
               </Text>
             </View>
           </View>
@@ -363,7 +355,7 @@ export default function SettingsScreen() {
               max={10}
               step={1}
               formatValue={(v) => `${v}초`}
-              helper="매수 주문이 이 시간 안에 안 붙으면 취소하고 다시 변곡점을 기다려요. 권장 2~3초. 일부라도 체결됐으면 취소하지 않고 그대로 기다려요. 취소가 3번 이어지면 그 종목은 1분간 쉬어요. 0이면 체결될 때까지 계속 기다려요."
+              helper="매수 주문이 이 시간 안에 안 붙으면 취소하고 다음 신호를 기다려요. 권장 2~3초. 일부라도 체결됐으면 취소하지 않고 그대로 기다려요. 취소가 3번 이어지면 그 종목은 1분간 쉬어요. 0이면 체결될 때까지 계속 기다려요."
               offAtZero
             />
           </View>
