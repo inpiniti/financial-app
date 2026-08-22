@@ -5,8 +5,8 @@
 // (2026-08-14 매수·매도폭 분리 — 폭이 비대칭이라 평단이 정중앙이 아닐 수 있다.) 현재가는 ▼ 화살표 + 말풍선.
 // app-ui-style: 이모지 금지(Ionicons도 필요 없는 단순 도형이라 SVG 직접), 손익이 아니라 매수/매도 방향 색이라
 // pnlColor() 대신 스킬이 지정한 고정 색(매도=#f04452·매수=#3182f6·평단/현재가=#191f28)을 그대로 쓴다.
-import { useState } from 'react';
-import { Text, View, type LayoutChangeEvent } from 'react-native';
+import { useRef, useState } from 'react';
+import { Pressable, Text, View, type LayoutChangeEvent } from 'react-native';
 import Svg, { Line } from 'react-native-svg';
 import { formatKrw, formatSignedPercentFromRatio, formatUsd, pnlColor } from '../../../lib/format';
 import { useUsdKrwRate } from '../../../lib/useUsdKrwRate';
@@ -31,6 +31,12 @@ const BUY_LEG_NOTICE: Record<string, string | undefined> = {
 
 const GAUGE_HEIGHT = 28;
 
+/**
+ * 두 번 누르기로 인정하는 최대 간격(ms) — 2026-08-22 사용자 요청("연속 두 번 터치하면 매도하시겠습니까").
+ * 실수로 팔리면 안 되므로 한 번 누름은 아무 일도 하지 않고, 두 번째 누름에서 확인 창을 띄운다.
+ */
+const DOUBLE_TAP_MS = 400;
+
 /** 현재가 말풍선 예상 폭(px) — 좌우 클램프에 쓴다. 텍스트 길이에 따라 살짝 어긋날 수 있지만 게이지 폭에 비해 무시할 정도다. */
 const BUBBLE_HALF_WIDTH = 24;
 
@@ -38,11 +44,28 @@ export interface GridGaugeProps {
   grid: AutoPilotGridView;
   /** 종목명 — 상위(리스트 행)가 알면 넘긴다. 없으면 티커로 대체 표시한다. */
   name?: string;
+  /**
+   * 게이지를 **두 번 연속 누르면** 부르는 콜백(2026-08-22) — 상위가 확인 창을 띄우고 전량 매도를 요청한다.
+   * 미주입이면 게이지는 그냥 보기 전용이다(누름 없음).
+   */
+  onDoubleTapSell?: () => void;
 }
 
-export function GridGauge({ grid, name }: GridGaugeProps) {
+export function GridGauge({ grid, name, onDoubleTapSell }: GridGaugeProps) {
   const [trackWidth, setTrackWidth] = useState(0);
   const onTrackLayout = (e: LayoutChangeEvent) => setTrackWidth(e.nativeEvent.layout.width);
+  // 두 번 누르기 — 마지막 누름 시각만 기억한다(타이머 없음: 첫 누름은 어차피 아무 일도 하지 않는다).
+  const lastTapAt = useRef(0);
+  const handleTap = () => {
+    if (!onDoubleTapSell) return;
+    const now = Date.now();
+    if (now - lastTapAt.current <= DOUBLE_TAP_MS) {
+      lastTapAt.current = 0; // 세 번째 누름이 곧바로 또 열리지 않게.
+      onDoubleTapSell();
+      return;
+    }
+    lastTapAt.current = now;
+  };
 
   // 보유금액 = 보유수량 × 현재가(최근 틱). 틱이 아직 없으면 표시 불가(—).
   // 환율은 잔고 기준 공용 캐시(30분) — 못 구하면 원화 병기 없이 USD만 보여준다.
@@ -68,7 +91,13 @@ export function GridGauge({ grid, name }: GridGaugeProps) {
   const tickFractions = [0, avgPos / 2, avgPos, (1 + avgPos) / 2, 1];
 
   return (
-    <View className="px-5 pb-5 pt-1">
+    <Pressable
+      className="px-5 pb-5 pt-1"
+      onPress={handleTap}
+      disabled={onDoubleTapSell === undefined}
+      accessibilityRole={onDoubleTapSell ? 'button' : undefined}
+      accessibilityLabel={onDoubleTapSell ? `${name ?? grid.ticker} 두 번 눌러 전량 매도` : undefined}
+    >
       {/* 헤더: 종목명(아래 종목코드·보유수량) · 보유금액(달러, 아래 원화 병기) 2열.
           보유금액 = 보유수량 × 현재가 — 환율을 못 구했거나 틱이 없으면 원화 줄은 생략한다. */}
       <View className="mb-5 flex-row items-center">
@@ -188,6 +217,11 @@ export function GridGauge({ grid, name }: GridGaugeProps) {
       ) : (
         !grid.gridActive && <Text className="mt-3 text-xs text-[#8b95a1]">그리드 주문을 거는 중이에요…</Text>
       )}
-    </View>
+
+      {/* 두 번 누르기 안내 — 숨은 기능이 되지 않게 항상 적어 둔다(격리 멈춤 중에는 누를 수 없으니 숨긴다). */}
+      {onDoubleTapSell !== undefined && grid.faultText === null && (
+        <Text className="mt-3 text-xs text-[#8b95a1]">두 번 누르면 전량 매도할 수 있어요</Text>
+      )}
+    </Pressable>
   );
 }

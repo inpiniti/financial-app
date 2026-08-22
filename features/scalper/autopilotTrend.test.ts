@@ -414,3 +414,44 @@ describe('외부(수동) 청산 기록 — 잔고 재확인', () => {
     expect(h.pilot.getView().grids[0].holdingQty).toBe(Math.max(1, qty - 1));
   });
 });
+
+describe('추세 → 그리드 → 매매 — 사용자 요청 전량 매도(2026-08-22)', () => {
+  it('sellNow는 신호를 기다리지 않고 전량을 매매로 넘긴다 — 청산 사유 USER_SELL', async () => {
+    const h = makeHarness();
+    await enter(h);
+    const broker = h.brokers.get('A')!;
+    const g = h.pilot.getView().grids[0];
+    expect(broker.placed).toHaveLength(1); // 진입 매수뿐 — 4선은 아직 안 꺾였다.
+
+    expect(h.pilot.sellNow('A')).toBeNull();
+    await flush();
+    expect(broker.placed).toHaveLength(2);
+    expect(broker.placed[1].side).toBe('sell');
+    expect(broker.placed[1].qty).toBe(g.holdingQty); // 전량
+
+    await h.pilot.pollCycle();
+    await flush();
+    expect(h.trades).toHaveLength(1);
+    expect(h.trades[0].exitReason).toBe('USER_SELL');
+    expect(h.pilot.getView().activeTickers).toEqual([]);
+    expect(h.events.some((e) => e.includes('사용자 매도 요청'))).toBe(true);
+  });
+
+  it('이미 매도 주문이 나가 있으면 두 번째 요청은 문구를 돌려준다(중복 발주 금지)', async () => {
+    const h = makeHarness();
+    await enter(h);
+    h.brokers.get('A')!.autoFill = false; // 매도가 안 붙게 — 추격 중 상태를 만든다.
+    expect(h.pilot.sellNow('A')).toBeNull();
+    await flush();
+    expect(h.pilot.sellNow('A')).toContain('이미 매도 주문이 나가 있어요');
+    expect(h.brokers.get('A')!.placed.filter((o) => o.side === 'sell')).toHaveLength(1);
+  });
+
+  it('관리 중이 아니거나 시작 전이면 사유 문구 — 아무 주문도 내지 않는다', async () => {
+    const h = makeHarness();
+    expect(h.pilot.sellNow('A')).toContain('자동 트레이딩을 먼저 시작해 주세요');
+    await enter(h);
+    expect(h.pilot.sellNow('ZZZ')).toContain('관리 중이 아니에요');
+    expect(h.brokers.get('A')!.placed).toHaveLength(1);
+  });
+});

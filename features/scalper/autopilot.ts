@@ -1313,6 +1313,34 @@ export class AutoPilot {
   }
 
   /**
+   * 사용자 요청 전량 매도(2026-08-22) — 게이지를 두 번 눌러 확인한 종목 하나를 지금 판다.
+   *
+   * 신호(4선 꺾임)를 기다리지 않고 **보유 수량 전부**를 매매로 넘긴다. 그다음은 자동 매도와 완전히 같다 —
+   * 매매가 체결될 때까지 현재가로 정정하며 따라가고(취소선 없음), 체결되면 평소 경로로 정산·기록된다
+   * (청산 사유 USER_SELL). 앱이 주문을 대신 낼 뿐, 판단은 사용자가 한 것이다.
+   *
+   * 성공하면 null, 못 하면 사용자에게 보여줄 문구를 돌려준다(adoptPosition과 같은 계약).
+   */
+  sellNow(ticker: string): string | null {
+    if (!this.running) return '자동 트레이딩을 먼저 시작해 주세요';
+    if (this.faulted) return '멈춤 상태예요 — 먼저 Stop으로 해제해 주세요';
+    // Stop 진행 중에는 새 발주가 mayStart에서 막힌다 — 조용히 실패하지 않게 여기서 먼저 알린다.
+    if (this.stopRequested) return '정지하는 중이에요 — 진행 중인 매매가 끝나면 자동으로 정리돼요';
+    const active = this.actives.get(ticker);
+    if (!active) return `${ticker}은(는) 관리 중이 아니에요`;
+    if (active.gridFaulted) return `${ticker} 그리드가 멈춰 있어요 — 주문은 계좌에서 직접 확인해 주세요`;
+    if (!active.cond?.sellNow) return `${ticker}은(는) 여기서 매도할 수 없어요 — 계좌에서 직접 팔아 주세요`;
+    // 발주 시작가는 슬롯의 최신 체결가. 틱이 아직 없으면 값을 지어내지 않고 되돌려보낸다.
+    const price = active.slot?.getView().price ?? null;
+    if (price === null || !(price > 0)) return `${ticker} 현재가를 아직 못 받았어요 — 잠시 뒤 다시 눌러 주세요`;
+    if (!active.cond.sellNow(price)) return `${ticker}은(는) 이미 매도 주문이 나가 있어요`;
+    this.event(`${ticker} 사용자 매도 요청 · 전량을 현재가 $${price.toFixed(2)}부터 추격 매도해요`);
+    this.startPollTimer(); // 이미 돌고 있으면 무해 — 체결 정산이 반드시 돌게 보장한다.
+    this.emit();
+    return null;
+  }
+
+  /**
    * 세션 전환(정규장↔주간거래, KST 10:00/16:00 경계) 감지 — 쉬는 주문을 가진 포지션 관리자(OCO)에게 재등록을 맡긴다.
    * (KIS는 세션이 끝나면 미체결을 일괄 취소한다 — 자세한 이유는 OcoGridPositionManager.rotateSession.)
    */

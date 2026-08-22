@@ -392,6 +392,11 @@ export class AutoPilotManager {
     return this.pilot.adoptPosition(ticker);
   }
 
+  /** 관리 중인 1종목을 사용자 요청으로 전량 매도한다(게이지 두 번 누르기). 성공하면 null, 실패하면 사용자 문구. */
+  sellNow(ticker: string): string | null {
+    return this.pilot.sellNow(ticker);
+  }
+
   dispose(): void {
     if (this.sessionTimer !== null) {
       this.scheduler.clearInterval(this.sessionTimer);

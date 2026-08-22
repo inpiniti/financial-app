@@ -21,7 +21,8 @@ export type CycleState = 'IDLE' | 'WATCH_BUY' | 'BUYING' | 'HOLDING' | 'SELLING'
 
 /** SELL_SIGNAL=신호 청산, STOP=수동/중지 청산, STOP_LOSS=추세 손절선(틱 판정, 2026-08-18). */
 /** 청산 사유 — CIRCUIT(서킷 하킷 2연속, 정지 중 지정가)·MANUAL(외부·한투앱 매도를 잔고 재확인으로 인지)은 2026-08-19 서킷 도메인. */
-export type ExitReason = 'SELL_SIGNAL' | 'STOP' | 'STOP_LOSS' | 'CIRCUIT' | 'MANUAL';
+/** USER_SELL=앱 안에서 사용자가 게이지를 두 번 눌러 요청한 전량 매도(2026-08-22) — MANUAL(앱 밖 매도)과 구분한다. */
+export type ExitReason = 'SELL_SIGNAL' | 'STOP' | 'STOP_LOSS' | 'CIRCUIT' | 'MANUAL' | 'USER_SELL';
 
 /** 신호 발생 시점의 스냅샷(거래 기록용). */
 export interface SignalSnapshot {

@@ -183,6 +183,13 @@ export interface PositionManager {
   readonly isolated: boolean;
   readonly faultText: string | null;
   onSignal(signal: Signal, price: number): void;
+  /**
+   * 사용자 요청 전량 매도(2026-08-22) — 신호를 기다리지 않고 지금 보유 수량 전부를 매매로 넘긴다.
+   * 매매는 평소와 똑같이 **체결될 때까지 현재가로 정정하며 따라간다**(취소선 없음). 청산 사유는 USER_SELL.
+   * 시작했으면 true, 이미 매매 중이거나 팔 수량이 없어 아무것도 하지 않았으면 false.
+   * 규칙 문턱을 통과하는 게 아니라 **덮어쓰는** 경로라, 자동 판정이 없는 어댑터(OCO)에는 없다(옵셔널).
+   */
+  sellNow?(price: number): boolean;
   tick(opts: { canStart: boolean }): Promise<void>;
   poll(): Promise<PositionPollResult>;
   /** 세션 전환 — 쉬는 주문을 새 세션으로 재등록한다(OCO만). 아무것도 안 했으면 null. */
@@ -383,6 +390,19 @@ export class RulePositionManager implements PositionManager {
     const decision = this.rule.decide(signal, price);
     if (!decision) return;
     this.begin(decision, price, decision.side === 'sell' ? 'SELL_SIGNAL' : null);
+  }
+
+  /**
+   * 사용자 요청 전량 매도 — 규칙 판정을 건너뛰고 보유 수량 전부를 매매로 넘긴다(2026-08-22).
+   * 게이트는 자동 경로와 같다(격리·해제·매매 중이면 안 받는다). 수량은 **전량**이며 문턱·취소선은 없다.
+   */
+  sellNow(price: number): boolean {
+    if (!this.rule || this.isolated || this.released || this.busy) return false;
+    const qty = this.rule.view.qty;
+    if (!(qty > 0) || !Number.isFinite(price) || price <= 0) return false;
+    this.event(`사용자 요청 · 전량 ${qty}주 매도를 시작해요 — 체결될 때까지 현재가로 따라가요`);
+    this.begin({ side: 'sell', qty }, price, 'USER_SELL');
+    return true;
   }
 
   /**

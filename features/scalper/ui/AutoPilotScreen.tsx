@@ -14,7 +14,7 @@ import { EmptyState } from '../../inquiry/components';
 import { TradeHistoryPanel, useTodayTrades } from '../../inquiry/TradeHistory';
 import { formatSignedKrw, formatSignedUsd, formatUsd, pnlColor } from '../../../lib/format';
 import { useUsdKrwRate } from '../../../lib/useUsdKrwRate';
-import type { AutoPilotEvent, AutoPilotState, AutoPilotView } from '../autopilot';
+import type { AutoPilotEvent, AutoPilotGridView, AutoPilotState, AutoPilotView } from '../autopilot';
 import type { AutoPilotManager, AutoPilotSlotRow } from '../autopilotManager';
 import type { FeedEvent, ScalperManager } from '../scalperManager';
 import type { FeedStatus } from '../types';
@@ -259,6 +259,34 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
     }
   }, [autopilot]);
 
+  /**
+   * 게이지 두 번 누르기 → 확인 → 전량 매도(2026-08-22 사용자 요청).
+   * 앱이 판단하는 게 아니라 사용자가 판단한 매도다 — 그래서 확인 창에 종목·수량·현재가를 그대로 적고,
+   * "예"를 누른 뒤에는 자동 매도와 똑같이 **체결될 때까지 현재가를 따라가는 매매**로 넘어간다.
+   */
+  const handleSellNow = useCallback(
+    (grid: AutoPilotGridView) => {
+      const priceText = grid.currentPrice === null ? '현재가 확인 중' : `현재가 ${formatUsd(grid.currentPrice, 2)}`;
+      Alert.alert(
+        `${grid.ticker} 전량 매도할까요?`,
+        `${grid.holdingQty}주 · ${priceText}
+체결될 때까지 현재가로 따라가며 팔아요. 취소는 계좌 화면의 미체결에서 해요.`,
+        [
+          { text: '아니요', style: 'cancel' },
+          {
+            text: '매도하기',
+            style: 'destructive',
+            onPress: () => {
+              const reason = autopilot.sellNow(grid.ticker);
+              if (reason !== null) Alert.alert('알림', reason);
+            },
+          },
+        ],
+      );
+    },
+    [autopilot],
+  );
+
   const handleStop = useCallback(() => autopilot.stop(), [autopilot]);
   const handleResume = useCallback(() => autopilot.resume(), [autopilot]);
 
@@ -418,7 +446,7 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                   <View key={grid.ticker}>
                     {/* 그리드 사이 구분선 — 게이지가 연달아 붙으면 어느 종목 것인지 읽기 어렵다. */}
                     {i > 0 && <View className="mx-5 h-px bg-[#f2f4f6]" />}
-                    <GridGauge grid={grid} />
+                    <GridGauge grid={grid} onDoubleTapSell={() => handleSellNow(grid)} />
                   </View>
                 ))}
               </Panel>

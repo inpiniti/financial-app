@@ -43,7 +43,7 @@
 | **오토파일럿** | 단타 중앙 관리자. 상태 IDLE/SCANNING/ENTERING/HOLDING/EXITING/PAUSED/FAULT(활성 종목 사이클에서 파생). 모드 스위치·동시 종목·FAULT 격리·청산 사유. → `docs/domain/오토파일럿/` |
 | **포지션 관리자** | 종목 1개의 진입 후 관리 인터페이스(인계·신호·틱·폴·해제 → 결과값 `holding`/`sold`/`isolated`)와 그 어댑터들 — 추세 청산(+서킷)·변곡점 조건부 그리드(규칙+매매형), OCO 매도그리드(롤백 보존). 어느 모드가 켜지는지는 `resolvePositionMode` 한 곳(추세 > 변곡점 > OCO). 청산 사유는 매도를 시작한 자리에서 정한다. → `features/scalper/positionManager.ts` |
 | **사이클(Run)** | 종목 1개의 매수→청산→종료 1회. WATCH_BUY/BUYING/HOLDING/SELLING/DONE/FAULT. |
-| **청산 사유** | SELL_SIGNAL(신호) · STOP(사용자) · STOP_LOSS(추세 손절선) · CIRCUIT(서킷) · MANUAL(앱 밖 매도를 잔고로 인지). |
+| **청산 사유** | SELL_SIGNAL(신호) · STOP(사용자) · STOP_LOSS(추세 손절선) · CIRCUIT(서킷) · MANUAL(앱 밖 매도를 잔고로 인지) · USER_SELL(앱 안에서 게이지 두 번 눌러 요청한 전량 매도, 2026-08-22). |
 | **트레이딩 리스트** | 신호 감지기를 상시 부착하는 최대 30종목. 순위 원천에서 채운다. |
 | **감시(watched)** | 트레이딩 리스트 중 틱/초 상위 3개. 예열·UI 우선순위 전용 — 진입 자격은 minTickRate 등 감지기가 정한다. |
 | **순위** | 트레이딩 리스트를 채우는 원천(토스 8종·한투 7종) 선택 규칙. 원천별 켬·개수·(한투) 기간창, 카탈로그 순서=우선권, 켜진 개수 합 ≤ 30(ADR 0005). → `docs/domain/순위/` |
