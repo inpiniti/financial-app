@@ -300,7 +300,7 @@ export default function SettingsScreen() {
         <Panel title="모델 (고정값)">
           <View className="px-5 pb-5">
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              진입은 예측 모델이, 매도는 정해진 세 가격선이 정해요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
+              진입은 예측 모델이, 매도는 따라 올라가는 매도선이 정해요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
             </Text>
 
             <View className="mb-1 flex-row items-center justify-between">
@@ -308,22 +308,22 @@ export default function SettingsScreen() {
               <Text className="text-sm font-semibold text-[#191f28]">모델 확률 ≥ 상위 1% 기준값</Text>
             </View>
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              {MODEL_BAR_MINUTES}분봉이 닫힐 때마다 리스트 전 종목에 대해 "지금 사면 −{Math.round(MODEL_CONFIG.stopLossPct * 100)}%
-              전에 +{Math.round(MODEL_CONFIG.takeProfitPct * 100)}%에 닿을 확률"을 계산해요(지표 33개). 3년 반치 과거에서 상위 1%에
-              해당하는 값을 넘어야 사요 — 신호가 드문 게 정상이에요. 정규장·그날 거래대금 $2M 이상·주가 $1 초과만 봐요. 물타기는 하지 않아요.
+              {MODEL_BAR_MINUTES}분봉이 닫힐 때마다 리스트 전 종목에 대해 "지금 사면 오를 자리인가"를 지표 33개로 계산해요. 3년 반치
+              과거에서 상위 1%에 해당하는 값을 넘어야 사요 — 신호가 드문 게 정상이에요. 정규장·그날 거래대금 $2M 이상·주가 $1 초과만
+              봐요. 물타기는 하지 않아요.
             </Text>
 
             <View className="mb-1 flex-row items-center justify-between">
               <Text className="text-xs text-[#8b95a1]">매도</Text>
               <Text className="text-sm font-semibold text-[#191f28]">
-                +{Math.round(MODEL_CONFIG.takeProfitPct * 100)}% / −{Math.round(MODEL_CONFIG.stopLossPct * 100)}% /{' '}
-                {MODEL_CONFIG.timeoutMinutes}분
+                고점 −{Math.round(MODEL_CONFIG.trailPct * 100)}% / 평단 −{Math.round(MODEL_CONFIG.stopLossPct * 100)}%
               </Text>
             </View>
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              평단 기준 세 선 중 먼저 닿는 것으로 전량 매도해요 — 익절 +{Math.round(MODEL_CONFIG.takeProfitPct * 100)}%, 손절 −
-              {Math.round(MODEL_CONFIG.stopLossPct * 100)}%, 시간 청산 {MODEL_CONFIG.timeoutMinutes}분. 봉 마감을 기다리지 않고
-              체결가가 닿는 순간 판단해요. 매도 주문은 체결될 때까지 현재가를 따라가고 도중에 거두지 않아요.
+              <Text className="font-semibold text-[#191f28]">익절 상한이 없어요.</Text> 오르는 동안 매도선이 최고가를 따라
+              올라가고(고점 −{Math.round(MODEL_CONFIG.trailPct * 100)}%), 한 번 올라간 매도선은 내려오지 않아요. 거기 닿거나 평단보다 −
+              {Math.round(MODEL_CONFIG.stopLossPct * 100)}% 빠지면 전량 매도해요. 봉 마감을 기다리지 않고 체결가가 닿는 순간
+              판단하며, 매도 주문은 체결될 때까지 현재가를 따라가요. 장 마감까지 안 닿으면 그때 정리해요.
             </Text>
 
             <View className="mb-1 flex-row items-center justify-between">
@@ -337,9 +337,10 @@ export default function SettingsScreen() {
 
             <View className="rounded-2xl bg-[#f2f4f6] px-4 py-3">
               <Text className="text-xs leading-5 text-[#4e5968]">
-                검증: 한 번도 안 본 2026-05~08 구간 3,116거래 · 승률 39% ·{' '}
-                <Text className="font-semibold text-[#191f28]">거래당 평균 +0.42%</Text>(비용 포함) · 4개월 전부 플러스.
-                다만 12연패 구간이 있었어요 — 한 번 −{Math.round(MODEL_CONFIG.stopLossPct * 100)}%를 감당할 금액으로만 하세요.
+                검증: 과거 4구간(2024-07~2026-04) 6,121거래 · 승률 34% ·{' '}
+                <Text className="font-semibold text-[#191f28]">거래당 평균 +0.62%</Text>(비용 포함) · 4구간 전부 플러스.
+                승률이 낮은 대신 이길 때 크게 벌어요(실측 최대 한 건 +340%). 한 번 지면 −
+                {Math.round(MODEL_CONFIG.stopLossPct * 100)}%를 감당할 금액으로만 하세요.
               </Text>
             </View>
           </View>

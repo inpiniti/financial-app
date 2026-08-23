@@ -78,7 +78,10 @@ export interface ModelGridConfig extends ModelExitConfig {
   readonly kind?: 'model';
 }
 
-/** 모델 설정의 단일 출처 — managerProvider가 주입한다. 근거: financial-analyze docs/analysis/2026-08-21_final-test-결과.md */
+/**
+ * 모델 설정의 단일 출처 — managerProvider가 주입한다.
+ * 근거: financial-analyze `docs/analysis/2026-08-24_청산-연구.md` (트레일 −5% + 하드 손절 −2%, 4폴드 전부 우세).
+ */
 export const MODEL_CONFIG: ModelGridConfig = { kind: 'model', ...MODEL_EXIT_CONFIG };
 
 /** 조건부 그리드 문턱 — 문서 §5 고정값(+2%/−3%)을 managerProvider가 주입한다. */
@@ -250,39 +253,42 @@ export function makePositionManager(
   switch (mode) {
     case 'model': {
       const model = cfg.model!;
-      const up = (model.takeProfitPct * 100).toFixed(0);
+      const trail = (model.trailPct * 100).toFixed(0);
       const dn = (model.stopLossPct * 100).toFixed(0);
       return new RulePositionManager(deps, {
         label: '모델 관리',
-        gauge: 'orders', // 게이지 양끝이 실제 청산선(+5%/−2%)이다 — 추세와 달리 그릴 선이 있다.
+        gauge: 'orders', // 게이지 위끝=진입 후 고점, 아래끝=지금 매도선. 추세와 달리 그릴 선이 있다.
         manualExitCheckMs: MANUAL_EXIT_CHECK_MS,
         build: (seed) => {
-          // 청산은 백테스트 기하 그대로 — 상단 +5% / 하단 −2% / 120분. 물타기 없음.
-          // 진입 시각은 우리가 산 포지션이면 실측(entry.entryTs), 입양이면 인계 시각(그때부터 120분).
+          // 청산은 백테스트 기하 그대로 — 트레일 −5% + 하드 손절 −2%, 익절 상한 없음. 물타기 없음.
           const entryAtMs = deps.entry?.entryTs ?? deps.clock.now();
           const rule = new ModelExitRule(seed, { ...model, entryAtMs, clock: deps.clock });
           // 서킷 데코레이터 — CIRCUIT_MODE=false면 관측(이벤트)만.
           const circuit = new CircuitExitRule(rule, { act: CIRCUIT_MODE });
-          const v = rule.view;
           return {
             rule: circuit,
             circuit,
-            priceExit: () => {
+            priceExit: (price) => {
               const kind = rule.exitKind;
-              if (kind === 'TAKE_PROFIT') {
-                return { reason: 'TAKE_PROFIT' as ExitReason, text: `익절선 도달 · +${up}% — 전량 매도해요` };
-              }
-              if (kind === 'TIMEOUT') {
+              if (kind === 'TRAIL') {
                 return {
-                  reason: 'TIMEOUT' as ExitReason,
-                  text: `${model.timeoutMinutes}분 경과 · 어느 장벽에도 안 닿아 시간 청산해요`,
+                  reason: 'TRAIL' as ExitReason,
+                  text: `트레일링 매도 · 고점 ${rule.peakPrice.toFixed(2)} 대비 −${trail}%(${rule.stopPrice.toFixed(
+                    2,
+                  )})에 닿아 전량 매도해요`,
                 };
               }
-              return { reason: 'STOP_LOSS' as ExitReason, text: `손절선 도달 · −${dn}% — 전량 매도해요` };
+              if (kind === 'SESSION_END') {
+                return { reason: 'SESSION_END' as ExitReason, text: '장 마감 · 남은 수량을 전량 매도해요' };
+              }
+              return {
+                reason: 'STOP_LOSS' as ExitReason,
+                text: `손절선 도달 · 현재가 ${price.toFixed(2)} ≤ 평단 대비 −${dn}% — 전량 매도해요`,
+              };
             },
-            armText: `${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} · 익절 ${v.sellLine.toFixed(2)}(+${up}%) · 손절 ${v.buyLine.toFixed(
+            armText: `${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} · 손절 ${rule.hardStopPrice.toFixed(
               2,
-            )}(−${dn}%) · ${model.timeoutMinutes}분 시간청산 — 물타기 없어요`,
+            )}(−${dn}%) · 오르면 고점 대비 −${trail}%로 매도선이 따라 올라가요 — 익절 상한·물타기 없어요`,
           };
         },
       });

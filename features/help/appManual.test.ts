@@ -29,11 +29,19 @@ describe('APP_MANUAL — 코드 상수와 어긋나지 않는다', () => {
     expect(APP_MANUAL).toContain(`기본 ${DEFAULT_APP_SETTINGS.minTickRate}`);
   });
 
-  it('청산 3선(익절·손절·시간)은 MODEL_CONFIG 값을 그대로 따라간다', () => {
+  it('매도선 2개(트레일링·손절)는 MODEL_CONFIG 값을 그대로 따라간다', () => {
     const pct = (r: number) => `${Number((r * 100).toFixed(2))}%`;
-    expect(APP_MANUAL).toContain(`**${pct(MODEL_CONFIG.takeProfitPct)} 오르면** 전량 매도(익절)`);
-    expect(APP_MANUAL).toContain(`**${pct(MODEL_CONFIG.stopLossPct)} 떨어지면** 전량 매도(손절)`);
-    expect(APP_MANUAL).toContain(`**${MODEL_CONFIG.timeoutMinutes}분이 지나면**`);
+    expect(APP_MANUAL).toContain(`지금까지의 최고가에서 ${pct(MODEL_CONFIG.trailPct)} 아래`);
+    expect(APP_MANUAL).toContain(`산 가격보다 ${pct(MODEL_CONFIG.stopLossPct)} 아래`);
+  });
+
+  it('익절 상한이 없다는 사실이 적혀 있다 — 트레일링 전환의 핵심', () => {
+    expect(APP_MANUAL).toContain('얼마를 벌면 판다는 목표가 없어요');
+    expect(APP_MANUAL).toContain('한 번 올라간 매도선은 내려오지 않아요');
+  });
+
+  it('승률이 낮다는 사실을 숨기지 않는다 — 트레일링은 자주 지고 크게 번다', () => {
+    expect(APP_MANUAL).toContain('승률은 **34%로 낮아요**');
   });
 
   it('물타기를 하지 않는다는 사실이 적혀 있다 — 오해가 가장 잦은 지점', () => {

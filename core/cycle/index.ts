@@ -23,13 +23,18 @@ export type CycleState = 'IDLE' | 'WATCH_BUY' | 'BUYING' | 'HOLDING' | 'SELLING'
 /** 청산 사유 — CIRCUIT(서킷 하킷 2연속, 정지 중 지정가)·MANUAL(외부·한투앱 매도를 잔고 재확인으로 인지)은 2026-08-19 서킷 도메인. */
 /** USER_SELL=앱 안에서 사용자가 게이지를 두 번 눌러 요청한 전량 매도(2026-08-22) — MANUAL(앱 밖 매도)과 구분한다. */
 /**
- * TAKE_PROFIT=모델 익절선(+5% 선터치)·TIMEOUT=모델 시간 청산(120분)  — 2026-08-22 모델 도메인.
- * 모델의 −2% 손절은 기존 STOP_LOSS를 그대로 쓴다(같은 뜻의 사유를 둘로 쪼개면 켈리·집계가 갈라진다).
+ * 모델 도메인 청산 사유(2026-08-24 트레일링 전환):
+ *   TRAIL       = 트레일링 매도선(진입 후 고점 대비 −5%) 도달 — 이익으로 끝나는 대부분이 여기다
+ *   STOP_LOSS   = 하드 손절(평단 대비 −2%) 도달. 추세 모드의 손절선도 같은 사유를 쓴다
+ *   SESSION_END = 장 마감(20:00 ET) 청산
+ * TAKE_PROFIT·TIMEOUT은 옛 고정 기하(+5%/120분) 시절 사유 — 지난 기록을 읽기 위해 남겨 둔다(신규 발생 없음).
  */
 export type ExitReason =
   | 'SELL_SIGNAL'
   | 'STOP'
   | 'STOP_LOSS'
+  | 'TRAIL'
+  | 'SESSION_END'
   | 'TAKE_PROFIT'
   | 'TIMEOUT'
   | 'CIRCUIT'
