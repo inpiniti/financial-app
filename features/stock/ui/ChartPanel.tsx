@@ -8,14 +8,15 @@ import { Pressable, Text, View, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Line, Polyline, Rect, Text as SvgText } from 'react-native-svg';
 import { computeTrendSeries } from '../../../core/trend';
-import { TREND_BAR_MINUTES, barKeyOf } from '../../../core/trend/bars';
-import { evaluateTrend, evaluateTrendLive } from '../../../core/trend/signal';
+import { barKeyOf } from '../../../core/trend/bars';
+import { describeReject, inspectModel, loadModel, type ModelInspection } from '../../../core/model';
+import { MODEL_BAR_MINUTES } from '../../../features/scalper/modelMode';
 import { getAccessToken } from '../../../kis/token';
 import type { MinuteChartExchangeCode } from '../../../kis/minuteChart';
 import { inquireOverseasPeriodChart, type PeriodChartPeriod } from '../../../kis/periodChart';
 import type { KisCredentials, KisEnvironment } from '../../../kis/types';
 import { loadAppSettings } from '../../../lib/appSettings';
-import { fetchTossMinuteCandles, resolveTossProductCode } from '../../../lib/tossMinuteChart';
+import { fetchTossDailyCloses, fetchTossMinuteCandles, resolveTossProductCode } from '../../../lib/tossMinuteChart';
 import { loadKisSettings } from '../../../lib/kisSettings';
 import { secureTokenStorage } from '../../../lib/secureTokenStorage';
 import { formatUsd } from '../../../lib/format';
@@ -32,9 +33,9 @@ type MinuteInterval = 1 | 3 | 5;
 /**
  * 자동매매 엔진이 실제로 쓰는 봉 주기 — 차트 기본값을 여기에 맞춘다(2026-08-22).
  * 8-18~21 실거래에서 "차트는 꺾였는데 앱은 안 판다"의 큰 몫이 **차트 1분봉 vs 엔진 5분봉**이었다.
- * 눈으로 보는 ma5(최근 5분)와 엔진의 ma5(최근 25분)는 애초에 다른 선이다.
+ * 지금 엔진은 모델이고, 모델은 이 주기의 봉으로만 학습·판정한다(다른 주기로는 아예 안 돌린다).
  */
-const ENGINE_INTERVAL: MinuteInterval = TREND_BAR_MINUTES as MinuteInterval;
+const ENGINE_INTERVAL: MinuteInterval = MODEL_BAR_MINUTES as MinuteInterval;
 
 const MODE_OPTIONS: Array<{ value: ChartMode; label: string }> = [
   { value: 'minute', label: '분봉' },
@@ -91,7 +92,7 @@ type LoadState =
   | { kind: 'loading' }
   | { kind: 'empty' }
   | { kind: 'error'; message: string }
-  | { kind: 'ready'; candles: ChartCandle[] };
+  | { kind: 'ready'; candles: ChartCandle[]; verdict: ModelInspection | null };
 
 interface Session {
   credentials: KisCredentials;
@@ -346,50 +347,63 @@ function CandleChart({
 
 const UP_MARK = { true: '상', false: '하', null: '?' } as const;
 
-/** 4선 상승 플래그를 "상상상상"처럼 한 덩어리로. 판정 불가는 '?'. */
-function upText(up: { ma5: boolean | null; ma20: boolean | null; ma60: boolean | null; ma120: boolean | null }): string {
-  return [up.ma5, up.ma20, up.ma60, up.ma120].map((v) => UP_MARK[String(v) as 'true' | 'false' | 'null']).join('');
-}
-
 /**
- * 엔진 판정 요약 — "그래프와 감지가 일치하는가"를 화면에서 바로 확인하는 자리(2026-08-22).
+ * 엔진 판정 요약 — "그래프와 감지가 일치하는가"를 화면에서 바로 확인하는 자리(2026-08-22 신설,
+ * 2026-08-24 모델 기준으로 교체).
  *
- * 같은 봉 데이터로 두 번 잰다:
- *  · 마감 기준  = 닫힌 봉만 (진입 BUY가 쓰는 기준)
- *  · 실시간 기준 = 진행 중 봉 포함 (청산 SELL이 쓰는 기준 · 차트에 그려진 4선과 같은 것)
- * 둘이 다르면 그게 곧 "눈에는 보이는데 아직 안 판" 구간이다.
+ * ⚠ 이 패널은 **자기 방식으로 다시 계산하지 않는다.** 자동매매 엔진(ModelScanner)과 같은 함수
+ * (`core/model/inspect`)에 같은 봉을 넣어 나온 답을 그대로 적는다. 화면이 독자적으로 판정하다
+ * 엔진과 다른 답을 보여 준 게 2026-08-22 사고의 본질이었다.
+ *
+ * 봉 주기가 엔진과 다르면 확률을 지어내지 않고 "그 주기로는 판정하지 않는다"고만 말한다 —
+ * 모델은 학습한 주기의 봉으로만 의미가 있다.
  */
-function EngineVerdict({ candles, interval }: { candles: ChartCandle[]; interval: MinuteInterval }) {
-  const closed = candles.filter((c) => c.inProgress !== true).map((c) => c.close);
-  const cur = candles.find((c) => c.inProgress === true);
-  const closedEval = evaluateTrend(closed);
-  const liveEval = cur ? evaluateTrendLive(closed, cur.close) : null;
-  const ready = closedEval.up.ma120 !== null;
-  const matched = interval === ENGINE_INTERVAL;
+function EngineVerdict({
+  verdict,
+  interval,
+  closedBars,
+}: {
+  verdict: ModelInspection | null;
+  interval: MinuteInterval;
+  closedBars: number;
+}) {
+  if (interval !== ENGINE_INTERVAL || verdict === null) {
+    return (
+      <View className="mt-2 bg-white py-1">
+        <Text className="px-5 py-[13px] text-xs leading-5 text-[#8b95a1]">
+          자동매매는 {ENGINE_INTERVAL}분봉으로만 판정해요. 지금 보는 {interval}분봉으로는 모델을 돌리지 않아요 —
+          위 탭에서 {ENGINE_INTERVAL}분을 고르면 앱이 지금 이 종목을 어떻게 보고 있는지 그대로 보여 줘요.
+        </Text>
+      </View>
+    );
+  }
+
+  const why = describeReject(verdict);
+  const buy = verdict.signal === 'BUY';
 
   return (
     <View className="mt-2 bg-white py-1">
       <View className="flex-row items-center justify-between px-5 py-[13px]">
-        <Text className="text-sm text-[#4e5968]">봉 마감 기준 4선</Text>
-        <Text className="text-sm font-semibold text-[#191f28]">
-          {upText(closedEval.up)} · {closed.length}봉
+        <Text className="text-sm text-[#4e5968]">모델 판정</Text>
+        <Text className="text-sm font-semibold" style={{ color: buy ? '#f04452' : '#191f28' }}>
+          {buy ? '살 자리예요' : '안 사요'}
         </Text>
       </View>
       <View className="flex-row items-center justify-between px-5 py-[13px]">
-        <Text className="text-sm text-[#4e5968]">진행 중 봉 포함</Text>
-        <Text
-          className="text-sm font-semibold"
-          style={{ color: liveEval?.signal === 'SELL' ? '#3182f6' : '#191f28' }}
-        >
-          {liveEval ? `${upText(liveEval.up)}${liveEval.signal === 'SELL' ? ' · 매도' : ''}` : '진행 중 봉 없음'}
+        <Text className="text-sm text-[#4e5968]">확률 / 기준</Text>
+        <Text className="text-sm font-semibold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
+          {verdict.prob === null ? '—' : `${(verdict.prob * 100).toFixed(1)}%`} / {(verdict.threshold * 100).toFixed(1)}%
+        </Text>
+      </View>
+      <View className="flex-row items-center justify-between px-5 py-[13px]">
+        <Text className="text-sm text-[#4e5968]">오늘 판정에 쓴 봉</Text>
+        <Text className="text-sm font-semibold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
+          {verdict.dayBars}개 · 거래대금 ${Math.round(verdict.cumDollarVolume / 10_000) / 100}M
         </Text>
       </View>
       <Text className="px-5 pb-3 pt-1 text-xs leading-5 text-[#8b95a1]">
-        {!matched
-          ? `엔진은 ${ENGINE_INTERVAL}분봉으로 판정해요. 지금 보는 ${interval}분봉과는 4선이 다른 선이라 신호도 다르게 보여요.`
-          : !ready
-            ? `120선을 재려면 ${121 - closed.length}봉이 더 필요해요. 그때까지 이 종목은 사지도 팔지도 않아요.`
-            : '점선 왼쪽까지가 확정된 봉이에요. 매수는 봉이 닫혀야 하고, 매도는 진행 중 봉이 꺾이면 바로 나가요.'}
+        {why ?? '지금 봉 마감 기준으로는 매수 조건을 만족해요.'} 점선 왼쪽까지가 확정된 봉이고, 아직 안 끝난 봉은
+        판정에 넣지 않아요(엔진도 같아요). 전체 {closedBars}봉 중 오늘(04:00 ET 이후) 봉만 판정에 써요.
       </Text>
     </View>
   );
@@ -485,7 +499,37 @@ export function ChartPanel({ ticker, excd }: ChartPanelProps) {
           }));
         }
         if (cancelled) return;
-        setState(candles.length === 0 ? { kind: 'empty' } : { kind: 'ready', candles });
+        if (candles.length === 0) {
+          setState({ kind: 'empty' });
+          return;
+        }
+        // 모델 판정 — 엔진과 같은 봉 주기일 때만, 엔진과 같은 함수로. 실패해도 차트는 그대로 그린다.
+        let verdict: ModelInspection | null = null;
+        if (mode === 'minute' && minuteInterval === ENGINE_INTERVAL) {
+          try {
+            const code = tossCodeRef.current?.code;
+            const daily = code ? await fetchTossDailyCloses(code, 5).catch(() => []) : [];
+            if (cancelled) return;
+            verdict = inspectModel(loadModel(), {
+              bars: candles
+                .filter((c) => c.inProgress !== true)
+                .map((c) => ({
+                  minuteKey: Number(c.key),
+                  open: c.open,
+                  high: c.high,
+                  low: c.low,
+                  close: c.close,
+                  volume: c.volume,
+                })),
+              dailyCloses: daily,
+              barMinutes: ENGINE_INTERVAL,
+            });
+          } catch {
+            verdict = null; // 모델을 못 돌려도 차트는 보여 준다.
+          }
+        }
+        if (cancelled) return;
+        setState({ kind: 'ready', candles, verdict });
       } catch (e) {
         if (!cancelled) {
           setState({ kind: 'error', message: e instanceof Error ? e.message : '차트를 불러오지 못했어요' });
@@ -555,7 +599,13 @@ export function ChartPanel({ ticker, excd }: ChartPanelProps) {
             <View className="px-4">
               <CandleChart candles={state.candles} width={svgWidth} height={chartHeight} trendOverlay={mode === 'minute'} />
             </View>
-            {mode === 'minute' && <EngineVerdict candles={state.candles} interval={minuteInterval} />}
+            {mode === 'minute' && (
+              <EngineVerdict
+                verdict={state.verdict}
+                interval={minuteInterval}
+                closedBars={state.candles.filter((c) => c.inProgress !== true).length}
+              />
+            )}
           </View>
         )}
       </View>

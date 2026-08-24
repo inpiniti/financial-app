@@ -24,6 +24,7 @@ import { ListRow } from '../../../components/ListRow';
 import { Panel } from '../../../components/Panel';
 import { loadAppSettings, type AppSettings } from '../../../lib/appSettings';
 import { peekManagerBootstrap } from '../../scalper/ui/managerProvider';
+import { MODEL_MODE } from '../../scalper/modelMode';
 import { APP_MANUAL, type HelpRuntimeState } from '../appManual';
 import { SUGGESTED_QUESTIONS, askHelp, type HelpMessage } from '../helpChat';
 import { HELP_TOOL_DECLARATIONS, runHelpTool, type HelpAutopilotSnapshot } from '../tools';
@@ -136,13 +137,31 @@ function readAutopilotSnapshot(): HelpAutopilotSnapshot | null {
       name: row.entry.name,
       price: row.view.price,
       tickRate: row.view.tickRate ?? null,
-      trend: formatTrendForTool(row.view.trend),
+      signal: formatSignalForTool(row.view),
+      candidate: view.watched.includes(row.entry.ticker),
     })),
   };
 }
 
-/** 추세 4선을 도구 결과에 넣을 한 줄로 — 화면 표기(5↑ 20↑ …)와 같은 읽기 방식. */
-function formatTrendForTool(trend: { up: { ma5: boolean | null; ma20: boolean | null; ma60: boolean | null; ma120: boolean | null }; bars: number } | null): string {
+/**
+ * 그 종목의 현행 감지 요약 한 줄 — **화면과 같은 기준**으로 만든다.
+ * 모델 모드(현행)는 모델 확률, 추세 모드(롤백 경로)는 4선 방향. 2026-08-24까지 여기가 4선 고정이라
+ * 모델 모드에서 챗봇이 전 종목을 "봉 부족"이라고 답했다.
+ */
+function formatSignalForTool(view: { modelProb: number | null; trend: TrendLike }): string {
+  if (MODEL_MODE) {
+    return view.modelProb === null ? '아직 판정 전(봉 마감 대기)' : `모델 확률 ${(view.modelProb * 100).toFixed(1)}%`;
+  }
+  return formatTrendForTool(view.trend);
+}
+
+type TrendLike = {
+  up: { ma5: boolean | null; ma20: boolean | null; ma60: boolean | null; ma120: boolean | null };
+  bars: number;
+} | null;
+
+/** 추세 4선을 도구 결과에 넣을 한 줄로 — 화면 표기(5↑ 20↑ …)와 같은 읽기 방식(추세 모드에서만). */
+function formatTrendForTool(trend: TrendLike): string {
   if (!trend) return '봉 부족';
   const arrow = (up: boolean | null) => (up === null ? '·' : up ? '상승' : '하락');
   return `5선 ${arrow(trend.up.ma5)}, 20선 ${arrow(trend.up.ma20)}, 60선 ${arrow(trend.up.ma60)}, 120선 ${arrow(trend.up.ma120)} (봉 ${trend.bars})`;

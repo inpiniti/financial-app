@@ -26,13 +26,19 @@ export interface HelpAutopilotSnapshot {
    * 실패가 전부 여기 남는다(2026-08-22 추가 — 실거래 진단이 매번 이 로그를 못 읽어서 막혔다).
    */
   events?: Array<{ at: number; text: string }>;
-  /** 트레이딩 리스트 — 티커·이름·현재가·속도·추세 4선 방향. */
+  /** 트레이딩 리스트 — 티커·이름·현재가·속도·모델 판정 한 줄. */
   list: Array<{
     ticker: string;
     name?: string;
     price: number | null;
     tickRate: number | null;
-    trend: string;
+    /**
+     * 그 종목의 현행 감지 요약 — 모델 모드면 "모델 확률 x.x%", 추세 모드면 4선 방향.
+     * 2026-08-24까지 이 자리는 추세 4선 고정이라 모델 모드에서 전 종목이 "봉 부족"으로 나왔다.
+     */
+    signal: string;
+    /** 지금 매수가 허용되는 종목인가(속도 상위 watchCount종). */
+    candidate?: boolean;
   }>;
 }
 
@@ -57,7 +63,7 @@ export const HELP_TOOL_DECLARATIONS = [
   {
     name: 'getWatchlist',
     description:
-      '지금 감시 중인 트레이딩 리스트를 돌려준다(티커·이름·현재가·틱속도·추세 4선 방향). 어떤 종목을 보고 있는지, 왜 진입 신호가 없는지 설명할 때 쓴다.',
+      '지금 트레이딩 리스트를 돌려준다(티커·이름·현재가·틱속도·모델 판정 요약·매수 후보 여부). 어떤 종목을 보고 있는지, 왜 진입 신호가 없는지 설명할 때 쓴다. candidate=false면 모델 확률이 높아도 사지 않는다(속도 상위 밖).',
     parameters: { type: 'OBJECT', properties: {} },
   },
   {
@@ -153,9 +159,9 @@ export const HELP_TOOL_DECLARATIONS = [
   {
     name: 'getMinuteCandles',
     description:
-      '미국 종목의 분봉(1·3·5·15분)을 토스 차트에서 가져오고, 그 봉으로 추세 4선(5·20·60·120선) 판정까지 계산해 돌려준다. ' +
-      '기본은 자동매매 엔진이 실제로 쓰는 봉 주기다. "지금 4선이 어때?", "왜 매도 신호가 안 나?", ' +
-      '"차트랑 앱 판정이 왜 달라?" 같은 질문에 쓴다. 닫힌 봉 기준(매수 판정)과 진행 중 봉 포함 기준(매도 판정)을 둘 다 준다.',
+      '미국 종목의 분봉을 토스 차트에서 가져오고, 엔진과 똑같은 절차로 모델 판정(확률·기준값·안 사는 이유)까지 계산해 돌려준다. ' +
+      '기본은 자동매매가 실제로 쓰는 봉 주기다. "지금 이 종목 확률 얼마야?", "왜 안 사?", "차트랑 앱 판정이 왜 달라?" 같은 질문에 쓴다. ' +
+      '봉은 진행 중(미완성) 봉을 빼고 본다 — 엔진도 닫힌 봉만 판정하기 때문이다.',
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -502,13 +508,14 @@ export async function runHelpTool(
       case 'getMinuteCandles': {
         const ticker = String(args.ticker ?? '').trim().toUpperCase();
         if (!ticker) return { error: '티커가 필요해요' };
-        const [{ fetchTossMinuteCandles, resolveTossProductCode }, { TREND_BAR_MINUTES, barKeyOf }, signal] =
+        const [{ fetchTossMinuteCandles, fetchTossDailyCloses, resolveTossProductCode }, model, { MODEL_BAR_MINUTES }] =
           await Promise.all([
             import('../../lib/tossMinuteChart'),
-            import('../../core/trend/bars'),
-            import('../../core/trend/signal'),
+            import('../../core/model'),
+            import('../scalper/modelMode'),
           ]);
-        const intervalMin = Math.max(1, Math.floor(num(args.intervalMin) || TREND_BAR_MINUTES));
+        const barKeyOf = (tsMs: number, m: number) => Math.floor(tsMs / (60_000 * m)) * m;
+        const intervalMin = Math.max(1, Math.floor(num(args.intervalMin) || MODEL_BAR_MINUTES));
         const count = Math.max(1, Math.min(300, Math.floor(num(args.count) || 130)));
         // 거래소는 종목 검색으로 — 못 찾으면 나스닥으로 시도(getQuote와 같은 관례).
         const hits = await searchStocks(ticker, { fetchImpl: deps.fetchImpl }).catch(() => []);
@@ -523,28 +530,50 @@ export async function runHelpTool(
         const nowBarKey = barKeyOf(deps.now ? deps.now() : Date.now(), intervalMin);
         const closed = candles.filter((c) => c.minuteKey < nowBarKey);
         const cur = candles.find((c) => c.minuteKey >= nowBarKey) ?? null;
-        const closedEval = signal.evaluateTrend(closed.map((c) => c.close));
-        const liveEval = cur ? signal.evaluateTrendLive(closed.map((c) => c.close), cur.close) : null;
-        const arrows = (up: { ma5: boolean | null; ma20: boolean | null; ma60: boolean | null; ma120: boolean | null }) => ({
-          ma5: up.ma5 === null ? '판정불가' : up.ma5 ? '상승' : '하락',
-          ma20: up.ma20 === null ? '판정불가' : up.ma20 ? '상승' : '하락',
-          ma60: up.ma60 === null ? '판정불가' : up.ma60 ? '상승' : '하락',
-          ma120: up.ma120 === null ? '판정불가' : up.ma120 ? '상승' : '하락',
-        });
+
+        // 모델 판정 — 엔진(ModelScanner)과 **같은 절차**(core/model/inspect)로 낸다. 화면·챗봇이 자기 방식으로
+        // 다시 계산해 엔진과 다른 답을 말하던 사고(2026-08-22)를 되풀이하지 않기 위한 단일 통로다.
+        // 봉 주기가 엔진과 다르면 학습과 다른 입력이므로 아예 판정하지 않는다 — 참고 수치도 지어내지 않는다.
+        const sameBar = intervalMin === MODEL_BAR_MINUTES;
+        const daily = sameBar
+          ? await fetchTossDailyCloses(code, 5, { fetchImpl: deps.fetchImpl }).catch(() => [])
+          : [];
+        const verdict = sameBar
+          ? model.inspectModel(model.loadModel(), {
+              bars: closed.map((c) => ({
+                minuteKey: c.minuteKey,
+                open: c.open,
+                high: c.high,
+                low: c.low,
+                close: c.close,
+                volume: c.volume,
+              })),
+              dailyCloses: daily,
+              barMinutes: intervalMin,
+            })
+          : null;
         return {
           ticker,
           intervalMin,
-          engineIntervalMin: TREND_BAR_MINUTES,
-          note:
-            intervalMin === TREND_BAR_MINUTES
-              ? '자동매매 엔진과 같은 봉 주기예요.'
-              : `엔진은 ${TREND_BAR_MINUTES}분봉으로 판정해요 — 이 결과는 참고용이에요.`,
+          engineIntervalMin: MODEL_BAR_MINUTES,
+          note: sameBar
+            ? '자동매매 엔진과 같은 봉 주기예요 — 아래 modelVerdict는 엔진이 내리는 것과 같은 계산이에요.'
+            : `엔진은 ${MODEL_BAR_MINUTES}분봉으로만 판정해요 — 다른 주기로는 모델을 돌리지 않고 봉만 보여 줘요.`,
           closedBars: closed.length,
-          inProgressBar: cur ? { time: cur.dt, close: cur.close, volume: cur.volume } : null,
-          // 매수(BUY) 판정 기준 — 닫힌 봉만.
-          closedVerdict: { up: arrows(closedEval.up), signal: closedEval.signal, lines: closedEval.lines },
-          // 매도(SELL) 판정 기준 — 진행 중 봉 포함(차트에 그려지는 4선과 같은 것).
-          liveVerdict: liveEval ? { up: arrows(liveEval.up), signal: liveEval.signal } : null,
+          inProgressBar: cur
+            ? { time: cur.dt, close: cur.close, volume: cur.volume, note: '아직 안 끝난 봉이라 판정에 넣지 않아요' }
+            : null,
+          modelVerdict: verdict
+            ? {
+                buy: verdict.signal === 'BUY',
+                probPct: verdict.prob === null ? null : Number((verdict.prob * 100).toFixed(2)),
+                thresholdPct: Number((verdict.threshold * 100).toFixed(2)),
+                whyNot: model.describeReject(verdict),
+                dayBars: verdict.dayBars,
+                cumDollarVolumeUsd: Math.round(verdict.cumDollarVolume),
+                etDate: verdict.etDate,
+              }
+            : null,
           // 최근 12봉만 — 전부 넣으면 프롬프트를 통째로 먹는다.
           recentCandles: candles.slice(-12).map((c) => ({
             time: c.dt,

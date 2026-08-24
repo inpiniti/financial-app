@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { HELP_TOOL_DECLARATIONS, runHelpTool, type HelpAutopilotSnapshot } from './tools';
+import { MODEL_BAR_MINUTES } from '../scalper/modelMode';
 
 const SNAPSHOT: HelpAutopilotSnapshot = {
   state: 'SCANNING',
@@ -7,7 +8,10 @@ const SNAPSHOT: HelpAutopilotSnapshot = {
   cycles: 2,
   cumPnlUsd: 1.2345,
   maxGrids: 1,
-  list: [{ ticker: 'NVDA', name: '엔비디아', price: 180.2, tickRate: 3.4, trend: '5선 상승, 20선 하락' }],
+  list: [
+    { ticker: 'NVDA', name: '엔비디아', price: 180.2, tickRate: 3.4, signal: '모델 확률 2.1%', candidate: true },
+    { ticker: 'AMD', name: 'AMD', price: 140.5, tickRate: 0.2, signal: '아직 판정 전(봉 마감 대기)', candidate: false },
+  ],
 };
 
 describe('도구 목록 — 읽기 전용 불변식', () => {
@@ -48,12 +52,15 @@ describe('runHelpTool — 앱 상태 도구', () => {
     expect(res.todayPnlUsd).toBe(1.23); // 소수점 2자리로 다듬어 프롬프트를 짧게
   });
 
-  it('감시 목록은 추세 방향까지 함께 준다 — "왜 안 사요?"의 근거', async () => {
+  it('리스트는 모델 판정과 매수 후보 여부를 함께 준다 — "왜 안 사요?"의 근거', async () => {
     const res = (await runHelpTool('getWatchlist', {}, { autopilot: () => SNAPSHOT })) as {
-      stocks: Array<{ ticker: string; trend: string }>;
+      stocks: Array<{ ticker: string; signal: string; candidate?: boolean }>;
     };
     expect(res.stocks[0].ticker).toBe('NVDA');
-    expect(res.stocks[0].trend).toContain('20선 하락');
+    expect(res.stocks[0].signal).toContain('모델 확률');
+    expect(res.stocks[0].candidate).toBe(true);
+    // 후보 밖 종목도 리스트에는 있다 — 확률이 높아도 못 사는 이유를 설명할 수 있어야 한다.
+    expect(res.stocks[1].candidate).toBe(false);
   });
 });
 
@@ -135,7 +142,7 @@ describe('runHelpTool — 계좌 진단(getAccountBinding)', () => {
 
 describe('runHelpTool — 분봉·차트 조회(2026-08-22)', () => {
   /** 토스 자동완성 + c-chart를 한 벌로 흉내낸다. n봉을 1분 간격 오름차순으로 만든 뒤 최신순으로 준다. */
-  function tossFetch(closes: number[], lastMinuteKey: number) {
+  function tossFetch(closes: number[], lastMinuteKey: number, stepMin = 1) {
     return vi.fn(async (url: string | URL, init?: { method?: string }) => {
       if (init?.method === 'POST') {
         return {
@@ -146,19 +153,20 @@ describe('runHelpTool — 분봉·차트 조회(2026-08-22)', () => {
       }
       const candles = closes
         .map((close, i) => {
-          const key = lastMinuteKey - (closes.length - 1 - i);
-          return { dt: new Date(key * 60_000).toISOString(), open: close, high: close, low: close, close, volume: 1 };
+          const key = lastMinuteKey - (closes.length - 1 - i) * stepMin;
+          return { dt: new Date(key * 60_000).toISOString(), open: close, high: close, low: close, close, volume: 1_000_000 };
         })
         .reverse(); // 토스는 최신순
+      // 일봉(day) 조회도 같은 목으로 받는다 — 전일 종가는 이 테스트의 관심사가 아니다.
+      if (String(url).includes('day:1')) return { json: async () => ({ result: { candles: [] } }) } as unknown as Response;
       expect(String(url)).toContain('c-chart');
       return { json: async () => ({ result: { candles } }) } as unknown as Response;
     });
   }
 
-  it('분봉을 가져와 4선 판정까지 계산한다 — 닫힌 봉 기준과 진행 중 봉 포함 기준을 둘 다 준다', async () => {
+  it('진행 중 봉은 판정에서 빼고 따로 알려 준다 — 엔진도 닫힌 봉만 본다', async () => {
     const nowMs = 1_800_000_000_000;
     const nowKey = Math.floor(nowMs / 60_000);
-    // 122봉 오름차순(전부 상승) + 진행 중 봉 하나를 급락으로.
     const closes = [...Array.from({ length: 122 }, (_, i) => 100 + i), 1];
     const fetchImpl = tossFetch(closes, nowKey);
     const res = (await runHelpTool(
@@ -169,11 +177,42 @@ describe('runHelpTool — 분봉·차트 조회(2026-08-22)', () => {
     expect(res.error).toBeUndefined();
     expect(res.closedBars).toBe(122);
     expect(res.inProgressBar.close).toBe(1);
-    expect(res.closedVerdict.up.ma5).toBe('상승'); // 닫힌 봉만 보면 아직 상승
-    expect(res.closedVerdict.signal).toBeNull();
-    expect(res.liveVerdict.up.ma5).toBe('하락'); // 진행 중 봉을 넣으면 이미 꺾였다
-    expect(res.liveVerdict.signal).toBe('SELL');
+    expect(res.inProgressBar.note).toContain('판정에 넣지 않아요');
     expect(res.recentCandles).toHaveLength(12);
+  });
+
+  it('엔진 봉 주기가 아니면 모델을 돌리지 않는다 — 참고 수치를 지어내지 않는다', async () => {
+    const nowMs = 1_800_000_000_000;
+    const nowKey = Math.floor(nowMs / 60_000);
+    const fetchImpl = tossFetch(Array.from({ length: 20 }, () => 10), nowKey);
+    const res = (await runHelpTool(
+      'getMinuteCandles',
+      { ticker: 'AAA', intervalMin: 1 }, // 엔진은 5분봉
+      { fetchImpl: fetchImpl as unknown as typeof fetch, now: () => nowMs },
+    )) as Record<string, any>;
+    expect(res.modelVerdict).toBeNull();
+    expect(res.note).toContain('분봉으로만 판정해요');
+    expect(res.engineIntervalMin).toBe(MODEL_BAR_MINUTES);
+  });
+
+  it('엔진과 같은 봉 주기면 모델 판정을 함께 준다 — 확률·기준값·안 사는 이유', async () => {
+    // 정규장 5분봉 20개(09:30 ET~)를 만들어 세션 필터를 통과시킨다.
+    const startKey = Math.floor(Date.parse('2026-08-18T09:30:00-04:00') / 60_000);
+    const lastKey = startKey + 19 * 5;
+    const nowMs = (lastKey + 5) * 60_000 + 1_000; // 마지막 봉은 닫혔고 그다음 봉이 진행 중
+    const fetchImpl = tossFetch(Array.from({ length: 20 }, () => 10), lastKey, 5);
+    const res = (await runHelpTool(
+      'getMinuteCandles',
+      { ticker: 'AAA', intervalMin: MODEL_BAR_MINUTES },
+      { fetchImpl: fetchImpl as unknown as typeof fetch, now: () => nowMs },
+    )) as Record<string, any>;
+    expect(res.modelVerdict).not.toBeNull();
+    expect(res.modelVerdict.thresholdPct).toBeGreaterThan(0);
+    expect(res.modelVerdict.etDate).toBe('2026-08-18');
+    expect(res.modelVerdict.dayBars).toBe(20);
+    // 실제 모델은 이 밋밋한 봉에 신호를 내지 않는다 — 안 사는 이유가 사람 문장으로 온다.
+    expect(res.modelVerdict.buy).toBe(false);
+    expect(typeof res.modelVerdict.whyNot).toBe('string');
   });
 
   it('토스에서 종목을 못 찾으면 error 객체', async () => {

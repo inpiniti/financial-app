@@ -23,6 +23,17 @@ describe('APP_MANUAL — 코드 상수와 어긋나지 않는다', () => {
     expect(APP_MANUAL).toContain(`${RANKING_TOTAL_MAX}개의 트레이딩 리스트`);
   });
 
+  it('차트 기본 분봉은 모델 봉 주기와 같다 — 화면과 엔진이 다른 봉을 보면 판정이 어긋난다(2026-08-22 사고)', () => {
+    expect(APP_MANUAL).toContain(`분봉 기본값은 ${MODEL_BAR_MINUTES}분`);
+  });
+
+  it('현행이 아닌 규칙(추세 4선)을 매매 규칙으로 설명하지 않는다 — 모델 전환 뒤 문서가 뒤처지지 않게', () => {
+    // 4선은 차트 오버레이로만 남았다. "판정/매수/매도 기준"으로 소개하면 챗봇이 옛 규칙을 말한다.
+    expect(APP_MANUAL).not.toContain('4선이 꺾');
+    expect(APP_MANUAL).not.toContain('4선이 모두 상승');
+    expect(APP_MANUAL).not.toContain('플립');
+  });
+
   it('설정 기본값은 하드코딩이 아니라 DEFAULT_APP_SETTINGS에서 온다', () => {
     expect(APP_MANUAL).toContain(`기본 $${DEFAULT_APP_SETTINGS.startAmountUsd}`);
     expect(APP_MANUAL).toContain(`기본 $${DEFAULT_APP_SETTINGS.maxPriceUsd}`);
