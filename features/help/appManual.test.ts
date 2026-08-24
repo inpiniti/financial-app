@@ -64,6 +64,7 @@ describe('설정 키 커버리지 — 설정을 추가하면 문서도 같이 �
       maxPriceUsd: '**가격 상한(USD)**',
       maxConcurrentGrids: '**동시 그리드 수**',
       minTickRate: '**최소 속도(틱/초)**',
+      watchCount: '**매수 후보 수**',
       buyCancelAfterSec: '**매수 미체결 취소(초)**',
       rankingSelection: '**순위 원천**',
     };

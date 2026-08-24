@@ -64,8 +64,15 @@ import type {
 
 export const AUTOPILOT_STORAGE_KEY = 'scalper:autopilot';
 
-/** 감시 대상 수(자격자 중 상위 N) · 재평가 주기 · 히스테리시스 배율. */
-export const WATCH_COUNT = 3;
+/**
+ * 매수 후보 수 기본값(최소 속도를 통과한 종목 중 틱/초 상위 N) · 재평가 주기 · 히스테리시스 배율.
+ * 2026-08-24: 3 → **5**, 그리고 설정값(AutoPilotConfig.watchCount)으로 승격했다.
+ * 이 목록은 화면의 "감시"이자 **매수가 허용되는 종목 집합**이다 — 모델은 리스트 전체를 계속 판정하지만
+ * 후보 밖에서 나온 BUY는 실행되지 않는다(handleBuySignal에서 사유와 함께 폐기).
+ */
+export const WATCH_COUNT = 5;
+/** 매수 후보 수 상한 — 리스트 최대치(RANKING_TOTAL_MAX)를 넘겨 봐야 의미가 없다. */
+export const WATCH_COUNT_LIMIT = 30;
 export const RESELECT_INTERVAL_MS = 30_000;
 
 /** BUY 폐기 이벤트 스로틀(종목당) — 신호가 3분마다 재발화해도 로그는 10분에 1번. */
@@ -110,6 +117,12 @@ export interface AutoPilotConfig {
    */
   maxPriceUsd?: number;
   minTickRate: number;
+  /**
+   * 매수 후보 수(틱/초 상위 N) — 미지정이면 WATCH_COUNT(5). 최소 속도를 통과한 종목 중 다시 이만큼만
+   * 후보로 남고, 그 밖에서 나온 BUY는 실행되지 않는다(2026-08-24). 이미 보유·진입 중인 종목은 후보에서 빠지므로
+   * 자리가 놀지 않는다. 옛 저장값 호환을 위해 선택 키.
+   */
+  watchCount?: number;
   /** 동시에 열 수 있는 그리드(포지션) 최대 개수. 미지정이면 DEFAULT_MAX_GRIDS. */
   maxConcurrentGrids?: number;
 }
@@ -246,6 +259,12 @@ export function validateConfig(config: AutoPilotConfig): string | null {
       return '진입 수량은 1 이상의 정수로 입력해 주세요 (비우면 진입금액으로 계산)';
     }
   }
+  if (config.watchCount !== undefined) {
+    const n = config.watchCount;
+    if (!Number.isFinite(n) || n < 1 || n > WATCH_COUNT_LIMIT || !Number.isInteger(n)) {
+      return `매수 후보 수는 1~${WATCH_COUNT_LIMIT} 사이의 정수로 입력해 주세요 (기본 ${WATCH_COUNT})`;
+    }
+  }
   if (config.maxConcurrentGrids !== undefined) {
     const n = config.maxConcurrentGrids;
     if (!Number.isFinite(n) || n < 1 || n > MAX_GRIDS_LIMIT) {
@@ -357,7 +376,8 @@ export class AutoPilot {
   private readonly gridBuyLegDelayMs: number;
   private readonly reselectIntervalMs: number;
   private readonly hysteresisRatio: number;
-  private readonly watchCount: number;
+  /** 매수 후보 수의 폴백(deps 주입값). 실제 값은 설정(config.watchCount)이 우선한다 — watchCountNow. */
+  private readonly watchCountFallback: number;
 
   /** start()~finishStop() 사이인가. 전역 state는 이 플래그·faulted·paused에서 파생된다. */
   private running = false;
@@ -412,7 +432,7 @@ export class AutoPilot {
     this.gridBuyLegDelayMs = deps.gridBuyLegDelayMs ?? GRID_BUY_LEG_DELAY_MS;
     this.reselectIntervalMs = deps.reselectIntervalMs ?? RESELECT_INTERVAL_MS;
     this.hysteresisRatio = deps.hysteresisRatio ?? HYSTERESIS_RATIO;
-    this.watchCount = deps.watchCount ?? WATCH_COUNT;
+    this.watchCountFallback = deps.watchCount ?? WATCH_COUNT;
   }
 
   // ---- 구독/뷰 ----
@@ -485,6 +505,20 @@ export class AutoPilot {
 
   private get maxGrids(): number {
     return maxGridsOf(this.config);
+  }
+
+  /** 지금 적용 중인 매수 후보 수 — 설정값 > 주입값 > 기본값(5) 순(2026-08-24). */
+  private get watchCountNow(): number {
+    const n = this.config?.watchCount;
+    return n !== undefined && Number.isFinite(n) && n >= 1 ? Math.floor(n) : this.watchCountFallback;
+  }
+
+  /**
+   * 지금 매수가 허용되는 종목들(= 화면의 "감시") — 최소 속도를 통과한 것 중 틱/초 상위 watchCountNow종.
+   * 이미 보유·진입 중인 종목은 빠져 있다. reselect가 유지한다.
+   */
+  get candidateTickers(): readonly string[] {
+    return [...this.watchedTickers];
   }
 
   /** 관리 중 그리드 뷰 — 그리드가 인계된 사이클만(진입 직후·비그리드 경로는 빠진다). */
@@ -576,6 +610,7 @@ export class AutoPilot {
       (prev.entryQty ?? 0) === (config.entryQty ?? 0) &&
       (prev.maxPriceUsd ?? 0) === (config.maxPriceUsd ?? 0) &&
       prev.minTickRate === config.minTickRate &&
+      (prev.watchCount ?? WATCH_COUNT) === (config.watchCount ?? WATCH_COUNT) &&
       (prev.maxConcurrentGrids ?? DEFAULT_MAX_GRIDS) === (config.maxConcurrentGrids ?? DEFAULT_MAX_GRIDS)
     ) {
       return null;
@@ -845,7 +880,7 @@ export class AutoPilot {
       .sort((a, b) => rateOf(b) - rateOf(a));
 
     // 빈 자리는 자격자로만 채운다(히스테리시스 없음 — 신규 편입).
-    while (watched.length < this.watchCount && candidates.length > 0) {
+    while (watched.length < this.watchCountNow && candidates.length > 0) {
       watched.push(candidates.shift()!);
     }
 
@@ -872,8 +907,8 @@ export class AutoPilot {
     this.watchedTickers = next;
     this.event(
       next.length > 0
-        ? `감시 교체 · ${next.join(', ')}`
-        : `감시 대상 없음 · 모든 종목이 ${minRate}틱/초 미만이라 기다리고 있어요`,
+        ? `매수 후보 교체 · ${next.join(', ')} (속도 상위 ${this.watchCountNow}종)`
+        : `매수 후보 없음 · 모든 종목이 ${minRate}틱/초 미만이라 기다리고 있어요`,
     );
     this.emit();
   }
@@ -949,6 +984,20 @@ export class AutoPilot {
     if (rate < (this.config?.minTickRate ?? DEFAULT_MIN_TICK_RATE)) {
       // 2026-08-20까지는 무음 폐기였다 — 속도 필터가 ZNB +72% 신호를 버린 걸 이틀 뒤에야 알았다. 이벤트로 남긴다.
       this.dropBuySignal(ctx.ticker, `속도 ${rate.toFixed(1)}틱/초 < 기준 ${this.config?.minTickRate ?? DEFAULT_MIN_TICK_RATE}`);
+      return;
+    }
+
+    // 매수 후보 게이트(2026-08-24 사용자 요청) — 최소 속도를 넘겼어도 **틱/초 상위 watchCount종**이
+    // 아니면 사지 않는다. 모델은 리스트 전 종목을 계속 판정하지만(확률은 화면에 다 보인다) 실제 매수는
+    // "지금 가장 활발한 몇 종목" 안에서만 일어난다 — 조용한 종목의 신호는 호가가 얇아 빠져나오기 어렵다.
+    // 후보 목록은 reselect가 유지한다(보유·진입 중 종목은 빠져 있어 자리가 놀지 않는다).
+    if (!this.watchedTickers.includes(ctx.ticker)) {
+      this.dropBuySignal(
+        ctx.ticker,
+        `매수 후보(속도 상위 ${this.watchCountNow}종) 밖이에요 · 지금 ${rate.toFixed(1)}틱/초, 후보 ${
+          this.watchedTickers.length > 0 ? this.watchedTickers.join(', ') : '없음'
+        }`,
+      );
       return;
     }
     this.pendingBuys.set(ctx.ticker, { ctx, tickRate: rate });

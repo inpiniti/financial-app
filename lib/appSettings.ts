@@ -73,6 +73,13 @@ export interface AppSettings {
   maxPriceUsd: number;
   /** 최소 속도(틱/초) — 이보다 조용한 종목은 감시하지 않는다. 기본 1(autopilot.DEFAULT_MIN_TICK_RATE와 같은 값). */
   minTickRate: number;
+  /**
+   * 매수 후보 수 — 트레이딩 리스트에서 **틱/초가 빠른 상위 몇 종목**만 매수 후보로 둘지. 기본 5
+   * (autopilot.WATCH_COUNT와 같은 값). 최소 속도를 통과한 종목 중에서 다시 이 수만큼만 남는다.
+   * 모델은 리스트 전 종목을 계속 판정하지만(확률은 화면에 다 보인다) **매수는 후보 안에서만** 일어난다.
+   * 2026-08-24 사용자 요청 — 조용한 종목에서 나온 신호가 실제로는 못 빠져나오는 자리였다.
+   */
+  watchCount: number;
   /** 동시에 관리할 그리드(종목) 개수. 기본 1(autopilot.DEFAULT_MAX_GRIDS와 같은 값), 상한은 autopilot이 잘라낸다. */
   maxConcurrentGrids: number;
   /**
@@ -97,6 +104,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   entryQty: 0,
   maxPriceUsd: 200,
   minTickRate: 1,
+  watchCount: 5,
   maxConcurrentGrids: 1,
   rankingSelection: DEFAULT_RANKING_SELECTION,
 };
@@ -156,6 +164,7 @@ export async function loadAppSettings(): Promise<AppSettings> {
       entryQty: parsed.entryQty ?? DEFAULT_APP_SETTINGS.entryQty,
       maxPriceUsd: parsed.maxPriceUsd ?? DEFAULT_APP_SETTINGS.maxPriceUsd,
       minTickRate: parsed.minTickRate ?? DEFAULT_APP_SETTINGS.minTickRate,
+      watchCount: parsed.watchCount ?? DEFAULT_APP_SETTINGS.watchCount,
       maxConcurrentGrids: parsed.maxConcurrentGrids ?? DEFAULT_APP_SETTINGS.maxConcurrentGrids,
       // 순위 선택은 저장값이 없으면 기본 구성, 있으면 카탈로그 기준으로 정리(모르는 id 폐기·누락 원천 채움).
       rankingSelection: normalizeRankingSelection(parsed.rankingSelection ?? DEFAULT_APP_SETTINGS.rankingSelection),

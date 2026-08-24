@@ -179,8 +179,9 @@ describe('순수 규칙 — 수량·검증·기준일', () => {
 });
 
 describe('AutoPilot — 감시 선정(최소 속도 자격 필터·히스테리시스)', () => {
-  it('감시(호가 예열) 목록은 자격자 중 상위 3개 — 감지기는 리스트 전 종목에 붙는다(2026-08-10)', () => {
-    const h = makeHarness(['A', 'B', 'C', 'D', 'E']);
+  it('매수 후보는 자격자 중 상위 watchCount개 — 감지기는 리스트 전 종목에 붙는다(2026-08-10)', () => {
+    // watchCount는 설정값이다(2026-08-24, 기본 5) — 이 테스트는 기본값이 아니라 **상위 N 기계**를 본다.
+    const h = makeHarness(['A', 'B', 'C', 'D', 'E'], { config: { ...CONFIG_100, watchCount: 3 } });
     burst(h, 'A', 10);
     burst(h, 'B', 8);
     burst(h, 'C', 6);
@@ -207,7 +208,7 @@ describe('AutoPilot — 감시 선정(최소 속도 자격 필터·히스테리�
     h.pilot.reselect();
     expect(h.pilot.getView().watched).toEqual([]);
     expect(h.slots.get('A')!.watched).toBe(true);
-    expect(h.events.some((e) => e.includes('감시 대상 없음'))).toBe(true);
+    expect(h.events.some((e) => e.includes('매수 후보 없음'))).toBe(true);
   });
 
   it('감시 중 종목이 자격을 잃으면 감시 목록에서 즉시 빠진다 — 감지기는 유지(사다리 앵커 보존)', () => {
@@ -242,7 +243,7 @@ describe('AutoPilot — 감시 선정(최소 속도 자격 필터·히스테리�
   });
 
   it('히스테리시스 — 자격자끼리는 최저 감시의 1.2배를 넘어야 교체된다', () => {
-    const h = makeHarness(['A', 'B', 'C', 'D']);
+    const h = makeHarness(['A', 'B', 'C', 'D'], { config: { ...CONFIG_100, watchCount: 3 } });
     burst(h, 'A', 30);
     burst(h, 'B', 20);
     burst(h, 'C', 10);
@@ -256,6 +257,33 @@ describe('AutoPilot — 감시 선정(최소 속도 자격 필터·히스테리�
     burst(h, 'D', 3); // 총 14틱 = C의 1.4배 — 교체.
     h.pilot.reselect();
     expect([...h.pilot.getView().watched].sort()).toEqual(['A', 'B', 'D']);
+  });
+
+  it('매수 후보 수 기본값은 5 — 설정으로 바꾸면 그 수만큼만 남는다(2026-08-24)', () => {
+    const h = makeHarness(['A', 'B', 'C', 'D', 'E', 'F', 'G']);
+    burst(h, 'A', 70);
+    burst(h, 'B', 60);
+    burst(h, 'C', 50);
+    burst(h, 'D', 40);
+    burst(h, 'E', 30);
+    burst(h, 'F', 20);
+    burst(h, 'G', 10);
+    h.pilot.start();
+    expect(h.pilot.getView().watched).toEqual(['A', 'B', 'C', 'D', 'E']); // 기본 5, 빠른 순
+
+    h.pilot.stop();
+    expect(h.pilot.setConfig({ ...CONFIG_100, watchCount: 2 })).toBeNull();
+    h.pilot.start();
+    expect(h.pilot.getView().watched).toEqual(['A', 'B']);
+  });
+
+  it('매수 후보 수는 1~30 정수만 받는다', () => {
+    const h = makeHarness(['A']);
+    h.pilot.stop();
+    expect(h.pilot.setConfig({ ...CONFIG_100, watchCount: 0 })).toContain('매수 후보 수');
+    expect(h.pilot.setConfig({ ...CONFIG_100, watchCount: 31 })).toContain('매수 후보 수');
+    expect(h.pilot.setConfig({ ...CONFIG_100, watchCount: 2.5 })).toContain('매수 후보 수');
+    expect(h.pilot.setConfig({ ...CONFIG_100, watchCount: 7 })).toBeNull();
   });
 });
 

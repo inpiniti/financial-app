@@ -122,8 +122,22 @@ function formatModelLine(prob: number | null): string {
   return `모델 ${(prob * 100).toFixed(1)}% / 기준 ${thr}`;
 }
 
-/** 리스트 행의 우측 상태 표시 — 보유 > 감시 > 핀(정리 대기) 순으로 하나만. */
-function SlotBadge({ row, activeTickers }: { row: AutoPilotSlotRow; activeTickers: readonly string[] }) {
+/**
+ * 리스트 행의 우측 상태 표시 — 보유 > 매수 후보 > 핀(정리 대기) 순으로 하나만.
+ *
+ * ⚠ 2026-08-24: 후보 판정은 `candidates`(오토파일럿의 watchedTickers)로 한다. 예전엔 `row.view.watched`
+ *   (= 슬롯에 감지기가 붙었나)를 썼는데, 감지기는 리스트 전 종목에 상시 부착이라 **모든 행에 "감시 중"이 떴다.**
+ *   지금은 매수가 실제로 허용되는 종목만 배지가 뜬다.
+ */
+function SlotBadge({
+  row,
+  activeTickers,
+  candidates,
+}: {
+  row: AutoPilotSlotRow;
+  activeTickers: readonly string[];
+  candidates: readonly string[];
+}) {
   if (activeTickers.includes(row.entry.ticker)) {
     return (
       <View className="mt-0.5 flex-row items-center" style={{ gap: 3 }}>
@@ -132,15 +146,15 @@ function SlotBadge({ row, activeTickers }: { row: AutoPilotSlotRow; activeTicker
       </View>
     );
   }
-  if (row.view.watched) {
-    // 사다리 감시(2026-08-07 plan) — 홀 카운트가 쌓이는 중이면 몇 칸째인지 보여준다(0칸이면 "감시 중"만).
+  if (candidates.includes(row.entry.ticker)) {
+    // 사다리 감시(2026-08-07 plan) — 홀 카운트가 쌓이는 중이면 몇 칸째인지 보여준다(0칸이면 "매수 후보"만).
     const ladder = row.view.ladder;
     const counting = ladder !== null && ladder.count > 0;
     return (
       <View className="mt-0.5 flex-row items-center" style={{ gap: 3 }}>
         <Ionicons name={counting ? 'trending-down-outline' : 'pulse-outline'} size={12} color="#3182f6" />
         <Text className="text-xs font-semibold text-[#3182f6]">
-          {counting ? `하락 ${ladder.count}/${ladder.triggerCount}칸` : '감시 중'}
+          {counting ? `하락 ${ladder.count}/${ladder.triggerCount}칸` : '매수 후보'}
         </Text>
       </View>
     );
@@ -161,10 +175,13 @@ function SlotBadge({ row, activeTickers }: { row: AutoPilotSlotRow; activeTicker
 function SlotRow({
   item,
   activeTickers,
+  candidates,
   onPress,
 }: {
   item: AutoPilotSlotRow;
   activeTickers: readonly string[];
+  /** 지금 매수가 허용되는 종목들(속도 상위 N) — 배지 표시용. */
+  candidates: readonly string[];
   onPress: (ticker: string, market: string, name?: string) => void;
 }) {
   // 종목명이 있으면 이름을 제목으로, 티커는 부제 맨 앞으로 — 이름 없이 티커만 보이면 무슨 종목인지
@@ -210,7 +227,7 @@ function SlotRow({
         trailing={
           <View className="items-end">
             <Text className="text-base font-bold text-[#191f28]">{formatPrice(item.view.price)}</Text>
-            <SlotBadge row={item} activeTickers={activeTickers} />
+            <SlotBadge row={item} activeTickers={activeTickers} candidates={candidates} />
           </View>
         }
       />
@@ -315,9 +332,14 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
 
   const renderRow = useCallback(
     ({ item }: { item: AutoPilotSlotRow }) => (
-      <SlotRow item={item} activeTickers={view.activeTickers} onPress={handleRowPress} />
+      <SlotRow
+        item={item}
+        activeTickers={view.activeTickers}
+        candidates={view.watched}
+        onPress={handleRowPress}
+      />
     ),
-    [view.activeTickers, handleRowPress],
+    [view.activeTickers, view.watched, handleRowPress],
   );
 
   const config = view.config;

@@ -11,7 +11,7 @@ import Slider from '@react-native-community/slider';
 import { BackHeader } from '../components/BackHeader';
 import { Panel } from '../components/Panel';
 import { DEFAULT_APP_SETTINGS, loadAppSettings, saveAppSettings, snapToStep } from '../lib/appSettings';
-import { MAX_GRIDS_LIMIT, MODEL_CONFIG } from '../features/scalper/autopilot';
+import { MAX_GRIDS_LIMIT, MODEL_CONFIG, WATCH_COUNT_LIMIT } from '../features/scalper/autopilot';
 import { MODEL_BAR_MINUTES } from '../features/scalper/modelMode';
 import {
   RankingSelectionPanel,
@@ -92,6 +92,7 @@ export default function SettingsScreen() {
   // 리스트 가격 상한(2026-08-20 풀데이 시뮬) — 수량 모드에서만 쓰는 상한. 0/빈 칸 = 진입금액이 상한(옛 동작).
   const [maxPriceUsd, setMaxPriceUsd] = useState(String(DEFAULT_APP_SETTINGS.maxPriceUsd));
   const [minTickRate, setMinTickRate] = useState(String(DEFAULT_APP_SETTINGS.minTickRate));
+  const [watchCount, setWatchCount] = useState(String(DEFAULT_APP_SETTINGS.watchCount));
   const [maxConcurrentGrids, setMaxConcurrentGrids] = useState(String(DEFAULT_APP_SETTINGS.maxConcurrentGrids));
   // 순위 선택(2026-08-18 순위 도메인) — 트레이딩 리스트 원천별 켬·개수·(한투) 기간창.
   const [rankingDraft, setRankingDraft] = useState<RankingSelectionDraft>(() =>
@@ -116,6 +117,7 @@ export default function SettingsScreen() {
       setEntryQty(appSettings.entryQty > 0 ? String(appSettings.entryQty) : '');
       setMaxPriceUsd(appSettings.maxPriceUsd > 0 ? String(appSettings.maxPriceUsd) : '');
       setMinTickRate(String(appSettings.minTickRate));
+      setWatchCount(String(appSettings.watchCount));
       setMaxConcurrentGrids(String(appSettings.maxConcurrentGrids));
       setRankingDraft(draftFromSelection(appSettings.rankingSelection));
     })();
@@ -153,6 +155,17 @@ export default function SettingsScreen() {
       return;
     }
 
+    const parsedWatchCount = Number(watchCount);
+    if (
+      !Number.isFinite(parsedWatchCount) ||
+      !Number.isInteger(parsedWatchCount) ||
+      parsedWatchCount < 1 ||
+      parsedWatchCount > WATCH_COUNT_LIMIT
+    ) {
+      Alert.alert('알림', `매수 후보 수는 1~${WATCH_COUNT_LIMIT} 사이 정수로 입력해 주세요. (기본 ${DEFAULT_APP_SETTINGS.watchCount})`);
+      return;
+    }
+
     const parsedMaxGrids = Number(maxConcurrentGrids);
     if (
       !Number.isFinite(parsedMaxGrids) ||
@@ -184,6 +197,7 @@ export default function SettingsScreen() {
         entryQty: parsedEntryQty,
         maxPriceUsd: parsedMaxPriceUsd,
         minTickRate: parsedMinTickRate,
+        watchCount: parsedWatchCount,
         maxConcurrentGrids: parsedMaxGrids,
         rankingSelection,
       });
@@ -276,7 +290,7 @@ export default function SettingsScreen() {
             </Text>
 
             <Text className="mb-1 text-xs text-[#8b95a1]">
-              최소 속도 (틱/초) — 이보다 조용한 종목은 감시하지 않아요
+              최소 속도 (틱/초) — 이보다 조용한 종목은 매수 후보에서 빼요
             </Text>
             <TextInput
               value={minTickRate}
@@ -287,9 +301,26 @@ export default function SettingsScreen() {
               className="mb-4 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
             />
 
+            <Text className="mb-1 text-xs text-[#8b95a1]">
+              매수 후보 수 — 최소 속도를 넘긴 종목 중 빠른 순으로 몇 개까지
+            </Text>
+            <TextInput
+              value={watchCount}
+              onChangeText={setWatchCount}
+              keyboardType="number-pad"
+              placeholder={`기본 ${DEFAULT_APP_SETTINGS.watchCount}`}
+              placeholderTextColor="#8b95a1"
+              className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
+            />
+            <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
+              모델은 리스트 전 종목을 계속 판정해서 확률을 보여 주지만, 매수는 이 후보 안에서만 일어나요. 조용한
+              종목은 호가가 얇아 사고팔 때 불리해요. 보유·진입 중인 종목은 후보에서 빠지니 자리가 놀지 않아요.
+              후보 밖 신호는 트레이딩 화면 기록에 "매수 후보 밖이에요"로 남아요.
+            </Text>
+
             <View className="rounded-2xl bg-[#f2f4f6] px-4 py-3">
               <Text className="text-xs leading-5 text-[#4e5968]">
-                이 세 값은 <Text className="font-semibold text-[#191f28]">정지 상태에서만</Text> 적용돼요. 매매 중에
+                이 값들은 <Text className="font-semibold text-[#191f28]">정지 상태에서만</Text> 적용돼요. 매매 중에
                 저장하면 정지한 뒤 트레이딩 화면으로 돌아올 때 반영돼요.
               </Text>
             </View>

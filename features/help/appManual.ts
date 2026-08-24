@@ -8,12 +8,7 @@
 // 챗봇이 확신에 차서 틀린 값을 말한다(2026-08-21 검토 결론 — docs/features/2026-08-21_대화-챗봇.md §3).
 import { TREND_BAR_MINUTES } from '../../core/trend/bars';
 import { RANKING_TOTAL_MAX, rankingSourceLabelOf } from '../../core/ranking';
-import {
-  ABANDON_COOLDOWN_MS,
-  ABANDON_COOLDOWN_STREAK,
-  MAX_GRIDS_LIMIT,
-  WATCH_COUNT,
-} from '../scalper/autopilot';
+import { ABANDON_COOLDOWN_MS, ABANDON_COOLDOWN_STREAK, MAX_GRIDS_LIMIT } from '../scalper/autopilot';
 import { MODEL_CONFIG } from '../scalper/positionManager';
 import { MODEL_BAR_MINUTES } from '../scalper/modelMode';
 import { DEFAULT_APP_SETTINGS, type AppSettings } from '../../lib/appSettings';
@@ -77,10 +72,11 @@ export const APP_MANUAL = `# SEEDTICK 사용 설명서
 
 ## 5. 자동 트레이딩이 도는 순서
 1. **리스트 채우기** — 설정에서 고른 순위 원천에서 종목을 모아 최대 ${RANKING_TOTAL_MAX}개의 트레이딩 리스트를 만들어요. 리스트는 주기적으로 다시 골라요.
-2. **판정** — 리스트에 있는 **모든 종목**을 ${MODEL_BAR_MINUTES}분마다 모델로 훑어요. 화면의 "감시" 상위 ${WATCH_COUNT}종목은 거래가 빠른 순서를 보여 주는 것일 뿐, 판정은 리스트 전체에 대해 돌아요.
-3. **진입** — 모델 확률이 기준값을 넘은 종목을 사요. 이미 보유 중인 종목은 다시 사지 않고, **최소 속도**(틱/초)보다 조용한 종목은 신호가 나도 넘겨요.
-4. **보유** — 산 종목은 "그리드 관리" 게이지에 나타나요. 게이지의 위끝이 진입 후 최고가, 아래끝이 지금 매도선이에요. 체결이 들어올 때마다 매도선을 다시 봐요.
-5. **청산** — 팔고 나면 그 자리에 새 종목이 들어와요. 완료된 매매는 "오늘 거래 기록"에 쌓여요.
+2. **판정** — 리스트에 있는 **모든 종목**을 ${MODEL_BAR_MINUTES}분마다 모델로 훑어요. 확률은 리스트 전체에 대해 나오고 화면에도 다 보여요.
+3. **매수 후보 고르기** — 그중 **최소 속도**(틱/초)를 넘긴 종목을 거래가 빠른 순으로 **매수 후보 수**(기본 ${DEFAULT_APP_SETTINGS.watchCount}종)만큼 골라요. 화면의 "감시"가 바로 이 후보예요. 이미 보유·진입 중인 종목은 후보에서 빠져요.
+4. **진입** — 모델 확률이 기준값을 넘고 **그 종목이 매수 후보 안에** 있으면 사요. 후보 밖에서 나온 신호는 기록에 사유를 남기고 넘겨요 — 조용한 종목은 호가가 얇아 사고팔 때 불리하거든요.
+5. **보유** — 산 종목은 "그리드 관리" 게이지에 나타나요. 게이지의 위끝이 진입 후 최고가, 아래끝이 지금 매도선이에요. 체결이 들어올 때마다 매도선을 다시 봐요.
+6. **청산** — 팔고 나면 그 자리에 새 종목이 들어와요. 완료된 매매는 "오늘 거래 기록"에 쌓여요.
 
 **동시 그리드 수**만큼 종목을 한 번에 관리할 수 있어요(최대 ${MAX_GRIDS_LIMIT}개).
 
@@ -100,14 +96,18 @@ export const APP_MANUAL = `# SEEDTICK 사용 설명서
 - **수량(주)** — 정하면 종목 가격과 상관없이 딱 이 수량만 사요. 비우면 진입금액 ÷ 현재가로 계산해요.
 - **가격 상한(USD)** — 수량을 정했을 때만 써요. 이 가격 이하 종목만 감시해요(기본 $${DEFAULT_APP_SETTINGS.maxPriceUsd}). 상한이 낮으면 리스트가 초저가 급등주로만 채워져요. 수량을 비우면(금액 모드) 진입금액이 상한 역할을 해요.
 - **동시 그리드 수** — 한 번에 관리할 종목 개수(1~${MAX_GRIDS_LIMIT}, 기본 ${DEFAULT_APP_SETTINGS.maxConcurrentGrids}).
-- **최소 속도(틱/초)** — 이보다 조용한 종목은 감시하지 않아요(기본 ${DEFAULT_APP_SETTINGS.minTickRate}).
+- **최소 속도(틱/초)** — 이보다 조용한 종목은 매수 후보에서 빼요(기본 ${DEFAULT_APP_SETTINGS.minTickRate}).
+- **매수 후보 수** — 최소 속도를 넘긴 종목 중 거래가 빠른 순으로 몇 개까지 매수 후보로 둘지(기본 ${DEFAULT_APP_SETTINGS.watchCount}). 모델은 리스트 전체를 판정하지만 매수는 이 후보 안에서만 일어나요.
 - **매수 미체결 취소(초)** — 매수가 이 시간 안에 안 붙으면 취소하고 다시 기다려요. 0이면 꺼짐(체결까지 대기), 권장 2~3초. 일부라도 체결됐으면 취소하지 않아요.
 - **순위 원천** — 트레이딩 리스트를 어디서 채울지 골라요. 토스 8종·한투 7종이 있고 원천별로 켜고 개수를 정해요. 켠 개수의 합은 ${RANKING_TOTAL_MAX}개를 넘을 수 없어요. 목록에서 위에 있는 원천이 겹치는 종목을 먼저 가져가요.
 
-⚠ **진입금액·수량·최소 속도·동시 그리드 수는 정지 상태에서만 적용돼요.** 매매 중에 저장했다면 정지한 뒤 트레이딩 화면으로 돌아올 때 반영돼요.
+⚠ **진입금액·수량·최소 속도·매수 후보 수·동시 그리드 수는 정지 상태에서만 적용돼요.** 매매 중에 저장했다면 정지한 뒤 트레이딩 화면으로 돌아올 때 반영돼요.
 
 ## 8. 기록에 뜨는 문구
 - "BUY 무시 · 속도 …" — 신호는 왔지만 그 종목이 최소 속도보다 조용해서 넘겼어요.
+- "BUY 무시 · 매수 후보(속도 상위 N종) 밖이에요" — 신호는 왔지만 그때 더 활발한 종목들에 밀려 후보가 아니었어요.
+- "매수 후보 교체 · …" — 거래가 빠른 순서가 바뀌어 후보 목록이 갱신됐어요.
+- "매수 후보 없음 · 모든 종목이 …틱/초 미만" — 리스트가 전부 조용해요. 최소 속도를 낮추거나 기다려요.
 - "진입 포기 · 진입금액이 1주 가격보다 작아요" — 금액 모드에서 1주도 못 사는 종목이에요.
 - "매수 취소 · 안 붙어서 다시 감시해요" — 미체결 취소가 작동했어요.
 - "매수 취소가 ${ABANDON_COOLDOWN_STREAK}번 이어져서 ${ABANDON_COOLDOWN_MS / 1000}초간 쉬어요" — 그 종목은 잠시 건너뛰어요.
@@ -157,6 +157,7 @@ export const USER_FACING_SETTING_KEYS = [
   'maxPriceUsd',
   'maxConcurrentGrids',
   'minTickRate',
+  'watchCount',
   'buyCancelAfterSec',
   'rankingSelection',
 ] as const satisfies readonly (keyof AppSettings)[];
@@ -186,6 +187,7 @@ export function describeUserSettings(settings: AppSettings): string {
   );
   lines.push(`동시 그리드 수: ${settings.maxConcurrentGrids}개`);
   lines.push(`최소 속도: ${settings.minTickRate}틱/초`);
+  lines.push(`매수 후보 수: 속도 상위 ${settings.watchCount}종`);
   lines.push(
     `매수 미체결 취소: ${
       settings.buyCancelAfterSec > 0 ? `${settings.buyCancelAfterSec}초` : '꺼짐(체결될 때까지 대기)'

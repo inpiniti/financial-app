@@ -124,17 +124,18 @@ describe('추세 → 그리드 → 매매 — 진입·인계', () => {
     expect(h.events.some((e) => e.includes('BUY 무시'))).toBe(false);
   });
 
-  it('감시 요건 없음(2026-08-21) — 감시 목록 밖이어도 BUY면 진입한다', async () => {
+  it('매수 후보 밖이면 BUY가 와도 사지 않는다 — 사유를 이벤트로 남긴다(2026-08-24)', async () => {
     const h = makeHarness();
     h.slots.get('A')!.seedTrend(risingSeed());
-    h.pilot.start(); // start 시점 reselect는 틱이 없어 감시가 비어 있다.
-    h.slots.get('A')!.pushTick(222, 122 * M); // reselect 없이 봉만 진행 — 감시 목록은 빈 채
+    h.pilot.start(); // start 시점 reselect는 틱이 없어 후보 목록이 비어 있다.
+    h.slots.get('A')!.pushTick(222, 122 * M); // reselect 없이 봉만 진행 — 후보 목록은 빈 채
     h.slots.get('A')!.pushTick(223, 123 * M); // 키 122 닫힘 → 플립 BUY
     await flush();
     expect(h.pilot.getView().watched).toEqual([]);
     await h.pilot.pollCycle();
     await flush();
-    expect(h.pilot.getView().activeTickers).toEqual(['A']);
+    expect(h.pilot.getView().activeTickers).toEqual([]);
+    expect(h.events.some((e) => e.includes('BUY 무시') && e.includes('매수 후보'))).toBe(true);
   });
 
   it('BUY 폐기 이벤트는 종목당 10분에 1번만 남는다(스로틀) — 남은 폐기 사유는 틱속도', async () => {
