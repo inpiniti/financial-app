@@ -968,9 +968,20 @@ export class AutoPilot {
   private handleBuySignal(ctx: SlotSignalContext): void {
     if (this.stopRequested || !this.running || this.faulted || this.paused) return;
     if (this.actives.has(ctx.ticker) || this.pendingBuys.has(ctx.ticker)) return; // 이미 보유·진입 중
-    if (this.inAbandonCooldown(ctx.ticker)) return;
-    if (this.deps.clock.now() < this.cashCooldownUntil) return;
-    if (this.actives.size + this.pendingBuys.size >= this.maxGrids) return; // 그리드 슬롯 만석
+    // ↓ 여기부터는 "살 수 있었는데 안 산" 경로 — 전부 사유를 남긴다(2026-08-26 제보: 신호가 났는데
+    //   안 샀고 기록도 없어 원인을 알 수 없었다. 2026-08-20 무음 폐기 교훈의 잔여 구멍).
+    if (this.inAbandonCooldown(ctx.ticker)) {
+      this.dropBuySignal(ctx.ticker, '매수 미체결 자동 포기가 연속돼 이 종목을 잠시 쉬는 중이에요');
+      return;
+    }
+    if (this.deps.clock.now() < this.cashCooldownUntil) {
+      this.dropBuySignal(ctx.ticker, '현금 부족 쿨다운 중이에요');
+      return;
+    }
+    if (this.actives.size + this.pendingBuys.size >= this.maxGrids) {
+      this.dropBuySignal(ctx.ticker, `그리드 만석(${this.actives.size + this.pendingBuys.size}/${this.maxGrids})`);
+      return;
+    }
 
     // 2026-08-21 순수 상태기계 전환(사용자 확정) — 추세 전용 진입 필터를 전부 걷어냈다.
     // 걷어낸 것: 챱 차단(밴드폭 하한, 2026-08-20) · 감시 요건(틱속도 상위 watchCount종, 2026-08-20).
