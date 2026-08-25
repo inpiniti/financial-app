@@ -35,10 +35,19 @@ interface RawTossCandle {
   volume?: number;
 }
 
-/** 봉 하나 — dt는 원문 그대로(오프셋 붙은 ISO, 미국 종목은 ET). 차트 화면용 OHLCV. */
+/**
+ * 봉 하나 — dt는 원문 그대로(오프셋 붙은 ISO, 미국 종목은 ET). 차트 화면용 OHLCV.
+ *
+ * ⚠ dt는 봉의 **끝** 시각이다(2026-08-26 실측: 18:43 현재 진행 중 봉의 dt가 "18:45",
+ * min:5의 main 세션 라벨이 09:35~16:00). minuteKey는 여기서 intervalMin을 빼서
+ * **봉 시작 epoch 분**으로 정규화한다 — 앱 전체(차트 진행 중 판정·스캐너 목표 봉·컷오프·
+ * WS 틱 버킷)가 시작 키를 전제한다. 2026-08-25까지 끝 라벨을 시작으로 오독해
+ * ① 점선(미확정) 봉이 2개 그려지고 ② 컷오프가 방금 닫힌 봉을 미완성으로 버려
+ * **모델 판정이 상시 한 봉(5분) 늦었다**(실거래 손실 분석의 핵심 원인).
+ */
 export interface TossMinuteCandle {
   dt: string;
-  /** dt의 epoch 분 키. */
+  /** 봉 시작 epoch 분 키(= dt의 epoch 분 − intervalMin). */
   minuteKey: number;
   sessionType?: string;
   open: number;
@@ -66,8 +75,9 @@ export function buildTossDayChartUrl(productCode: string, count: number, adjuste
   return `${TOSS_CHART_URL}/${encodeURIComponent(productCode)}/day:1?count=${n}&useAdjustedRate=${adjusted}`;
 }
 
-/** 응답 → OHLCV 봉(원문 순서 그대로 = 최신순). dt 파싱 불가·종가 0 이하는 버린다. */
-export function parseTossMinuteCandles(body: unknown): TossMinuteCandle[] {
+/** 응답 → OHLCV 봉(원문 순서 그대로 = 최신순). dt 파싱 불가·종가 0 이하는 버린다. intervalMin = 봉 주기(키 정규화용). */
+export function parseTossMinuteCandles(body: unknown, intervalMin = 1): TossMinuteCandle[] {
+  const iv = Math.max(1, Math.floor(intervalMin));
   const candles = (body as { result?: { candles?: unknown } } | null)?.result?.candles;
   if (!Array.isArray(candles)) return [];
   const out: TossMinuteCandle[] = [];
@@ -81,7 +91,7 @@ export function parseTossMinuteCandles(body: unknown): TossMinuteCandle[] {
     const low = Number(raw.low);
     out.push({
       dt: raw.dt,
-      minuteKey: Math.floor(ms / 60_000),
+      minuteKey: Math.floor(ms / 60_000) - iv,
       sessionType: raw.sessionType,
       open: Number.isFinite(open) && open > 0 ? open : close,
       high: Number.isFinite(high) && high > 0 ? high : close,
@@ -105,7 +115,7 @@ export async function fetchTossMinuteCandles(
     method: 'GET',
     headers: { accept: 'application/json' },
   });
-  return parseTossMinuteCandles(await res.json());
+  return parseTossMinuteCandles(await res.json(), intervalMin);
 }
 
 /**
@@ -114,9 +124,9 @@ export async function fetchTossMinuteCandles(
  * beforeMinuteKey를 주면 그 키 **이상**은 버린다 — 토스는 현재 분의 진행 중 봉도 내려주는데(min:5 실호출에서 확인)
  * 그걸 seed하면 MinuteBarBuilder가 그 분의 뒤이은 WS 틱을 "seed 마지막 키 이하"로 버려 봉이 미완성값으로 굳는다.
  */
-export function parseTossMinuteBars(body: unknown, beforeMinuteKey?: number): MinuteBar[] {
+export function parseTossMinuteBars(body: unknown, beforeMinuteKey?: number, intervalMin = 1): MinuteBar[] {
   const out: MinuteBar[] = [];
-  for (const c of parseTossMinuteCandles(body)) {
+  for (const c of parseTossMinuteCandles(body, intervalMin)) {
     if (beforeMinuteKey !== undefined && c.minuteKey >= beforeMinuteKey) continue;
     out.push({ minuteKey: c.minuteKey, close: c.close });
   }
@@ -143,7 +153,7 @@ export async function fetchTossMinuteBars(
     headers: { accept: 'application/json' },
   });
   const nowKey = Math.floor((deps.nowMs ?? Date.now()) / (60_000 * iv)) * iv;
-  return parseTossMinuteBars(await res.json(), nowKey);
+  return parseTossMinuteBars(await res.json(), nowKey, iv);
 }
 
 interface RawSearchItem {
@@ -190,9 +200,9 @@ export async function resolveTossProductCode(
 // 추세용 fetchTossMinuteBars(종가·조정가)는 그대로 두고 모델용 조회를 나란히 둔다.
 
 /** 응답 → 모델용 OHLCV 봉(오름차순). 진행 중(미완성) 봉은 뺀다 — beforeMinuteKey 이상은 버린다. */
-export function parseTossOhlcvBars(body: unknown, beforeMinuteKey?: number): ModelOhlcvBar[] {
+export function parseTossOhlcvBars(body: unknown, beforeMinuteKey?: number, intervalMin = 5): ModelOhlcvBar[] {
   const out: ModelOhlcvBar[] = [];
-  for (const c of parseTossMinuteCandles(body)) {
+  for (const c of parseTossMinuteCandles(body, intervalMin)) {
     if (beforeMinuteKey !== undefined && c.minuteKey >= beforeMinuteKey) continue;
     out.push({
       minuteKey: c.minuteKey,
@@ -226,7 +236,7 @@ export async function fetchTossOhlcvBars(
     headers: { accept: 'application/json' },
   });
   const nowKey = Math.floor((deps.nowMs ?? Date.now()) / (60_000 * iv)) * iv;
-  return parseTossOhlcvBars(await res.json(), nowKey);
+  return parseTossOhlcvBars(await res.json(), nowKey, iv);
 }
 
 /** 일봉 종가 하나 — 거래일(ET, 원문 dt의 날짜 부분)과 원시 종가. */

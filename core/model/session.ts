@@ -73,8 +73,13 @@ export function inCollectWindow(minuteKey: number): boolean {
 /**
  * 신호를 낼 수 있는 봉인가(학습의 `session=='main'` 필터) — 집계봉의 **마지막 구성 1분봉** 기준이다.
  * 학습 파이프라인이 k분봉의 session을 마지막 구성 분봉에서 가져왔다(build-dataset.aggregateBars).
+ *
+ * 토스 1분봉 라벨은 봉의 **끝** 시각이다(2026-08-26 실측 — tossMinuteChart.ts 주석). 시작 키 s의
+ * k분봉을 구성하는 1분봉의 끝 라벨은 s+1..s+k, 마지막 = **s+k**. 그 라벨이 09:31~16:00이면 main
+ * (실측: min:5의 main 라벨 = 09:35~16:00 = 시작 09:30~15:55와 일치). 2026-08-25까지는 s+k−1로 재서
+ * 마지막 정규장 봉(시작 15:55)을 애프터로 버리고, 프리장 마지막 봉(시작 09:25)을 main으로 오판했다.
  */
 export function isMainSessionBar(barStartMinuteKey: number, barMinutes: number): boolean {
-  const m = etMinuteOfDay(barStartMinuteKey + Math.max(1, barMinutes) - 1);
+  const m = etMinuteOfDay(barStartMinuteKey + Math.max(1, barMinutes));
   return m >= MAIN_SESSION_START_MIN && m <= MAIN_SESSION_END_MIN;
 }

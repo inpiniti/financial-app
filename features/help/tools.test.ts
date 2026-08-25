@@ -154,7 +154,8 @@ describe('runHelpTool — 분봉·차트 조회(2026-08-22)', () => {
       const candles = closes
         .map((close, i) => {
           const key = lastMinuteKey - (closes.length - 1 - i) * stepMin;
-          return { dt: new Date(key * 60_000).toISOString(), open: close, high: close, low: close, close, volume: 1_000_000 };
+          // 토스 dt는 봉의 **끝** 시각(2026-08-26 실측) — 시작 키 + 주기로 만든다.
+          return { dt: new Date((key + stepMin) * 60_000).toISOString(), open: close, high: close, low: close, close, volume: 1_000_000 };
         })
         .reverse(); // 토스는 최신순
       // 일봉(day) 조회도 같은 목으로 받는다 — 전일 종가는 이 테스트의 관심사가 아니다.

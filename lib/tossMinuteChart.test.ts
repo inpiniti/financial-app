@@ -40,11 +40,16 @@ describe('buildTossChartUrl', () => {
 });
 
 describe('parseTossMinuteCandles', () => {
-  it('OHLCV·dt·sessionType을 원문 순서(최신순)로', () => {
+  it('OHLCV·dt·sessionType을 원문 순서(최신순)로 — 키는 봉 시작(dt는 끝 라벨이라 주기를 뺀다)', () => {
     const c = parseTossMinuteCandles(SAMPLE);
     expect(c).toHaveLength(3);
     expect(c[0]).toMatchObject({ dt: '2026-08-18T01:33:00-04:00', sessionType: 'day', open: 0.7518, high: 0.7519, low: 0.7518, close: 0.7519, volume: 107 });
-    expect(c[0].minuteKey).toBe(Math.floor(Date.UTC(2026, 7, 18, 5, 33) / 60_000));
+    // dt 01:33(끝) − 1분 = 시작 01:32.
+    expect(c[0].minuteKey).toBe(Math.floor(Date.UTC(2026, 7, 18, 5, 32) / 60_000));
+  });
+  it('N분봉이면 시작 키 = dt − N분', () => {
+    const c = parseTossMinuteCandles(SAMPLE, 5);
+    expect(c[0].minuteKey).toBe(Math.floor(Date.UTC(2026, 7, 18, 5, 28) / 60_000));
   });
   it('OHL이 없거나 0이면 종가로 채운다', () => {
     const c = parseTossMinuteCandles({ result: { candles: [{ dt: '2026-08-18T01:33:00-04:00', close: 2, open: 0 }] } });
@@ -53,9 +58,9 @@ describe('parseTossMinuteCandles', () => {
 });
 
 describe('parseTossMinuteBars', () => {
-  it('dt(오프셋 ISO)를 epoch 분 키로, close를 종가로 — ET 01:33(-04:00) = UTC 05:33', () => {
+  it('dt(오프셋 ISO, 봉 끝)를 시작 epoch 분 키로, close를 종가로 — dt 01:33 → 키 01:32', () => {
     const bars = parseTossMinuteBars(SAMPLE);
-    const k = Math.floor(Date.UTC(2026, 7, 18, 5, 33) / 60_000);
+    const k = Math.floor(Date.UTC(2026, 7, 18, 5, 32) / 60_000);
     expect(bars).toEqual([
       { minuteKey: k, close: 0.7519 },
       { minuteKey: k - 1, close: 0.7519 },
@@ -82,25 +87,33 @@ describe('fetchTossMinuteBars', () => {
     expect(url).toContain('/c-chart/us-s/US20200609002/min:1?count=130');
     expect(init.method).toBe('GET');
   });
-  it('현재 분(진행 중) 봉은 뺀다 — 지금이 01:33이면 01:33 봉 제외', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue({ json: async () => SAMPLE });
-    const bars = await fetchTossMinuteBars('X', 130, { fetchImpl, nowMs: Date.UTC(2026, 7, 18, 5, 33, 20) });
-    expect(bars.map((b) => b.close)).toEqual([0.7519, 0.752]);
+  it('진행 중 봉만 뺀다 — 지금 01:32:40이면 dt 01:33 봉(01:32~33 진행 중)은 제외, 지금 01:33:20이면 그 봉은 닫혔으니 포함', async () => {
+    const mk = () => vi.fn().mockResolvedValue({ json: async () => SAMPLE });
+    const inProgress = await fetchTossMinuteBars('X', 130, { fetchImpl: mk(), nowMs: Date.UTC(2026, 7, 18, 5, 32, 40) });
+    expect(inProgress.map((b) => b.close)).toEqual([0.7519, 0.752]);
+    // 2026-08-25까지는 여기서 방금 닫힌 봉까지 버려 판정이 한 봉 늦었다(끝 라벨 오독).
+    const closed = await fetchTossMinuteBars('X', 130, { fetchImpl: mk(), nowMs: Date.UTC(2026, 7, 18, 5, 33, 20) });
+    expect(closed.map((b) => b.close)).toEqual([0.7519, 0.7519, 0.752]);
   });
 });
 
 describe('fetchTossMinuteBars — intervalMin', () => {
-  it('min:N URL로 받고, 지금이 속한 N분 봉(진행 중)은 뺀다', async () => {
-    const body = { result: { candles: [
-      { dt: '2026-08-18T01:33:00-04:00', close: 3 }, // UTC 05:33 → 3분 버킷 시작(05:33 = 분 키 …33, 3의 배수)
-      { dt: '2026-08-18T01:30:00-04:00', close: 2 },
-      { dt: '2026-08-18T01:27:00-04:00', close: 1 },
-    ] } };
+  const body = { result: { candles: [
+    { dt: '2026-08-18T01:33:00-04:00', close: 3 }, // 끝 01:33 → 시작 01:30(= UTC 05:30, 3의 배수)
+    { dt: '2026-08-18T01:30:00-04:00', close: 2 },
+    { dt: '2026-08-18T01:27:00-04:00', close: 1 },
+  ] } };
+  it('min:N URL로 받고, 지금이 속한 N분 봉(진행 중)만 뺀다', async () => {
     const fetchImpl = vi.fn().mockResolvedValue({ json: async () => body });
-    // 지금 = 05:34:10 UTC → 진행 중 3분 봉은 05:33 시작 → 그 봉 제외
-    const bars = await fetchTossMinuteBars('X', 130, { fetchImpl, intervalMin: 3, nowMs: Date.UTC(2026, 7, 18, 5, 34, 10) });
+    // 지금 = 05:32:10 → 진행 중 3분 봉 시작 = 05:30 → dt 01:33 봉(시작 05:30) 제외.
+    const bars = await fetchTossMinuteBars('X', 130, { fetchImpl, intervalMin: 3, nowMs: Date.UTC(2026, 7, 18, 5, 32, 10) });
     expect(fetchImpl.mock.calls[0][0]).toContain('/min:3?count=130&');
     expect(bars.map((b) => b.close)).toEqual([2, 1]);
+  });
+  it('봉이 닫힌 직후에는 그 봉을 포함한다 — 지금 05:34:10이면 dt 01:33(시작 05:30) 봉은 닫혔다', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ json: async () => body });
+    const bars = await fetchTossMinuteBars('X', 130, { fetchImpl, intervalMin: 3, nowMs: Date.UTC(2026, 7, 18, 5, 34, 10) });
+    expect(bars.map((b) => b.close)).toEqual([3, 2, 1]);
   });
 });
 
