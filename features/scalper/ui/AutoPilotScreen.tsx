@@ -119,33 +119,27 @@ function formatTrendLine(trend: TrendEval | null, live: TrendEval | null): strin
  * 확률이 기준값에 얼마나 못 미치는지가 "왜 안 사요?"의 답이다(대부분의 봉은 한참 아래에 있다).
  */
 function formatModelLine(v: ModelVerdictView | null): string {
-  const thr = `${(loadModel().threshold * 100).toFixed(1)}%`;
-  if (v === null) return `모델 판정 대기 · 곧 첫 판정이 떠요 · 기준 ${thr}`;
+  if (v === null) return '모델 판정 대기';
   const prob = v.prob === null ? null : `${(v.prob * 100).toFixed(1)}%`;
   // 옛 봉 기준 판정(장 닫힘·거래정지)이면 어느 봉인지 밝힌다 — 지금 시세에 대한 판정처럼 읽히면 안 된다.
   const staleMin = v.barKey === null ? null : Date.now() / 60_000 - (v.barKey + MODEL_BAR_MINUTES);
   const stale = staleMin !== null && staleMin > MODEL_BAR_MINUTES * 2;
   const tag = stale ? ` · ${formatHHMM(v.barKey! * 60_000)} 봉 기준` : '';
-  // 게이트에 걸려도 확률은 계산돼 온다(2026-08-25) — "(참고)"를 붙여 매수 판단용 숫자가 아님을 밝힌다.
+  // 기준값·"정규장에서만 매수"는 패널 머리에 한 번만 적는다(2026-08-25) — 30행 반복은 소음이었다.
+  // "(참고)" = 정규장 밖 봉 판정(게이트에 걸려 매수 없음). 사유는 종목마다 다른 것만 남긴다.
   switch (v.reject) {
     case null:
-      return stale ? `모델 ${prob} ≥ 기준 ${thr} · 그때 기준 넘음${tag}` : `모델 ${prob} ≥ 기준 ${thr} · 매수 신호`;
+      return stale ? `모델 ${prob} · 그때 기준 넘음${tag}` : `모델 ${prob} · 매수 신호`;
     case 'prob':
-      return `모델 ${prob} / 기준 ${thr} · 아직 낮아요${tag}`;
+      return `모델 ${prob} · 아직 낮아요${tag}`;
     case 'session':
-      return prob === null
-        ? `모델 쉼 · 정규장에만 사요 · 기준 ${thr}`
-        : `모델 ${prob}(참고) / 기준 ${thr} · 정규장에만 사요${tag}`;
+      return prob === null ? '모델 판정 대기' : `모델 ${prob}(참고)${tag}`;
     case 'liquidity':
-      return prob === null
-        ? `모델 쉼 · 오늘 거래대금 200만 달러 미달 · 기준 ${thr}`
-        : `모델 ${prob}(참고) / 기준 ${thr} · 거래대금 200만 달러 미달${tag}`;
+      return prob === null ? '모델 쉼 · 거래대금 미달' : `모델 ${prob}(참고) · 거래대금 미달${tag}`;
     case 'price':
-      return prob === null
-        ? `모델 쉼 · 주가 1달러 이하 제외 · 기준 ${thr}`
-        : `모델 ${prob}(참고) / 기준 ${thr} · 주가 1달러 이하${tag}`;
+      return prob === null ? '모델 쉼 · 주가 $1 이하' : `모델 ${prob}(참고) · 주가 $1 이하${tag}`;
     case 'bars':
-      return `모델 쉼 · 봉 부족(${v.bars}개) · 기준 ${thr}`;
+      return `모델 쉼 · 봉 부족(${v.bars}개)`;
   }
 }
 
@@ -524,10 +518,11 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                 <Text className="text-xs text-[#8b95a1]">순위 상위 {rows.length}종목 · 원천은 설정에서</Text>
               </View>
               {MODEL_MODE && (
-                // 모델이 뭘 예측하는지 — 행마다 뜨는 확률 숫자의 뜻을 여기서 한 번만 설명한다(2026-08-25).
+                // 모델이 뭘 예측하는지·기준값·매수 시간대 — 행마다 반복하지 않고 여기 한 번만(2026-08-25).
                 <Text className="px-5 pb-2 text-xs text-[#8b95a1]">
-                  모델 % = 지금 사면 손절(−2%)보다 익절(+5%)에 먼저 닿을 확률. 5분봉이 닫힐 때마다 다시
-                  계산하고, 기준을 넘는 종목만 사요.
+                  {`모델 % = 지금 사면 손절(−2%)보다 익절(+5%)에 먼저 닿을 확률. 5분봉마다 갱신, ${(
+                    loadModel().threshold * 100
+                  ).toFixed(1)}%를 넘으면 정규장에서 매수해요. (참고) = 정규장 밖 판정.`}
                 </Text>
               )}
             </View>
