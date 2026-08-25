@@ -95,10 +95,11 @@ describe('inspectModel', () => {
     expect(r.signal).toBe('BUY'); // 일봉 유무와 무관하게 판정은 난다
   });
 
-  it('표본 창(04:00~20:00 ET) 밖 봉은 담지 않는다 — 오버나이트는 판정에 안 들어간다', () => {
+  it('주간거래(오버나이트) 봉도 판정에 담는다 — 참고 확률은 주되 정규장이 아니라 신호는 없다(2026-08-25)', () => {
     const overnight = [bar('2026-08-18T21:00:00-04:00', 10), bar('2026-08-18T22:00:00-04:00', 10)];
     const r = inspectModel(model(0.4), { bars: overnight, barMinutes: 5 });
-    expect(r.dayBars).toBe(0);
-    expect(r.reject).toBe('bars');
+    expect(r.dayBars).toBe(2);
+    expect(r.reject).toBe('session');
+    expect(r.prob).not.toBeNull();
   });
 });

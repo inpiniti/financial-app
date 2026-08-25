@@ -15,8 +15,11 @@ import { evaluateModel, type ModelEval } from '../../core/model/signal';
 import type { GbdtModel } from '../../core/model/gbdt';
 import type { ClockLike } from './types';
 
-/** 첫 조회 봉 수 — 5분봉 150개 = 12.5시간. 정규장 어느 시점에 켜도 그날 04:00까지 닿는다. */
-export const MODEL_SEED_BAR_COUNT = 150;
+/**
+ * 첫 조회 봉 수 — 5분봉 300개 = 25시간. 거래일이 주간거래까지 최대 24시간(288봉)이라(2026-08-25
+ * 주간거래 봉 포함) 어느 시점에 켜도 그날 04:00 ET(dayOpen)까지 닿는다. 150이던 시절엔 창이 16시간이었다.
+ */
+export const MODEL_SEED_BAR_COUNT = 300;
 /** 이후 조회 봉 수 — 마감 직후 몇 봉만. 놓친 봉(앱 절전·네트워크 끊김)까지 흡수하도록 여유를 둔다. */
 export const MODEL_INCREMENTAL_BAR_COUNT = 6;
 /** 스캔 점검 주기(ms) — 봉 마감을 놓치지 않을 만큼만 자주 본다. */

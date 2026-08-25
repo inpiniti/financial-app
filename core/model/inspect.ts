@@ -56,7 +56,7 @@ export function describeReject(ev: Pick<ModelEval, 'reject' | 'prob' | 'threshol
 
 /**
  * 봉을 넣으면 스캐너와 같은 절차로 판정한다.
- * 거래일 경계(04:00 ET)·표본 창(04:00~20:00 ET)·누적 거래대금은 ModelDayBars가 처리한다.
+ * 거래일 경계(04:00 ET)·누적 거래대금은 ModelDayBars가 처리한다(주간거래 봉 포함 — bars.ts 주석).
  */
 export function inspectModel(model: GbdtModel, input: ModelInspectInput): ModelInspection {
   const store = new ModelDayBars(input.barMinutes);

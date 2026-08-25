@@ -41,7 +41,7 @@ describe('ET 시각 판정', () => {
     expect(isMainSessionBar(at('2026-08-18T16:00:00-04:00'), 5)).toBe(false);
   });
 
-  it('표본 창 — 04:00~20:00 ET만 담는다(오버나이트·주간거래 봉은 버린다)', () => {
+  it('표본 창 판정 — 04:00~20:00 ET 안인가(학습 수집 규약 기록 — 2026-08-25부터 저장 필터로는 안 쓴다)', () => {
     expect(inCollectWindow(at('2026-08-18T04:00:00-04:00'))).toBe(true);
     expect(inCollectWindow(at('2026-08-18T19:55:00-04:00'))).toBe(true);
     expect(inCollectWindow(at('2026-08-18T20:00:00-04:00'))).toBe(false);

@@ -7,11 +7,17 @@
 //   그래서 **모델 경로의 봉은 처음부터 끝까지 토스**다 — 첫 조회로 그날치를 받고, 이후 봉 마감마다 몇 개만
 //   덧붙인다(merge). WS 틱은 속도·진입가·청산 감시에만 쓴다.
 //
-// 학습 규약 재현: 하루 경계는 04:00 ET(거래일이 바뀌면 통째로 비운다), 표본 창은 04:00~20:00 ET,
+// 학습 규약 재현: 하루 경계는 04:00 ET(거래일이 바뀌면 통째로 비운다),
 // 봉 키는 봉 시작 epoch 분(barMinutes의 배수) — 토스 min:5의 dt와 같은 버킷.
+//
+// 표본 창(04:00~20:00 ET) 밖 봉(주간거래·오버나이트)도 **담는다**(2026-08-25 사용자 요청) —
+// 한국 낮 시간에도 화면·챗봇의 참고 판정이 그래프를 따라 움직이게. 학습 때 없던 봉이라 그 구간
+// 확률은 참고값이지만, 매수 판정에는 영향이 없다: BUY는 마지막 봉이 정규장일 때만 나오고(signal.ts
+// session 게이트), 정규장 판정 시점의 저장소에는 주간거래 봉이 없다(20:00 ET 이후에나 생기고,
+// 새벽 04:00 ET 거래일 전환에서 전일치와 함께 통째로 비워진다).
 
 import type { OhlcvBar } from './features';
-import { inCollectWindow, tradingDayIndex } from './session';
+import { tradingDayIndex } from './session';
 
 export type { OhlcvBar } from './features';
 
@@ -62,18 +68,12 @@ export class ModelDayBars {
 
   /**
    * 봉 덧붙이기 — 같은 키는 새 값으로 갈아끼우고, 거래일이 바뀌면 통째로 비우고 새 날로 시작한다.
-   * 표본 창(04:00~20:00 ET) 밖 봉과 **마지막 봉의 거래일이 아닌** 봉은 버린다.
+   * **마지막 봉의 거래일이 아닌** 봉은 버린다. 주간거래·오버나이트 봉도 담는다(파일 상단 주석).
    * 반영된(추가·갱신) 봉 수를 돌려준다.
    */
   merge(incoming: readonly OhlcvBar[]): number {
     const clean = incoming
-      .filter(
-        (b) =>
-          Number.isFinite(b.minuteKey) &&
-          Number.isFinite(b.close) &&
-          b.close > 0 &&
-          inCollectWindow(b.minuteKey),
-      )
+      .filter((b) => Number.isFinite(b.minuteKey) && Number.isFinite(b.close) && b.close > 0)
       .map((b) => ({ ...b, minuteKey: Math.floor(b.minuteKey / this.barMinutes) * this.barMinutes }))
       .sort((a, b) => a.minuteKey - b.minuteKey);
     if (clean.length === 0) return 0;

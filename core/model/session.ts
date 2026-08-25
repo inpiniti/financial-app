@@ -60,7 +60,11 @@ export function etDateString(minuteKey: number): string {
   return new Date(shifted).toISOString().slice(0, 10);
 }
 
-/** 학습 표본 창(04:00~20:00 ET) 안의 봉인가 — 밖의 봉(오버나이트·주간거래)은 지표에 넣지 않는다. */
+/**
+ * 학습 표본 창(04:00~20:00 ET) 안의 봉인가 — 학습 파이프라인의 수집 규약 기록.
+ * 2026-08-25부터 저장소(ModelDayBars)는 이 창 밖 봉(주간거래·오버나이트)도 담는다(표시용 참고 판정) —
+ * 이 함수는 더 이상 저장 필터로 쓰지 않는다. "이 봉의 확률은 학습 분포 안인가"를 물을 때의 기준으로 남긴다.
+ */
 export function inCollectWindow(minuteKey: number): boolean {
   const m = etMinuteOfDay(minuteKey);
   return m >= TRADING_DAY_START_MIN && m < TRADING_DAY_END_MIN;
