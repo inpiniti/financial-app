@@ -40,12 +40,14 @@ function bars(n: number, lastUp: number): OhlcvBar[] {
 interface Harness {
   scanner: ModelScanner;
   signals: Array<{ ticker: string; prob: number | null }>;
+  verdicts: Array<{ ticker: string; prob: number | null; reject: string | null }>;
   counts: number[];
   now: { value: number };
 }
 
 function harness(all: OhlcvBar[], opts: { tickers?: string[] } = {}): Harness {
   const signals: Array<{ ticker: string; prob: number | null }> = [];
+  const verdicts: Array<{ ticker: string; prob: number | null; reject: string | null }> = [];
   const counts: number[] = [];
   const now = { value: (all[all.length - 1].minuteKey + BAR) * 60_000 + MODEL_SCAN_DELAY_MS };
   const scanner = new ModelScanner({
@@ -60,8 +62,9 @@ function harness(all: OhlcvBar[], opts: { tickers?: string[] } = {}): Harness {
     },
     fetchDailyCloses: async () => [{ date: '2026-08-15', close: 99 }, { date: '2026-08-14', close: 98 }],
     onSignal: (ticker, ev) => signals.push({ ticker, prob: ev.prob }),
+    onVerdict: (ticker, ev) => verdicts.push({ ticker, prob: ev.prob, reject: ev.reject }),
   });
-  return { scanner, signals, counts, now };
+  return { scanner, signals, verdicts, counts, now };
 }
 
 describe('ModelScanner', () => {
@@ -71,12 +74,17 @@ describe('ModelScanner', () => {
     expect(h.signals).toHaveLength(1);
     expect(h.signals[0].ticker).toBe('AAPL');
     expect(h.signals[0].prob).toBeGreaterThan(0.9);
+    expect(h.verdicts).toHaveLength(1);
+    expect(h.verdicts[0]).toMatchObject({ ticker: 'AAPL', reject: null });
   });
 
-  it('임계값에 못 미치면 신호가 없다', async () => {
+  it('임계값에 못 미치면 신호가 없다 — 판정 결과(onVerdict)는 그래도 나온다', async () => {
     const h = harness(bars(30, 0));
     await h.scanner.pump();
     expect(h.signals).toHaveLength(0);
+    expect(h.verdicts).toHaveLength(1);
+    expect(h.verdicts[0]).toMatchObject({ ticker: 'AAPL', reject: 'prob' });
+    expect(h.verdicts[0].prob).not.toBeNull();
   });
 
   it('첫 조회는 그날치, 이후 봉부터는 몇 봉만 덧붙인다', async () => {
@@ -114,6 +122,7 @@ describe('ModelScanner', () => {
     const h = harness(pre);
     await h.scanner.pump();
     expect(h.signals).toHaveLength(0);
+    expect(h.verdicts[0]).toMatchObject({ reject: 'session' }); // 화면은 "정규장 아님"을 읽을 수 있다
   });
 
   it('누적 거래대금이 $2M에 못 미치면 신호를 내지 않는다(감지 가능 시점 필터)', async () => {
@@ -121,6 +130,7 @@ describe('ModelScanner', () => {
     const h = harness(thin);
     await h.scanner.pump();
     expect(h.signals).toHaveLength(0);
+    expect(h.verdicts[0]).toMatchObject({ reject: 'liquidity' });
   });
 
   it('조회가 실패하면 그 종목만 건너뛰고 다른 종목은 계속 본다', async () => {

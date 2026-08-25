@@ -25,6 +25,9 @@ import { Panel } from '../../../components/Panel';
 import { loadAppSettings, type AppSettings } from '../../../lib/appSettings';
 import { peekManagerBootstrap } from '../../scalper/ui/managerProvider';
 import { MODEL_MODE } from '../../scalper/modelMode';
+import type { ModelVerdictView } from '../../scalper/feedSlot';
+import { loadModel } from '../../../core/model';
+import { describeReject } from '../../../core/model/inspect';
 import { APP_MANUAL, type HelpRuntimeState } from '../appManual';
 import { SUGGESTED_QUESTIONS, askHelp, type HelpMessage } from '../helpChat';
 import { HELP_TOOL_DECLARATIONS, runHelpTool, type HelpAutopilotSnapshot } from '../tools';
@@ -148,9 +151,17 @@ function readAutopilotSnapshot(): HelpAutopilotSnapshot | null {
  * 모델 모드(현행)는 모델 확률, 추세 모드(롤백 경로)는 4선 방향. 2026-08-24까지 여기가 4선 고정이라
  * 모델 모드에서 챗봇이 전 종목을 "봉 부족"이라고 답했다.
  */
-function formatSignalForTool(view: { modelProb: number | null; trend: TrendLike }): string {
+function formatSignalForTool(view: {
+  modelProb: number | null;
+  modelVerdict: ModelVerdictView | null;
+  trend: TrendLike;
+}): string {
   if (MODEL_MODE) {
-    return view.modelProb === null ? '아직 판정 전(봉 마감 대기)' : `모델 확률 ${(view.modelProb * 100).toFixed(1)}%`;
+    const v = view.modelVerdict;
+    if (v === null) return '아직 판정 전(봉 마감 대기)';
+    if (v.reject === null) return `모델 확률 ${((v.prob ?? 0) * 100).toFixed(1)}% — 매수 신호`;
+    const why = describeReject({ reject: v.reject, prob: v.prob, threshold: loadModel().threshold });
+    return v.prob === null ? `판정 안 함 — ${why}` : `모델 확률 ${(v.prob * 100).toFixed(1)}% — ${why}`;
   }
   return formatTrendForTool(view.trend);
 }

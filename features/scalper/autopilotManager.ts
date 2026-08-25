@@ -330,10 +330,12 @@ export class AutoPilotManager {
               deps.fetchModelDailyCloses
                 ? deps.fetchModelDailyCloses(ticker, this.marketOf(ticker))
                 : Promise.resolve([]),
+            // 매 봉 판정을 슬롯에 밀어 넣는다(BUY든 아니든) — 리스트 줄이 "왜 안 사는지"를 설명할 근거.
+            // 이 배선이 없던 동안 화면은 BUY가 나기 전까지 영영 "모델 판정 대기"였다(2026-08-25 제보).
+            onVerdict: (ticker, ev) => this.slots.get(ticker)?.setModelVerdict(ev),
             onSignal: (ticker, ev, bar) => {
               const slot = this.slots.get(ticker);
               if (!slot) return;
-              slot.setModelProb(ev.prob);
               // 신호 봉 종가는 예비값 — 슬롯에 살아 있는 체결가가 있으면 그쪽이 진입가가 된다.
               const fired = slot.emitSignal('BUY', bar.close, this.deps.clock.now());
               this.pushEvent({

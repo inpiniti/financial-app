@@ -40,6 +40,11 @@ export interface ModelScannerDeps {
   fetchDailyCloses: (ticker: string) => Promise<Array<{ date: string; close: number }>>;
   /** BUY 신호 — 신호 봉과 판정 결과를 함께 넘긴다. */
   onSignal: (ticker: string, ev: ModelEval, bar: OhlcvBar) => void;
+  /**
+   * 매 판정 결과(BUY든 아니든) — 화면·진단용. onSignal보다 먼저 불린다.
+   * 이게 없으면 화면은 BUY가 날 때까지 "판정 대기"만 보게 된다(2026-08-25 제보 — 왜 안 사는지 알 길이 없었다).
+   */
+  onVerdict?: (ticker: string, ev: ModelEval) => void;
   /** 진단 이벤트(선택). */
   onEvent?: (text: string) => void;
 }
@@ -155,6 +160,7 @@ export class ModelScanner {
     const last = state.bars.bars[state.bars.size - 1];
     if (!last) {
       state.evaluatedKey = targetKey;
+      this.deps.onVerdict?.(ticker, this.barsReject(state));
       return;
     }
     // 아직 목표 봉이 안 올라왔으면 다음 점검 때 다시 본다(evaluatedKey를 올리지 않는다).
@@ -163,7 +169,10 @@ export class ModelScanner {
     await this.ensureDaily(ticker, state, last.minuteKey);
     const dayOpen = state.bars.dayOpen;
     state.evaluatedKey = targetKey;
-    if (dayOpen === null || !(dayOpen > 0)) return;
+    if (dayOpen === null || !(dayOpen > 0)) {
+      this.deps.onVerdict?.(ticker, this.barsReject(state));
+      return;
+    }
 
     const ev = evaluateModel(this.deps.model, {
       bars: state.bars.bars,
@@ -171,7 +180,19 @@ export class ModelScanner {
       cumDollarVolume: state.bars.cumDollarVolume,
       barMinutes: this.deps.barMinutes,
     });
+    this.deps.onVerdict?.(ticker, ev);
     if (ev.signal === 'BUY') this.deps.onSignal(ticker, ev, last);
+  }
+
+  /** 봉이 없어 evaluateModel까지 못 간 상태의 판정 — 화면이 "봉 부족"으로 읽게 한다. */
+  private barsReject(state: SymbolState): ModelEval {
+    return {
+      signal: null,
+      prob: null,
+      threshold: this.deps.model.threshold,
+      reject: 'bars',
+      bars: state.bars.size,
+    };
   }
 
   /** 전일·전전일 종가 — 거래일당 1회. 실패하면 null로 두고(전일 Feature는 null) 신호는 계속 낸다. */

@@ -17,6 +17,7 @@ import { useUsdKrwRate } from '../../../lib/useUsdKrwRate';
 import type { AutoPilotEvent, AutoPilotGridView, AutoPilotState, AutoPilotView } from '../autopilot';
 import type { AutoPilotManager, AutoPilotSlotRow } from '../autopilotManager';
 import type { FeedEvent, ScalperManager } from '../scalperManager';
+import type { ModelVerdictView } from '../feedSlot';
 import type { FeedStatus } from '../types';
 import { isDaytimeSessionOpen } from '../daySession';
 import { rankingSourceLabelOf } from '../../../core/ranking';
@@ -113,13 +114,28 @@ function formatTrendLine(trend: TrendEval | null, live: TrendEval | null): strin
 }
 
 /**
- * 모델 판정 한 줄 — "모델 12.4% / 기준 37.7%". 아직 판정 전이면 "모델 판정 대기".
+ * 모델 판정 한 줄 — 마지막 판정의 **상태까지** 말한다(2026-08-25). 확률 숫자만으로는
+ * "정규장이 아니라 판정을 안 한 것"과 "판정했는데 낮은 것"이 같은 "판정 대기"로 보였다.
  * 확률이 기준값에 얼마나 못 미치는지가 "왜 안 사요?"의 답이다(대부분의 봉은 한참 아래에 있다).
  */
-function formatModelLine(prob: number | null): string {
+function formatModelLine(v: ModelVerdictView | null): string {
   const thr = `${(loadModel().threshold * 100).toFixed(1)}%`;
-  if (prob === null) return `모델 판정 대기 · 기준 ${thr}`;
-  return `모델 ${(prob * 100).toFixed(1)}% / 기준 ${thr}`;
+  if (v === null) return `모델 판정 대기 · 첫 5분봉 마감 뒤에 떠요 · 기준 ${thr}`;
+  const prob = v.prob === null ? null : `${(v.prob * 100).toFixed(1)}%`;
+  switch (v.reject) {
+    case null:
+      return `모델 ${prob} ≥ 기준 ${thr} · 매수 신호`;
+    case 'prob':
+      return `모델 ${prob} / 기준 ${thr} · 아직 낮아요`;
+    case 'session':
+      return `모델 쉼 · 정규장(9:31~16:00 ET)에만 사요 · 기준 ${thr}`;
+    case 'liquidity':
+      return `모델 쉼 · 오늘 거래대금 200만 달러 미달 · 기준 ${thr}`;
+    case 'price':
+      return `모델 쉼 · 주가 1달러 이하 제외 · 기준 ${thr}`;
+    case 'bars':
+      return `모델 쉼 · 봉 부족(${v.bars}개) · 기준 ${thr}`;
+  }
 }
 
 /**
@@ -213,7 +229,7 @@ function SlotRow({
             {MODEL_MODE ? (
               // 모델 모드(2026-08-22) — 마지막 봉의 판정 확률과 임계값. 왜 안 사는지 한눈에.
               <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
-                {formatModelLine(item.view.modelProb)}
+                {formatModelLine(item.view.modelVerdict)}
               </Text>
             ) : TREND_MODE ? (
               // 추세 모드(2026-08-18, 롤백 보존) — 4선 방향·위치·봉 수.
@@ -496,6 +512,13 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                 <Text className="text-[15px] font-bold text-[#191f28]">트레이딩 리스트</Text>
                 <Text className="text-xs text-[#8b95a1]">순위 상위 {rows.length}종목 · 원천은 설정에서</Text>
               </View>
+              {MODEL_MODE && (
+                // 모델이 뭘 예측하는지 — 행마다 뜨는 확률 숫자의 뜻을 여기서 한 번만 설명한다(2026-08-25).
+                <Text className="px-5 pb-2 text-xs text-[#8b95a1]">
+                  모델 % = 지금 사면 손절(−2%)보다 익절(+5%)에 먼저 닿을 확률. 5분봉이 닫힐 때마다 다시
+                  계산하고, 기준을 넘는 종목만 사요.
+                </Text>
+              )}
             </View>
           </>
         }

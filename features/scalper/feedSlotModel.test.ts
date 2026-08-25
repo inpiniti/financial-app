@@ -59,12 +59,22 @@ describe('FeedSlot — 모델 모드', () => {
     expect(s.quote).toEqual({ bid1: 99.9, ask1: 100.1, at: clock.now() });
   });
 
-  it('확률은 화면용으로만 들고 있는다', () => {
+  it('판정은 화면용으로만 들고 있는다 — 확률·사유 모두', () => {
     const { s } = slot();
     expect(s.getView().modelProb).toBeNull();
-    s.setModelProb(0.42);
+    expect(s.getView().modelVerdict).toBeNull();
+    s.setModelVerdict({ prob: 0.42, reject: 'prob', bars: 30 });
     expect(s.getView().modelProb).toBeCloseTo(0.42, 9);
-    s.setModelProb(Number.NaN);
+    expect(s.getView().modelVerdict).toMatchObject({ prob: 0.42, reject: 'prob', bars: 30 });
+    s.setModelVerdict({ prob: Number.NaN, reject: 'session', bars: 12 });
     expect(s.getView().modelProb).toBeNull();
+    expect(s.getView().modelVerdict).toMatchObject({ prob: null, reject: 'session', bars: 12 });
+  });
+
+  it('모델 모드가 아니면 판정 스냅샷을 노출하지 않는다', () => {
+    const { s } = slot(false);
+    s.setModelVerdict({ prob: 0.42, reject: null, bars: 30 });
+    expect(s.getView().modelProb).toBeNull();
+    expect(s.getView().modelVerdict).toBeNull();
   });
 });

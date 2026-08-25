@@ -22,6 +22,7 @@ import {
   type TrendEval,
 } from '../../core/trend/signal';
 import { MODEL_MODE } from './modelMode';
+import type { ModelEval } from '../../core/model/signal';
 import { TREND_MODE } from './trendMode';
 import { TickRateMeter } from './tickRate';
 import { SlopeMeter } from './slopeRate';
@@ -172,9 +173,22 @@ export interface FeedSlotView {
   readonly trendInProgressClose: number | null;
   /**
    * 마지막 모델 판정 확률(모델 모드에서만, 0~1) — "지금 사면 −2% 전에 +5%에 닿을" 확률.
-   * 아직 판정 전이거나 다른 모드면 null. 화면·진단 전용.
+   * 아직 판정 전이거나 다른 모드면 null. 화면·진단 전용. (modelVerdict.prob의 지름길)
    */
   readonly modelProb: number | null;
+  /**
+   * 마지막 모델 판정 전체(모델 모드에서만) — 확률에 더해 **왜 판정을 못 했는지**(reject)까지.
+   * 스캐너가 매 봉 밀어 넣는다. BUY가 안 나는 대부분의 시간에 화면이 상황을 설명할 유일한 근거다.
+   */
+  readonly modelVerdict: ModelVerdictView | null;
+}
+
+/** 화면용 모델 판정 스냅샷 — ModelEval에서 화면이 쓰는 것만 + 판정 시각. */
+export interface ModelVerdictView {
+  readonly prob: number | null;
+  readonly reject: ModelEval['reject'];
+  readonly bars: number;
+  readonly at: number;
 }
 
 export class FeedSlot {
@@ -234,8 +248,8 @@ export class FeedSlot {
   /** 진행 중 봉 SELL을 이미 낸 봉 키 — 같은 봉에서 되풀이 발화하지 않게. */
   private liveSellBarKey: number | null = null;
   private trendListener: SlotSignalListener | null = null;
-  /** 마지막 모델 판정 확률(모델 모드에서만) — 스캐너가 밀어 넣는다. 화면·진단 전용, 판정에는 쓰지 않는다. */
-  private modelProb: number | null = null;
+  /** 마지막 모델 판정(모델 모드에서만) — 스캐너가 매 봉 밀어 넣는다. 화면·진단 전용, 판정에는 쓰지 않는다. */
+  private modelVerdict: ModelVerdictView | null = null;
 
   constructor(options: FeedSlotOptions) {
     this.ticker = options.ticker;
@@ -472,9 +486,14 @@ export class FeedSlot {
     return true;
   }
 
-  /** 마지막 모델 판정 확률(화면·진단용) — 스캐너가 매 봉 갱신한다. */
-  setModelProb(prob: number | null): void {
-    this.modelProb = prob === null || !Number.isFinite(prob) ? null : prob;
+  /** 마지막 모델 판정(화면·진단용) — 스캐너가 매 봉(BUY든 아니든) 갱신한다. */
+  setModelVerdict(ev: Pick<ModelEval, 'prob' | 'reject' | 'bars'>): void {
+    this.modelVerdict = {
+      prob: ev.prob === null || !Number.isFinite(ev.prob) ? null : ev.prob,
+      reject: ev.reject,
+      bars: ev.bars,
+      at: this.clock.now(),
+    };
   }
 
   seedTrend(bars: readonly MinuteBar[]): number {
@@ -581,7 +600,8 @@ export class FeedSlot {
       trend: this.trendEval,
       trendLive: this.trendLiveEval,
       trendInProgressClose: this.trendMode ? (this.bars.inProgress?.close ?? null) : null,
-      modelProb: this.modelMode ? this.modelProb : null,
+      modelProb: this.modelMode ? (this.modelVerdict?.prob ?? null) : null,
+      modelVerdict: this.modelMode ? this.modelVerdict : null,
     };
   }
 }
