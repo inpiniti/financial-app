@@ -57,11 +57,12 @@ describe('inspectModel', () => {
     expect(describeReject(r)).toContain('봉이 모자라');
   });
 
-  it('정규장 밖 봉이면 session — 프리마켓에서 확률을 지어내지 않는다', () => {
+  it('정규장 밖 봉이면 session — 참고 확률은 주되 신호는 내지 않는다(2026-08-25)', () => {
     const pre = [bar('2026-08-18T08:00:00-04:00', 10), bar('2026-08-18T08:05:00-04:00', 10)];
     const r = inspectModel(model(0.4), { bars: pre, barMinutes: 5 });
     expect(r.reject).toBe('session');
-    expect(r.prob).toBeNull();
+    expect(r.signal).toBeNull();
+    expect(r.prob).not.toBeNull(); // 게이트에 걸려도 확률은 계산한다 — 화면·챗봇 표시용
     expect(describeReject(r)).toContain('정규장');
   });
 

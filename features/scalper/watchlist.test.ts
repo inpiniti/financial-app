@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SchedulerLike } from './types';
 import {
   computeDesired,
+  isAboveMinPrice,
   isOrderable,
   isWithinMaxPrice,
   parseSignedRate,
@@ -64,6 +65,14 @@ describe('parseSignedRate / isOrderable', () => {
     expect(isWithinMaxPrice(row('A', '1', { last: 'abc' }), 1)).toBe(true); // 현재가 파싱 불가 — 관대 통과.
     expect(isWithinMaxPrice(row('A', '1', { last: '5' }), 0)).toBe(true); // 상한 0 이하 — 필터 없음 취급.
   });
+
+  it('최소 진입가 판정 — $1 이하는 배제(모델이 어차피 안 산다), 현재가를 못 읽으면 관대 통과', () => {
+    expect(isAboveMinPrice(row('A', '1', { last: '0.99' }))).toBe(false);
+    expect(isAboveMinPrice(row('A', '1', { last: '1.00' }))).toBe(false); // 모델 게이트는 close > $1 — 경계 포함 배제.
+    expect(isAboveMinPrice(row('A', '1', { last: '1.01' }))).toBe(true);
+    expect(isAboveMinPrice(row('A', '1', {}))).toBe(true); // 현재가 누락 — 관대 통과.
+    expect(isAboveMinPrice(row('A', '1', { last: 'abc' }))).toBe(true);
+  });
 });
 
 describe('computeDesired — 필터·중복 제거·차순위 충원', () => {
@@ -83,6 +92,12 @@ describe('computeDesired — 필터·중복 제거·차순위 충원', () => {
     expect(amountSide).toEqual(Array.from({ length: 15 }, (_, i) => `A${i + 1}`));
     // A1~A5는 거래대금에 이미 채용 — 거래량은 V1~V15로 채운다.
     expect(volumeSide).toEqual(Array.from({ length: 15 }, (_, i) => `V${i + 1}`));
+  });
+
+  it('$1 이하 종목은 리스트에 올리지 않고 차순위로 충원한다(2026-08-25)', () => {
+    const rows = [row('P', '1', { last: '0.80' }), row('A', '1', { last: '5' }), row('B', '1', { last: '3' })];
+    const desired = computeDesired([{ source: 's', count: 2, rows }]);
+    expect(desired.map((e) => e.ticker)).toEqual(['A', 'B']);
   });
 
   it('순위가 비면(조회 실패 등) 리스트도 비운다', () => {
@@ -147,14 +162,14 @@ describe('computeDesired — 필터·중복 제거·차순위 충원', () => {
     const desired = computeDesired(
       snapshot({
         tossVolume: [
-          row('RICH', '5', { last: '42.10' }), // $1 초과 — 제외.
-          row('EDGE', '4', { last: '1.00' }), // 정확히 $1 — 1주 진입 가능, 채용.
-          row('PENNY', '3', { last: '0.42' }),
-          row('CHEAP', '2', { last: '0.87' }),
-          row('SPARE', '1', { last: '0.55' }),
+          row('RICH', '5', { last: '42.10' }), // 상한($10) 초과 — 제외.
+          row('EDGE', '4', { last: '10.00' }), // 정확히 상한 — 1주 진입 가능, 채용.
+          row('PENNY', '3', { last: '4.20' }),
+          row('CHEAP', '2', { last: '8.70' }),
+          row('SPARE', '1', { last: '5.50' }),
         ],
       }),
-      1,
+      10,
     );
     expect(desired.map((e) => e.ticker)).toEqual(['EDGE', 'PENNY', 'CHEAP', 'SPARE']);
   });
@@ -185,7 +200,7 @@ describe('computeDesired — 필터·중복 제거·차순위 충원', () => {
 
   it('상한 미지정이면 가격 필터 없이 기존과 동일하게 동작한다', () => {
     const desired = computeDesired(
-      snapshot({ tossVolume: [row('RICH', '5', { last: '42.10' }), row('A', '1', { last: '0.5' })] }),
+      snapshot({ tossVolume: [row('RICH', '5', { last: '42.10' }), row('A', '1', { last: '5' })] }),
     );
     expect(desired.map((e) => e.ticker)).toEqual(['RICH', 'A']);
   });
@@ -290,10 +305,10 @@ describe('ScalperWatchlist — 폴링·diff·핀 유예', () => {
 
   it('maxPriceUsd getter를 갱신마다 읽어 진입금액 초과 종목을 거른다 — 설정 변경도 다음 갱신에 반영', async () => {
     const { scheduler } = manualScheduler();
-    let limit: number | null = 1;
+    let limit: number | null = 10;
     const fetchSnapshot = vi
       .fn<() => Promise<RankingSnapshot>>()
-      .mockResolvedValue(snapshot({ tossVolume: [row('RICH', '5', { last: '42.10' }), row('A', '1', { last: '0.50' })] }));
+      .mockResolvedValue(snapshot({ tossVolume: [row('RICH', '5', { last: '42.10' }), row('A', '1', { last: '5.00' })] }));
     const wl = new ScalperWatchlist({ fetchSnapshot, scheduler, maxPriceUsd: () => limit });
 
     await wl.refresh();

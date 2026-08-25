@@ -34,7 +34,12 @@ export interface ModelEvalInput {
 /** 판정 결과 — 왜 신호가 아닌지까지 남긴다(실거래 일지·화면 진단용). */
 export interface ModelEval {
   signal: 'BUY' | null;
-  /** 상단 장벽(+5%) 선터치 확률. 판정 불가면 null. */
+  /**
+   * 상단 장벽(+5%) 선터치 확률. 봉이 모자랄 때(reject 'bars')만 null.
+   * 정규장·거래대금·가격 게이트에 걸려도 확률은 계산한다(2026-08-25) — 화면·챗봇이 "모델이 지금
+   * 뭐라고 보는지"를 항상 보여주기 위해서다. 단 그 확률은 **학습 분포 밖일 수 있는 참고값**이고
+   * (프리·애프터 봉은 학습에 없었다), 매수는 여전히 게이트를 전부 통과해야만 나간다.
+   */
   prob: number | null;
   threshold: number;
   /** 신호가 아닌 이유 — 'bars'(봉 부족) 'session'(정규장 아님) 'liquidity'(누적 거래대금 미달) 'price'(≤$1) 'prob'(확률 미달). */
@@ -44,19 +49,20 @@ export interface ModelEval {
 
 /**
  * 마지막 닫힌 봉 시점의 진입 판정.
- * 확률은 필터를 통과했을 때만 계산한다(30종목 × 800트리를 필요 없을 때 돌리지 않는다).
+ * 확률은 봉만 있으면 항상 계산한다(30종목 × 800트리 × 5분당 1회 — 부담 없는 양이다).
+ * 게이트(정규장·거래대금·가격)는 확률과 무관하게 신호를 막는다 — reject 우선순위는 게이트가 먼저다.
  */
 export function evaluateModel(model: GbdtModel, input: ModelEvalInput): ModelEval {
   const { bars, ctx, cumDollarVolume, barMinutes } = input;
   const n = bars.length;
-  const base = { signal: null, prob: null, threshold: model.threshold, bars: n } as const;
-  if (n < MIN_BARS_FOR_SIGNAL) return { ...base, reject: 'bars' };
+  const base = { signal: null, threshold: model.threshold, bars: n } as const;
+  if (n < MIN_BARS_FOR_SIGNAL) return { ...base, prob: null, reject: 'bars' };
   const last = bars[n - 1];
-  if (!isMainSessionBar(last.minuteKey, barMinutes)) return { ...base, reject: 'session' };
-  if (!(cumDollarVolume >= DETECT_DOLLAR_VOLUME)) return { ...base, reject: 'liquidity' };
-  if (!(last.close > MIN_ENTRY_PRICE)) return { ...base, reject: 'price' };
 
   const prob = predictProb(model, computeFeatures(bars, ctx));
+  if (!isMainSessionBar(last.minuteKey, barMinutes)) return { ...base, prob, reject: 'session' };
+  if (!(cumDollarVolume >= DETECT_DOLLAR_VOLUME)) return { ...base, prob, reject: 'liquidity' };
+  if (!(last.close > MIN_ENTRY_PRICE)) return { ...base, prob, reject: 'price' };
   if (!(prob >= model.threshold)) return { ...base, prob, reject: 'prob' };
   return { signal: 'BUY', prob, threshold: model.threshold, reject: null, bars: n };
 }

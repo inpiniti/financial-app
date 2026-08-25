@@ -126,17 +126,24 @@ function formatModelLine(v: ModelVerdictView | null): string {
   const staleMin = v.barKey === null ? null : Date.now() / 60_000 - (v.barKey + MODEL_BAR_MINUTES);
   const stale = staleMin !== null && staleMin > MODEL_BAR_MINUTES * 2;
   const tag = stale ? ` · ${formatHHMM(v.barKey! * 60_000)} 봉 기준` : '';
+  // 게이트에 걸려도 확률은 계산돼 온다(2026-08-25) — "(참고)"를 붙여 매수 판단용 숫자가 아님을 밝힌다.
   switch (v.reject) {
     case null:
       return stale ? `모델 ${prob} ≥ 기준 ${thr} · 그때 기준 넘음${tag}` : `모델 ${prob} ≥ 기준 ${thr} · 매수 신호`;
     case 'prob':
       return `모델 ${prob} / 기준 ${thr} · 아직 낮아요${tag}`;
     case 'session':
-      return `모델 쉼 · 정규장(9:31~16:00 ET)에만 사요 · 기준 ${thr}`;
+      return prob === null
+        ? `모델 쉼 · 정규장에만 사요 · 기준 ${thr}`
+        : `모델 ${prob}(참고) / 기준 ${thr} · 정규장에만 사요${tag}`;
     case 'liquidity':
-      return `모델 쉼 · 오늘 거래대금 200만 달러 미달 · 기준 ${thr}${tag}`;
+      return prob === null
+        ? `모델 쉼 · 오늘 거래대금 200만 달러 미달 · 기준 ${thr}`
+        : `모델 ${prob}(참고) / 기준 ${thr} · 거래대금 200만 달러 미달${tag}`;
     case 'price':
-      return `모델 쉼 · 주가 1달러 이하 제외 · 기준 ${thr}`;
+      return prob === null
+        ? `모델 쉼 · 주가 1달러 이하 제외 · 기준 ${thr}`
+        : `모델 ${prob}(참고) / 기준 ${thr} · 주가 1달러 이하${tag}`;
     case 'bars':
       return `모델 쉼 · 봉 부족(${v.bars}개) · 기준 ${thr}`;
   }
