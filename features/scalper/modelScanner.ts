@@ -25,6 +25,11 @@ export const MODEL_SCAN_TICK_MS = 20_000;
 export const MODEL_SCAN_DELAY_MS = 5_000;
 /** 조회 실패가 이만큼 연속되면 그 종목은 다음 봉까지 쉰다(무한 재시도 방지). */
 export const MODEL_MAX_CONSECUTIVE_FAILS = 3;
+/**
+ * 목표 봉이 이 봉 수 이내로 늦으면 "장중 토스 지연"으로 보고 20초 재시도, 넘으면 "장 닫힘"으로 보고
+ * 가진 봉으로 판정만 알린 뒤 다음 봉까지 쉰다(매수 신호는 내지 않는다).
+ */
+export const MODEL_STALE_BEHIND_BARS = 2;
 
 export interface ModelScannerDeps {
   model: GbdtModel;
@@ -43,8 +48,9 @@ export interface ModelScannerDeps {
   /**
    * 매 판정 결과(BUY든 아니든) — 화면·진단용. onSignal보다 먼저 불린다.
    * 이게 없으면 화면은 BUY가 날 때까지 "판정 대기"만 보게 된다(2026-08-25 제보 — 왜 안 사는지 알 길이 없었다).
+   * lastBarKey = 판정에 쓴 마지막 봉의 시작 분 키(봉이 없으면 null) — 화면이 "몇 시 봉 기준"인지 밝힐 때 쓴다.
    */
-  onVerdict?: (ticker: string, ev: ModelEval) => void;
+  onVerdict?: (ticker: string, ev: ModelEval, lastBarKey: number | null) => void;
   /** 진단 이벤트(선택). */
   onEvent?: (text: string) => void;
 }
@@ -160,28 +166,46 @@ export class ModelScanner {
     const last = state.bars.bars[state.bars.size - 1];
     if (!last) {
       state.evaluatedKey = targetKey;
-      this.deps.onVerdict?.(ticker, this.barsReject(state));
+      this.deps.onVerdict?.(ticker, this.barsReject(state), null);
       return;
     }
-    // 아직 목표 봉이 안 올라왔으면 다음 점검 때 다시 본다(evaluatedKey를 올리지 않는다).
-    if (last.minuteKey < targetKey) return;
+    if (last.minuteKey < targetKey) {
+      // 목표 봉이 아직 없다. 조금 늦는 것(장중 토스 업로드 지연)이면 다음 점검(20초) 때 다시 본다 —
+      // evaluatedKey를 올리지 않아 재시도가 이어진다. 매수 기회를 봉 지연으로 놓치지 않기 위해서다.
+      const behind = (targetKey - last.minuteKey) / this.deps.barMinutes;
+      if (behind <= MODEL_STALE_BEHIND_BARS) return;
+      // 한참 없다(장 닫힘·거래정지). 가진 봉으로 판정해 화면에는 알리되 **매수 신호는 내지 않고**,
+      // 다음 봉 주기까지 쉰다 — 안 그러면 밤새 20초마다 그날치 봉을 헛조회한다(2026-08-25).
+      state.evaluatedKey = targetKey;
+      await this.evaluateAndReport(ticker, state, last, false);
+      return;
+    }
 
+    state.evaluatedKey = targetKey;
+    await this.evaluateAndReport(ticker, state, last, true);
+  }
+
+  /** 판정 1회 — onVerdict는 항상, onSignal(BUY)은 live(목표 봉이 실제로 닫힌 직후)일 때만. */
+  private async evaluateAndReport(
+    ticker: string,
+    state: SymbolState,
+    last: OhlcvBar,
+    live: boolean,
+  ): Promise<void> {
     await this.ensureDaily(ticker, state, last.minuteKey);
     const dayOpen = state.bars.dayOpen;
-    state.evaluatedKey = targetKey;
     if (dayOpen === null || !(dayOpen > 0)) {
-      this.deps.onVerdict?.(ticker, this.barsReject(state));
+      this.deps.onVerdict?.(ticker, this.barsReject(state), null);
       return;
     }
-
     const ev = evaluateModel(this.deps.model, {
       bars: state.bars.bars,
       ctx: { dayOpen, prevClose: state.prevClose, prevPrevClose: state.prevPrevClose },
       cumDollarVolume: state.bars.cumDollarVolume,
       barMinutes: this.deps.barMinutes,
     });
-    this.deps.onVerdict?.(ticker, ev);
-    if (ev.signal === 'BUY') this.deps.onSignal(ticker, ev, last);
+    this.deps.onVerdict?.(ticker, ev, last.minuteKey);
+    if (live && ev.signal === 'BUY') this.deps.onSignal(ticker, ev, last);
   }
 
   /** 봉이 없어 evaluateModel까지 못 간 상태의 판정 — 화면이 "봉 부족"으로 읽게 한다. */

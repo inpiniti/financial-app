@@ -189,6 +189,8 @@ export interface ModelVerdictView {
   readonly reject: ModelEval['reject'];
   readonly bars: number;
   readonly at: number;
+  /** 판정에 쓴 마지막 봉의 시작 분 키(epoch 분) — 장이 닫혀 옛 봉 기준이면 화면이 시각을 밝힌다. */
+  readonly barKey: number | null;
 }
 
 export class FeedSlot {
@@ -487,12 +489,13 @@ export class FeedSlot {
   }
 
   /** 마지막 모델 판정(화면·진단용) — 스캐너가 매 봉(BUY든 아니든) 갱신한다. */
-  setModelVerdict(ev: Pick<ModelEval, 'prob' | 'reject' | 'bars'>): void {
+  setModelVerdict(ev: Pick<ModelEval, 'prob' | 'reject' | 'bars'>, barKey: number | null = null): void {
     this.modelVerdict = {
       prob: ev.prob === null || !Number.isFinite(ev.prob) ? null : ev.prob,
       reject: ev.reject,
       bars: ev.bars,
       at: this.clock.now(),
+      barKey,
     };
   }
 

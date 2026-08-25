@@ -174,6 +174,27 @@ describe('ModelScanner', () => {
     expect(signals).toEqual(['AAPL']);
   });
 
+  it('장이 닫혀 새 봉이 없으면 — 가진 봉으로 판정을 알리되 매수 신호는 내지 않고, 다음 봉까지 재조회하지 않는다', async () => {
+    const h = harness(bars(30, 0.02)); // 마지막 봉이 임계값을 넘는 자리
+    h.now.value += 30 * 60_000; // 목표 봉보다 6봉 뒤 — "장 닫힘"으로 판정된다
+    await h.scanner.pump();
+    expect(h.signals).toHaveLength(0); // 옛 봉으로는 사지 않는다
+    expect(h.verdicts).toHaveLength(1); // 화면에는 상황이 간다
+    expect(h.verdicts[0].reject).toBeNull();
+    await h.scanner.pump(); // 같은 봉 주기 안 — 재조회·재판정 없음(밤새 20초마다 헛조회하던 문제)
+    expect(h.counts).toHaveLength(1);
+    expect(h.verdicts).toHaveLength(1);
+  });
+
+  it('장중 토스 지연(목표 봉이 2봉 이내로 늦음)은 판정을 미루고 다음 점검 때 다시 조회한다', async () => {
+    const h = harness(bars(30, 0));
+    h.now.value += 5 * 60_000; // 목표 봉보다 1봉 뒤 — 곧 올라올 봉을 기다린다
+    await h.scanner.pump();
+    expect(h.verdicts).toHaveLength(0);
+    await h.scanner.pump();
+    expect(h.counts).toHaveLength(2); // 재시도마다 다시 조회
+  });
+
   it('리스트에서 빠진 종목의 봉·맥락은 버린다', async () => {
     const h = harness(bars(30, 0.02));
     await h.scanner.pump();

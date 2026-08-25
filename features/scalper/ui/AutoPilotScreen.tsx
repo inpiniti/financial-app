@@ -21,7 +21,7 @@ import type { ModelVerdictView } from '../feedSlot';
 import type { FeedStatus } from '../types';
 import { isDaytimeSessionOpen } from '../daySession';
 import { rankingSourceLabelOf } from '../../../core/ranking';
-import { MODEL_MODE } from '../modelMode';
+import { MODEL_BAR_MINUTES, MODEL_MODE } from '../modelMode';
 import { loadModel } from '../../../core/model';
 import { TREND_MODE } from '../trendMode';
 import type { TrendEval } from '../../../core/trend/signal';
@@ -120,17 +120,21 @@ function formatTrendLine(trend: TrendEval | null, live: TrendEval | null): strin
  */
 function formatModelLine(v: ModelVerdictView | null): string {
   const thr = `${(loadModel().threshold * 100).toFixed(1)}%`;
-  if (v === null) return `모델 판정 대기 · 첫 5분봉 마감 뒤에 떠요 · 기준 ${thr}`;
+  if (v === null) return `모델 판정 대기 · 곧 첫 판정이 떠요 · 기준 ${thr}`;
   const prob = v.prob === null ? null : `${(v.prob * 100).toFixed(1)}%`;
+  // 옛 봉 기준 판정(장 닫힘·거래정지)이면 어느 봉인지 밝힌다 — 지금 시세에 대한 판정처럼 읽히면 안 된다.
+  const staleMin = v.barKey === null ? null : Date.now() / 60_000 - (v.barKey + MODEL_BAR_MINUTES);
+  const stale = staleMin !== null && staleMin > MODEL_BAR_MINUTES * 2;
+  const tag = stale ? ` · ${formatHHMM(v.barKey! * 60_000)} 봉 기준` : '';
   switch (v.reject) {
     case null:
-      return `모델 ${prob} ≥ 기준 ${thr} · 매수 신호`;
+      return stale ? `모델 ${prob} ≥ 기준 ${thr} · 그때 기준 넘음${tag}` : `모델 ${prob} ≥ 기준 ${thr} · 매수 신호`;
     case 'prob':
-      return `모델 ${prob} / 기준 ${thr} · 아직 낮아요`;
+      return `모델 ${prob} / 기준 ${thr} · 아직 낮아요${tag}`;
     case 'session':
       return `모델 쉼 · 정규장(9:31~16:00 ET)에만 사요 · 기준 ${thr}`;
     case 'liquidity':
-      return `모델 쉼 · 오늘 거래대금 200만 달러 미달 · 기준 ${thr}`;
+      return `모델 쉼 · 오늘 거래대금 200만 달러 미달 · 기준 ${thr}${tag}`;
     case 'price':
       return `모델 쉼 · 주가 1달러 이하 제외 · 기준 ${thr}`;
     case 'bars':
