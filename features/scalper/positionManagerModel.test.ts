@@ -107,6 +107,42 @@ describe('makePositionManager — 모델 어댑터', () => {
     if (result.kind === 'sold') expect(result.record.exitReason).toBe('STOP_LOSS');
   });
 
+  it('정산 기록의 exitSnapshot에 판정가·매도선·고점·종류가 남는다 — 슬리피지 계측(2026-08-26)', async () => {
+    const h = harness();
+    await h.pm.arm({ qty: 10, avgPrice: 100 });
+    for (const p of [110, 120]) {
+      h.setPrice(p);
+      await h.pm.tick({ canStart: true });
+    }
+    h.setPrice(113.5); // 매도선 114(=120×0.95) 아래로 갭 — 판정가 113.5
+    await h.pm.tick({ canStart: true });
+    await flush();
+    const result = await h.pm.poll();
+    expect(result.kind).toBe('sold');
+    if (result.kind === 'sold') {
+      const s = result.record.exitSnapshot;
+      expect(s).not.toBeNull();
+      expect(s?.price).toBe(113.5);
+      expect(s?.line).toBeCloseTo(114, 9);
+      expect(s?.peak).toBe(120);
+      expect(s?.kind).toBe('TRAIL');
+      expect(s?.ts).toBe(h.clock.now());
+    }
+  });
+
+  it('손절 정산의 exitSnapshot — 매도선은 하드 손절선, 종류는 STOP_LOSS', async () => {
+    const h = harness();
+    await h.pm.arm({ qty: 10, avgPrice: 100 });
+    h.setPrice(97.2);
+    await h.pm.tick({ canStart: true });
+    await flush();
+    const result = await h.pm.poll();
+    expect(result.kind).toBe('sold');
+    if (result.kind === 'sold') {
+      expect(result.record.exitSnapshot).toMatchObject({ price: 97.2, line: 98, peak: 100, kind: 'STOP_LOSS' });
+    }
+  });
+
   it('오체결 한 건으로는 팔지 않는다 — 다음 틱이 확인해야 반영한다', async () => {
     const h = harness();
     await h.pm.arm({ qty: 10, avgPrice: 100 });

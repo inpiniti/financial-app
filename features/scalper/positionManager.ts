@@ -270,20 +270,25 @@ export function makePositionManager(
             circuit,
             priceExit: (price) => {
               const kind = rule.exitKind;
+              // 매도선·고점은 판정 직후 값 — 슬리피지 계측(exitSnapshot.line)용. 매도 틱은 고점을 갱신하지 않으므로 판정 시점 값 그대로다.
+              const line = rule.stopPrice;
+              const peak = rule.peakPrice;
               if (kind === 'TRAIL') {
                 return {
                   reason: 'TRAIL' as ExitReason,
-                  text: `트레일링 매도 · 고점 ${rule.peakPrice.toFixed(2)} 대비 −${trail}%(${rule.stopPrice.toFixed(
-                    2,
-                  )})에 닿아 전량 매도해요`,
+                  text: `트레일링 매도 · 고점 ${peak.toFixed(2)} 대비 −${trail}%(${line.toFixed(2)})에 닿아 전량 매도해요`,
+                  line,
+                  peak,
                 };
               }
               if (kind === 'SESSION_END') {
-                return { reason: 'SESSION_END' as ExitReason, text: '장 마감 · 남은 수량을 전량 매도해요' };
+                return { reason: 'SESSION_END' as ExitReason, text: '장 마감 · 남은 수량을 전량 매도해요', peak };
               }
               return {
                 reason: 'STOP_LOSS' as ExitReason,
                 text: `손절선 도달 · 현재가 ${price.toFixed(2)} ≤ 평단 대비 −${dn}% — 전량 매도해요`,
+                line,
+                peak,
               };
             },
             armText: `${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} · 손절 ${rule.hardStopPrice.toFixed(
@@ -357,7 +362,8 @@ export interface RulePositionManagerOptions {
   build: (seed: ConditionalPosition) => {
     rule: PositionRule;
     circuit?: CircuitExitRule;
-    priceExit?: (price: number) => { reason: ExitReason; text: string };
+    /** line·peak = 판정 시점 매도선·고점(있으면) — 정산 기록 exitSnapshot에 실려 슬리피지 계측의 기준이 된다. */
+    priceExit?: (price: number) => { reason: ExitReason; text: string; line?: number; peak?: number };
     armText: string;
   };
 }
@@ -371,7 +377,7 @@ export class RulePositionManager implements PositionManager {
   private rule: PositionRule | null = null;
   private circuit: CircuitExitRule | undefined;
   /** 틱 판정 매도의 사유·문구 결정자(모드별) — build가 준다. 없으면 추세의 손절선 문구. */
-  private priceExit: ((price: number) => { reason: ExitReason; text: string }) | undefined;
+  private priceExit: ((price: number) => { reason: ExitReason; text: string; line?: number; peak?: number }) | undefined;
 
   private exec: Execution | null = null;
   private execSide: 'buy' | 'sell' | null = null;
@@ -379,6 +385,8 @@ export class RulePositionManager implements PositionManager {
   private starting = false;
   /** 진행 중 매도를 시작한 사유 — 정산 기록의 exitReason. 매도가 끝나거나 취소되면 null. */
   private pendingExitReason: ExitReason | null = null;
+  /** 매도를 결정한 순간의 스냅샷(판정가·매도선·고점·시각) — 정산 기록 exitSnapshot. 슬리피지 계측(2026-08-26). */
+  private pendingExitSnapshot: SignalSnapshot | null = null;
   private _isolated: string | null = null;
   private released = false;
   /** 다음 잔고 재확인 시각(ms)과 연속 "잔고 없음" 관측 수(2회 연속이어야 MANUAL). undefined면 감지 안 함. */
@@ -516,7 +524,7 @@ export class RulePositionManager implements PositionManager {
           text: `손절선 도달 · 현재가 ${price.toFixed(2)} ≤ 평단 대비 −${((this.opts.stopLossPct ?? 0) * 100).toFixed(0)}% — 봉 마감을 기다리지 않고 전량 매도해요`,
         };
         this.event(exit.text);
-        this.begin(decision, price, exit.reason);
+        this.begin(decision, price, exit.reason, { line: exit.line, peak: exit.peak });
       }
     }
   }
@@ -533,21 +541,23 @@ export class RulePositionManager implements PositionManager {
         return this.isolate(r.reason);
       case 'cancelled': {
         const side = this.execSide ?? exec.side;
+        const snap = this.pendingExitSnapshot;
         this.clearExec();
         this.event(
           `${side === 'sell' ? '매도' : '매수'} 추격 취소 · 평단 대비 문턱이 깨져 다음 변곡점을 기다려요${
             r.result.filledQty > 0 ? ` (부분 체결 ${r.result.filledQty}주 반영)` : ''
           }`,
         );
-        if (r.result.filledQty > 0) return this.refreshPosition(side, r.result, side === 'sell' ? 'SELL_SIGNAL' : null);
+        if (r.result.filledQty > 0) return this.refreshPosition(side, r.result, side === 'sell' ? 'SELL_SIGNAL' : null, snap);
         return { kind: 'holding' };
       }
       case 'done': {
         const side = this.execSide ?? exec.side;
         const reason = this.pendingExitReason ?? 'SELL_SIGNAL';
+        const snap = this.pendingExitSnapshot;
         this.clearExec();
-        if (side === 'sell') return this.settleSell(r.result, reason);
-        const refreshed = await this.refreshPosition(side, r.result, null);
+        if (side === 'sell') return this.settleSell(r.result, reason, snap);
+        const refreshed = await this.refreshPosition(side, r.result, null, null);
         if (refreshed.kind !== 'holding') return refreshed;
         const v = this.rule.view;
         this.event(`물타기 체결 · ${r.result.filledQty}주 · 평단 $${v.avgPrice.toFixed(2)} · ${v.qty}주 보유`);
@@ -572,9 +582,27 @@ export class RulePositionManager implements PositionManager {
   }
 
   /** 슬롯 점유(starting)를 동기로 먼저 확정하고 발주는 비동기로 — 발주 중 겹친 신호가 이중 매매가 되지 않게. */
-  private begin(decision: ConditionalDecision, price: number, exitReason: ExitReason | null): void {
+  private begin(
+    decision: ConditionalDecision,
+    price: number,
+    exitReason: ExitReason | null,
+    exitInfo: { line?: number; peak?: number } = {},
+  ): void {
     this.starting = true;
     this.pendingExitReason = decision.side === 'sell' ? exitReason : null;
+    // 매도 결정 순간을 남긴다 — 체결가와의 차이(슬리피지)·지연이 여기서 잰다. 매수(물타기)는 기록하지 않는다.
+    this.pendingExitSnapshot =
+      decision.side === 'sell'
+        ? {
+            price,
+            slope: 0,
+            accel: 0,
+            ts: this.deps.clock.now(),
+            ...(exitInfo.line !== undefined ? { line: exitInfo.line } : {}),
+            ...(exitInfo.peak !== undefined ? { peak: exitInfo.peak } : {}),
+            ...(exitReason !== null ? { kind: exitReason } : {}),
+          }
+        : null;
     void this.startExec(decision, price);
   }
 
@@ -631,6 +659,7 @@ export class RulePositionManager implements PositionManager {
     this.exec = null;
     this.execSide = null;
     this.pendingExitReason = null;
+    this.pendingExitSnapshot = null;
   }
 
   /**
@@ -641,6 +670,7 @@ export class RulePositionManager implements PositionManager {
     side: 'buy' | 'sell',
     result: ExecutionResult,
     exitReason: ExitReason | null,
+    exitSnapshot: SignalSnapshot | null = null,
   ): Promise<PositionPollResult> {
     const rule = this.rule!;
     const prev = rule.view;
@@ -655,7 +685,7 @@ export class RulePositionManager implements PositionManager {
         : { qty: prev.qty - result.filledQty, avgPrice: prev.avgPrice };
     const pos = await this.fetchPosition();
     const next = pos && pos.qty > 0 && pos.avgPrice > 0 ? pos : merged;
-    if (next.qty <= 0) return this.settleSell(result, exitReason ?? 'SELL_SIGNAL');
+    if (next.qty <= 0) return this.settleSell(result, exitReason ?? 'SELL_SIGNAL', exitSnapshot);
     rule.setPosition(next);
     return { kind: 'holding' };
   }
@@ -665,7 +695,11 @@ export class RulePositionManager implements PositionManager {
    * 추론 체결(체결가 미실측)은 잔고로 먼저 검증한다 — 세션 일괄 취소가 "목록 부재→전량체결"로
    * 오판되면 없는 매도를 정산하고 관리를 놓게 되므로(Grid의 일괄 취소 방어와 같은 이유).
    */
-  private async settleSell(result: ExecutionResult, exitReason: ExitReason): Promise<PositionPollResult> {
+  private async settleSell(
+    result: ExecutionResult,
+    exitReason: ExitReason,
+    exitSnapshot: SignalSnapshot | null = null,
+  ): Promise<PositionPollResult> {
     const v = this.rule!.view;
     if (!result.priceConfirmed) {
       const pos = await this.fetchPosition();
@@ -680,6 +714,7 @@ export class RulePositionManager implements PositionManager {
       exitPrice: result.fillPrice ?? this.deps.price()?.price ?? v.sellLine,
       entry: this.deps.entry,
       exitReason,
+      exitSnapshot,
       feeRate: this.deps.feeRate,
       now: this.deps.clock.now(),
     });

@@ -47,6 +47,14 @@ export interface SignalSnapshot {
   slope: number;
   accel: number;
   ts: number;
+  /**
+   * 청산 계측(2026-08-26, 청산 스냅샷에만) — 매도를 **결정한 순간**의 매도선·고점·판정 종류.
+   * 슬리피지 = 체결가(exitPrice) − line, 지연 = exitTs − ts. financial-analyze 청산 연구 2:
+   * 채택안은 선 체결이 1%p 불리하면 손실이라(손익분기 ≈ 0.6%p) 이 실측이 다음 판단의 입력값이다.
+   */
+  line?: number;
+  peak?: number;
+  kind?: string;
 }
 
 export interface OrderRequest {
