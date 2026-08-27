@@ -10,6 +10,8 @@
 // "등락률 +, 주문가능, 진입금액 이하" 상위 총 최대 30티커를 상시 유지한다(모자라면 차순위로 충원).
 //  · 현재가 > 진입금액이면 어차피 1주도 못 사서(qtyForAmount=0) 감시·WS 구독이 낭비다 —
 //    리스트 구성 단계에서 걸러내고 차순위로 충원한다(maxPriceUsd).
+//  · 가격 하한은 두지 않는다(2026-08-27 사용자 요청으로 $1 이하 배제 필터 제거 — 물타기 모드는 모델 price 게이트를
+//    안 거치므로 초저가 종목도 리스트에 올라와야 한다. 모델 모드에서는 모델의 MIN_ENTRY_PRICE 게이트가 진입을 막는다).
 //  · 중복 티커는 1개만 올리고 차순위로 충원(원천이 여러 개면 배열 순서가 곧 우선권).
 //  · 리스트에서 밀려난 종목은 즉시 제거하되, 사이클 진행 중(핀 고정)이면 제거를 유예하고
 //    unpin(사이클 종료) 시점에 즉시 제거한다 — 핀은 여러 개 걸릴 수 있어(다중 그리드)
@@ -18,7 +20,6 @@
 //
 // 순수 로직: 랭킹 호출은 fetchSnapshot 주입으로 추상화(테스트는 가짜 스냅샷 심).
 
-import { MIN_ENTRY_PRICE } from '../../core/model/signal';
 import type { SchedulerLike } from './types';
 
 /**
@@ -137,19 +138,8 @@ export function isWithinMaxPrice(row: WatchCandidateRow, maxPriceUsd: number | n
 }
 
 /**
- * 최소 진입가 판정(2026-08-25) — 모델이 $1 이하(MIN_ENTRY_PRICE, 백테스트 MINPRICE)는 어차피 안 사므로
- * 리스트에 올려 봐야 슬롯·WS 구독만 낭비다. 현재가를 못 읽으면 통과(관대 판정 — 상한 필터와 같은 원칙,
- * 못 거른 종목은 진입 시점의 모델 price 게이트가 최종 방어한다).
- */
-export function isAboveMinPrice(row: WatchCandidateRow): boolean {
-  const price = Number.parseFloat(row.last ?? '');
-  if (!Number.isFinite(price) || price <= 0) return true;
-  return price > MIN_ENTRY_PRICE;
-}
-
-/**
  * 스냅샷 → 목표 리스트(서로 다른 최대 WATCHLIST_MAX_SIZE티커) 계산. 순수 함수 — 테스트 진입점.
- * 각 순위에서 "+등락·주문가능·진입금액 이하·$1 초과·미중복" 상위 count개를 우선권(배열) 순서로 채용한다.
+ * 각 순위에서 "+등락·주문가능·진입금액 이하·미중복" 상위 count개를 우선권(배열) 순서로 채용한다.
  * 필터를 통과한 후보가 모자라면 그 순위 슬롯은 비워둔다(억지로 채우지 않는다).
  * 총합이 WATCHLIST_MAX_SIZE를 넘으면 뒤 원천부터 잘린다(계획 단계에서 이미 막지만 최후 방어선).
  */
@@ -166,7 +156,6 @@ export function computeDesired(snapshot: RankingSnapshot, maxPriceUsd?: number |
       if (!Number.isFinite(rate) || rate <= 0) continue;
       if (!isOrderable(row)) continue;
       if (!isWithinMaxPrice(row, maxPriceUsd)) continue;
-      if (!isAboveMinPrice(row)) continue;
       taken.add(ticker);
       desired.push({
         ticker,

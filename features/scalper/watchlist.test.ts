@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SchedulerLike } from './types';
 import {
   computeDesired,
-  isAboveMinPrice,
   isOrderable,
   isWithinMaxPrice,
   parseSignedRate,
@@ -66,13 +65,6 @@ describe('parseSignedRate / isOrderable', () => {
     expect(isWithinMaxPrice(row('A', '1', { last: '5' }), 0)).toBe(true); // 상한 0 이하 — 필터 없음 취급.
   });
 
-  it('최소 진입가 판정 — $1 이하는 배제(모델이 어차피 안 산다), 현재가를 못 읽으면 관대 통과', () => {
-    expect(isAboveMinPrice(row('A', '1', { last: '0.99' }))).toBe(false);
-    expect(isAboveMinPrice(row('A', '1', { last: '1.00' }))).toBe(false); // 모델 게이트는 close > $1 — 경계 포함 배제.
-    expect(isAboveMinPrice(row('A', '1', { last: '1.01' }))).toBe(true);
-    expect(isAboveMinPrice(row('A', '1', {}))).toBe(true); // 현재가 누락 — 관대 통과.
-    expect(isAboveMinPrice(row('A', '1', { last: 'abc' }))).toBe(true);
-  });
 });
 
 describe('computeDesired — 필터·중복 제거·차순위 충원', () => {
@@ -94,10 +86,10 @@ describe('computeDesired — 필터·중복 제거·차순위 충원', () => {
     expect(volumeSide).toEqual(Array.from({ length: 15 }, (_, i) => `V${i + 1}`));
   });
 
-  it('$1 이하 종목은 리스트에 올리지 않고 차순위로 충원한다(2026-08-25)', () => {
+  it('가격 하한은 없다(2026-08-27, $1 이하 배제 필터 제거) — 초저가 종목도 순위 그대로 리스트에 오른다', () => {
     const rows = [row('P', '1', { last: '0.80' }), row('A', '1', { last: '5' }), row('B', '1', { last: '3' })];
     const desired = computeDesired([{ source: 's', count: 2, rows }]);
-    expect(desired.map((e) => e.ticker)).toEqual(['A', 'B']);
+    expect(desired.map((e) => e.ticker)).toEqual(['P', 'A']);
   });
 
   it('순위가 비면(조회 실패 등) 리스트도 비운다', () => {
