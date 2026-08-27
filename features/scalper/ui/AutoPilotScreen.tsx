@@ -551,7 +551,7 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
               {MARTINGALE_MODE && (
                 // 물타기 시험 모드(2026-08-27) — 규칙 요약을 여기 한 번만.
                 <Text className="px-5 pb-2 text-xs text-[#8b95a1]">
-                  {`물타기 시험 모드 · 1분봉 5·20·60·120선 정배열(4선 상승)이고 종가가 5선 위면 정규장 매수(후보 안에서만 · 오늘 이미 산 종목은 5선 돌파·정배열 성립·4선 상승 성립 때만). 익절 평단 ${MARTINGALE_CONFIG.tpLadder
+                  {`물타기 시험 모드 · 1분봉 5·20·60·120선 정배열(4선 상승)이고 종가가 5선 위면 매수 — 프리·정규·애프터·주간거래 모두(후보 안에서만 · 오늘 이미 산 종목은 5선 돌파·정배열 성립·4선 상승 성립 때만). 익절 평단 ${MARTINGALE_CONFIG.tpLadder
                     .map((p) => `+${(p * 100).toFixed(0)}%`)
                     .join('/')}(물타기 0/1/2회+), 5선 변곡에서 평단 −k%면 보유량의 (k−1)배 물타기, ${Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:${String(
                     MARTINGALE_CONFIG.closeAtMin % 60,

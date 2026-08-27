@@ -47,13 +47,13 @@ describe('FeedSlot 물타기 모드', () => {
     expect(h.slot.getView().martingale?.entry).toBe(true);
   });
 
-  it('프리마켓 봉은 4선에는 쓰이지만 진입 신호는 내지 않는다', () => {
+  it('프리마켓 봉에서도 진입 신호를 낸다(모든 세션, 2026-08-28)', () => {
     const h = harness(FIVE_AM_ET);
     h.slot.seedTrend(seedBars(FIVE_AM_ET));
     h.slot.pushTick(230, FIVE_AM_ET + 10_000);
     h.slot.pushTick(231, FIVE_AM_ET + M + 1_000);
-    expect(h.slot.getView().martingale?.entry).toBe(true); // 판정은 진입 봉
-    expect(h.signals.filter((s) => s.ctx.kind === 'entry')).toHaveLength(0); // 정규장 밖 — 흘리지 않는다
+    expect(h.slot.getView().martingale?.entry).toBe(true);
+    expect(h.signals.filter((s) => s.ctx.kind === 'entry')).toHaveLength(1);
   });
 
   it('5선 변곡만 있고 정배열 돌파가 아니면 add만 나온다', () => {

@@ -89,7 +89,7 @@ export const MODEL_CONFIG: ModelGridConfig = { kind: 'model', ...MODEL_EXIT_CONF
 /**
  * 배수 물타기 시험 모드 설정(2026-08-27, ADR 0006) — **주입 자체가 활성화 신호**다(MARTINGALE_MODE AND 주입).
  * 값은 백테스트 규약 그대로(financial-analyze docs/analysis/2026-08-27_물타기-변형.md): 익절 사다리 +3/+2/+1,
- * 첫 물타기 −3%, 배수 = 낙폭%−1, 간격 5분, 마감 청산 15:55 ET. 자본·횟수 상한 없음(사용자 결정).
+ * 첫 물타기 −3%, 배수 = 낙폭%−1, 간격 5분, 마감 청산 19:55 ET(모든 세션 매매, 2026-08-28). 자본·횟수 상한 없음(사용자 결정).
  */
 export interface MartingaleGridConfig extends MartingaleConfig {
   readonly kind?: 'martingale';

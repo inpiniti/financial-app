@@ -63,7 +63,7 @@ describe('모드 판정 — 물타기 시험이 모델보다 우선한다', () =
     expect(MARTINGALE_POSITION_CONFIG.tpLadder).toEqual([0.03, 0.02, 0.01]);
     expect(MARTINGALE_POSITION_CONFIG.dropStartPct).toBe(0.03);
     expect(MARTINGALE_POSITION_CONFIG.minGapMs).toBe(5 * 60_000);
-    expect(MARTINGALE_POSITION_CONFIG.closeAtMin).toBe(15 * 60 + 55);
+    expect(MARTINGALE_POSITION_CONFIG.closeAtMin).toBe(19 * 60 + 55);
   });
 });
 
@@ -76,7 +76,7 @@ describe('makePositionManager — 물타기 어댑터', () => {
     expect(text).toContain('물타기 관리 인계 · 10주 · 평단 100.00');
     expect(text).toContain('익절 103.00(+3%, 물타기 뒤 +3%/+2%/+1%)');
     expect(text).toContain('물타기 선 97.00(−3%)');
-    expect(text).toContain('15:55 ET 마감 청산');
+    expect(text).toContain('19:55 ET 마감 청산');
     const g = h.pm.gaugeView();
     expect(g.rangeKind).toBe('orders');
     expect([g.buyPrice, g.sellPrice]).toEqual([97, 103]);
@@ -161,11 +161,11 @@ describe('makePositionManager — 물타기 어댑터', () => {
     expect(h.events.some((e) => e.includes('물타기 생략 · 현금 부족'))).toBe(true);
   });
 
-  it('마감 청산: 15:55 ET가 되면 목표 미달이어도 전량 매도 → SESSION_END', async () => {
+  it('마감 청산: 19:55 ET가 되면 목표 미달이어도 전량 매도 → SESSION_END', async () => {
     const h = harness();
     await h.pm.arm({ qty: 10, avgPrice: 100 });
     h.setPrice(95);
-    h.clock.set(Date.UTC(2026, 7, 27, 19, 55)); // 15:55 EDT
+    h.clock.set(Date.UTC(2026, 7, 27, 23, 55)); // 19:55 EDT
     await h.pm.tick({ canStart: true });
     await flush();
     const r = await h.pm.poll();

@@ -51,16 +51,20 @@ describe('evaluateMartingaleBars — 5선 변곡(물타기 시점)', () => {
   });
 });
 
-describe('isMartingaleEntryBar — 정규장 봉만, 마감 청산 전', () => {
-  // 2026-08-27(EDT, UTC−4) 09:31 ET 끝나는 1분봉의 시작 키 = 09:30 ET = 13:30 UTC.
+describe('isMartingaleEntryBar — 모든 세션 허용, 마감 청산 구간(19:55~20:00 ET)만 금지', () => {
+  // 2026-08-27(EDT, UTC−4). key(h, m) = 그 ET 시각에 시작하는 1분봉의 키.
   const key = (h: number, m: number) => Math.floor(Date.UTC(2026, 7, 27, h + 4, m) / 60_000);
-  it('09:30 시작(09:31 종료) 봉은 허용, 09:29 시작 봉은 프리마켓', () => {
-    expect(isMartingaleEntryBar(key(9, 30))).toBe(true);
-    expect(isMartingaleEntryBar(key(9, 29))).toBe(false);
+  it('프리마켓·정규장·애프터마켓·주간거래 봉 모두 허용', () => {
+    expect(isMartingaleEntryBar(key(5, 0))).toBe(true); // 프리
+    expect(isMartingaleEntryBar(key(9, 30))).toBe(true); // 정규장 첫 봉
+    expect(isMartingaleEntryBar(key(17, 0))).toBe(true); // 애프터
+    expect(isMartingaleEntryBar(key(22, 0))).toBe(true); // 주간거래(KST 낮)
   });
-  it('15:53 시작(15:54 종료)은 허용, 15:54 시작(15:55 종료)부터는 마감 청산 구간이라 금지', () => {
-    expect(isMartingaleEntryBar(key(15, 53))).toBe(true);
-    expect(isMartingaleEntryBar(key(15, 54))).toBe(false);
+  it('19:54 시작(19:55 종료)부터 19:59 시작(20:00 종료)까지는 마감 청산 구간이라 금지', () => {
+    expect(isMartingaleEntryBar(key(19, 53))).toBe(true);
+    expect(isMartingaleEntryBar(key(19, 54))).toBe(false);
+    expect(isMartingaleEntryBar(key(19, 59))).toBe(false);
+    expect(isMartingaleEntryBar(key(20, 0))).toBe(true);
   });
 });
 
@@ -122,8 +126,8 @@ describe('MartingaleRule — 포지션 규칙', () => {
     expect(r.onPriceAt(102.9)).toBeNull();
     expect(r.onPriceAt(103)).toEqual({ side: 'sell', qty: 10 });
     expect(r.exitKind).toBe('TAKE_PROFIT');
-    // 15:55 ET(EDT) = 19:55 UTC
-    const closeMs = Date.UTC(2026, 7, 27, 19, 55);
+    // 19:55 ET(EDT) = 23:55 UTC
+    const closeMs = Date.UTC(2026, 7, 27, 23, 55);
     expect(r.onPriceAt(100, closeMs - 60_000)).toBeNull();
     expect(r.onPriceAt(100, closeMs)).toEqual({ side: 'sell', qty: 10 });
     expect(r.exitKind).toBe('SESSION_END');
@@ -136,7 +140,7 @@ describe('MartingaleRule — 포지션 규칙', () => {
     r.onPriceAt(103); // 익절 결정
     expect(r.shouldAbort('sell', 102.5)).toBe(true);
     expect(r.shouldAbort('sell', 103.2)).toBe(false);
-    const closeMs = Date.UTC(2026, 7, 27, 19, 55);
+    const closeMs = Date.UTC(2026, 7, 27, 23, 55);
     r.onPriceAt(90, closeMs); // 마감 결정
     expect(r.shouldAbort('sell', 80)).toBe(false);
   });

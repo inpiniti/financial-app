@@ -10,11 +10,11 @@
 //   · 익절: 평단 × (1 + 사다리[물타기 횟수]) — 0회 +3% / 1회 +2% / 2회 이상 +1%. 현재가가 닿으면 전량 매도.
 //   · 물타기: 5선 **변곡**(up5(t−1)=false → up5(t)=true) 봉에서, 마지막 체결 후 ≥ 5분, 현재가 ≤ 평단×(1−3%)일 때.
 //            낙폭 k%(내림, 3~50)면 현재 보유량의 (k−1)배를 산다 — −3% 2배 · −4% 3배 · … · −50% 49배.
-//   · 마감: 정규장 마감 5분 전(15:55 ET)부터 전량 매도(오버나이트 없음 — 백테스트가 일 단위라 검증되지 않았다).
+//   · 세션: 모든 세션에서 진입·물타기·익절(2026-08-28). 마감: 확장세션 끝 5분 전(19:55 ET)부터 20:00까지 전량 매도.
 //   · 손절 없음. 트레일 없음. 재진입 허용(청산 뒤 다음 진입 신호에서).
 
 import type { ConditionalDecision, ConditionalGridView, ConditionalPosition } from '../conditional';
-import { etMinuteOfDay, MAIN_SESSION_END_MIN, MAIN_SESSION_START_MIN } from '../model/session';
+import { etMinuteOfDay, TRADING_DAY_END_MIN } from '../model/session';
 import { smaSeries } from '../trend';
 
 // ---------------------------------------------------------------------------
@@ -143,12 +143,17 @@ function stateAt(s: Series, i: number): {
 }
 
 /**
- * 진입 허용 봉인가 — 봉 **종료** 분(ET)이 정규장 안이고 마감 청산 시각 전. barStartMinuteKey = 봉 시작 epoch 분(1분봉).
- * 프리·애프터마켓 봉은 4선 계산에는 쓰되 진입은 하지 않는다(백테스트 규약).
+ * 진입 허용 봉인가 — **모든 세션**(프리·정규·애프터·주간거래)에서 진입한다(2026-08-28 사용자 확정, 백테스트의 정규장 제한 해제).
+ * 예외는 하루 마감 청산 구간뿐: 봉 **종료** 분(ET)이 [closeAtMin, 20:00] 안이면 진입하지 않는다(사자마자 마감 청산이 나간다).
+ * barStartMinuteKey = 봉 시작 epoch 분(1분봉).
  */
 export function isMartingaleEntryBar(barStartMinuteKey: number, closeAtMin: number = MARTINGALE_CLOSE_AT_MIN): boolean {
-  const endMin = etMinuteOfDay(barStartMinuteKey + 1);
-  return endMin >= MAIN_SESSION_START_MIN && endMin <= MAIN_SESSION_END_MIN && endMin < closeAtMin;
+  return !inCloseWindow(etMinuteOfDay(barStartMinuteKey + 1), closeAtMin);
+}
+
+/** 하루 마감 청산 구간인가 — [closeAtMin, TRADING_DAY_END_MIN](20:00 정각 포함). 그 뒤 주간거래는 다시 매매 가능. */
+export function inCloseWindow(etMin: number, closeAtMin: number = MARTINGALE_CLOSE_AT_MIN): boolean {
+  return etMin >= closeAtMin && etMin <= TRADING_DAY_END_MIN;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,12 +169,12 @@ export interface MartingaleConfig {
   tpLadder: readonly number[];
   /** 물타기 최소 간격(ms) — 마지막 체결(진입 포함)로부터. */
   minGapMs: number;
-  /** 마감 청산 시각(ET 분, 15:55 = 955). 이 시각부터 틱 판정이 전량 매도를 낸다. */
+  /** 마감 청산 시각(ET 분, 19:55 = 1195). 이 시각부터 20:00까지 틱 판정이 전량 매도를 낸다. */
   closeAtMin: number;
 }
 
-/** 정규장 마감 5분 전 — 마감 동시호가·애프터 유동성 없는 구간을 피한다. */
-export const MARTINGALE_CLOSE_AT_MIN = MAIN_SESSION_END_MIN - 5;
+/** 하루 마감 청산 시각 — 미국 확장세션 끝(20:00 ET) 5분 전. 애프터마켓까지 보유하고 그날 안에 정리한다(2026-08-28). */
+export const MARTINGALE_CLOSE_AT_MIN = TRADING_DAY_END_MIN - 5;
 
 export const MARTINGALE_CONFIG: MartingaleConfig = {
   dropStartPct: 0.03,
@@ -281,7 +286,7 @@ export class MartingaleRule {
       this.pendingExit = 'TAKE_PROFIT';
       return { side: 'sell', qty: this.qty };
     }
-    if (nowMs !== undefined && etMinuteOfDay(Math.floor(nowMs / 60_000)) >= this.cfg.closeAtMin) {
+    if (nowMs !== undefined && inCloseWindow(etMinuteOfDay(Math.floor(nowMs / 60_000)), this.cfg.closeAtMin)) {
       this.lastKind = 'SESSION_END';
       this.pendingExit = 'SESSION_END';
       return { side: 'sell', qty: this.qty };
