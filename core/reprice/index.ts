@@ -63,6 +63,20 @@ const hold = (reason: RepriceHoldReason): RepriceDecision => ({ action: 'hold', 
  * 그 외에는 전부 보류하며, 보류는 안전하다 — 원주문이 그대로 살아 무한 대기가 이어질 뿐이다.
  */
 export function decideReprice(input: RepriceInput): RepriceDecision {
+  return decideRepriceCore(input);
+}
+
+/**
+ * 매수 정정 판정(2026-08-28, 물타기 시험 모드) — 매도의 거울: **매도1호가만 추종**하고 시간 양보는 없다(ADR 0003 대칭).
+ * "매수를 맘먹었으면 체결돼야 한다"(사용자) — 가격이 위로 달아나면 매도1호가로 정정해 따라간다.
+ * bid1 자리에 매도1호가(ask1, 절사 후)를 넣는다. 보류 규칙은 매도와 같다.
+ */
+export function decideBuyReprice(input: Omit<RepriceInput, 'bid1'> & { ask1: number }): RepriceDecision {
+  const { ask1, ...rest } = input;
+  return decideRepriceCore({ ...rest, bid1: ask1 });
+}
+
+function decideRepriceCore(input: RepriceInput): RepriceDecision {
   if (input.disabled) return hold('disabled');
   if (input.cancelInvolved) return hold('cancel-involved');
   if (input.amendInFlight) return hold('in-flight');

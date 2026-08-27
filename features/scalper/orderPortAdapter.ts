@@ -11,7 +11,7 @@
 //   - cancel: odno가 도착했으면 즉시 취소, 아직이면 취소 플래그만 세우고 발주 완료 시점에 취소한다.
 //   - checkFilled: 폴러(refreshFills)가 주문체결내역 폴링 결과로 갱신해 둔 캐시를 "동기"로 읽어 반환한다.
 //     이 값이 true가 되기 전까지 RunCycle은 미체결로 보고 무한 대기한다(자동 타임아웃 취소 없음). 취소는 오직 Stop 경로.
-import { decideReprice } from '../../core/reprice';
+import { decideBuyReprice, decideReprice } from '../../core/reprice';
 import type {
   CancelReason,
   CancelState,
@@ -455,17 +455,46 @@ export class OrderPortAdapter implements OrderPort {
     await this.fireAmend(p, decision.price, decision.qty);
   }
 
+  /**
+   * 매수 리프라이스 1회(2026-08-28, 물타기 시험 모드) — repriceSell의 거울. 매도1호가가 접수가와 다를 때만
+   * 정정해 따라간다(시간 양보 없음). 취소가 얽혀 있으면(자동 포기 진행 중) 보류.
+   */
+  async repriceBuy(): Promise<void> {
+    const p = this.findRepriceable('buy');
+    if (!p) return;
+    if (this.clock.now() < p.amendNotBefore) return;
+
+    const quote = this.computeOrderPrice('buy');
+    const ask1 = quote.usedQuote ? roundOverseasOrderPrice(quote.price, 'ceil') : 0;
+    const decision = decideBuyReprice({
+      currentPrice: p.orderPrice,
+      ask1,
+      quoteFresh: quote.usedQuote,
+      remainingQty: p.qty - p.filledQty,
+      amendInFlight: p.amendInFlight,
+      cancelInvolved: p.cancelState !== 'none' || p.cancelRequested,
+      disabled: p.repriceDisabled,
+    });
+    if (decision.action === 'hold') return;
+
+    await this.fireAmend(p, decision.price, decision.qty, 'buy');
+  }
+
   /** 리프라이스 대상 매도 주문 — 발주 완료(odno 확보)됐고 아직 전량 체결되지 않은 것 하나. */
   private findRepriceablSell(): PendingOrder | null {
+    return this.findRepriceable('sell');
+  }
+
+  private findRepriceable(side: 'buy' | 'sell'): PendingOrder | null {
     for (const p of this.orders.values()) {
-      if (p.side !== 'sell' || p.fill.filled || !p.odno || p.placeError) continue;
+      if (p.side !== side || p.fill.filled || !p.odno || p.placeError) continue;
       return p;
     }
     return null;
   }
 
   /** 정정 요청 1회. 성공 시 odno·접수가·명목수량·체결 오프셋을 한 번에 갈아끼운다. */
-  private async fireAmend(p: PendingOrder, price: number, qty: number): Promise<void> {
+  private async fireAmend(p: PendingOrder, price: number, qty: number, side: 'buy' | 'sell' = 'sell'): Promise<void> {
     p.amendInFlight = true;
     try {
       const r = await this.broker.amendOrder({
@@ -473,7 +502,7 @@ export class OrderPortAdapter implements OrderPort {
         odno: p.odno!,
         qty,
         price,
-        side: 'sell',
+        side,
       });
       // ↓ await가 없는 동기 구간 — 중간 상태를 아무도 관찰할 수 없어 원자성이 자동 보장된다.
       //   filledBase를 먼저 고정해야 새 odno의 "새 주문 기준" 체결량이 절대 누적으로 이어진다.

@@ -125,10 +125,13 @@ function formatMartingaleLine(ev: MartingaleBarEval | null): string {
   if (ev.aligned === null) return `물타기 · 4선 계산 중 · ${bars}`;
   // "정배열"은 배열(5>20>60>120)과 4선 기울기 모두 상승을 **둘 다** 뜻한다(백테스트 규약). 눈으로는 배열이 맞아
   // 보여도 5선이 꺾여 있으면 진입 조건이 아니다 — 그 차이를 화살표로 보인다(2026-08-27 CHOW 13:19 ET 제보).
-  const state = ev.entry
-    ? '정배열 · 5선 돌파 → 진입 신호'
+  const eventText = { cross: '5선 돌파', allUp: '4선 상승 성립', ordered: '정배열 성립' } as const;
+  const state = ev.condition
+    ? ev.entryEvent === null
+      ? '조건 충족(정배열 · 5선 위) → 진입 가능'
+      : `조건 충족 · ${eventText[ev.entryEvent]} → 진입 신호`
     : ev.aligned
-      ? '정배열 · 5선 돌파 대기'
+      ? '정배열 · 5선 아래(돌파 대기)'
       : ev.ordered
         ? `배열은 정배열, 기울기 ${trendArrows(ev.up)}`
         : '정배열 아님';
@@ -548,7 +551,7 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
               {MARTINGALE_MODE && (
                 // 물타기 시험 모드(2026-08-27) — 규칙 요약을 여기 한 번만.
                 <Text className="px-5 pb-2 text-xs text-[#8b95a1]">
-                  {`물타기 시험 모드 · 1분봉 5·20·60·120선 정배열에서 종가가 5선을 위로 뚫는 봉에 정규장 매수(후보 안에서만). 익절 평단 ${MARTINGALE_CONFIG.tpLadder
+                  {`물타기 시험 모드 · 1분봉 5·20·60·120선 정배열(4선 상승)이고 종가가 5선 위면 정규장 매수(후보 안에서만 · 오늘 이미 산 종목은 5선 돌파·정배열 성립·4선 상승 성립 때만). 익절 평단 ${MARTINGALE_CONFIG.tpLadder
                     .map((p) => `+${(p * 100).toFixed(0)}%`)
                     .join('/')}(물타기 0/1/2회+), 5선 변곡에서 평단 −k%면 보유량의 (k−1)배 물타기, ${Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:${String(
                     MARTINGALE_CONFIG.closeAtMin % 60,

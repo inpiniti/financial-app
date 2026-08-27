@@ -79,3 +79,15 @@ describe('FeedSlot 물타기 모드', () => {
     expect(slot.getView().modelProb).toBeNull();
   });
 });
+
+describe('FeedSlot 물타기 모드 — 진입 이벤트 종류(2026-08-28)', () => {
+  it('돌파 봉은 entryEvent=cross, 조건이 이어지는 다음 봉은 state', () => {
+    const h = harness(TEN_AM_ET);
+    h.slot.seedTrend(seedBars(TEN_AM_ET));
+    h.slot.pushTick(230, TEN_AM_ET + 10_000);
+    h.slot.pushTick(231, TEN_AM_ET + M + 1_000); // 돌파 봉 닫힘
+    h.slot.pushTick(232, TEN_AM_ET + 2 * M + 1_000); // 상승 지속 봉 닫힘
+    const entries = h.signals.filter((s) => s.ctx.kind === 'entry').map((s) => s.ctx.entryEvent);
+    expect(entries).toEqual(['cross', 'state']);
+  });
+});

@@ -162,10 +162,13 @@ function formatSignalForTool(view: {
   if (MARTINGALE_MODE) {
     const m = view.martingale ?? null;
     if (m === null || m.aligned === null) return `물타기 시험 모드 — 1분봉 4선 계산 중(봉 ${m?.bars ?? 0}개)`;
-    if (m.entry) return '물타기 시험 모드 — 정배열에서 5선 상향 돌파(진입 신호)';
+    if (m.condition) {
+      const ev = { cross: '5선 돌파', allUp: '4선 상승 성립', ordered: '정배열 성립' } as const;
+      return `물타기 시험 모드 — 진입 조건 충족(정배열·4선 상승·5선 위)${m.entryEvent ? `, 이 봉 이벤트: ${ev[m.entryEvent]}` : ' (이벤트 없음 — 오늘 안 산 종목이면 바로 매수)'}`;
+    }
     const arrow = (u: boolean | null) => (u === null ? '·' : u ? '↑' : '↓');
     const state = m.aligned
-      ? '정배열(4선 상승), 5선 돌파 대기'
+      ? '정배열(4선 상승), 5선 아래라 돌파 대기'
       : m.ordered
         ? `배열은 정배열이지만 기울기가 5${arrow(m.up.ma5)} 20${arrow(m.up.ma20)} 60${arrow(m.up.ma60)} 120${arrow(m.up.ma120)}라 진입 조건 아님`
         : '정배열 아님';

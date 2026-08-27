@@ -147,3 +147,40 @@ describe('MartingaleRule — 포지션 규칙', () => {
     expect(MARTINGALE_CONFIG.tpLadder).toEqual([0.03, 0.02, 0.01]);
   });
 });
+
+describe('evaluateMartingaleBars — 진입 조건·이벤트(2026-08-28)', () => {
+  it('꾸준히 오르는 봉: 조건은 충족하지만 이벤트는 없다(state)', () => {
+    const ev = evaluateMartingaleBars(risingCloses());
+    expect(ev.condition).toBe(true);
+    expect(ev.entryEvent).toBeNull();
+    expect(ev.entry).toBe(false);
+  });
+
+  it('V자 반등: 배열 성립(ordered) 또는 4선 상승 성립(allUp) 이벤트가 나오고, 그 뒤 봉은 state', () => {
+    const closes: number[] = [];
+    for (let i = 0; i < 130; i += 1) closes.push(200 - i); // 하락
+    const seen: string[] = [];
+    let lastEvent: string | null = null;
+    for (let i = 0; i < 200; i += 1) {
+      closes.push(closes[closes.length - 1] + 1.5); // 반등
+      const ev = evaluateMartingaleBars(closes);
+      if (ev.condition && ev.entryEvent !== null) {
+        seen.push(ev.entryEvent);
+        lastEvent = ev.entryEvent;
+      } else if (ev.condition && lastEvent !== null) {
+        expect(ev.entryEvent).toBeNull(); // 이벤트 뒤 이어지는 조건 봉은 state
+      }
+    }
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.some((e) => e === 'ordered' || e === 'allUp')).toBe(true);
+  });
+
+  it('5선 돌파가 다른 이벤트와 겹치면 cross가 우선', () => {
+    const closes = risingCloses(121);
+    closes.push(closes[closes.length - 1] - 8); // 5선 아래로 눌림(ma5 하락)
+    closes.push(closes[closes.length - 1] + 20); // 돌파 + ma5 재상승
+    const ev = evaluateMartingaleBars(closes);
+    expect(ev.condition).toBe(true);
+    expect(ev.entryEvent).toBe('cross');
+  });
+});

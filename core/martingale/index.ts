@@ -21,8 +21,21 @@ import { smaSeries } from '../trend';
 // 신호 (봉 종가 배열 → 진입 / 물타기 시점)
 // ---------------------------------------------------------------------------
 
+/**
+ * 진입 이벤트 종류(2026-08-28, 사용자 확정) — 조건(정배열 ∧ 4선 상승 ∧ 종가 > 5선)이 **이 봉에서 성립하게 만든** 사건.
+ *  cross   : 종가가 5선을 아래→위로 돌파
+ *  allUp   : 4선 기울기가 이 봉에서 모두 상승으로 바뀜(배열·5선 위는 이미)
+ *  ordered : 배열이 이 봉에서 5>20>60>120이 됨(기울기·5선 위는 이미)
+ * 당일 이미 매매한 종목은 이 세 이벤트에서만 재진입하고, 아직 안 한 종목은 조건이 맞는 어느 봉이든(state) 진입한다.
+ */
+export type MartingaleEntryEvent = 'cross' | 'allUp' | 'ordered';
+
 export interface MartingaleBarEval {
-  /** 이 봉이 진입 봉인가 — 정배열 ∧ 4선 상승 ∧ 5선 상향 돌파. */
+  /** 진입 조건이 이 봉에서 성립하는가 — 정배열 ∧ 4선 상승 ∧ 종가 > 5선. */
+  condition: boolean;
+  /** 조건 성립 봉에서 그 성립을 만든 이벤트 — 이벤트 없이(전 봉부터 계속 성립) 조건만 맞으면 null. */
+  entryEvent: MartingaleEntryEvent | null;
+  /** 이 봉이 이벤트 진입 봉인가(condition ∧ entryEvent≠null). 5선 돌파 단독 규칙이던 때의 이름을 유지. */
   entry: boolean;
   /** 이 봉에서 5선이 하락(또는 보합)→상승으로 바뀌었나 — 물타기 시점. */
   ma5TurnUp: boolean;
@@ -52,12 +65,23 @@ export function evaluateMartingaleBars(closes: readonly number[]): MartingaleBar
   const n = closes.length;
   const last = n - 1;
   const nullUp = { ma5: null, ma20: null, ma60: null, ma120: null };
-  const none: MartingaleBarEval = { entry: false, ma5TurnUp: false, aligned: null, ordered: null, up: nullUp, ma5: null, bars: n };
+  const none: MartingaleBarEval = {
+    condition: false,
+    entryEvent: null,
+    entry: false,
+    ma5TurnUp: false,
+    aligned: null,
+    ordered: null,
+    up: nullUp,
+    ma5: null,
+    bars: n,
+  };
   if (n < 2) return none;
   const s5 = smaSeries(closes, 5);
   const s20 = smaSeries(closes, 20);
   const s60 = smaSeries(closes, 60);
   const s120 = smaSeries(closes, 120);
+  const series = { s5, s20, s60, s120 };
   const ma5 = s5[last];
   const ma5Prev = s5[last - 1];
   const up5 = upAt(s5, last);
@@ -65,21 +89,57 @@ export function evaluateMartingaleBars(closes: readonly number[]): MartingaleBar
   // 5선 변곡 — 직전 봉은 상승이 아니었고(하락·보합) 이번 봉은 상승. 둘 중 하나라도 모르면 변곡 아님.
   const ma5TurnUp = up5 === true && up5Prev === false;
 
-  const m20 = s20[last];
-  const m60 = s60[last];
-  const m120 = s120[last];
-  const up = { ma5: up5, ma20: upAt(s20, last), ma60: upAt(s60, last), ma120: upAt(s120, last) };
-  let aligned: boolean | null = null;
-  let ordered: boolean | null = null;
-  if (ma5 !== null && m20 !== null && m60 !== null && m120 !== null) {
-    ordered = ma5 > m20 && m20 > m60 && m60 > m120;
-    aligned = ordered && [up.ma5, up.ma20, up.ma60, up.ma120].every((u) => u === true);
-  }
+  const cur = stateAt(series, last);
+  const prev = stateAt(series, last - 1);
   const close = closes[last];
   const closePrev = closes[last - 1];
-  const crossUp =
-    ma5 !== null && ma5Prev !== null && Number.isFinite(close) && Number.isFinite(closePrev) && closePrev < ma5Prev && close > ma5;
-  return { entry: aligned === true && crossUp, ma5TurnUp, aligned, ordered, up, ma5, bars: n };
+  const above = ma5 !== null && Number.isFinite(close) && close > ma5;
+  const abovePrev = ma5Prev !== null && Number.isFinite(closePrev) && closePrev > ma5Prev;
+  const crossUp = above && ma5Prev !== null && Number.isFinite(closePrev) && closePrev < ma5Prev;
+  const condition = cur.aligned === true && above;
+  let entryEvent: MartingaleEntryEvent | null = null;
+  if (condition) {
+    // 우선순위: 돌파 > 4선 상승 성립 > 배열 성립. 세 사건이 같은 봉에 겹치면 하나만 고른다.
+    if (crossUp) entryEvent = 'cross';
+    else if (prev.allUp === false) entryEvent = 'allUp';
+    else if (prev.ordered === false) entryEvent = 'ordered';
+    else if (!abovePrev) entryEvent = 'cross'; // 직전 종가가 5선과 같았던 경계 사례 — 위로 올라섰으니 돌파로 본다.
+  }
+  return {
+    condition,
+    entryEvent,
+    entry: condition && entryEvent !== null,
+    ma5TurnUp,
+    aligned: cur.aligned,
+    ordered: cur.ordered,
+    up: cur.up,
+    ma5,
+    bars: n,
+  };
+}
+
+type Series = { s5: (number | null)[]; s20: (number | null)[]; s60: (number | null)[]; s120: (number | null)[] };
+
+/** i번째 봉의 배열·기울기 상태. 4선 중 하나라도 null이면 ordered/allUp/aligned 모두 null. */
+function stateAt(s: Series, i: number): {
+  ordered: boolean | null;
+  allUp: boolean | null;
+  aligned: boolean | null;
+  up: MartingaleBarEval['up'];
+} {
+  const up = { ma5: upAt(s.s5, i), ma20: upAt(s.s20, i), ma60: upAt(s.s60, i), ma120: upAt(s.s120, i) };
+  if (i < 0) return { ordered: null, allUp: null, aligned: null, up };
+  const m5 = s.s5[i];
+  const m20 = s.s20[i];
+  const m60 = s.s60[i];
+  const m120 = s.s120[i];
+  if (m5 === null || m20 === null || m60 === null || m120 === null || m5 === undefined || m20 === undefined || m60 === undefined || m120 === undefined) {
+    return { ordered: null, allUp: null, aligned: null, up };
+  }
+  const ups = [up.ma5, up.ma20, up.ma60, up.ma120];
+  const allUp = ups.some((u) => u === null) ? null : ups.every((u) => u === true);
+  const ordered = m5 > m20 && m20 > m60 && m60 > m120;
+  return { ordered, allUp, aligned: allUp === null ? null : ordered && allUp, up };
 }
 
 /**

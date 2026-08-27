@@ -23,7 +23,12 @@ import {
 } from '../../core/trend/signal';
 import { MODEL_MODE } from './modelMode';
 import type { ModelEval } from '../../core/model/signal';
-import { evaluateMartingaleBars, isMartingaleEntryBar, type MartingaleBarEval } from '../../core/martingale';
+import {
+  evaluateMartingaleBars,
+  isMartingaleEntryBar,
+  type MartingaleBarEval,
+  type MartingaleEntryEvent,
+} from '../../core/martingale';
 import { MARTINGALE_BAR_MINUTES, MARTINGALE_MODE } from './martingaleMode';
 import { TREND_MODE } from './trendMode';
 import { TickRateMeter } from './tickRate';
@@ -140,6 +145,11 @@ export interface SlotSignalContext {
    * 오토파일럿이 보유 여부로 거른다(보유 중엔 entry 무시, 미보유엔 add 무시). 다른 모드는 undefined.
    */
   readonly kind?: 'entry' | 'add';
+  /**
+   * 물타기 모드 진입 신호의 근거(2026-08-28) — 'cross'/'allUp'/'ordered'는 조건을 이 봉에서 성립시킨 이벤트,
+   * 'state'는 이벤트 없이 조건만 맞는 봉. 당일 이미 매매한 종목은 오토파일럿이 'state'를 버린다.
+   */
+  readonly entryEvent?: MartingaleEntryEvent | 'state';
 }
 
 export interface FeedSlotView {
@@ -565,9 +575,19 @@ export class FeedSlot {
     this.martingaleEval = ev;
     if (this.trendListener === null) return;
     const at = this.lastTickAt ?? this.clock.now();
-    if (ev.entry && isMartingaleEntryBar(closed.minuteKey)) {
+    // 조건(정배열·4선 상승·종가>5선)이 맞는 봉마다 진입 신호를 흘린다 — 이벤트 봉인지(cross/allUp/ordered)
+    // 조건만 이어지는 봉인지(state)를 실어, 당일 매매 여부에 따른 거름은 오토파일럿이 한다(2026-08-28).
+    if (ev.condition && isMartingaleEntryBar(closed.minuteKey)) {
       this.lastSignal = 'BUY';
-      this.trendListener('BUY', { ticker: this.ticker, price, slope: 0, accel: 0, at, kind: 'entry' });
+      this.trendListener('BUY', {
+        ticker: this.ticker,
+        price,
+        slope: 0,
+        accel: 0,
+        at,
+        kind: 'entry',
+        entryEvent: ev.entryEvent ?? 'state',
+      });
     }
     if (ev.ma5TurnUp) {
       this.lastSignal = 'BUY';

@@ -23,6 +23,7 @@
 
 import { RunCycle, type SignalSnapshot, type TradeRecord } from '../../core/cycle';
 import { entryChaseExceeded, TREND_ENTRY_GATE_QUOTE_FRESH_MS } from '../../core/trend/entryGate';
+import { etDateString } from '../../core/model/session';
 import type { ConditionalPosition } from '../../core/conditional';
 import type { Signal } from '../../core/detector';
 import { isDaytimeSessionOpen } from './daySession';
@@ -938,6 +939,14 @@ export class AutoPilot {
     if (signal === 'BUY') {
       // 물타기 모드: 미보유 종목의 5선 변곡(kind='add')은 진입 신호가 아니다.
       if (ctx.kind === 'add') return;
+      // 물타기 모드(2026-08-28): 당일 이미 매매한 종목은 조건만 맞는 봉(state)으로는 재진입하지 않는다 —
+      // 5선 돌파·4선 상승 성립·정배열 성립 이벤트 봉에서만. 처음 보는 종목은 조건이 맞으면 바로 산다.
+      if (ctx.kind === 'entry' && ctx.entryEvent === 'state' && this.tradedToday(ctx.ticker)) {
+        if (!this.actives.has(ctx.ticker) && !this.pendingBuys.has(ctx.ticker)) {
+          this.dropBuySignal(ctx.ticker, '오늘 이미 매매한 종목 — 조건만으로는 다시 안 사고, 5선 돌파·정배열 성립·4선 상승 성립에서만 재진입해요');
+        }
+        return;
+      }
       this.handleBuySignal(ctx);
       return;
     }
@@ -961,6 +970,13 @@ export class AutoPilot {
    */
   /** BUY 폐기 로그 시각(종목별) — 신호가 매 봉 재발화하므로 스로틀 없이는 이벤트가 스팸이 된다. */
   private readonly buyDropLoggedAt = new Map<string, number>();
+
+  /** 오늘(ET) 진입한 종목 → 그 거래일. 물타기 모드의 "당일 매매 종목은 이벤트에서만 재진입" 판정용(2026-08-28). */
+  private readonly enteredOn = new Map<string, string>();
+
+  private tradedToday(ticker: string): boolean {
+    return this.enteredOn.get(ticker) === etDateString(Math.floor(this.deps.clock.now() / 60_000));
+  }
 
   /** BUY 신호 폐기 — 사유를 이벤트로 남긴다(종목당 10분에 1번). 2026-08-20 분석: 무음 폐기가 원인 파악을 이틀 늦췄다. */
   private dropBuySignal(ticker: string, reason: string): void {
@@ -1066,8 +1082,9 @@ export class AutoPilot {
     // 추격 진입 게이트(2026-08-20 둘째날 분석) — 신호가 대비 매도1호가가 +1%를 넘으면 사지 않는다.
     // 실거래 이틀 66건에서 신호가보다 +1% 이상 뛰어 체결된 진입 23건 합계 −89%(승 4) — 얇은 호가 추격의 대가.
     // 신선한 호가가 있을 때만 판정한다(없으면 기존 동작 그대로 — 게이트는 보조 방어선).
-    // 물타기 시험 모드도 같은 게이트를 쓴다 — 진입 봉 종가 대비 호가가 튀어 있으면 그 자리가 급등 끝일 확률이 높다.
-    if (this.positionMode === 'trend' || this.positionMode === 'martingale') {
+    // 물타기 시험 모드는 이 게이트를 쓰지 않는다(2026-08-28 사용자 확정: "매수를 맘먹었으면 조금 비싸도 체결") —
+    // 대신 매수 미체결은 매도1호가로 정정해 따라간다(repriceTick → repriceBuy).
+    if (this.positionMode === 'trend') {
       const gateQuote = slot.quote;
       if (
         gateQuote !== null &&
@@ -1157,6 +1174,7 @@ export class AutoPilot {
       },
     });
     this.actives.set(ctx.ticker, active);
+    this.enteredOn.set(ctx.ticker, etDateString(Math.floor(this.deps.clock.now() / 60_000)));
     this.deps.pin(ctx.ticker);
     // 이 종목은 이제 "감시 후보"가 아니다 — 목록에서 빼고 빈 자리를 다른 종목으로 채운다(감시 계속).
     this.watchedTickers = this.watchedTickers.filter((t) => t !== ctx.ticker);
@@ -1622,6 +1640,12 @@ export class AutoPilot {
           if (quote) active.adapter.setQuote(quote.bid1, quote.ask1, quote.at);
           await active.adapter.repriceSell();
         } else {
+          // 물타기 시험 모드(2026-08-28): 매수도 매도처럼 호가를 따라간다 — 매도1호가가 바뀌면 그 가격으로 정정.
+          if (this.positionMode === 'martingale') {
+            const quote = active.slot.quote;
+            if (quote) active.adapter.setQuote(quote.bid1, quote.ask1, quote.at);
+            await active.adapter.repriceBuy();
+          }
           await this.tryAbandonBuy(active);
         }
       }
