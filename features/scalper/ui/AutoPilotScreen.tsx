@@ -123,7 +123,15 @@ function formatMartingaleLine(ev: MartingaleBarEval | null): string {
   if (ev === null) return `물타기 · 1분봉 0/${MARTINGALE_MIN_BARS}`;
   const bars = `봉 ${Math.min(ev.bars, MARTINGALE_MIN_BARS)}/${MARTINGALE_MIN_BARS}`;
   if (ev.aligned === null) return `물타기 · 4선 계산 중 · ${bars}`;
-  const state = ev.entry ? '정배열 · 5선 돌파 → 진입 신호' : ev.aligned ? '정배열 · 5선 돌파 대기' : '정배열 아님';
+  // "정배열"은 배열(5>20>60>120)과 4선 기울기 모두 상승을 **둘 다** 뜻한다(백테스트 규약). 눈으로는 배열이 맞아
+  // 보여도 5선이 꺾여 있으면 진입 조건이 아니다 — 그 차이를 화살표로 보인다(2026-08-27 CHOW 13:19 ET 제보).
+  const state = ev.entry
+    ? '정배열 · 5선 돌파 → 진입 신호'
+    : ev.aligned
+      ? '정배열 · 5선 돌파 대기'
+      : ev.ordered
+        ? `배열은 정배열, 기울기 ${trendArrows(ev.up)}`
+        : '정배열 아님';
   const turn = ev.ma5TurnUp ? ' · 5선 변곡' : '';
   return `물타기 · ${state}${turn} · ${bars}`;
 }

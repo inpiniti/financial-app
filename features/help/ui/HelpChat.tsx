@@ -163,7 +163,13 @@ function formatSignalForTool(view: {
     const m = view.martingale ?? null;
     if (m === null || m.aligned === null) return `물타기 시험 모드 — 1분봉 4선 계산 중(봉 ${m?.bars ?? 0}개)`;
     if (m.entry) return '물타기 시험 모드 — 정배열에서 5선 상향 돌파(진입 신호)';
-    return `물타기 시험 모드 — ${m.aligned ? '정배열, 5선 돌파 대기' : '정배열 아님'}${m.ma5TurnUp ? ', 5선 변곡' : ''} (봉 ${m.bars})`;
+    const arrow = (u: boolean | null) => (u === null ? '·' : u ? '↑' : '↓');
+    const state = m.aligned
+      ? '정배열(4선 상승), 5선 돌파 대기'
+      : m.ordered
+        ? `배열은 정배열이지만 기울기가 5${arrow(m.up.ma5)} 20${arrow(m.up.ma20)} 60${arrow(m.up.ma60)} 120${arrow(m.up.ma120)}라 진입 조건 아님`
+        : '정배열 아님';
+    return `물타기 시험 모드 — ${state}${m.ma5TurnUp ? ', 5선 변곡' : ''} (봉 ${m.bars})`;
   }
   if (MODEL_MODE) {
     const v = view.modelVerdict;

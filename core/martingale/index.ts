@@ -28,6 +28,10 @@ export interface MartingaleBarEval {
   ma5TurnUp: boolean;
   /** 정배열 ∧ 4선 모두 상승(진단·화면용). */
   aligned: boolean | null;
+  /** 배열만 본 정배열(ma5>ma20>ma60>ma120) — 기울기 무관. 화면이 "배열은 맞는데 기울기가 아니다"를 구분하는 데 쓴다. */
+  ordered: boolean | null;
+  /** 각 선의 상승 여부(직전 봉 대비 strict). 판정 불가 null. */
+  up: { ma5: boolean | null; ma20: boolean | null; ma60: boolean | null; ma120: boolean | null };
   ma5: number | null;
   bars: number;
 }
@@ -47,7 +51,8 @@ function upAt(s: readonly (number | null)[], i: number): boolean | null {
 export function evaluateMartingaleBars(closes: readonly number[]): MartingaleBarEval {
   const n = closes.length;
   const last = n - 1;
-  const none: MartingaleBarEval = { entry: false, ma5TurnUp: false, aligned: null, ma5: null, bars: n };
+  const nullUp = { ma5: null, ma20: null, ma60: null, ma120: null };
+  const none: MartingaleBarEval = { entry: false, ma5TurnUp: false, aligned: null, ordered: null, up: nullUp, ma5: null, bars: n };
   if (n < 2) return none;
   const s5 = smaSeries(closes, 5);
   const s20 = smaSeries(closes, 20);
@@ -63,16 +68,18 @@ export function evaluateMartingaleBars(closes: readonly number[]): MartingaleBar
   const m20 = s20[last];
   const m60 = s60[last];
   const m120 = s120[last];
+  const up = { ma5: up5, ma20: upAt(s20, last), ma60: upAt(s60, last), ma120: upAt(s120, last) };
   let aligned: boolean | null = null;
+  let ordered: boolean | null = null;
   if (ma5 !== null && m20 !== null && m60 !== null && m120 !== null) {
-    const ups = [up5, upAt(s20, last), upAt(s60, last), upAt(s120, last)];
-    aligned = ups.every((u) => u === true) && ma5 > m20 && m20 > m60 && m60 > m120;
+    ordered = ma5 > m20 && m20 > m60 && m60 > m120;
+    aligned = ordered && [up.ma5, up.ma20, up.ma60, up.ma120].every((u) => u === true);
   }
   const close = closes[last];
   const closePrev = closes[last - 1];
   const crossUp =
     ma5 !== null && ma5Prev !== null && Number.isFinite(close) && Number.isFinite(closePrev) && closePrev < ma5Prev && close > ma5;
-  return { entry: aligned === true && crossUp, ma5TurnUp, aligned, ma5, bars: n };
+  return { entry: aligned === true && crossUp, ma5TurnUp, aligned, ordered, up, ma5, bars: n };
 }
 
 /**
