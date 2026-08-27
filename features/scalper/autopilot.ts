@@ -44,10 +44,12 @@ export {
   INFLECTION_GRID,
   INFLECTION_THRESHOLDS,
   MANUAL_EXIT_CHECK_MS,
+  MARTINGALE_POSITION_CONFIG,
   MODEL_CONFIG,
   TREND_CONFIG,
   type GridExitConfig,
   type InflectionGridConfig,
+  type MartingaleGridConfig,
   type ModelGridConfig,
   type PositionManagementConfig,
   type PositionRule,
@@ -928,10 +930,14 @@ export class AutoPilot {
     const active0 = this.actives.get(ctx.ticker);
     if (active0?.cond) {
       if (active0.gridFaulted || this.stopRequested || !this.running || this.faulted || this.paused) return;
+      // 물타기 모드(2026-08-27): 보유 중엔 진입 봉(kind='entry')은 의미가 없다 — 5선 변곡(kind='add')만 규칙에 넘긴다.
+      if (ctx.kind === 'entry') return;
       active0.cond.onSignal(signal, ctx.price);
       return;
     }
     if (signal === 'BUY') {
+      // 물타기 모드: 미보유 종목의 5선 변곡(kind='add')은 진입 신호가 아니다.
+      if (ctx.kind === 'add') return;
       this.handleBuySignal(ctx);
       return;
     }
@@ -1060,7 +1066,8 @@ export class AutoPilot {
     // 추격 진입 게이트(2026-08-20 둘째날 분석) — 신호가 대비 매도1호가가 +1%를 넘으면 사지 않는다.
     // 실거래 이틀 66건에서 신호가보다 +1% 이상 뛰어 체결된 진입 23건 합계 −89%(승 4) — 얇은 호가 추격의 대가.
     // 신선한 호가가 있을 때만 판정한다(없으면 기존 동작 그대로 — 게이트는 보조 방어선).
-    if (this.positionMode === 'trend') {
+    // 물타기 시험 모드도 같은 게이트를 쓴다 — 진입 봉 종가 대비 호가가 튀어 있으면 그 자리가 급등 끝일 확률이 높다.
+    if (this.positionMode === 'trend' || this.positionMode === 'martingale') {
       const gateQuote = slot.quote;
       if (
         gateQuote !== null &&

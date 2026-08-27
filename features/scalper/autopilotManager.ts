@@ -18,11 +18,13 @@ import {
   type GridExitConfig,
   type TradingSettings,
   type InflectionGridConfig,
+  type MartingaleGridConfig,
   type ModelGridConfig,
   type TrendGridConfig,
 } from './autopilot';
 import { isDaytimeSessionOpen } from './daySession';
 import { FeedSlot, INFLECTION_ENTRY, LADDER_ENTRY, type FeedSlotView, type LadderEntryOptions } from './feedSlot';
+import { MARTINGALE_MODE } from './martingaleMode';
 import { MODEL_BAR_MINUTES, MODEL_MODE } from './modelMode';
 import { ModelScanner } from './modelScanner';
 import { TREND_MODE } from './trendMode';
@@ -106,6 +108,12 @@ export interface AutoPilotManagerDeps {
    * ⚠ 이 주입만으로는 신호가 안 난다 — `fetchModelBars`·`fetchModelDailyCloses`도 함께 있어야 스캐너가 돈다.
    */
   model?: ModelGridConfig;
+  /**
+   * 배수 물타기 시험 모드(2026-08-27, ADR 0006) — 주입되고 martingaleMode.MARTINGALE_MODE=true면 슬롯은 **1분봉** 합성+4선으로
+   * 진입(정배열·5선 돌파)·물타기(5선 변곡) 신호를 내고, 포지션 관리는 MartingaleRule이 맡는다. 모델보다 우선한다 —
+   * 모델 스캐너는 돌지 않고 분봉 워밍업(fetchMinuteBars, 1분봉)이 돈다. 미주입이면 기존 동작 — 회귀 안전.
+   */
+  martingale?: MartingaleGridConfig;
   /** 모델 봉 조회 — 토스 5분봉 OHLCV(원시가) count개, 오름차순·진행 중 봉 제외. 실패는 throw. */
   fetchModelBars?: (ticker: string, market: WatchMarket, count: number) => Promise<OhlcvBar[]>;
   /** 모델 전일 종가 조회 — 토스 일봉(원시가) 최근 몇 개. 거래일당 1회만 부른다. */
@@ -281,6 +289,7 @@ export class AutoPilotManager {
         inflection: deps.inflection,
         trend: deps.trend,
         model: deps.model,
+        martingale: deps.martingale,
       },
       clock: deps.clock,
       scheduler,
@@ -318,7 +327,7 @@ export class AutoPilotManager {
 
     // 모델 감지 — 스위치 AND 설정 주입 AND 봉 조회기가 모두 있어야 돈다(하나라도 없으면 신호가 없다).
     this.modelScanner =
-      MODEL_MODE && deps.model !== undefined && deps.fetchModelBars !== undefined
+      this.modelActive && deps.fetchModelBars !== undefined
         ? new ModelScanner({
             model: loadModel(),
             clock: deps.clock,
@@ -406,7 +415,12 @@ export class AutoPilotManager {
 
   /** 모델 경로가 실제로 도는가 — 스위치 AND 설정 주입. 워밍업·전략 태그가 이 하나를 읽는다. */
   private get modelActive(): boolean {
-    return MODEL_MODE && this.deps.model !== undefined;
+    return !this.martingaleActive && MODEL_MODE && this.deps.model !== undefined;
+  }
+
+  /** 물타기 시험 모드가 실제로 도는가 — 스위치 AND 설정 주입. 켜지면 모델·추세는 돌지 않는다. */
+  private get martingaleActive(): boolean {
+    return MARTINGALE_MODE && this.deps.martingale !== undefined;
   }
 
   /** 앱 재시작 복원 — 금액 상태 로드(+보유 감지는 start 시점에 다시 한다). */
@@ -546,6 +560,7 @@ export class AutoPilotManager {
 
   /** 현재 배선의 진입·청산 규칙 태그(거래 결과 기록용) — 스위치·주입 조합을 그대로 읽는다. */
   strategyTag(): TradeStrategy {
+    if (this.martingaleActive) return 'martingale';
     if (this.modelActive) return 'model';
     if (TREND_MODE && this.deps.trend !== undefined) return 'trend';
     if (INFLECTION_ENTRY && this.deps.inflection !== undefined) return 'inflection';
@@ -605,12 +620,14 @@ export class AutoPilotManager {
       inflection: this.deps.inflection !== undefined,
       trend: this.deps.trend !== undefined,
       model: this.deps.model !== undefined,
+      martingale: this.deps.martingale !== undefined,
     });
     this.slots.set(ticker, slot);
     const trKey = this.marketTrKeyOf(ticker); // 체결가 — 전 종목(정규장 D 또는 주간거래 R).
     this.tickTrKeys.set(ticker, trKey);
     this.deps.realtime.subscribe(trKey);
     // 모델 모드는 봉을 스캐너가 토스에서 직접 읽는다 — 추세 워밍업(분봉 시드)은 돌리지 않는다.
+    // 물타기 모드는 1분봉 시드가 필요하다(fetchMinuteBars가 1분봉을 준다 — managerProvider).
     if (!this.modelActive) this.enqueueTrendWarmup(ticker);
   }
 
@@ -621,7 +638,7 @@ export class AutoPilotManager {
   private readonly trendWarmupAttempts = new Map<string, number>();
 
   private enqueueTrendWarmup(ticker: string): void {
-    if (this.deps.trend === undefined || !this.deps.fetchMinuteBars) return;
+    if ((this.deps.trend === undefined && !this.martingaleActive) || !this.deps.fetchMinuteBars) return;
     if (this.trendWarmupQueue.includes(ticker)) return;
     this.trendWarmupQueue.push(ticker);
     void this.drainTrendWarmup();

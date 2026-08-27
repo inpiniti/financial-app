@@ -23,6 +23,8 @@ import {
 } from '../../core/trend/signal';
 import { MODEL_MODE } from './modelMode';
 import type { ModelEval } from '../../core/model/signal';
+import { evaluateMartingaleBars, isMartingaleEntryBar, type MartingaleBarEval } from '../../core/martingale';
+import { MARTINGALE_BAR_MINUTES, MARTINGALE_MODE } from './martingaleMode';
 import { TREND_MODE } from './trendMode';
 import { TickRateMeter } from './tickRate';
 import { SlopeMeter } from './slopeRate';
@@ -97,6 +99,12 @@ export interface FeedSlotOptions {
    * 추세·조합·사다리보다 우선한다. 미주입(기존 하네스·테스트)이면 기존 동작 그대로 — 회귀 안전.
    */
   model?: boolean;
+  /**
+   * 배수 물타기 시험 모드(2026-08-27, ADR 0006) — true고 MARTINGALE_MODE=true면 **1분봉** 합성 + 4선으로
+   * 진입(정배열·5선 상향 돌파, ctx.kind='entry')과 물타기 시점(5선 변곡, ctx.kind='add')을 BUY로 낸다.
+   * 모델·추세·조합·사다리보다 우선한다. 미주입이면 기존 동작 그대로 — 회귀 안전.
+   */
+  martingale?: boolean;
 }
 
 /** 변곡점 신호 콜백 — attach 시 등록. */
@@ -127,6 +135,11 @@ export interface SlotSignalContext {
    * 봉 부족 등 판정 불가면 null, 추세 외 신호(사다리 등)는 undefined.
    */
   readonly bandWidthPct?: number | null;
+  /**
+   * 물타기 모드의 BUY 종류(2026-08-27) — 'entry'=진입 봉(정배열·5선 돌파), 'add'=물타기 시점(5선 변곡).
+   * 오토파일럿이 보유 여부로 거른다(보유 중엔 entry 무시, 미보유엔 add 무시). 다른 모드는 undefined.
+   */
+  readonly kind?: 'entry' | 'add';
 }
 
 export interface FeedSlotView {
@@ -181,6 +194,8 @@ export interface FeedSlotView {
    * 스캐너가 매 봉 밀어 넣는다. BUY가 안 나는 대부분의 시간에 화면이 상황을 설명할 유일한 근거다.
    */
   readonly modelVerdict: ModelVerdictView | null;
+  /** 물타기 모드의 마지막 봉 판정(진입·5선 변곡·정배열) — 다른 모드면 null. 화면·진단 전용. */
+  readonly martingale: MartingaleBarEval | null;
 }
 
 /** 화면용 모델 판정 스냅샷 — ModelEval에서 화면이 쓰는 것만 + 판정 시각. */
@@ -237,6 +252,10 @@ export class FeedSlot {
   private readonly modelMode: boolean;
   /** 추세 모드인가 — 생성 시 확정(TREND_MODE AND trend 주입). 조합·사다리보다 우선. */
   private readonly trendMode: boolean;
+  /** 배수 물타기 시험 모드인가 — 생성 시 확정(MARTINGALE_MODE AND martingale 주입). 모든 모드보다 우선. */
+  private readonly martingaleMode: boolean;
+  /** 물타기 모드 마지막 봉 판정(뷰용). */
+  private martingaleEval: MartingaleBarEval | null = null;
   /**
    * 분봉 빌더·마지막 추세 판정 — **슬롯 필드로 상시 누적**(리샘플과 같은 원칙). attach/detach는
    * 리스너만 붙였다 뗀다 — 재부착해도 봉 링이 유지돼 매도 직후 122봉을 다시 기다리지 않는다.
@@ -256,10 +275,16 @@ export class FeedSlot {
   constructor(options: FeedSlotOptions) {
     this.ticker = options.ticker;
     this.clock = options.clock;
-    this.modelMode = MODEL_MODE && options.model === true;
-    this.trendMode = !this.modelMode && TREND_MODE && options.trend === true;
-    this.bars = new MinuteBarBuilder(undefined, options.trendBarMinutes ?? TREND_BAR_MINUTES);
-    this.inflectionMode = !this.modelMode && !this.trendMode && INFLECTION_ENTRY && options.inflection === true;
+    this.martingaleMode = MARTINGALE_MODE && options.martingale === true;
+    this.modelMode = !this.martingaleMode && MODEL_MODE && options.model === true;
+    this.trendMode = !this.martingaleMode && !this.modelMode && TREND_MODE && options.trend === true;
+    // 물타기 모드는 봉 주기가 1분(백테스트 규약) — 주입값보다 우선한다.
+    this.bars = new MinuteBarBuilder(
+      undefined,
+      this.martingaleMode ? MARTINGALE_BAR_MINUTES : (options.trendBarMinutes ?? TREND_BAR_MINUTES),
+    );
+    this.inflectionMode =
+      !this.martingaleMode && !this.modelMode && !this.trendMode && INFLECTION_ENTRY && options.inflection === true;
     this.meter = new TickRateMeter(options.tickRateWindowMs ?? FEED_RATE_WINDOW_MS, FEED_SERIES_HISTORY_MS);
     this.slopeMeter = new SlopeMeter(options.slopeWindowMs ?? FEED_RATE_WINDOW_MS, FEED_SERIES_HISTORY_MS);
     this.resampler = new Resampler({
@@ -285,6 +310,13 @@ export class FeedSlot {
     if (extras?.dayLow !== undefined) this.dayLow = extras.dayLow;
     this.meter.record(this.lastTickAt);
     this.slopeMeter.record(this.lastTickAt, price);
+
+    if (this.martingaleMode) {
+      // 물타기 모드 — 1분봉 마감마다 4선을 재고 진입(정배열·5선 돌파)·물타기(5선 변곡) 신호를 낸다.
+      const bar = this.bars.pushTick(price, tsMs);
+      if (bar !== null) this.evaluateMartingaleBar(bar, price);
+      return null;
+    }
 
     if (this.modelMode) {
       // 모델 모드 — 판정은 ModelScanner(토스 5분봉)가 한다. 여기서는 틱/초·기울기·호가만 유지한다.
@@ -375,7 +407,7 @@ export class FeedSlot {
    * 버퍼는 이미 차 있으므로 다음 청크 마감부터 바로 판정한다(워밍업 공백 없음 — plan §2-1).
    */
   attachDetector(onSignal: SlotSignalListener): void {
-    if (this.modelMode) {
+    if (this.modelMode || this.martingaleMode) {
       // 모델 모드 — 감지기 객체가 없다. 리스너만 등록하고 신호는 ModelScanner가 emitSignal로 민다.
       this.trendListener = onSignal;
       this.detector = null;
@@ -500,6 +532,12 @@ export class FeedSlot {
   }
 
   seedTrend(bars: readonly MinuteBar[]): number {
+    if (this.martingaleMode) {
+      // 물타기 모드 — 1분봉 시드. 판정 스냅샷만 갱신하고 신호는 내지 않는다(과거 봉으로 진입하지 않는다).
+      const n = this.bars.seed(bars);
+      if (n > 0) this.martingaleEval = evaluateMartingaleBars(this.bars.closes);
+      return n;
+    }
     if (!this.trendMode) return 0;
     const n = this.bars.seed(bars);
     if (n > 0) {
@@ -514,7 +552,27 @@ export class FeedSlot {
 
   /** 추세 모드의 마지막 닫힌 봉 분 키(뷰·이음새 로그용). */
   get trendLastBarKey(): number | null {
-    return this.trendMode ? this.bars.lastClosedKey : null;
+    return this.trendMode || this.martingaleMode ? this.bars.lastClosedKey : null;
+  }
+
+  /**
+   * 물타기 모드 봉 마감 1회 — 진입 봉이면 BUY(kind='entry'), 5선 변곡이면 BUY(kind='add'). 둘 다면 두 번 흘린다
+   * (보유 여부는 오토파일럿이 안다 — 여기서는 판정만). 진입은 정규장 봉·마감 청산 전에만.
+   * price = 마감을 유발한 새 분 첫 틱 가격(추세 모드와 같은 규약).
+   */
+  private evaluateMartingaleBar(closed: MinuteBar, price: number): void {
+    const ev = evaluateMartingaleBars(this.bars.closes);
+    this.martingaleEval = ev;
+    if (this.trendListener === null) return;
+    const at = this.lastTickAt ?? this.clock.now();
+    if (ev.entry && isMartingaleEntryBar(closed.minuteKey)) {
+      this.lastSignal = 'BUY';
+      this.trendListener('BUY', { ticker: this.ticker, price, slope: 0, accel: 0, at, kind: 'entry' });
+    }
+    if (ev.ma5TurnUp) {
+      this.lastSignal = 'BUY';
+      this.trendListener('BUY', { ticker: this.ticker, price, slope: 0, accel: 0, at, kind: 'add' });
+    }
   }
 
   /** 봉 마감 1회 처리 — 4선 재계산·스냅샷 갱신·신호 전달. price = 마감을 유발한 새 분 첫 틱 가격. */
@@ -605,6 +663,7 @@ export class FeedSlot {
       trendInProgressClose: this.trendMode ? (this.bars.inProgress?.close ?? null) : null,
       modelProb: this.modelMode ? (this.modelVerdict?.prob ?? null) : null,
       modelVerdict: this.modelMode ? this.modelVerdict : null,
+      martingale: this.martingaleMode ? this.martingaleEval : null,
     };
   }
 }

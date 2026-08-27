@@ -10,7 +10,7 @@ import type { KeyValueStore } from './types';
 import type { WatchMarket } from './watchlist';
 
 /** 진입·청산 규칙 태그 — 켈리는 전략별로 따로 센다. */
-export type TradeStrategy = 'model' | 'trend' | 'inflection' | 'ladder' | 'grid';
+export type TradeStrategy = 'martingale' | 'model' | 'trend' | 'inflection' | 'ladder' | 'grid';
 
 /** insert 행 — 마이그레이션 0006 컬럼(생성 컬럼 제외). */
 export interface TradeResultRow {

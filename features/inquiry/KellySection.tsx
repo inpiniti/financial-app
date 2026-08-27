@@ -13,6 +13,7 @@ import { getSupabaseClient, isSupabaseConfigured } from '../../lib/supabase';
 import { fetchTradeReturns, type TradeResultsSelectClient, type TradeStrategy } from '../scalper/tradeResults';
 
 const STRATEGY_OPTIONS: { value: TradeStrategy; label: string }[] = [
+  { value: 'martingale', label: '물타기 시험' },
   { value: 'model', label: '모델' },
   { value: 'trend', label: '추세' },
   { value: 'inflection', label: '변곡점 조합' },

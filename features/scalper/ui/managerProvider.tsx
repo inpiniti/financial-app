@@ -35,8 +35,9 @@ import {
 import { planFromSelection, rankingPlanKey, type KisMetric, type KisWindow, type RankingPlan } from '../../../core/ranking';
 import { buildRankingSnapshot } from '../rankingSnapshot';
 import type { OverseasExchangeCode } from '../../../kis/trId';
-import { INFLECTION_THRESHOLDS, MODEL_CONFIG, TREND_CONFIG } from '../autopilot';
+import { INFLECTION_THRESHOLDS, MARTINGALE_POSITION_CONFIG, MODEL_CONFIG, TREND_CONFIG } from '../autopilot';
 import { MINUTE_BAR_RING_SIZE, TREND_BAR_MINUTES, type MinuteBar } from '../../../core/trend/bars';
+import { MARTINGALE_BAR_MINUTES, MARTINGALE_MODE } from '../martingaleMode';
 import {
   fetchTossDailyCloses,
   fetchTossMinuteBars,
@@ -230,7 +231,10 @@ async function buildManager(): Promise<ManagerBootstrap> {
       tossCodeCache.set(ticker, resolved);
       code = resolved;
     }
-    return fetchTossMinuteBars(code, MINUTE_BAR_RING_SIZE, { intervalMin: TREND_BAR_MINUTES });
+    // 물타기 시험 모드(2026-08-27)는 1분봉 시드 — 켜져 있으면 추세 봉 주기 대신 1분을 쓴다(슬롯 빌더도 1분).
+    return fetchTossMinuteBars(code, MINUTE_BAR_RING_SIZE, {
+      intervalMin: MARTINGALE_MODE ? MARTINGALE_BAR_MINUTES : TREND_BAR_MINUTES,
+    });
   };
 
   // 모델 봉·전일 종가(2026-08-22) — 같은 토스 c-chart지만 **OHLCV·원시가**다(학습 데이터와 같은 규약).
@@ -315,6 +319,10 @@ async function buildManager(): Promise<ManagerBootstrap> {
     model: MODEL_CONFIG,
     fetchModelBars,
     fetchModelDailyCloses,
+    // 배수 물타기 시험 모드(2026-08-27, ADR 0006) — **켜져 있으면 모델·추세보다 우선**한다(단일 스위치 martingaleMode.MARTINGALE_MODE).
+    // 신호: 슬롯이 1분봉 4선으로 진입(정배열·5선 돌파)·물타기(5선 변곡)를 낸다. 청산: 익절 사다리 +3/+2/+1, 15:55 ET 마감 청산.
+    // 끄려면 MARTINGALE_MODE=false(한 줄 롤백 → 모델) 또는 이 주입 한 줄을 뺀다.
+    martingale: MARTINGALE_POSITION_CONFIG,
     // 추세 → 그리드 → 매매(2026-08-18 도메인 문서) — 모델 롤백용 보존. 모델이 켜져 있는 동안은 쓰이지 않는다.
     // 끄려면 TREND_MODE=false(한 줄 롤백 → 변곡점 조합) 또는 이 주입 두 줄을 뺀다.
     trend: TREND_CONFIG,

@@ -24,10 +24,12 @@ import type { Signal } from '../../core/detector';
 import { Execution, type ClockLike, type ExecutionResult } from '../../core/execution';
 import { Grid, REBRACKET_RETRY_MS, type BuyLegStatus, type GridPollResult } from '../../core/grid';
 import { ModelExitRule, MODEL_EXIT_CONFIG, type ModelExitConfig } from '../../core/model/exitRule';
+import { MARTINGALE_CONFIG, MartingaleRule, type MartingaleConfig } from '../../core/martingale';
 import { TrendExitRule } from '../../core/trend/exitRule';
 import { CIRCUIT_MODE } from './circuitMode';
 import { createExecutionPort } from './executionPort';
 import { createGridOrderPort } from './gridOrderPort';
+import { MARTINGALE_MODE } from './martingaleMode';
 import { MODEL_MODE } from './modelMode';
 import { TREND_MODE } from './trendMode';
 import type { ScalperBroker } from './types';
@@ -84,6 +86,17 @@ export interface ModelGridConfig extends ModelExitConfig {
  */
 export const MODEL_CONFIG: ModelGridConfig = { kind: 'model', ...MODEL_EXIT_CONFIG };
 
+/**
+ * 배수 물타기 시험 모드 설정(2026-08-27, ADR 0006) — **주입 자체가 활성화 신호**다(MARTINGALE_MODE AND 주입).
+ * 값은 백테스트 규약 그대로(financial-analyze docs/analysis/2026-08-27_물타기-변형.md): 익절 사다리 +3/+2/+1,
+ * 첫 물타기 −3%, 배수 = 낙폭%−1, 간격 5분, 마감 청산 15:55 ET. 자본·횟수 상한 없음(사용자 결정).
+ */
+export interface MartingaleGridConfig extends MartingaleConfig {
+  readonly kind?: 'martingale';
+}
+
+export const MARTINGALE_POSITION_CONFIG: MartingaleGridConfig = { kind: 'martingale', ...MARTINGALE_CONFIG };
+
 /** 조건부 그리드 문턱 — 문서 §5 고정값(+2%/−3%)을 managerProvider가 주입한다. */
 export interface InflectionGridConfig {
   /** 매도 수익 문턱(소수, 0.02=+2%). */
@@ -118,16 +131,19 @@ export interface PositionManagementConfig {
   trend?: TrendGridConfig;
   /** 모델 청산 규칙(현행) — +5%/−2%/120분. */
   model?: ModelGridConfig;
+  /** 배수 물타기 시험 모드(2026-08-27) — 켜면 모델보다 우선한다. */
+  martingale?: MartingaleGridConfig;
 }
 
-export type PositionMode = 'model' | 'trend' | 'inflection' | 'oco';
+export type PositionMode = 'martingale' | 'model' | 'trend' | 'inflection' | 'oco';
 
 /**
- * 모드 판정 — **유일한** 자리. 우선순위 모델 > 추세 > 변곡점 조합 > OCO 그리드, 각각 스위치 상수 AND 설정 주입.
+ * 모드 판정 — **유일한** 자리. 우선순위 물타기 시험 > 모델 > 추세 > 변곡점 조합 > OCO 그리드, 각각 스위치 상수 AND 설정 주입.
  * null이면 진입 후 관리자가 없다(RunCycle의 옛 SELL 신호 청산 경로 — 하네스 하위호환).
  */
 export function resolvePositionMode(cfg: PositionManagementConfig | undefined): PositionMode | null {
   if (!cfg) return null;
+  if (MARTINGALE_MODE && cfg.martingale !== undefined) return 'martingale';
   if (MODEL_MODE && cfg.model !== undefined) return 'model';
   if (TREND_MODE && cfg.trend !== undefined) return 'trend';
   if (INFLECTION_GRID && cfg.inflection !== undefined) return 'inflection';
@@ -251,6 +267,35 @@ export function makePositionManager(
   deps: PositionManagerDeps,
 ): PositionManager {
   switch (mode) {
+    case 'martingale': {
+      const mg = cfg.martingale!;
+      const ladderText = mg.tpLadder.map((p) => `+${(p * 100).toFixed(0)}%`).join('/');
+      return new RulePositionManager(deps, {
+        label: '물타기 관리',
+        gauge: 'orders', // 위끝 = 익절 목표가, 아래끝 = 첫 물타기 선(평단 −3%).
+        manualExitCheckMs: MANUAL_EXIT_CHECK_MS,
+        build: (seed) => {
+          const entryAtMs = deps.entry?.entryTs ?? deps.clock.now();
+          const rule = new MartingaleRule(seed, { config: mg, clock: deps.clock, entryAtMs });
+          return {
+            rule,
+            priceExit: (price) => {
+              const kind = rule.exitKind;
+              const line = rule.targetPrice;
+              if (kind === 'SESSION_END') {
+                return { reason: 'SESSION_END' as ExitReason, text: '마감 청산 · 정규장 마감 전이라 남은 수량을 전량 매도해요', line };
+              }
+              return {
+                reason: 'TAKE_PROFIT' as ExitReason,
+                text: `익절 · 현재가 ${price.toFixed(2)} ≥ 평단 +${(rule.targetPct * 100).toFixed(0)}%(${line.toFixed(2)}) — 물타기 ${rule.adds}회 뒤 전량 매도해요`,
+                line,
+              };
+            },
+            armText: `${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} · 익절 ${rule.targetPrice.toFixed(2)}(+${(rule.targetPct * 100).toFixed(0)}%, 물타기 뒤 ${ladderText}) · 물타기 선 ${rule.buyLinePrice.toFixed(2)}(−${(mg.dropStartPct * 100).toFixed(0)}%) — 5선 변곡에서 낙폭 −k%면 보유량의 (k−1)배를 사요 · 손절 없음 · ${Math.floor(mg.closeAtMin / 60)}:${String(mg.closeAtMin % 60).padStart(2, '0')} ET 마감 청산`,
+          };
+        },
+      });
+    }
     case 'model': {
       const model = cfg.model!;
       const trail = (model.trailPct * 100).toFixed(0);
