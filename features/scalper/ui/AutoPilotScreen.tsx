@@ -22,7 +22,9 @@ import type { FeedStatus } from '../types';
 import { isDaytimeSessionOpen } from '../daySession';
 import { rankingSourceLabelOf } from '../../../core/ranking';
 import { MODEL_BAR_MINUTES, MODEL_MODE } from '../modelMode';
+import { MARTINGALE_MODE } from '../martingaleMode';
 import { loadModel } from '../../../core/model';
+import { MARTINGALE_CONFIG, MARTINGALE_MIN_BARS, type MartingaleBarEval } from '../../../core/martingale';
 import { TREND_MODE } from '../trendMode';
 import type { TrendEval } from '../../../core/trend/signal';
 import { AdoptSheet } from './AdoptSheet';
@@ -111,6 +113,19 @@ function formatTrendLine(trend: TrendEval | null, live: TrendEval | null): strin
   const now = liveArrows !== null && liveArrows !== closedArrows ? ` · 지금 ${liveArrows}` : '';
   const above = trend.aboveMa60 === null ? '' : trend.aboveMa60 ? ' · 종가>60선' : ' · 종가≤60선';
   return `추세 ${closedArrows}${now}${above} · 봉 ${Math.min(trend.bars, 122)}/122`;
+}
+
+/**
+ * 물타기 시험 모드 한 줄(2026-08-27) — 마지막 1분봉 기준 "정배열인가 · 진입 봉인가 · 5선 변곡인가 · 봉 수".
+ * 진입은 정배열 상태에서 종가가 5선을 아래→위로 뚫는 **그 봉**에만 나므로, 정배열이어도 대부분의 봉은 "돌파 대기"다.
+ */
+function formatMartingaleLine(ev: MartingaleBarEval | null): string {
+  if (ev === null) return `물타기 · 1분봉 0/${MARTINGALE_MIN_BARS}`;
+  const bars = `봉 ${Math.min(ev.bars, MARTINGALE_MIN_BARS)}/${MARTINGALE_MIN_BARS}`;
+  if (ev.aligned === null) return `물타기 · 4선 계산 중 · ${bars}`;
+  const state = ev.entry ? '정배열 · 5선 돌파 → 진입 신호' : ev.aligned ? '정배열 · 5선 돌파 대기' : '정배열 아님';
+  const turn = ev.ma5TurnUp ? ' · 5선 변곡' : '';
+  return `물타기 · ${state}${turn} · ${bars}`;
 }
 
 /**
@@ -231,7 +246,12 @@ function SlotRow({
             <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
               {`기울기/10초 ${formatSlopeRateSeries(item.view.slopeRateSeries)}`}
             </Text>
-            {MODEL_MODE ? (
+            {MARTINGALE_MODE ? (
+              // 물타기 시험 모드(2026-08-27) — 모델보다 우선. 1분봉 정배열·5선 돌파·변곡 상태.
+              <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
+                {formatMartingaleLine(item.view.martingale)}
+              </Text>
+            ) : MODEL_MODE ? (
               // 모델 모드(2026-08-22) — 마지막 봉의 판정 확률과 임계값. 왜 안 사는지 한눈에.
               <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
                 {formatModelLine(item.view.modelVerdict)}
@@ -517,7 +537,17 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                 <Text className="text-[15px] font-bold text-[#191f28]">트레이딩 리스트</Text>
                 <Text className="text-xs text-[#8b95a1]">순위 상위 {rows.length}종목 · 원천은 설정에서</Text>
               </View>
-              {MODEL_MODE && (
+              {MARTINGALE_MODE && (
+                // 물타기 시험 모드(2026-08-27) — 규칙 요약을 여기 한 번만.
+                <Text className="px-5 pb-2 text-xs text-[#8b95a1]">
+                  {`물타기 시험 모드 · 1분봉 5·20·60·120선 정배열에서 종가가 5선을 위로 뚫는 봉에 정규장 매수(후보 안에서만). 익절 평단 ${MARTINGALE_CONFIG.tpLadder
+                    .map((p) => `+${(p * 100).toFixed(0)}%`)
+                    .join('/')}(물타기 0/1/2회+), 5선 변곡에서 평단 −k%면 보유량의 (k−1)배 물타기, ${Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:${String(
+                    MARTINGALE_CONFIG.closeAtMin % 60,
+                  ).padStart(2, '0')} ET 전량 청산. 손절·상한 없음.`}
+                </Text>
+              )}
+              {!MARTINGALE_MODE && MODEL_MODE && (
                 // 모델이 뭘 예측하는지·기준값·매수 시간대 — 행마다 반복하지 않고 여기 한 번만(2026-08-25).
                 <Text className="px-5 pb-2 text-xs text-[#8b95a1]">
                   {`모델 % = 지금 사면 손절(−2%)보다 익절(+5%)에 먼저 닿을 확률. 5분봉마다 갱신, ${(

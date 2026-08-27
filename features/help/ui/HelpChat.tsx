@@ -25,6 +25,8 @@ import { Panel } from '../../../components/Panel';
 import { loadAppSettings, type AppSettings } from '../../../lib/appSettings';
 import { peekManagerBootstrap } from '../../scalper/ui/managerProvider';
 import { MODEL_MODE } from '../../scalper/modelMode';
+import { MARTINGALE_MODE } from '../../scalper/martingaleMode';
+import type { MartingaleBarEval } from '../../../core/martingale';
 import type { ModelVerdictView } from '../../scalper/feedSlot';
 import { loadModel } from '../../../core/model';
 import { describeReject } from '../../../core/model/inspect';
@@ -155,7 +157,14 @@ function formatSignalForTool(view: {
   modelProb: number | null;
   modelVerdict: ModelVerdictView | null;
   trend: TrendLike;
+  martingale?: MartingaleBarEval | null;
 }): string {
+  if (MARTINGALE_MODE) {
+    const m = view.martingale ?? null;
+    if (m === null || m.aligned === null) return `물타기 시험 모드 — 1분봉 4선 계산 중(봉 ${m?.bars ?? 0}개)`;
+    if (m.entry) return '물타기 시험 모드 — 정배열에서 5선 상향 돌파(진입 신호)';
+    return `물타기 시험 모드 — ${m.aligned ? '정배열, 5선 돌파 대기' : '정배열 아님'}${m.ma5TurnUp ? ', 5선 변곡' : ''} (봉 ${m.bars})`;
+  }
   if (MODEL_MODE) {
     const v = view.modelVerdict;
     if (v === null) return '아직 판정 전(봉 마감 대기)';
