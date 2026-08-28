@@ -152,6 +152,36 @@ class FakeWebSocket implements WebSocketLike {
 }
 
 describe('OverseasRealtimePriceClient', () => {
+  it('staleSubscriptions — 첫 열림에 해제 프레임을 먼저 보내고(구독 복원보다 앞), 구독 집합엔 넣지 않으며 재연결엔 다시 안 보낸다(2026-08-28)', () => {
+    FakeWebSocket.reset();
+    const client = new OverseasRealtimePriceClient(
+      {
+        approvalKey: 'approval-key',
+        onTick: vi.fn(),
+        staleSubscriptions: [{ trKey: 'RBAQOLD', trId: REALTIME_PRICE_TR_ID }],
+        reconnect: { baseDelayMs: 0, maxDelayMs: 0 },
+      },
+      { WebSocketImpl: FakeWebSocket, setTimeoutImpl: (fn) => fn() },
+    );
+    client.connect();
+    client.subscribe('DNASAAPL'); // 열리기 전 구독 — 열릴 때 복원된다.
+    const socket = FakeWebSocket.instances[0];
+    socket.triggerOpen();
+
+    const frames = socket.sent.map((s) => JSON.parse(s));
+    expect(frames.map((f) => [f.header.tr_type, f.body.input.tr_key])).toEqual([
+      ['2', 'RBAQOLD'], // 잔재 해제 먼저
+      ['1', 'DNASAAPL'], // 그다음 복원
+    ]);
+    expect(client.subscribedKeys.has('RBAQOLD')).toBe(false);
+
+    socket.triggerAbnormalClose(); // 재연결(지연 0) → 새 소켓
+    const socket2 = FakeWebSocket.instances[1];
+    socket2.triggerOpen();
+    const frames2 = socket2.sent.map((s) => JSON.parse(s));
+    expect(frames2.map((f) => [f.header.tr_type, f.body.input.tr_key])).toEqual([['1', 'DNASAAPL']]);
+  });
+
   it('subscribe/unsubscribe가 등록/해제 프레임을 전송하고 구독 집합을 관리한다', () => {
     FakeWebSocket.reset();
     const onTick = vi.fn();

@@ -171,6 +171,13 @@ export interface RealtimePriceClientConfig {
   onError?(err: unknown): void;
   onStatusChange?(status: 'connecting' | 'open' | 'closed' | 'reconnecting'): void;
   reconnect?: RealtimeReconnectOptions;
+  /**
+   * 첫 연결이 열리자마자 **해제(tr_type '2') 프레임을 보낼 옛 구독** — 직전 실행이 강제 종료돼(해제 프레임 없이
+   * 끊김) 서버에 남은 등록을 쓸어내는 용도. 2026-08-28 실사고: 앱을 여러 번 껐다 켠 뒤 새 연결에서 3건만 성공하고
+   * 18건이 "MAX SUBSCRIBE OVER" — KIS가 등록 수(41)를 세션이 아니라 계정 단위로 세고 죽은 세션 등록이 남는 정황.
+   * 구독 집합(subscriptions)에는 넣지 않는다 — 재연결 복원 대상이 아니다. 한 번 보내고 버린다.
+   */
+  staleSubscriptions?: readonly { trKey: string; trId: string }[];
 }
 
 export interface RealtimePriceClientDeps {
@@ -211,7 +218,11 @@ export class OverseasRealtimePriceClient {
     this.setTimeoutImpl = deps.setTimeoutImpl ?? ((fn, ms) => setTimeout(fn, ms));
     this.clearTimeoutImpl = deps.clearTimeoutImpl ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
     this.reconnectOpts = { ...DEFAULT_RECONNECT, ...config.reconnect };
+    this.staleToSweep = [...(config.staleSubscriptions ?? [])];
   }
+
+  /** 첫 열림에 해제 프레임으로 쓸어낼 옛 구독(생성자에서 복사, 보낸 뒤 비운다). */
+  private staleToSweep: { trKey: string; trId: string }[];
 
   connect(): void {
     this.manuallyClosed = false;
@@ -284,6 +295,11 @@ export class OverseasRealtimePriceClient {
       if (this.socket !== socket) return; // 교체된 낡은 소켓의 늦은 이벤트 무시
       this.reconnectAttempt = 0;
       this.config.onStatusChange?.('open');
+      // 직전 실행의 잔재 구독을 먼저 쓸어낸다(첫 열림 한 번만) — 아래 복원보다 앞서야 같은 키를 해제→등록 순서로 보낸다.
+      if (this.staleToSweep.length > 0) {
+        for (const { trKey, trId } of this.staleToSweep) this.sendRegisterFrame(trKey, trId, '2');
+        this.staleToSweep = [];
+      }
       // 재연결 시 기존 구독을 전부(체결가·호가) 복원한다.
       for (const { trKey, trId } of this.subscriptions.values()) {
         this.sendRegisterFrame(trKey, trId, '1');

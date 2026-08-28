@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { AutoPilotManager, AUTOPILOT_TRADE_ID, type AutoPilotManagerDeps } from './autopilotManager';
+import { AutoPilotManager, AUTOPILOT_TRADE_ID, FEED_KEYS_STORAGE_KEY, type AutoPilotManagerDeps } from './autopilotManager';
 import { TREND_CONFIG } from './autopilot';
 import { TREND_BAR_MINUTES } from '../../core/trend/bars';
 import { FakeBroker, FakeStore, fakeClock, flush, noopScheduler } from './fakes';
@@ -270,6 +270,24 @@ describe('AutoPilotManager — 배선(구독·라우팅·상호 배타)', () => 
     });
     expect(rows.find((r) => r.entry.ticker === 'B')?.feedRejected).toBeNull();
     expect(rows.find((r) => r.entry.ticker === 'C')?.feedRejected).toBeNull(); // ACK 없음.
+  });
+
+  it('구독 키 목록을 storage(FEED_KEYS_STORAGE_KEY)에 저장한다 — 다음 실행이 잔재 구독을 쓸어내는 근거(2026-08-28)', async () => {
+    const { manager, store, fetchSnapshot } = makeManager();
+    manager.start();
+    await vi.waitFor(() => expect(manager.watchlist.size).toBe(12));
+    await flush();
+
+    const saved = JSON.parse((await store.getItem(FEED_KEYS_STORAGE_KEY))!) as string[];
+    expect(saved).toHaveLength(12);
+    expect(saved).toContain('DNASA');
+
+    fetchSnapshot.mockResolvedValue(snapshotOf(['Z', ...TWELVE.slice(1)])); // A 드롭·Z 추가 → 저장 목록도 따라간다.
+    await manager.watchlist.refresh();
+    await flush();
+    const saved2 = JSON.parse((await store.getItem(FEED_KEYS_STORAGE_KEY))!) as string[];
+    expect(saved2).not.toContain('DNASA');
+    expect(saved2).toContain('DNASZ');
   });
 
   it('routeTick/routeQuote — 해당 티커 슬롯으로만 흘러간다', async () => {

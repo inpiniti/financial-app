@@ -53,6 +53,12 @@ import type {
 
 /** 거래 기록의 instanceId — 자동관리 사이클은 전부 이 아이디로 남긴다. */
 export const AUTOPILOT_TRADE_ID = 'autopilot';
+/**
+ * 현재 체결가 구독 키 목록 저장 키(2026-08-28) — 앱이 강제 종료되면 해제 프레임 없이 끊겨 서버에 등록이 남고, 다음
+ * 실행의 구독이 "MAX SUBSCRIBE OVER"에 걸린다(실사고: 3건 성공·18건 실패). managerProvider가 다음 시작 때 이 목록을
+ * 읽어 첫 열림에 해제 프레임으로 쓸어낸다(createRealtimeFeed.staleTrKeys).
+ */
+export const FEED_KEYS_STORAGE_KEY = 'scalper:feedKeys';
 
 // 리스트는 미국 거래소 병합(2026-08-08 3거래소 확대 → 2026-08-10 아멕스 제외, 현재 NAS·NYS) — 티커별 채용 거래소(WatchEntry.market)가
 // WS trKey 시장구분·주문 거래소를 정한다. AMS 매핑은 기존 채용 종목·방어적 정규화용으로 유지.
@@ -639,6 +645,12 @@ export class AutoPilotManager {
       this.tickTrKeys.set(ticker, newKey);
       this.deps.realtime.subscribe(newKey);
     }
+    this.persistTickKeys();
+  }
+
+  /** 현재 구독 키 목록을 저장(fire-and-forget) — 다음 실행의 잔재 구독 청소용. 실패는 무시한다(진단 보조일 뿐). */
+  private persistTickKeys(): void {
+    void this.deps.storage.setItem(FEED_KEYS_STORAGE_KEY, JSON.stringify([...this.tickTrKeys.values()])).catch(() => {});
   }
 
   private addSlot(ticker: string): void {
@@ -662,6 +674,7 @@ export class AutoPilotManager {
     const trKey = this.marketTrKeyOf(ticker); // 체결가 — 전 종목(정규장 D 또는 주간거래 R).
     this.tickTrKeys.set(ticker, trKey);
     this.deps.realtime.subscribe(trKey);
+    this.persistTickKeys();
     // 모델 모드는 봉을 스캐너가 토스에서 직접 읽는다 — 추세 워밍업(분봉 시드)은 돌리지 않는다.
     // 물타기 모드는 1분봉 시드가 필요하다(fetchMinuteBars가 1분봉을 준다 — managerProvider).
     if (!this.modelActive) this.enqueueTrendWarmup(ticker);
@@ -741,6 +754,7 @@ export class AutoPilotManager {
     this.modelScanner?.drop(ticker);
     const tickTrKey = this.tickTrKeys.get(ticker);
     this.tickTrKeys.delete(ticker);
+    this.persistTickKeys();
     // 상세화면이 같은 키를 잡고 있으면 실제 해제는 건너뛴다 — 그쪽 releaseFeed가 마지막에 정리한다.
     if (tickTrKey && !this.deps.isFeedHeldExternally?.(tickTrKey, REALTIME_PRICE_TR_ID)) {
       this.deps.realtime.unsubscribe(tickTrKey);

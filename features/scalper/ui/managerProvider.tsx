@@ -48,7 +48,7 @@ import { MODEL_BAR_MINUTES } from '../modelMode';
 import { getSupabaseClient, isSupabaseConfigured } from '../../../lib/supabase';
 import { loadApprovedAccountNo } from '../../../lib/gateStorage';
 import { TradeResultRecorder, toTradeResultRow, type TradeResultsInsertClient } from '../tradeResults';
-import { AutoPilotManager, type AutoPilotManagerDeps, type ManagerSettings } from '../autopilotManager';
+import { AutoPilotManager, FEED_KEYS_STORAGE_KEY, type AutoPilotManagerDeps, type ManagerSettings } from '../autopilotManager';
 import { createKisBroker } from '../createKisBroker';
 import { createRealtimeFeed } from '../createRealtimeFeed';
 import { expoKeepAwake } from '../keepAwake';
@@ -91,6 +91,17 @@ let liveRankingPlanKey = '';
 
 const clock = { now: () => Date.now() };
 
+/** 직전 실행이 저장한 체결가 구독 키 목록(FEED_KEYS_STORAGE_KEY) — 없거나 깨졌으면 빈 배열(청소 생략). */
+async function loadStaleTrKeys(): Promise<string[]> {
+  try {
+    const raw = await AsyncStorage.getItem(FEED_KEYS_STORAGE_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((k): k is string => typeof k === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 async function buildManager(): Promise<ManagerBootstrap> {
   const [kisSettings, appSettings] = await Promise.all([loadKisSettings(), loadAppSettings()]);
   if (!kisSettings) {
@@ -102,11 +113,14 @@ async function buildManager(): Promise<ManagerBootstrap> {
   const environment: KisEnvironment = appSettings.environment;
 
   const approvalKey = await getApprovalKey(environment, credentials);
+  // 직전 실행의 구독 키 — 강제 종료로 서버에 남은 등록을 첫 열림에 해제 프레임으로 쓸어낸다(2026-08-28 MAX SUBSCRIBE OVER).
+  const staleTrKeys = await loadStaleTrKeys();
   // manager는 realtime 다음에 만들어지므로, onError는 클로저로 나중에 할당되는 manager를 참조한다.
   let manager: ScalperManager | undefined;
   const realtime = createRealtimeFeed({
     approvalKey,
     clock,
+    staleTrKeys,
     onError: (err) => manager?.reportFeedError(err),
   });
 

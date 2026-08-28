@@ -2,6 +2,7 @@
 // WS 단일 연결 1개를 감싸고, 매니저가 이 위로 티커별 구독을 멀티플렉스한다. 테스트는 이 파일을 import하지 않는다.
 import {
   OverseasRealtimePriceClient,
+  REALTIME_PRICE_TR_ID,
   type RealtimeControlMessage,
   type RealtimePriceClientConfig,
   type RealtimePriceClientDeps,
@@ -14,6 +15,8 @@ export interface RealtimeFeedConfig {
   clock?: ClockLike;
   onError?: (err: unknown) => void;
   onStatusChange?: RealtimePriceClientConfig['onStatusChange'];
+  /** 첫 열림에 해제 프레임으로 쓸어낼 직전 실행의 구독 키(체결가 TR) — kis 클라이언트 staleSubscriptions로 전달. */
+  staleTrKeys?: readonly string[];
 }
 
 /**
@@ -56,6 +59,7 @@ export function createRealtimeFeed(
       approvalKey: config.approvalKey,
       custtype: config.custtype,
       onError: config.onError,
+      staleSubscriptions: config.staleTrKeys?.map((trKey) => ({ trKey, trId: REALTIME_PRICE_TR_ID })),
       onStatusChange: (status) => {
         config.onStatusChange?.(status);
         statusHandler?.(mapKisStatus(status));
