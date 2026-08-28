@@ -42,10 +42,16 @@ function mapKisStatus(status: 'connecting' | 'open' | 'closed' | 'reconnecting')
  * WS 지연체결가 → (symb, price, tsMs) 틱으로 정규화한다.
  * price = LAST(문자열) 파싱, tsMs = 수신 시각(clock.now) — 리샘플은 단조 증가 ms만 필요.
  */
+/** 실서비스 피드 — RealtimeFeed에 접속키 교체·즉시 재접속을 더한 것(계좌 화면 "접속키 새로 발급" 버튼용, 2026-08-28). */
+export interface LiveRealtimeFeed extends RealtimeFeed {
+  setApprovalKey(approvalKey: string): void;
+  reconnect(): void;
+}
+
 export function createRealtimeFeed(
   config: RealtimeFeedConfig,
   deps: RealtimePriceClientDeps = {},
-): RealtimeFeed {
+): LiveRealtimeFeed {
   const clock = config.clock ?? { now: () => Date.now() };
   let handler: ((symb: string, price: number, tsMs: number, extras?: TickExtras) => void) | null = null;
   let quoteHandler:
@@ -107,6 +113,8 @@ export function createRealtimeFeed(
   return {
     connect: () => client.connect(),
     close: () => client.close(),
+    setApprovalKey: (key) => client.setApprovalKey(key),
+    reconnect: () => client.reconnect(),
     subscribe: (trKey, trId) => client.subscribe(trKey, trId),
     unsubscribe: (trKey, trId) => client.unsubscribe(trKey, trId),
     setTickHandler: (h) => {

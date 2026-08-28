@@ -182,6 +182,27 @@ describe('OverseasRealtimePriceClient', () => {
     expect(frames2.map((f) => [f.header.tr_type, f.body.input.tr_key])).toEqual([['1', 'DNASAAPL']]);
   });
 
+  it('setApprovalKey + reconnect — 새 소켓을 열고 복원 등록 프레임에 새 접속키를 쓴다(계좌 화면 "새로 발급" 버튼, 2026-08-28)', () => {
+    FakeWebSocket.reset();
+    const client = new OverseasRealtimePriceClient(
+      { approvalKey: 'key-old', onTick: vi.fn() },
+      { WebSocketImpl: FakeWebSocket },
+    );
+    client.connect();
+    FakeWebSocket.instances[0].triggerOpen();
+    client.subscribe('DNASAAPL');
+    expect(JSON.parse(FakeWebSocket.instances[0].sent.at(-1)!).header.approval_key).toBe('key-old');
+
+    client.setApprovalKey('key-new');
+    client.reconnect();
+    expect(FakeWebSocket.instances[0].closed).toBe(true);
+    const socket2 = FakeWebSocket.instances[1];
+    socket2.triggerOpen();
+    const frame = JSON.parse(socket2.sent.at(-1)!);
+    expect(frame.header.approval_key).toBe('key-new');
+    expect(frame.body.input.tr_key).toBe('DNASAAPL'); // 구독 복원.
+  });
+
   it('subscribe/unsubscribe가 등록/해제 프레임을 전송하고 구독 집합을 관리한다', () => {
     FakeWebSocket.reset();
     const onTick = vi.fn();

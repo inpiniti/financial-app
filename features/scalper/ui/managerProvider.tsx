@@ -50,7 +50,7 @@ import { loadApprovedAccountNo } from '../../../lib/gateStorage';
 import { TradeResultRecorder, toTradeResultRow, type TradeResultsInsertClient } from '../tradeResults';
 import { AutoPilotManager, FEED_KEYS_STORAGE_KEY, type AutoPilotManagerDeps, type ManagerSettings } from '../autopilotManager';
 import { createKisBroker } from '../createKisBroker';
-import { createRealtimeFeed } from '../createRealtimeFeed';
+import { createRealtimeFeed, type LiveRealtimeFeed } from '../createRealtimeFeed';
 import { expoKeepAwake } from '../keepAwake';
 import { ScalperManager } from '../scalperManager';
 import type { RankingSnapshot, WatchCandidateRow, WatchMarket } from '../watchlist';
@@ -91,6 +91,49 @@ let liveRankingPlanKey = '';
 
 const clock = { now: () => Date.now() };
 
+/** 현재 웹소켓 접속키 정보(2026-08-28) — 계좌 화면이 "새로 받았는지·재활용인지"를 눈으로 확인하게 노출. */
+export interface ApprovalInfo {
+  approvalKey: string;
+  issuedAt: number;
+}
+
+let liveFeed: LiveRealtimeFeed | null = null;
+let approvalInfo: ApprovalInfo | null = null;
+const approvalListeners = new Set<(info: ApprovalInfo | null) => void>();
+
+function setApprovalInfo(info: ApprovalInfo | null): void {
+  approvalInfo = info;
+  for (const l of approvalListeners) l(info);
+}
+
+/** 지금 쓰는 접속키(발급 시각 포함) — 매니저가 아직 없으면 null. */
+export function getApprovalInfo(): ApprovalInfo | null {
+  return approvalInfo;
+}
+
+export function subscribeApprovalInfo(listener: (info: ApprovalInfo | null) => void): () => void {
+  approvalListeners.add(listener);
+  return () => {
+    approvalListeners.delete(listener);
+  };
+}
+
+/**
+ * 접속키를 새로 발급받고 그 키로 소켓을 끊었다 다시 연다(구독은 열릴 때 복원). 매니저가 없으면 아무것도 안 한다.
+ * 앱 시작 때와 같은 절차라 결과도 같을 것으로 보지만, 키가 실제로 바뀌는지 화면에서 확인하는 데 쓴다.
+ */
+export async function reissueApprovalKey(): Promise<ApprovalInfo | null> {
+  if (!liveFeed) return null;
+  const [kisSettings, appSettings] = await Promise.all([loadKisSettings(), loadAppSettings()]);
+  if (!kisSettings) return null;
+  const key = await getApprovalKey(appSettings.environment, { appKey: kisSettings.appKey, appSecret: kisSettings.appSecret });
+  liveFeed.setApprovalKey(key);
+  liveFeed.reconnect();
+  const info = { approvalKey: key, issuedAt: clock.now() };
+  setApprovalInfo(info);
+  return info;
+}
+
 /** 직전 실행이 저장한 체결가 구독 키 목록(FEED_KEYS_STORAGE_KEY) — 없거나 깨졌으면 빈 배열(청소 생략). */
 async function loadStaleTrKeys(): Promise<string[]> {
   try {
@@ -123,6 +166,8 @@ async function buildManager(): Promise<ManagerBootstrap> {
     staleTrKeys,
     onError: (err) => manager?.reportFeedError(err),
   });
+  liveFeed = realtime;
+  setApprovalInfo({ approvalKey, issuedAt: clock.now() });
 
   manager = new ScalperManager({ realtime, clock });
 

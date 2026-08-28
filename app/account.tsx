@@ -15,6 +15,12 @@ import { formatKrw, formatSignedKrw, formatSignedPercent, pnlColor } from '../li
 import { clearApprovedAccountNo, loadApprovedAccountNo } from '../lib/gateStorage';
 import { formatAccountNo, loadKisSettings, parseAccountNo, saveKisSettings } from '../lib/kisSettings';
 import { resetUsdKrwCache } from '../lib/usdKrw';
+import {
+  getApprovalInfo,
+  reissueApprovalKey,
+  subscribeApprovalInfo,
+  type ApprovalInfo,
+} from '../features/scalper/ui/managerProvider';
 
 type TokenStatus =
   | { kind: 'idle' }
@@ -50,6 +56,68 @@ function SummaryRow({ label, value, color }: { label: string; value: string; col
         </Text>
       }
     />
+  );
+}
+
+/**
+ * 실시간(웹소켓) 접속키 패널(2026-08-28) — 지금 소켓이 쓰는 접속키와 발급 시각을 그대로 보여 주고, 버튼으로 새로 발급받아
+ * 재접속한다. 접속키는 앱을 켤 때마다 새로 받지만(managerProvider), "정말 새 키인지·재활용인지"를 사용자가 눈으로 확인할
+ * 길이 없었다(MAX SUBSCRIBE OVER 진단 중 제보). 트레이딩 탭을 연 적이 없으면 매니저가 없어 키도 없다.
+ */
+function ApprovalKeyPanel() {
+  const [info, setInfo] = useState<ApprovalInfo | null>(() => getApprovalInfo());
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  useEffect(() => subscribeApprovalInfo(setInfo), []);
+
+  const handleReissue = useCallback(async () => {
+    const before = getApprovalInfo()?.approvalKey ?? null;
+    setBusy(true);
+    setNote(null);
+    try {
+      const next = await reissueApprovalKey();
+      if (!next) {
+        setNote('트레이딩 탭을 먼저 열어야 접속키가 만들어져요.');
+      } else {
+        setNote(next.approvalKey === before ? 'KIS가 같은 키를 돌려줬어요(재활용).' : '새 키를 받아 재접속했어요.');
+      }
+    } catch (err) {
+      setNote(`발급 실패: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  return (
+    <Panel
+      title="실시간 접속키"
+      headerRight={
+        <Pressable onPress={handleReissue} disabled={busy} hitSlop={8} className="active:opacity-60">
+          <Text className="text-xs font-semibold" style={{ color: busy ? '#8b95a1' : '#3182f6' }}>
+            {busy ? '발급 중…' : '새로 발급 · 재접속'}
+          </Text>
+        </Pressable>
+      }
+    >
+      <View className="px-5 pb-4">
+        {info === null ? (
+          <Text className="text-sm text-[#8b95a1]">아직 없어요 — 트레이딩 탭을 열면 발급돼요.</Text>
+        ) : (
+          <>
+            <Text className="text-xs text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }} selectable>
+              {info.approvalKey}
+            </Text>
+            <Text className="mt-1 text-xs text-[#8b95a1]">
+              발급 {new Date(info.issuedAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            </Text>
+          </>
+        )}
+        {note !== null && <Text className="mt-2 text-xs text-[#4e5968]">{note}</Text>}
+        <Text className="mt-2 text-xs leading-5 text-[#8b95a1]">
+          앱을 켤 때마다 새로 받는 키예요. 새로 발급하면 지금 소켓을 끊고 새 키로 다시 붙어요(구독은 자동 복원).
+        </Text>
+      </View>
+    </Panel>
   );
 }
 
@@ -337,6 +405,8 @@ export default function AccountScreen() {
             )}
           </Panel>
         )}
+
+        <ApprovalKeyPanel />
 
         <Panel title="거래 모드">
           <View className="px-5 pb-5">

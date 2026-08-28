@@ -219,6 +219,21 @@ export class OverseasRealtimePriceClient {
     this.clearTimeoutImpl = deps.clearTimeoutImpl ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
     this.reconnectOpts = { ...DEFAULT_RECONNECT, ...config.reconnect };
     this.staleToSweep = [...(config.staleSubscriptions ?? [])];
+    this.approvalKey = config.approvalKey;
+  }
+
+  /** 현재 등록 프레임에 쓰는 접속키 — setApprovalKey로 교체 가능(재발급 뒤 재접속용, 2026-08-28). */
+  private approvalKey: string;
+
+  /** 접속키 교체 — 다음 연결/등록 프레임부터 새 키를 쓴다. 살아 있는 소켓은 건드리지 않는다(reconnect로 갈아탄다). */
+  setApprovalKey(approvalKey: string): void {
+    this.approvalKey = approvalKey;
+  }
+
+  /** 지금 소켓을 끊고 즉시 다시 연다 — 구독 집합은 열릴 때 복원된다. 접속키 재발급 뒤 세션을 갈아탈 때 쓴다. */
+  reconnect(): void {
+    this.close();
+    this.connect();
   }
 
   /** 첫 열림에 해제 프레임으로 쓸어낼 옛 구독(생성자에서 복사, 보낸 뒤 비운다). */
@@ -271,7 +286,7 @@ export class OverseasRealtimePriceClient {
     if (!this.socket || this.socket.readyState !== 1 /* OPEN */) return;
     const frame = {
       header: {
-        approval_key: this.config.approvalKey,
+        approval_key: this.approvalKey,
         custtype: this.config.custtype ?? 'P',
         tr_type: trType,
         'content-type': 'utf-8',
