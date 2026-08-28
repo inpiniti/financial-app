@@ -9,7 +9,8 @@
 //   KIS_SYMBOL          예) AAPL (기본 AAPL)
 //   KIS_PRICE_EXCD      현재가상세 EXCD (기본 NAS — 나스닥)
 //   KIS_WS_MARKET       실시간 시세 시장구분 (기본 NAS — buildFreeQuoteTrKey 사용)
-//   KIS_WS_TRKEY        tr_key를 통째로 지정 (예: RBAQAAPL — 주간거래 키 진단용. 지정하면 KIS_WS_MARKET·KIS_SYMBOL 무시)
+//   KIS_WS_TRKEY        tr_key를 통째로 지정 (예: RBAQAAPL — 주간거래 키 진단용. 지정하면 KIS_WS_MARKET·KIS_SYMBOL 무시).
+//                       쉼표로 여러 개(DNASAAPL,DNASTSLA,…)면 전부 구독해 ACK로 몇 건까지 받아주는지 센다(한도 진단)
 //   KIS_WS_ONLY         "true"면 토큰 발급·현재가 조회를 건너뛰고 웹소켓만 (휴대폰 앱이 쓰는 토큰을 죽이지 않는다 —
 //                       KIS는 앱키당 유효 토큰 1개. 구독 ACK(rt_cd·msg1)를 그대로 찍어 "mci send failed" 진단에 쓴다)
 //   RAW_FIELD_DEBUG     "true"면 WS 원본 필드 배열을 그대로 콘솔에 출력 (9단계 필드맵 대조용)
@@ -86,9 +87,10 @@ async function main(): Promise<void> {
 
   console.log('\n[3/3] 웹소켓 접속키 발급 후 실시간지연체결가 10초 수신...');
   const approvalKey = await getApprovalKey(environment, credentials);
-  // KIS_WS_TRKEY로 키를 통째로 줄 수 있다(주간거래 R키 진단용) — 없으면 옛 동작(D+시장+종목).
-  const trKey = process.env.KIS_WS_TRKEY ?? buildFreeQuoteTrKey(wsMarket, symbol);
-  console.log(`  tr_key=${trKey}`);
+  // KIS_WS_TRKEY로 키를 통째로 줄 수 있다(주간거래 R키 진단용) — 쉼표로 여러 개면 순서대로 전부 구독해 **몇 건까지 받아주는지** 센다
+  // (2026-08-28 "MAX SUBSCRIBE OVER" 한도 진단). 없으면 옛 동작(D+시장+종목 1건).
+  const trKeys = (process.env.KIS_WS_TRKEY ?? buildFreeQuoteTrKey(wsMarket, symbol)).split(",").map((k) => k.trim()).filter(Boolean);
+  console.log(`  tr_key=${trKeys.join(",")} (${trKeys.length}건)`);
 
   await new Promise<void>((resolve) => {
     let tickCount = 0;
@@ -100,7 +102,7 @@ async function main(): Promise<void> {
         console.log(`  [ws] status=${status}`);
         if (status === 'open' && !subscribed) {
           subscribed = true;
-          client.subscribe(trKey);
+          for (const k of trKeys) client.subscribe(k);
         }
       },
       onError: (err) => console.error('  [ws] error', err),
@@ -119,7 +121,7 @@ async function main(): Promise<void> {
     client.connect();
 
     const timer = setTimeout(() => {
-      client.unsubscribe(trKey);
+      for (const k of trKeys) client.unsubscribe(k);
       client.close();
       console.log(`\n[kis-smoke] 완료 — 수신 틱 수: ${tickCount}`);
       resolve();
