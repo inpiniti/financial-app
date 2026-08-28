@@ -22,11 +22,15 @@ class PairFeed implements RealtimeFeed {
   close(): void {
     this.connected = false;
   }
+  /** 구독/해제 호출 순서 기록 — 세션 키 회전 순서(해제 → 구독) 검증용. */
+  readonly ops: string[] = [];
   subscribe(trKey: string, trId = 'HDFSCNT0'): void {
     this.pairs.add(`${trId}|${trKey}`);
+    this.ops.push(`+${trKey}`);
   }
   unsubscribe(trKey: string, trId = 'HDFSCNT0'): void {
     this.pairs.delete(`${trId}|${trKey}`);
+    this.ops.push(`-${trKey}`);
   }
   setTickHandler(handler: (symb: string, price: number, tsMs: number) => void): void {
     this.tick = handler;
@@ -214,6 +218,14 @@ describe('AutoPilotManager — 배선(구독·라우팅·상호 배타)', () => 
     expect(feed.pairs.has('HDFSCNT0|RBAQA')).toBe(true);
     expect(feed.pairs.has('HDFSCNT0|DNASA')).toBe(false);
     expect(feed.tickPairs()).toHaveLength(12);
+    // 회전 순서는 종목마다 **해제 → 구독**(2026-08-28 MAX SUBSCRIBE OVER 실사고) — 동시 등록 수가 리스트 크기를 넘지 않는다.
+    const rotation = feed.ops.slice(feed.ops.indexOf('-DNASA'));
+    expect(rotation.slice(0, 2)).toEqual(['-DNASA', '+RBAQA']);
+    let live = 12;
+    for (const op of rotation) {
+      live += op.startsWith('+') ? 1 : -1;
+      expect(live).toBeLessThanOrEqual(12);
+    }
   });
 
   it('구독 거절(ACK 실패)은 리스트 행 feedRejected로 드러난다 — R키면 daytime=true, ACK 전·성공은 null(2026-08-28)', async () => {

@@ -621,7 +621,10 @@ export class AutoPilotManager {
   /**
    * 세션 전환(정규장↔주간거래) 시 살아 있는 구독을 새 세션 키로 회전한다 — 이게 없으면 10:00/16:00
    * 경계에서 기존 종목의 구독 키가 옛 세션 것으로 남아 틱이 끊긴다(리스트가 안 바뀐 종목은 재구독 계기가
-   * 없다). 새 키 구독 → 옛 키 해제 순서. 상세화면이 잡고 있는 옛 키는 해제하지 않는다(교차 해제 방지).
+   * 없다). **옛 키 해제 → 새 키 구독** 순서(2026-08-28 실사고: 새 키 먼저 올리니 30개 리스트가 순간 60개로
+   * KIS 한도 41을 넘어 "MAX SUBSCRIBE OVER" — 거절됐던 R키도 서버 쪽 등록 수에는 남아 있었다). 경계 시각엔
+   * 어느 세션도 틱을 내지 않아(10:00 KST=전날 21:00 ET 장외, 16:00 KST=03:00 ET 장외) 해제 먼저 해도 잃는 틱이 없다.
+   * 상세화면이 잡고 있는 옛 키는 해제하지 않는다(교차 해제 방지).
    */
   private rotateSessionKeys(): void {
     const daytime = isDaytimeSessionOpen(this.deps.clock.now());
@@ -630,11 +633,11 @@ export class AutoPilotManager {
     for (const [ticker, oldKey] of [...this.tickTrKeys]) {
       const newKey = this.marketTrKeyOf(ticker);
       if (newKey === oldKey) continue;
-      this.tickTrKeys.set(ticker, newKey);
-      this.deps.realtime.subscribe(newKey);
       if (!this.deps.isFeedHeldExternally?.(oldKey, REALTIME_PRICE_TR_ID)) {
         this.deps.realtime.unsubscribe(oldKey);
       }
+      this.tickTrKeys.set(ticker, newKey);
+      this.deps.realtime.subscribe(newKey);
     }
   }
 

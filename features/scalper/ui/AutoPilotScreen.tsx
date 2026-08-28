@@ -116,12 +116,13 @@ function formatTrendLine(trend: TrendEval | null, live: TrendEval | null): strin
 }
 
 /**
- * 체결가 구독 거절 한 줄(2026-08-28) — 거절된 키와 KIS 사유. 주간 키(R…)면 주간거래 미지원 종목일 가능성이 커
- * 그렇게 말하고, 16:00 KST 뒤 정규장 키로 회전하면 자연히 풀린다는 것도 같이 알린다.
+ * 체결가 구독 거절 한 줄(2026-08-28) — 거절된 키와 KIS 사유. 주간 키(R…) 거절은 종목이 주간거래 미지원이거나
+ * 계정의 주간거래 신청 상태 문제(HTS ID 변경·API 재신청 뒤 전 종목 거절 실사고) 둘 중 하나라 단정하지 않고,
+ * 16:00 KST 뒤 정규장 키로 회전하면 자연히 풀린다는 것만 확실히 알린다.
  */
 export function formatFeedRejectedLine(r: FeedRejection): string {
   return r.daytime
-    ? `주간거래 미지원 · 시세 없음 · ${r.trKey} 거절(${r.message || '사유 없음'}) — 16:00 KST 뒤 정규장 키로 다시 받아요`
+    ? `주간거래 시세 거절 · ${r.trKey}(${r.message || '사유 없음'}) — 미지원 종목이거나 주간거래 신청 상태 확인 · 16:00 KST 뒤 정규장 키로 다시 받아요`
     : `시세 구독 거절 · ${r.trKey} · ${r.message || '사유 없음'}`;
 }
 
