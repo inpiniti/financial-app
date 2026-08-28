@@ -259,6 +259,9 @@ export class OverseasRealtimePriceClient {
       this.clearTimeoutImpl(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    // 끊기 전에 현재 구독 전부에 해제 프레임을 보낸다(2026-08-28) — 소켓만 닫으면 서버가 등록을 지워주지 않는 정황
+    // (재접속할수록 수락 수가 3→1로 줄어든 실측). 구독 집합은 유지한다 — reconnect가 열릴 때 다시 등록한다.
+    for (const { trKey, trId } of this.subscriptions.values()) this.sendRegisterFrame(trKey, trId, '2');
     this.socket?.close();
     this.socket = null;
   }
