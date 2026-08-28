@@ -129,9 +129,14 @@ export class ScalperManager {
    */
   private handleFeedControl(msg: RealtimeControlMessage): void {
     const success = msg.rtCd === '0';
+    // 실패 문구에 거절된 trKey를 같이 적는다(2026-08-28) — "mci send failed"만으로는 어느 종목·어느 세션 키
+    // (D정규장/R주간)가 거절됐는지 알 수 없어 접속키 재발급으로 오진하기 쉬웠다.
+    const reason = msg.msg1 ?? msg.msgCd ?? '알 수 없음';
     const text = success
       ? `구독 성공 · ${msg.trKey ?? ''}`
-      : `구독 실패 · ${msg.msg1 ?? msg.msgCd ?? '알 수 없음'}`;
+      : msg.trKey
+        ? `구독 실패 · ${msg.trKey} · ${reason}`
+        : `구독 실패 · ${reason}`;
     this.setFeedEvent(text);
     if (msg.trKey) {
       this.subscriptionStatus.set(`${msg.trId}|${msg.trKey}`, {

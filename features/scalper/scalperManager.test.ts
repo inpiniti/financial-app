@@ -27,7 +27,7 @@ describe('ScalperManager — 피드 허브(진단·ACK 이력)', () => {
     expect(quoteStatus?.success).toBe(false);
     expect(quoteStatus?.message).toBe('구독 한도 초과');
     // 마지막 이벤트는 호가 실패로 덮어써졌지만, 체결가(trId별) 이력은 그대로 남아 있다(핵심 회귀 방지).
-    expect(manager.lastFeedEvent?.text).toContain('구독 실패');
+    expect(manager.lastFeedEvent?.text).toBe('구독 실패 · DNASAAPL · 구독 한도 초과'); // trKey를 같이 적는다(2026-08-28).
     expect(fillStatus?.success).toBe(true);
   });
 

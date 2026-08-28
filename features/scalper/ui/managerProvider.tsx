@@ -338,8 +338,12 @@ async function buildManager(): Promise<ManagerBootstrap> {
     buyCancelAfterMs: initialSettings.trading.buyCancelAfterMs,
     // 종목 상세화면(acquireFeed)이 잡고 있는 구독은 리스트 이탈 시에도 해제하지 않는다(교차 해제 방지).
     isFeedHeldExternally: (trKey, trId) => finalManager.holdsFeed(trKey, trId),
+    // 구독 거절(ACK 실패)을 리스트 행에 드러낸다 — 주간거래 창에 R키가 거절된 종목은 "시세 없음"(2026-08-28).
+    getFeedSubscriptionStatus: (trKey, trId) => finalManager.getSubscriptionStatus(trKey, trId),
     onError: (err) => finalManager.reportFeedError(err),
   });
+  // 구독 ACK가 오면 행(feedRejected)을 다시 그린다 — 슬롯 틱이 없는(거절된) 종목은 달리 재발행 계기가 없다.
+  manager.subscribeFeedDiagnostic(() => autopilot.refreshList());
 
   // WS 단일 연결 공유 — 피드 허브의 라우터가 오토파일럿 슬롯으로 흘려보낸다.
   manager.setAuxRoutes(autopilot.routeTick, autopilot.routeQuote);

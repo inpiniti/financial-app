@@ -55,7 +55,7 @@ export type {
   GridExitConfig,
 } from './autopilot';
 export { AutoPilotManager, AUTOPILOT_TRADE_ID } from './autopilotManager';
-export type { AutoPilotManagerDeps, AutoPilotSlotRow } from './autopilotManager';
+export type { AutoPilotManagerDeps, AutoPilotSlotRow, FeedRejection } from './autopilotManager';
 export { createKisBroker } from './createKisBroker';
 export type { KisBrokerConfig } from './createKisBroker';
 export { createRealtimeFeed } from './createRealtimeFeed';

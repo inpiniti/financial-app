@@ -15,7 +15,7 @@ import { TradeHistoryPanel, useTodayTrades } from '../../inquiry/TradeHistory';
 import { formatSignedKrw, formatSignedUsd, formatUsd, pnlColor } from '../../../lib/format';
 import { useUsdKrwRate } from '../../../lib/useUsdKrwRate';
 import type { AutoPilotEvent, AutoPilotGridView, AutoPilotState, AutoPilotView } from '../autopilot';
-import type { AutoPilotManager, AutoPilotSlotRow } from '../autopilotManager';
+import type { AutoPilotManager, AutoPilotSlotRow, FeedRejection } from '../autopilotManager';
 import type { FeedEvent, ScalperManager } from '../scalperManager';
 import type { ModelVerdictView } from '../feedSlot';
 import type { FeedStatus } from '../types';
@@ -113,6 +113,16 @@ function formatTrendLine(trend: TrendEval | null, live: TrendEval | null): strin
   const now = liveArrows !== null && liveArrows !== closedArrows ? ` · 지금 ${liveArrows}` : '';
   const above = trend.aboveMa60 === null ? '' : trend.aboveMa60 ? ' · 종가>60선' : ' · 종가≤60선';
   return `추세 ${closedArrows}${now}${above} · 봉 ${Math.min(trend.bars, 122)}/122`;
+}
+
+/**
+ * 체결가 구독 거절 한 줄(2026-08-28) — 거절된 키와 KIS 사유. 주간 키(R…)면 주간거래 미지원 종목일 가능성이 커
+ * 그렇게 말하고, 16:00 KST 뒤 정규장 키로 회전하면 자연히 풀린다는 것도 같이 알린다.
+ */
+export function formatFeedRejectedLine(r: FeedRejection): string {
+  return r.daytime
+    ? `주간거래 미지원 · 시세 없음 · ${r.trKey} 거절(${r.message || '사유 없음'}) — 16:00 KST 뒤 정규장 키로 다시 받아요`
+    : `시세 구독 거절 · ${r.trKey} · ${r.message || '사유 없음'}`;
 }
 
 /**
@@ -257,7 +267,13 @@ function SlotRow({
             <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
               {`기울기/10초 ${formatSlopeRateSeries(item.view.slopeRateSeries)}`}
             </Text>
-            {MARTINGALE_MODE ? (
+            {item.feedRejected ? (
+              // 체결가 구독이 KIS에 거절됨(2026-08-28) — 틱이 안 오니 판정도 진입도 없다. 옛 봉 판정 줄 대신 이유를 보인다.
+              // 주간 키(R+BAQ…) 거절은 대개 주간거래 미지원 종목 — 16:00 KST 뒤 D키로 회전하면 다시 받는다.
+              <Text className="text-xs text-[#f04452]" numberOfLines={1}>
+                {formatFeedRejectedLine(item.feedRejected)}
+              </Text>
+            ) : MARTINGALE_MODE ? (
               // 물타기 시험 모드(2026-08-27) — 모델보다 우선. 1분봉 정배열·5선 돌파·변곡 상태.
               <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
                 {formatMartingaleLine(item.view.martingale)}

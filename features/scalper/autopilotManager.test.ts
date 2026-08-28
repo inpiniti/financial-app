@@ -216,6 +216,50 @@ describe('AutoPilotManager — 배선(구독·라우팅·상호 배타)', () => 
     expect(feed.tickPairs()).toHaveLength(12);
   });
 
+  it('구독 거절(ACK 실패)은 리스트 행 feedRejected로 드러난다 — R키면 daytime=true, ACK 전·성공은 null(2026-08-28)', async () => {
+    // 실제 배선: ScalperManager.getSubscriptionStatus. 여기서는 (trId|trKey)별 ACK 표를 직접 흉내 낸다.
+    const acks = new Map<string, { success: boolean; message: string }>();
+    const feed = new PairFeed();
+    const clock = fakeClock(1000);
+    clock.set(Date.UTC(2026, 7, 28, 6, 0)); // 2026-08-28 15:00 KST — 주간거래 창(R+BAQ 키).
+    const manager = new AutoPilotManager({
+      realtime: feed,
+      storage: new FakeStore(),
+      clock,
+      scheduler: noopScheduler(),
+      makeBroker: () => new FakeBroker({ autoFill: true }),
+      fetchSnapshot: async () => snapshotOf(TWELVE),
+      keepAwake: { activate: vi.fn(), deactivate: vi.fn() },
+      chunkSeconds: 1,
+      bufferSize: 7,
+      getFeedSubscriptionStatus: (trKey, trId) => acks.get(`${trId}|${trKey}`) ?? null,
+    });
+    manager.setConfig({ startAmountUsd: 100, minTickRate: 0.01 });
+    const listener = vi.fn();
+    manager.subscribeList(listener);
+    manager.start();
+    await vi.waitFor(() => expect(manager.watchlist.size).toBe(12));
+    await flush();
+
+    // ACK 전 — 아무 표시도 없다.
+    expect(manager.getRows().every((r) => r.feedRejected === null)).toBe(true);
+
+    acks.set('HDFSCNT0|RBAQA', { success: false, message: 'mci send failed' }); // A는 주간거래 미지원 종목.
+    acks.set('HDFSCNT0|RBAQB', { success: true, message: '' });
+    const before = listener.mock.calls.length;
+    manager.refreshList(); // managerProvider가 구독 ACK 진단 이벤트마다 부른다.
+    expect(listener.mock.calls.length).toBe(before + 1);
+
+    const rows = manager.getRows();
+    expect(rows.find((r) => r.entry.ticker === 'A')?.feedRejected).toEqual({
+      trKey: 'RBAQA',
+      message: 'mci send failed',
+      daytime: true,
+    });
+    expect(rows.find((r) => r.entry.ticker === 'B')?.feedRejected).toBeNull();
+    expect(rows.find((r) => r.entry.ticker === 'C')?.feedRejected).toBeNull(); // ACK 없음.
+  });
+
   it('routeTick/routeQuote — 해당 티커 슬롯으로만 흘러간다', async () => {
     const { manager } = makeManager();
     manager.start();

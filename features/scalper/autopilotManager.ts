@@ -161,12 +161,28 @@ export interface AutoPilotManagerDeps {
    * (상세화면이 보고 있는 시세를 리스트 이탈이 끊지 않게 — 2026-08-07 종목상세화면 plan §4).
    */
   isFeedHeldExternally?: (trKey: string, trId: string) => boolean;
+  /**
+   * (trKey, trId)의 마지막 구독 ACK 조회 — managerProvider가 ScalperManager.getSubscriptionStatus로 배선한다.
+   * 거절(rt_cd≠'0')된 체결가 구독은 리스트 행에 "시세 없음"으로 드러낸다(2026-08-28: 주간거래 창에 R키가
+   * "mci send failed"로 거절된 종목이 아무 표시 없이 옛 봉 판정만 보여주던 문제). 미배선이면 표시하지 않는다.
+   */
+  getFeedSubscriptionStatus?: (trKey: string, trId: string) => { success: boolean; message: string } | null;
   onError?: (err: unknown) => void;
+}
+
+/** 체결가 구독이 KIS에 거절된 상태 — 어느 키가 왜 거절됐는지. 주간 키(R…)면 주간거래 미지원 종목일 가능성이 크다. */
+export interface FeedRejection {
+  trKey: string;
+  message: string;
+  /** 거절된 키가 주간거래(R+BAQ/BAY/BAA) 키인가 — 화면 문구 분기용. */
+  daytime: boolean;
 }
 
 export interface AutoPilotSlotRow {
   entry: WatchEntry;
   view: FeedSlotView;
+  /** 체결가 구독 거절 상태(ACK 실패) — 정상이거나 ACK 전이면 null. */
+  feedRejected: FeedRejection | null;
 }
 
 type ViewListener = (view: AutoPilotView) => void;
@@ -537,15 +553,32 @@ export class AutoPilotManager {
     return [...this.events];
   }
 
-  /** 리스트 카드용 행 — watchlist 엔트리 + 해당 슬롯의 실시간 뷰. 틱/초 빠른 순으로 정렬. */
+  /** 리스트 카드용 행 — watchlist 엔트리 + 해당 슬롯의 실시간 뷰 + 구독 거절 상태. 틱/초 빠른 순으로 정렬. */
   getRows(): AutoPilotSlotRow[] {
     return this.watchlist.list
       .map((entry) => {
         const slot = this.slots.get(entry.ticker);
-        return slot ? { entry, view: slot.getView() } : null;
+        return slot ? { entry, view: slot.getView(), feedRejected: this.feedRejectionOf(entry.ticker) } : null;
       })
       .filter((r): r is AutoPilotSlotRow => r !== null)
       .sort((a, b) => b.view.tickRate - a.view.tickRate);
+  }
+
+  /** 티커의 체결가 구독이 거절됐는가 — 실제 구독에 쓴 키(tickTrKeys)의 마지막 ACK를 본다. */
+  private feedRejectionOf(ticker: string): FeedRejection | null {
+    const trKey = this.tickTrKeys.get(ticker);
+    if (trKey === undefined || this.deps.getFeedSubscriptionStatus === undefined) return null;
+    const status = this.deps.getFeedSubscriptionStatus(trKey, REALTIME_PRICE_TR_ID);
+    if (status === null || status.success) return null;
+    return { trKey, message: status.message, daytime: trKey.startsWith('R') };
+  }
+
+  /**
+   * 리스트 행 재발행 — 구독 ACK처럼 슬롯 밖에서 행 내용(feedRejected)이 바뀌었을 때 화면이 다시 그리게 한다.
+   * managerProvider가 ScalperManager.subscribeFeedDiagnostic에 배선한다.
+   */
+  refreshList(): void {
+    this.emitList();
   }
 
   /**
