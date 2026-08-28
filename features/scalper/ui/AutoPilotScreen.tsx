@@ -127,6 +127,18 @@ export function formatFeedRejectedLine(r: FeedRejection): string {
 }
 
 /**
+ * 시세 구독 ACK 집계 한 줄(2026-08-28) — "시세 구독 21건 · 수락 3 · 거절 18 · 응답 없음 0". 거절이 하나도 없으면 null
+ * (정상일 땐 소음). 장이 닫혀 가격이 안 들어올 때도 KIS가 몇 건을 받아줬는지 숫자로 보여 한도 문제를 셀 수 있게.
+ */
+export function formatFeedAckSummary(rows: readonly AutoPilotSlotRow[]): string | null {
+  const rejected = rows.filter((r) => r.feedAck === 'rejected').length;
+  if (rejected === 0) return null;
+  const ok = rows.filter((r) => r.feedAck === 'ok').length;
+  const pending = rows.length - ok - rejected;
+  return `시세 구독 ${rows.length}건 · 수락 ${ok} · 거절 ${rejected} · 응답 없음 ${pending}`;
+}
+
+/**
  * 물타기 시험 모드 한 줄(2026-08-27) — 마지막 1분봉 기준 "정배열인가 · 진입 봉인가 · 5선 변곡인가 · 봉 수".
  * 진입은 정배열 상태에서 종가가 5선을 아래→위로 뚫는 **그 봉**에만 나므로, 정배열이어도 대부분의 봉은 "돌파 대기"다.
  */
@@ -413,6 +425,7 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
 
   const config = view.config;
   const idleWatch = view.state === 'SCANNING' && view.watched.length === 0 && rows.length > 0;
+  const feedAckSummary = formatFeedAckSummary(rows);
 
   return (
     <View className="flex-1 bg-[#f2f4f6]">
@@ -565,6 +578,10 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                 <Text className="text-[15px] font-bold text-[#191f28]">트레이딩 리스트</Text>
                 <Text className="text-xs text-[#8b95a1]">순위 상위 {rows.length}종목 · 원천은 설정에서</Text>
               </View>
+              {feedAckSummary !== null && (
+                // 시세 구독 ACK 집계(2026-08-28) — 장이 닫혀 가격으로 셀 수 없을 때도 "요청·수락·거절"을 숫자로. 거절이 있을 때만.
+                <Text className="px-5 pb-2 text-xs text-[#f04452]">{feedAckSummary}</Text>
+              )}
               {MARTINGALE_MODE && (
                 // 물타기 시험 모드(2026-08-27) — 규칙 요약을 여기 한 번만.
                 <Text className="px-5 pb-2 text-xs text-[#8b95a1]">

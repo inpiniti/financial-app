@@ -270,6 +270,10 @@ describe('AutoPilotManager — 배선(구독·라우팅·상호 배타)', () => 
     });
     expect(rows.find((r) => r.entry.ticker === 'B')?.feedRejected).toBeNull();
     expect(rows.find((r) => r.entry.ticker === 'C')?.feedRejected).toBeNull(); // ACK 없음.
+    // ACK 상태 집계용 — 수락/거절/응답 없음을 행마다 구분한다.
+    expect(rows.find((r) => r.entry.ticker === 'A')?.feedAck).toBe('rejected');
+    expect(rows.find((r) => r.entry.ticker === 'B')?.feedAck).toBe('ok');
+    expect(rows.find((r) => r.entry.ticker === 'C')?.feedAck).toBe('pending');
   });
 
   it('구독 키 목록을 storage(FEED_KEYS_STORAGE_KEY)에 저장한다 — 다음 실행이 잔재 구독을 쓸어내는 근거(2026-08-28)', async () => {

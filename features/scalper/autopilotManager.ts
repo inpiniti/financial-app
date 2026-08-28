@@ -189,6 +189,11 @@ export interface AutoPilotSlotRow {
   view: FeedSlotView;
   /** 체결가 구독 거절 상태(ACK 실패) — 정상이거나 ACK 전이면 null. */
   feedRejected: FeedRejection | null;
+  /**
+   * 체결가 구독 ACK 상태(2026-08-28) — 'ok' 수락, 'rejected' 거절, 'pending' 아직 응답 없음(또는 ACK 조회 미배선).
+   * 장이 닫혀 가격으로 셀 수 없을 때도 "요청 n · 수락 a · 거절 b"를 화면이 세게 한다.
+   */
+  feedAck: 'ok' | 'rejected' | 'pending';
 }
 
 type ViewListener = (view: AutoPilotView) => void;
@@ -564,19 +569,24 @@ export class AutoPilotManager {
     return this.watchlist.list
       .map((entry) => {
         const slot = this.slots.get(entry.ticker);
-        return slot ? { entry, view: slot.getView(), feedRejected: this.feedRejectionOf(entry.ticker) } : null;
+        if (!slot) return null;
+        const ack = this.feedAckOf(entry.ticker);
+        return { entry, view: slot.getView(), feedRejected: ack.rejected, feedAck: ack.state };
       })
       .filter((r): r is AutoPilotSlotRow => r !== null)
       .sort((a, b) => b.view.tickRate - a.view.tickRate);
   }
 
-  /** 티커의 체결가 구독이 거절됐는가 — 실제 구독에 쓴 키(tickTrKeys)의 마지막 ACK를 본다. */
-  private feedRejectionOf(ticker: string): FeedRejection | null {
+  /** 티커의 체결가 구독 ACK — 실제 구독에 쓴 키(tickTrKeys)의 마지막 응답. 거절이면 사유까지. */
+  private feedAckOf(ticker: string): { state: AutoPilotSlotRow['feedAck']; rejected: FeedRejection | null } {
     const trKey = this.tickTrKeys.get(ticker);
-    if (trKey === undefined || this.deps.getFeedSubscriptionStatus === undefined) return null;
+    if (trKey === undefined || this.deps.getFeedSubscriptionStatus === undefined) {
+      return { state: 'pending', rejected: null };
+    }
     const status = this.deps.getFeedSubscriptionStatus(trKey, REALTIME_PRICE_TR_ID);
-    if (status === null || status.success) return null;
-    return { trKey, message: status.message, daytime: trKey.startsWith('R') };
+    if (status === null) return { state: 'pending', rejected: null };
+    if (status.success) return { state: 'ok', rejected: null };
+    return { state: 'rejected', rejected: { trKey, message: status.message, daytime: trKey.startsWith('R') } };
   }
 
   /**
