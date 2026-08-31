@@ -377,7 +377,8 @@ export class RunCycle {
   }
 
   private placeSell(snapshot: SignalSnapshot | null, reason: ExitReason): void {
-    this.pendingRef = this.port.sell({ ticker: this.ticker, qty: this.qty });
+    // 보유 실측 수량으로 청산 — 부분체결로 계획보다 적게 들고 있으면 계획 수량 매도는 잔고 부족 거절이 난다.
+    this.pendingRef = this.port.sell({ ticker: this.ticker, qty: this._position?.qty ?? this.qty });
     this.pendingSnapshot = snapshot;
     this.exitReason = reason;
     this.awaitingCancel = false;
@@ -390,7 +391,9 @@ export class RunCycle {
     const entrySnap = this.pendingSnapshot!;
     this._position = {
       ticker: this.ticker,
-      qty: this.qty,
+      // 체결 실측 수량 우선 — 부분체결 뒤 종결된 매수에서 계획 수량(this.qty)을 그대로 믿으면
+      // 포지션이 과대 계상된다. 실측이 없으면 기존 그대로 계획 수량.
+      qty: fill.qty !== undefined && fill.qty > 0 ? fill.qty : this.qty,
       entryPrice: fill.price ?? entrySnap.price,
       entryTs: this.clock.now(),
       entrySnapshot: entrySnap,

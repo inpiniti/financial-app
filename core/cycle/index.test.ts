@@ -571,3 +571,38 @@ describe('RunCycle — 매수 미체결 자동 포기(abandonBuy)', () => {
     expect(port.count('cancel')).toBe(0);
   });
 });
+
+describe('RunCycle — 체결 실측 수량', () => {
+  it('체결 보고의 실측 수량이 계획 수량과 다르면 포지션·매도 수량은 실측을 따른다', () => {
+    const port = new FakePort();
+    const clock = fakeClock(0);
+    const cycle = makeCycle(port, clock); // 계획 3주
+
+    cycle.start();
+    cycle.onSignal('BUY', snap(100, 0.1, 0.2, 0));
+    // 부분체결 뒤 종결된 매수: 3주 계획 중 2주만 체결로 확정
+    port.fill(port.lastRef('buy'), 100, 2);
+    cycle.poll();
+
+    expect(cycle.state).toBe('HOLDING');
+    expect(cycle.position?.qty).toBe(2);
+
+    cycle.onSignal('SELL', snap(110, -0.1, 0, 1000));
+    const sell = port.calls.find((c) => c.type === 'sell');
+    expect(sell && sell.type === 'sell' ? sell.qty : null).toBe(2);
+  });
+
+  it('실측 수량이 없으면(undefined) 기존대로 계획 수량을 쓴다', () => {
+    const port = new FakePort();
+    const clock = fakeClock(0);
+    const cycle = makeCycle(port, clock);
+
+    cycle.start();
+    cycle.onSignal('BUY', snap(100, 0.1, 0.2, 0));
+    port.fill(port.lastRef('buy'), 100, undefined as unknown as number);
+    cycle.poll();
+
+    expect(cycle.state).toBe('HOLDING');
+    expect(cycle.position?.qty).toBe(3);
+  });
+});
