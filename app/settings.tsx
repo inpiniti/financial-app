@@ -91,9 +91,12 @@ export default function SettingsScreen() {
   const [entryQty, setEntryQty] = useState('');
   // 리스트 가격 상한(2026-08-20 풀데이 시뮬) — 수량 모드에서만 쓰는 상한. 0/빈 칸 = 진입금액이 상한(옛 동작).
   const [maxPriceUsd, setMaxPriceUsd] = useState(String(DEFAULT_APP_SETTINGS.maxPriceUsd));
+  // 가격 하한(2026-08-29 데스크탑에서 이식) — 빈 칸/0 = 없음. 초저가 급등주 편중 방어.
+  const [minPriceUsd, setMinPriceUsd] = useState('');
   const [minTickRate, setMinTickRate] = useState(String(DEFAULT_APP_SETTINGS.minTickRate));
-  const [watchCount, setWatchCount] = useState(String(DEFAULT_APP_SETTINGS.watchCount));
-  const [maxConcurrentGrids, setMaxConcurrentGrids] = useState(String(DEFAULT_APP_SETTINGS.maxConcurrentGrids));
+  // 동시 그리드 수·매수 후보 수는 슬라이더(2026-08-30 데스크탑에서 이식) — 정수 범위가 좁아 입력창보다 슬라이더가 맞다.
+  const [watchCount, setWatchCount] = useState<number>(DEFAULT_APP_SETTINGS.watchCount);
+  const [maxConcurrentGrids, setMaxConcurrentGrids] = useState<number>(DEFAULT_APP_SETTINGS.maxConcurrentGrids);
   // 순위 선택(2026-08-18 순위 도메인) — 트레이딩 리스트 원천별 켬·개수·(한투) 기간창.
   const [rankingDraft, setRankingDraft] = useState<RankingSelectionDraft>(() =>
     draftFromSelection(normalizeRankingSelection(DEFAULT_APP_SETTINGS.rankingSelection)),
@@ -116,9 +119,10 @@ export default function SettingsScreen() {
       setStartAmountUsd(appSettings.startAmountUsd > 0 ? String(appSettings.startAmountUsd) : '');
       setEntryQty(appSettings.entryQty > 0 ? String(appSettings.entryQty) : '');
       setMaxPriceUsd(appSettings.maxPriceUsd > 0 ? String(appSettings.maxPriceUsd) : '');
+      setMinPriceUsd(appSettings.minPriceUsd > 0 ? String(appSettings.minPriceUsd) : '');
       setMinTickRate(String(appSettings.minTickRate));
-      setWatchCount(String(appSettings.watchCount));
-      setMaxConcurrentGrids(String(appSettings.maxConcurrentGrids));
+      setWatchCount(appSettings.watchCount);
+      setMaxConcurrentGrids(appSettings.maxConcurrentGrids);
       setRankingDraft(draftFromSelection(appSettings.rankingSelection));
     })();
   }, []);
@@ -149,13 +153,20 @@ export default function SettingsScreen() {
       return;
     }
 
+    // 가격 하한 — 빈 칸/0은 없음. 상한과 달리 진입금액과의 대소는 검증하지 않는다(하한만 걸고 싶을 수 있다).
+    const parsedMinPriceUsd = minPriceUsd.trim() === '' ? 0 : Number(minPriceUsd);
+    if (!Number.isFinite(parsedMinPriceUsd) || parsedMinPriceUsd < 0 || parsedMinPriceUsd > START_AMOUNT_MAX_USD) {
+      Alert.alert('알림', '가격 하한은 비우거나 0 이상인 달러 금액으로 입력해 주세요.');
+      return;
+    }
+
     const parsedMinTickRate = Number(minTickRate);
     if (!Number.isFinite(parsedMinTickRate) || parsedMinTickRate <= 0) {
       Alert.alert('알림', '최소 속도는 0보다 크게 입력해 주세요. (기본 1틱/초)');
       return;
     }
 
-    const parsedWatchCount = Number(watchCount);
+    const parsedWatchCount = watchCount;
     if (
       !Number.isFinite(parsedWatchCount) ||
       !Number.isInteger(parsedWatchCount) ||
@@ -166,7 +177,7 @@ export default function SettingsScreen() {
       return;
     }
 
-    const parsedMaxGrids = Number(maxConcurrentGrids);
+    const parsedMaxGrids = maxConcurrentGrids;
     if (
       !Number.isFinite(parsedMaxGrids) ||
       !Number.isInteger(parsedMaxGrids) ||
@@ -196,6 +207,7 @@ export default function SettingsScreen() {
         startAmountUsd: parsedStartAmountUsd,
         entryQty: parsedEntryQty,
         maxPriceUsd: parsedMaxPriceUsd,
+        minPriceUsd: parsedMinPriceUsd,
         minTickRate: parsedMinTickRate,
         watchCount: parsedWatchCount,
         maxConcurrentGrids: parsedMaxGrids,
@@ -210,7 +222,7 @@ export default function SettingsScreen() {
   /** 첫 진입에 한 번에 들어갈 수 있는 최대 금액 — 진입금액 × 동시 그리드 수. */
   const exposure = (() => {
     const amount = Number(startAmountUsd);
-    const grids = Number(maxConcurrentGrids);
+    const grids = maxConcurrentGrids;
     if (entryQty.trim() !== '' && Number(entryQty) > 0) return null; // 고정 수량이면 금액 노출은 종목 가격에 달렸다.
     if (!Number.isFinite(amount) || amount <= 0) return null;
     if (!Number.isFinite(grids) || grids < 1) return null;
@@ -270,24 +282,36 @@ export default function SettingsScreen() {
               값과 무관하게 진입금액이 상한이에요.
             </Text>
 
-            <Text className="mb-1 text-xs text-[#8b95a1]">
-              동시 그리드 수 (1~{MAX_GRIDS_LIMIT}) — 한 번에 관리할 종목 개수
-            </Text>
+            <Text className="mb-1 text-xs text-[#8b95a1]">가격 하한 (USD) — 이보다 싼 종목은 감시하지 않아요</Text>
             <TextInput
-              value={maxConcurrentGrids}
-              onChangeText={setMaxConcurrentGrids}
-              keyboardType="number-pad"
-              placeholder={`기본 ${DEFAULT_APP_SETTINGS.maxConcurrentGrids}`}
+              value={minPriceUsd}
+              onChangeText={setMinPriceUsd}
+              keyboardType="decimal-pad"
+              placeholder="하한 없음"
               placeholderTextColor="#8b95a1"
               className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
             />
             <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
-              {exposure
-                ? `첫 진입에만 최대 $${exposure}가 들어가요. 물타기는 매번 최초 진입 수량만큼이라, 물탈 때마다 종목당 금액이 진입금액만큼씩 더 들어가요.`
-                : entryQty.trim() !== '' && Number(entryQty) > 0
-                  ? `종목당 ${Number(entryQty)}주 × 현재가만큼 들어가고, 물타기도 매번 ${Number(entryQty)}주씩이에요.`
-                  : '물타기는 매번 최초 진입 수량만큼이라, 물탈 때마다 종목당 금액이 진입금액만큼씩 더 들어가요.'}
+              하한이 없으면 리스트가 초저가 급등주로만 채워질 수 있어요. 하한을 두면 그보다 싼 동전주는 리스트에서
+              빠지고 다음 순위 종목이 올라와요.
             </Text>
+
+            <SettingSlider
+              label={`동시 그리드 수 (1~${MAX_GRIDS_LIMIT}) — 한 번에 관리할 종목 개수`}
+              value={maxConcurrentGrids}
+              onChange={setMaxConcurrentGrids}
+              min={1}
+              max={MAX_GRIDS_LIMIT}
+              step={1}
+              formatValue={(v) => `${v}개`}
+              helper={
+                exposure
+                  ? `첫 진입에만 최대 $${exposure}가 들어가요. 물타기는 매번 최초 진입 수량만큼이라, 물탈 때마다 종목당 금액이 진입금액만큼씩 더 들어가요.`
+                  : entryQty.trim() !== '' && Number(entryQty) > 0
+                    ? `종목당 ${Number(entryQty)}주 × 현재가만큼 들어가고, 물타기도 매번 ${Number(entryQty)}주씩이에요.`
+                    : '물타기는 매번 최초 진입 수량만큼이라, 물탈 때마다 종목당 금액이 진입금액만큼씩 더 들어가요.'
+              }
+            />
 
             <Text className="mb-1 text-xs text-[#8b95a1]">
               최소 속도 (틱/초) — 이보다 조용한 종목은 매수 후보에서 빼요
@@ -301,22 +325,16 @@ export default function SettingsScreen() {
               className="mb-4 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
             />
 
-            <Text className="mb-1 text-xs text-[#8b95a1]">
-              매수 후보 수 — 최소 속도를 넘긴 종목 중 빠른 순으로 몇 개까지
-            </Text>
-            <TextInput
+            <SettingSlider
+              label="매수 후보 수 — 최소 속도를 넘긴 종목 중 빠른 순으로 몇 개까지"
               value={watchCount}
-              onChangeText={setWatchCount}
-              keyboardType="number-pad"
-              placeholder={`기본 ${DEFAULT_APP_SETTINGS.watchCount}`}
-              placeholderTextColor="#8b95a1"
-              className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
+              onChange={setWatchCount}
+              min={1}
+              max={WATCH_COUNT_LIMIT}
+              step={1}
+              formatValue={(v) => `${v}종목`}
+              helper={'모델은 리스트 전 종목을 계속 판정해서 확률을 보여 주지만, 매수는 이 후보 안에서만 일어나요. 조용한 종목은 호가가 얇아 사고팔 때 불리해요. 보유·진입 중인 종목은 후보에서 빠지니 자리가 놀지 않아요. 후보 밖 신호는 트레이딩 화면 기록에 "매수 후보 밖이에요"로 남아요.'}
             />
-            <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
-              모델은 리스트 전 종목을 계속 판정해서 확률을 보여 주지만, 매수는 이 후보 안에서만 일어나요. 조용한
-              종목은 호가가 얇아 사고팔 때 불리해요. 보유·진입 중인 종목은 후보에서 빠지니 자리가 놀지 않아요.
-              후보 밖 신호는 트레이딩 화면 기록에 "매수 후보 밖이에요"로 남아요.
-            </Text>
 
             <View className="rounded-2xl bg-[#f2f4f6] px-4 py-3">
               <Text className="text-xs leading-5 text-[#4e5968]">

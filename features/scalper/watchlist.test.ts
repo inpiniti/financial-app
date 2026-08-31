@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SchedulerLike } from './types';
 import {
   computeDesired,
+  isAbovePriceFloor,
   isOrderable,
   isWithinMaxPrice,
   parseSignedRate,
@@ -63,6 +64,15 @@ describe('parseSignedRate / isOrderable', () => {
     expect(isWithinMaxPrice(row('A', '1', {}), 1)).toBe(true); // 현재가 누락 — 관대 통과.
     expect(isWithinMaxPrice(row('A', '1', { last: 'abc' }), 1)).toBe(true); // 현재가 파싱 불가 — 관대 통과.
     expect(isWithinMaxPrice(row('A', '1', { last: '5' }), 0)).toBe(true); // 상한 0 이하 — 필터 없음 취급.
+  });
+
+  it('가격 하한 판정 — 현재가 < 하한만 배제, 하한·현재가가 없거나 이상하면 관대 통과', () => {
+    expect(isAbovePriceFloor(row('A', '1', { last: '0.99' }), 1)).toBe(false);
+    expect(isAbovePriceFloor(row('A', '1', { last: '1.00' }), 1)).toBe(true);
+    expect(isAbovePriceFloor(row('A', '1', { last: '5' }), 1)).toBe(true);
+    expect(isAbovePriceFloor(row('A', '1', { last: '0.5' }), null)).toBe(true); // 하한 없음(설정 미입력).
+    expect(isAbovePriceFloor(row('A', '1', { last: '0.5' }), 0)).toBe(true); // 하한 0 이하 — 필터 없음 취급.
+    expect(isAbovePriceFloor(row('A', '1', {}), 1)).toBe(true); // 현재가 누락 — 관대 통과.
   });
 
 });

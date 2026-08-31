@@ -71,6 +71,11 @@ export interface AppSettings {
    * $200짜리도 1주 리스크는 감당 범위다. 금액 모드(entryQty=0)는 기존대로 진입금액이 상한(1주도 못 사는 종목 배제).
    */
   maxPriceUsd: number;
+  /**
+   * 리스트 가격 하한(USD) — 이보다 싼 종목은 감시하지 않는다(초저가 급등주 편중 방어,
+   * 2026-08-29 데스크탑에서 이식). 기본 0(=하한 없음). 금액·수량 모드 모두 적용.
+   */
+  minPriceUsd: number;
   /** 최소 속도(틱/초) — 이보다 조용한 종목은 감시하지 않는다. 기본 1(autopilot.DEFAULT_MIN_TICK_RATE와 같은 값). */
   minTickRate: number;
   /**
@@ -103,6 +108,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   startAmountUsd: 1,
   entryQty: 0,
   maxPriceUsd: 200,
+  minPriceUsd: 0,
   minTickRate: 1,
   watchCount: 5,
   maxConcurrentGrids: 1,
@@ -163,6 +169,7 @@ export async function loadAppSettings(): Promise<AppSettings> {
       startAmountUsd: parsed.startAmountUsd ?? DEFAULT_APP_SETTINGS.startAmountUsd,
       entryQty: parsed.entryQty ?? DEFAULT_APP_SETTINGS.entryQty,
       maxPriceUsd: parsed.maxPriceUsd ?? DEFAULT_APP_SETTINGS.maxPriceUsd,
+      minPriceUsd: parsed.minPriceUsd ?? DEFAULT_APP_SETTINGS.minPriceUsd,
       minTickRate: parsed.minTickRate ?? DEFAULT_APP_SETTINGS.minTickRate,
       watchCount: parsed.watchCount ?? DEFAULT_APP_SETTINGS.watchCount,
       maxConcurrentGrids: parsed.maxConcurrentGrids ?? DEFAULT_APP_SETTINGS.maxConcurrentGrids,

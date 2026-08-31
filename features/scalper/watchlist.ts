@@ -108,6 +108,8 @@ export interface WatchlistDeps {
    * 현재가가 이 값보다 비싸면 1주도 못 사므로 리스트에 올리지 않는다. null/미주입이면 필터 없음.
    */
   maxPriceUsd?: () => number | null;
+  /** 종목 현재가 하한(USD) — 설정(minPriceUsd)을 폴링마다 읽는 getter. null/0 이하면 필터 없음. */
+  minPriceUsd?: () => number | null;
 }
 
 /** 등락률 파싱 — sign(4·5=하락)이 있으면 부호를 강제하고, 없으면 rate 원문 부호를 쓴다. */
@@ -137,13 +139,21 @@ export function isWithinMaxPrice(row: WatchCandidateRow, maxPriceUsd: number | n
   return price <= maxPriceUsd;
 }
 
+/** 가격 하한 판정 — 현재가 < 하한이면 배제. 하한이 없거나 현재가를 못 읽으면 통과(상한과 같은 관대 판정). */
+export function isAbovePriceFloor(row: WatchCandidateRow, minPriceUsd: number | null | undefined): boolean {
+  if (minPriceUsd == null || !Number.isFinite(minPriceUsd) || minPriceUsd <= 0) return true;
+  const price = Number.parseFloat(row.last ?? '');
+  if (!Number.isFinite(price) || price <= 0) return true;
+  return price >= minPriceUsd;
+}
+
 /**
  * 스냅샷 → 목표 리스트(서로 다른 최대 WATCHLIST_MAX_SIZE티커) 계산. 순수 함수 — 테스트 진입점.
  * 각 순위에서 "+등락·주문가능·진입금액 이하·미중복" 상위 count개를 우선권(배열) 순서로 채용한다.
  * 필터를 통과한 후보가 모자라면 그 순위 슬롯은 비워둔다(억지로 채우지 않는다).
  * 총합이 WATCHLIST_MAX_SIZE를 넘으면 뒤 원천부터 잘린다(계획 단계에서 이미 막지만 최후 방어선).
  */
-export function computeDesired(snapshot: RankingSnapshot, maxPriceUsd?: number | null): WatchEntry[] {
+export function computeDesired(snapshot: RankingSnapshot, maxPriceUsd?: number | null, minPriceUsd?: number | null): WatchEntry[] {
   const taken = new Set<string>();
   const desired: WatchEntry[] = [];
   for (const { source, count, rows } of snapshot) {
@@ -156,6 +166,7 @@ export function computeDesired(snapshot: RankingSnapshot, maxPriceUsd?: number |
       if (!Number.isFinite(rate) || rate <= 0) continue;
       if (!isOrderable(row)) continue;
       if (!isWithinMaxPrice(row, maxPriceUsd)) continue;
+      if (!isAbovePriceFloor(row, minPriceUsd)) continue;
       taken.add(ticker);
       desired.push({
         ticker,
@@ -249,7 +260,7 @@ export class ScalperWatchlist {
     this.refreshing = true;
     try {
       const snapshot = await this.deps.fetchSnapshot();
-      this.apply(computeDesired(snapshot, this.deps.maxPriceUsd?.() ?? null));
+      this.apply(computeDesired(snapshot, this.deps.maxPriceUsd?.() ?? null, this.deps.minPriceUsd?.() ?? null));
     } catch (err) {
       this.deps.onError?.(err);
     } finally {

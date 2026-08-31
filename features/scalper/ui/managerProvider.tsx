@@ -434,6 +434,7 @@ export function managerSettingsFrom(appSettings: AppSettings): ManagerSettings {
               startAmountUsd: appSettings.startAmountUsd,
               entryQty: appSettings.entryQty,
               maxPriceUsd: appSettings.maxPriceUsd,
+              minPriceUsd: appSettings.minPriceUsd,
               minTickRate: appSettings.minTickRate,
               watchCount: appSettings.watchCount,
               maxConcurrentGrids: appSettings.maxConcurrentGrids,

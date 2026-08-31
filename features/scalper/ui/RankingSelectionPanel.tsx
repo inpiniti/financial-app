@@ -3,7 +3,8 @@
 // 이 패널은 편집 상태(문자열 개수)를 들고 있다가 toRankingSelection으로 도메인 값을 돌려준다.
 // UI 문법: .claude/skills/app-ui-style — 풀폭 Panel, 촘촘한 행(px-5), 선택은 SelectBox(바텀시트).
 import { useMemo } from 'react';
-import { Pressable, Text, TextInput, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
+import Slider from '@react-native-community/slider';
 import { Ionicons } from '@expo/vector-icons';
 import { Panel } from '../../../components/Panel';
 import { SelectBox } from '../../../components/SelectBox';
@@ -99,17 +100,24 @@ function SourceRow(props: {
             {label}
           </Text>
         </Pressable>
-        <TextInput
-          value={item.countText}
-          onChangeText={(t) => onChange({ ...item, countText: t.replace(/[^0-9]/g, '') })}
-          keyboardType="number-pad"
-          placeholder="0"
-          placeholderTextColor="#b0b8c1"
-          editable={item.enabled}
-          className="w-14 rounded-xl border border-[#e5e8eb] px-2 py-1.5 text-center text-sm text-[#191f28]"
-          style={item.enabled ? undefined : { opacity: 0.5 }}
-        />
+        <Text className={item.enabled ? 'w-10 text-right text-sm font-semibold text-[#3182f6]' : 'w-10 text-right text-sm font-semibold text-[#b0b8c1]'}>
+          {Number.parseInt(item.countText, 10) > 0 ? `${Number.parseInt(item.countText, 10)}개` : '0개'}
+        </Text>
       </View>
+      {item.enabled ? (
+        // 종목 수 슬라이더(2026-08-30 데스크탑에서 이식) — 0~RANKING_TOTAL_MAX. 켜진 원천의 합이 상한을 넘으면 저장 시 안내한다.
+        <Slider
+          value={Number.parseInt(item.countText, 10) || 0}
+          onValueChange={(v) => onChange({ ...item, countText: String(Math.round(v)) })}
+          minimumValue={0}
+          maximumValue={RANKING_TOTAL_MAX}
+          step={1}
+          minimumTrackTintColor="#3182f6"
+          maximumTrackTintColor="#e5e8eb"
+          thumbTintColor="#3182f6"
+          style={{ height: 32, marginBottom: 4 }}
+        />
+      ) : null}
       {source.provider === 'kis' && item.enabled ? (
         <View className="mb-2 flex-row">
           <SelectBox

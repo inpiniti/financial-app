@@ -119,6 +119,8 @@ export interface AutoPilotConfig {
    * 진입금액 겸용 상한이 MRNA류 유동성 급등주를 배제). 미지정·0이면 진입금액이 상한(옛 동작). 옛 저장값 호환 선택 키.
    */
   maxPriceUsd?: number;
+  /** 리스트 가격 하한(USD) — 이보다 싼 종목은 감시하지 않는다(초저가 급등주 편중 방어). 미지정·0이면 필터 없음. */
+  minPriceUsd?: number;
   minTickRate: number;
   /**
    * 매수 후보 수(틱/초 상위 N) — 미지정이면 WATCH_COUNT(5). 최소 속도를 통과한 종목 중 다시 이만큼만
@@ -612,6 +614,7 @@ export class AutoPilot {
       prev.startAmountUsd === config.startAmountUsd &&
       (prev.entryQty ?? 0) === (config.entryQty ?? 0) &&
       (prev.maxPriceUsd ?? 0) === (config.maxPriceUsd ?? 0) &&
+      (prev.minPriceUsd ?? 0) === (config.minPriceUsd ?? 0) &&
       prev.minTickRate === config.minTickRate &&
       (prev.watchCount ?? WATCH_COUNT) === (config.watchCount ?? WATCH_COUNT) &&
       (prev.maxConcurrentGrids ?? DEFAULT_MAX_GRIDS) === (config.maxConcurrentGrids ?? DEFAULT_MAX_GRIDS)

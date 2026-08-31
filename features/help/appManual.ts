@@ -94,6 +94,7 @@ export const APP_MANUAL = `# SEEDTICK 사용 설명서
 - **진입금액(USD)** — 종목 하나를 살 때 쓰는 금액(기본 $${DEFAULT_APP_SETTINGS.startAmountUsd}). 비어 있으면 자동 트레이딩이 시작되지 않아요.
 - **수량(주)** — 정하면 종목 가격과 상관없이 딱 이 수량만 사요. 비우면 진입금액 ÷ 현재가로 계산해요.
 - **가격 상한(USD)** — 수량을 정했을 때만 써요. 이 가격 이하 종목만 감시해요(기본 $${DEFAULT_APP_SETTINGS.maxPriceUsd}). 상한이 낮으면 리스트가 초저가 급등주로만 채워져요. 수량을 비우면(금액 모드) 진입금액이 상한 역할을 해요.
+- **가격 하한(USD)** — 이보다 싼 종목은 감시하지 않아요(기본 없음). 하한을 두면 리스트가 초저가 동전주로 채워지는 걸 막고, 걸러진 자리는 다음 순위 종목이 채워요.
 - **동시 그리드 수** — 한 번에 관리할 종목 개수(1~${MAX_GRIDS_LIMIT}, 기본 ${DEFAULT_APP_SETTINGS.maxConcurrentGrids}).
 - **최소 속도(틱/초)** — 이보다 조용한 종목은 매수 후보에서 빼요(기본 ${DEFAULT_APP_SETTINGS.minTickRate}).
 - **매수 후보 수** — 최소 속도를 넘긴 종목 중 거래가 빠른 순으로 몇 개까지 매수 후보로 둘지(기본 ${DEFAULT_APP_SETTINGS.watchCount}). 모델은 리스트 전체를 판정하지만 매수는 이 후보 안에서만 일어나요.
@@ -154,6 +155,7 @@ export const USER_FACING_SETTING_KEYS = [
   'startAmountUsd',
   'entryQty',
   'maxPriceUsd',
+  'minPriceUsd',
   'maxConcurrentGrids',
   'minTickRate',
   'watchCount',
@@ -184,6 +186,7 @@ export function describeUserSettings(settings: AppSettings): string {
           settings.startAmountUsd > 0 ? `$${settings.startAmountUsd}` : '미설정(자동 트레이딩 시작 불가)'
         } ÷ 현재가`,
   );
+  if (settings.minPriceUsd > 0) lines.push(`가격 하한: $${settings.minPriceUsd} — 이보다 싼 종목은 감시 안 함`);
   lines.push(`동시 그리드 수: ${settings.maxConcurrentGrids}개`);
   lines.push(`최소 속도: ${settings.minTickRate}틱/초`);
   lines.push(`매수 후보 수: 속도 상위 ${settings.watchCount}종`);

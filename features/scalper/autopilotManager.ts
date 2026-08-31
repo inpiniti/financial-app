@@ -283,6 +283,12 @@ export class AutoPilotManager {
         const cap = config.maxPriceUsd ?? 0;
         return qtyMode && Number.isFinite(cap) && cap > 0 ? cap : config.startAmountUsd;
       },
+      // 가격 하한 — 금액·수량 모드 모두. 0이면 없음(초저가 급등주 편중 방어, 2026-08-29 데스크탑에서 이식).
+      minPriceUsd: () => {
+        const config = this.pilot.getView().config;
+        const floor = config?.minPriceUsd ?? 0;
+        return Number.isFinite(floor) && floor > 0 ? floor : null;
+      },
       onChange: (entries, diff) => {
         // 구독·주문 거래소 판별용 — dropSlot/addSlot보다 먼저 최신화한다(추가 종목의 trKey가 이 맵을 읽는다).
         for (const entry of entries) {

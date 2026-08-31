@@ -73,6 +73,7 @@ describe('설정 키 커버리지 — 설정을 추가하면 문서도 같이 �
       startAmountUsd: '**진입금액(USD)**',
       entryQty: '**수량(주)**',
       maxPriceUsd: '**가격 상한(USD)**',
+      minPriceUsd: '**가격 하한(USD)**',
       maxConcurrentGrids: '**동시 그리드 수**',
       minTickRate: '**최소 속도(틱/초)**',
       watchCount: '**매수 후보 수**',
