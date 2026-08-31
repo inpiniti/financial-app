@@ -1,5 +1,6 @@
 // 자동 트레이딩(오토파일럿) 화면.
-// 상태 패널(오늘 성과·Run/Stop·PAUSED 복구) + 트레이딩 리스트 패널 + 오늘 거래 기록 + 기록 패널.
+// 상태 패널(오늘 성과·Run/Stop·PAUSED 복구) + 트레이딩 리스트 패널 + 기록 패널.
+// 오늘 거래 기록은 /trades 화면으로 분리(2026-08-29) — "오늘 성과" 행을 눌러 들어간다.
 // 운용 설정(진입금액·동시 그리드·최소 속도)은 상단바 > 설정 > "트레이딩 설정"으로 옮겼다(2026-08-12) —
 // 매매파라미터와 흩어져 있던 설정을 한 화면에 모았다. 값 반영은 managerProvider가 트레이딩 포커스마다 한다.
 // app-ui-style: 풀폭 Panel + 촘촘한 ListRow, 이모지 금지(Ionicons), 손익 색은 pnlColor()만.
@@ -11,7 +12,6 @@ import { ListRow } from '../../../components/ListRow';
 import { Panel } from '../../../components/Panel';
 import { TickerAvatar } from '../../../components/TickerAvatar';
 import { EmptyState } from '../../inquiry/components';
-import { TradeHistoryPanel, useTodayTrades } from '../../inquiry/TradeHistory';
 import { formatSignedKrw, formatSignedUsd, formatUsd, pnlColor } from '../../../lib/format';
 import { useUsdKrwRate } from '../../../lib/useUsdKrwRate';
 import type { AutoPilotEvent, AutoPilotGridView, AutoPilotState, AutoPilotView } from '../autopilot';
@@ -29,7 +29,7 @@ import { TREND_MODE } from '../trendMode';
 import type { TrendEval } from '../../../core/trend/signal';
 import { AdoptSheet } from './AdoptSheet';
 import { refreshLiveSettings } from './managerProvider';
-import { formatHHMM, formatPrice, formatSlopeRateSeries, formatTickRateSeries } from './format';
+import { formatHHMM, formatPrice, formatSlopeRate } from './format';
 import { GridGauge } from './GridGauge';
 
 const STATE_BADGE: Record<AutoPilotState, { label: string; bg: string; fg: string }> = {
@@ -143,9 +143,8 @@ export function formatFeedAckSummary(rows: readonly AutoPilotSlotRow[]): string 
  * 진입은 정배열 상태에서 종가가 5선을 아래→위로 뚫는 **그 봉**에만 나므로, 정배열이어도 대부분의 봉은 "돌파 대기"다.
  */
 function formatMartingaleLine(ev: MartingaleBarEval | null): string {
-  if (ev === null) return `물타기 · 1분봉 0/${MARTINGALE_MIN_BARS}`;
-  const bars = `봉 ${Math.min(ev.bars, MARTINGALE_MIN_BARS)}/${MARTINGALE_MIN_BARS}`;
-  if (ev.aligned === null) return `물타기 · 4선 계산 중 · ${bars}`;
+  if (ev === null) return '4선 계산 중';
+  if (ev.aligned === null) return `4선 계산 중 · 봉 ${Math.min(ev.bars, MARTINGALE_MIN_BARS)}/${MARTINGALE_MIN_BARS}`;
   // "정배열"은 배열(5>20>60>120)과 4선 기울기 모두 상승을 **둘 다** 뜻한다(백테스트 규약). 눈으로는 배열이 맞아
   // 보여도 5선이 꺾여 있으면 진입 조건이 아니다 — 그 차이를 화살표로 보인다(2026-08-27 CHOW 13:19 ET 제보).
   const eventText = { cross: '5선 돌파', allUp: '4선 상승 성립', ordered: '정배열 성립' } as const;
@@ -159,7 +158,7 @@ function formatMartingaleLine(ev: MartingaleBarEval | null): string {
         ? `배열은 정배열, 기울기 ${trendArrows(ev.up)}`
         : '정배열 아님';
   const turn = ev.ma5TurnUp ? ' · 5선 변곡' : '';
-  return `물타기 · ${state}${turn} · ${bars}`;
+  return `${state}${turn}`;
 }
 
 /**
@@ -257,6 +256,8 @@ function SlotRow({
   // 종목명이 있으면 이름을 제목으로, 티커는 부제 맨 앞으로 — 이름 없이 티커만 보이면 무슨 종목인지
   // 알 수 없어 조회 탭 리스트(종목명 · 티커)와 읽는 방식이 달랐다.
   const { ticker, name } = item.entry;
+  // 분속 = 틱/초 × 60(최근 10초 창의 순간값을 분당으로) — 사용자가 읽기 쉬운 단위(2026-08-29 데스크탑에서 이식).
+  const perMinute = Math.round(item.view.tickRate * 60);
   return (
     <Pressable
       className="bg-white"
@@ -265,20 +266,24 @@ function SlotRow({
     >
       <ListRow
         leading={<TickerAvatar ticker={ticker} />}
-        title={name || ticker}
-        // 속도·기울기는 겹침 없는 10초 봉 5칸(최근 50초) 시계열로 아래 두 줄에(2026-08-14).
-        // 라벨은 단위 포함 "속도/10초"·"기울기/10초"(단독 "기울기" 금지 — SG %/청크와 혼동, 도메인 문서 §2).
-        // 기울기 v2 = 직전 봉 평균 대비 현재 봉 평균의 %변화(양끝점 아님 — 봉 안 노이즈 상쇄).
+        title={
+          <Text className="text-base font-bold text-[#191f28]" numberOfLines={1}>
+            {name ? (
+              <>
+                <Text className="text-[#8b95a1]">{ticker}</Text>
+                {` ${name}`}
+              </>
+            ) : (
+              ticker
+            )}
+          </Text>
+        }
+        // 속도·기울기는 최근 10초 창의 순간값 한 줄(분속·기울기, 2026-08-29 행 정리 — 시계열 2줄은 소음).
+        // 라벨 단독 "기울기" 금지 규칙은 %단위 병기로 지킨다(도메인 문서 §2).
         subtitle={
           <View className="mt-0.5">
-            <Text className="text-sm text-[#8b95a1]" numberOfLines={1}>
-              {`${name ? `${ticker} · ` : ''}${rankingSourceLabelOf(item.entry.source)}`}
-            </Text>
             <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
-              {`속도/10초 ${formatTickRateSeries(item.view.tickRateSeries)}`}
-            </Text>
-            <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
-              {`기울기/10초 ${formatSlopeRateSeries(item.view.slopeRateSeries)}`}
+              {`분속 ${perMinute}틱 · 기울기 ${formatSlopeRate(item.view.slopeRate)}%`}
             </Text>
             {item.feedRejected ? (
               // 체결가 구독이 KIS에 거절됨(2026-08-28) — 틱이 안 오니 판정도 진입도 없다. 옛 봉 판정 줄 대신 이유를 보인다.
@@ -307,6 +312,9 @@ function SlotRow({
         }
         trailing={
           <View className="items-end">
+            <View className="mb-1 rounded-full bg-[#f2f4f6] px-2 py-0.5">
+              <Text className="text-[10px] font-semibold text-[#6b7684]">{rankingSourceLabelOf(item.entry.source)}</Text>
+            </View>
             <Text className="text-base font-bold text-[#191f28]">{formatPrice(item.view.price)}</Text>
             <SlotBadge row={item} activeTickers={activeTickers} candidates={candidates} />
           </View>
@@ -328,8 +336,6 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
   const [events, setEvents] = useState<readonly AutoPilotEvent[]>(() => autopilot.recentEvents);
   // 계좌 잔고 보유분을 그리드에 다시 태우는 시트(FAULT 이후 복구 경로).
   const [adoptVisible, setAdoptVisible] = useState(false);
-  // 오늘 거래 기록(푸터 패널) — 사이클이 완료될 때마다(view.cycles 증가) 다시 읽는다.
-  const trades = useTodayTrades(view.cycles);
   // 시세 피드 진단 — 매니저가 이미 보존 중인 연결 상태·마지막 진단 이벤트를 구독해 그린다.
   const [feedStatus, setFeedStatus] = useState<FeedStatus>(() => manager.getFeedStatus());
   const [feedEvent, setFeedEvent] = useState<FeedEvent | null>(() => manager.lastFeedEvent);
@@ -446,36 +452,41 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                 </View>
               }
             >
+              {/* 오늘 성과 — 누르면 "오늘 거래 기록" 화면(사이클별 상세)으로. 설정 요약·사이클·그리드 줄은 뺐다(2026-08-29 행 정리). */}
               <ListRow
-                title="오늘 성과 · 오늘예상"
-                subtitle={`사이클 ${view.cycles}회 · 그리드 ${view.activeTickers.length}/${view.maxGrids}개 관리 중`}
+                title="오늘 성과"
+                onPress={() => router.push('/trades')}
                 trailing={
                   // 누적 손익은 USD로 쌓이지만 체감은 원화라 둘 다 보여준다 —
                   // 환율(잔고 기준)을 못 구했을 때만 예전처럼 USD 한 줄.
-                  usdKrw !== null ? (
-                    <>
-                      <Text className="text-base font-bold" style={{ color: pnlColor(view.cumPnl) }}>
-                        {formatSignedKrw(view.cumPnl * usdKrw)}
-                      </Text>
-                      <Text className="mt-0.5 text-xs font-semibold" style={{ color: pnlColor(view.cumPnl) }}>
-                        {formatSignedUsd(view.cumPnl)}
-                      </Text>
-                    </>
-                  ) : (
-                    <Text className="text-base font-bold" style={{ color: pnlColor(view.cumPnl) }}>
-                      {formatSignedUsd(view.cumPnl)}
-                    </Text>
-                  )
+                  <View className="flex-row items-center">
+                    <View className="items-end">
+                      {usdKrw !== null ? (
+                        <>
+                          <Text className="text-base font-bold" style={{ color: pnlColor(view.cumPnl) }}>
+                            {formatSignedKrw(view.cumPnl * usdKrw)}
+                          </Text>
+                          <Text className="mt-0.5 text-xs font-semibold" style={{ color: pnlColor(view.cumPnl) }}>
+                            {formatSignedUsd(view.cumPnl)}
+                          </Text>
+                        </>
+                      ) : (
+                        <Text className="text-base font-bold" style={{ color: pnlColor(view.cumPnl) }}>
+                          {formatSignedUsd(view.cumPnl)}
+                        </Text>
+                      )}
+                    </View>
+                    <Ionicons name="chevron-forward" size={16} color="#b0b8c1" style={{ marginLeft: 6 }} />
+                  </View>
                 }
               />
-              {/* 실계좌로 나가는 금액이라 지금 걸린 값은 화면에 늘 보여야 한다 — 편집은 설정 화면에서만 한다. */}
-              <View className="px-5 pb-2">
-                <Text className="text-xs leading-5 text-[#8b95a1]">
-                  {config
-                    ? `종목당 ${config.entryQty && config.entryQty > 0 ? `${config.entryQty}주 고정` : formatUsd(config.startAmountUsd)} · 그리드 최대 ${view.maxGrids}개 · 최소 속도 ${config.minTickRate}틱/초`
-                    : '진입금액이 아직 없어요 — 설정 > 트레이딩 설정에서 정해 주세요'}
-                </Text>
-              </View>
+              {!config && (
+                <View className="px-5 pb-2">
+                  <Text className="text-xs leading-5 text-[#8b95a1]">
+                    진입금액이 아직 없어요 — 설정 &gt; 트레이딩 설정에서 정해 주세요
+                  </Text>
+                </View>
+              )}
               {view.lastFault && (
                 <View className="px-5 pb-2">
                   <Text className="text-xs leading-5 text-[#f04452]">{view.lastFault.text}</Text>
@@ -616,8 +627,7 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
           <>
             {/* 리스트 패널 마감 여백 + 패널 간 갭. */}
             <View className="bg-white" style={{ height: 8, marginBottom: 8 }} />
-            {/* 완료된 사이클(오늘 거래 기록)이 먼저 — 운영 이벤트 로그(기록)보다 자주 본다. */}
-            <TradeHistoryPanel trades={trades} usdKrw={usdKrw} />
+            {/* 오늘 거래 기록 패널은 /trades 화면으로 분리(2026-08-29) — "오늘 성과" 행을 눌러 들어간다. */}
             <Panel title="기록" headerRight={events.length > 0 ? `최근 ${events.length}건` : undefined}>
               {events.length === 0 ? (
                 <View className="px-5 pb-4">

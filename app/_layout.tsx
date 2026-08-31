@@ -29,6 +29,7 @@ export default function RootLayout() {
         <Stack.Screen name="account" />
         <Stack.Screen name="settings" />
         <Stack.Screen name="stock/[ticker]" />
+        <Stack.Screen name="trades" />
       </Stack>
     </SafeAreaProvider>
   );
