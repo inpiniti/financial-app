@@ -934,15 +934,13 @@ export class AutoPilot {
     const active0 = this.actives.get(ctx.ticker);
     if (active0?.cond) {
       if (active0.gridFaulted || this.stopRequested || !this.running || this.faulted || this.paused) return;
-      // 물타기 모드(2026-08-27): 보유 중엔 진입 봉(kind='entry')은 의미가 없다 — 5선 변곡(kind='add')만 규칙에 넘긴다.
+      // ±3% 단타 모드(2026-09-01, 물타기 제거): 보유 중엔 진입 봉(kind='entry')은 의미가 없다 — 청산은 틱 판정 몫.
       if (ctx.kind === 'entry') return;
       active0.cond.onSignal(signal, ctx.price);
       return;
     }
     if (signal === 'BUY') {
-      // 물타기 모드: 미보유 종목의 5선 변곡(kind='add')은 진입 신호가 아니다.
-      if (ctx.kind === 'add') return;
-      // 물타기 모드(2026-08-28): 당일 이미 매매한 종목은 조건만 맞는 봉(state)으로는 재진입하지 않는다 —
+      // ±3% 단타 모드(2026-08-28): 당일 이미 매매한 종목은 조건만 맞는 봉(state)으로는 재진입하지 않는다 —
       // 5선 돌파·4선 상승 성립·정배열 성립 이벤트 봉에서만. 처음 보는 종목은 조건이 맞으면 바로 산다.
       if (ctx.kind === 'entry' && ctx.entryEvent === 'state' && this.tradedToday(ctx.ticker)) {
         if (!this.actives.has(ctx.ticker) && !this.pendingBuys.has(ctx.ticker)) {

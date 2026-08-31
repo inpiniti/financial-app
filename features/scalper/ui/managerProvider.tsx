@@ -378,8 +378,8 @@ async function buildManager(): Promise<ManagerBootstrap> {
     model: MODEL_CONFIG,
     fetchModelBars,
     fetchModelDailyCloses,
-    // 배수 물타기 시험 모드(2026-08-27, ADR 0006) — **켜져 있으면 모델·추세보다 우선**한다(단일 스위치 martingaleMode.MARTINGALE_MODE).
-    // 신호: 슬롯이 1분봉 4선으로 진입(정배열·5선 돌파)·물타기(5선 변곡)를 낸다. 청산: 익절 사다리 +3/+2/+1, 15:55 ET 마감 청산.
+    // ±3% 단타 모드(구 배수 물타기 시험 — ADR 0006·0007) — **켜져 있으면 모델·추세보다 우선**한다(단일 스위치 martingaleMode.MARTINGALE_MODE).
+    // 신호: 슬롯이 1분봉 4선으로 진입(정배열·5선 돌파)만 낸다. 청산: 익절 +3% · 손절 −3% · 19:55 ET 마감 청산(물타기 없음, 2026-09-01).
     // 끄려면 MARTINGALE_MODE=false(한 줄 롤백 → 모델) 또는 이 주입 한 줄을 뺀다.
     martingale: MARTINGALE_POSITION_CONFIG,
     // 추세 → 그리드 → 매매(2026-08-18 도메인 문서) — 모델 롤백용 보존. 모델이 켜져 있는 동안은 쓰이지 않는다.

@@ -105,8 +105,9 @@ export interface FeedSlotOptions {
    */
   model?: boolean;
   /**
-   * 배수 물타기 시험 모드(2026-08-27, ADR 0006) — true고 MARTINGALE_MODE=true면 **1분봉** 합성 + 4선으로
-   * 진입(정배열·5선 상향 돌파, ctx.kind='entry')과 물타기 시점(5선 변곡, ctx.kind='add')을 BUY로 낸다.
+   * ±3% 단타 모드(구 배수 물타기 시험 — 2026-08-27 ADR 0006, 2026-09-01 물타기 제거 ADR 0007) —
+   * true고 MARTINGALE_MODE=true면 **1분봉** 합성 + 4선으로 진입(정배열·5선 상향 돌파, ctx.kind='entry')만 BUY로 낸다.
+   * 물타기(5선 변곡) 신호는 없다. 청산(±3%·마감)은 포지션 규칙(MartingaleRule)의 틱 판정 몫.
    * 모델·추세·조합·사다리보다 우선한다. 미주입이면 기존 동작 그대로 — 회귀 안전.
    */
   martingale?: boolean;
@@ -141,10 +142,10 @@ export interface SlotSignalContext {
    */
   readonly bandWidthPct?: number | null;
   /**
-   * 물타기 모드의 BUY 종류(2026-08-27) — 'entry'=진입 봉(정배열·5선 돌파), 'add'=물타기 시점(5선 변곡).
-   * 오토파일럿이 보유 여부로 거른다(보유 중엔 entry 무시, 미보유엔 add 무시). 다른 모드는 undefined.
+   * ±3% 단타 모드의 BUY 종류 — 'entry'=진입 봉(정배열·5선 돌파)뿐이다(2026-09-01 물타기 제거로 'add' 폐기).
+   * 오토파일럿이 보유 여부로 거른다(보유 중엔 entry 무시). 다른 모드는 undefined.
    */
-  readonly kind?: 'entry' | 'add';
+  readonly kind?: 'entry';
   /**
    * 물타기 모드 진입 신호의 근거(2026-08-28) — 'cross'/'allUp'/'ordered'는 조건을 이 봉에서 성립시킨 이벤트,
    * 'state'는 이벤트 없이 조건만 맞는 봉. 당일 이미 매매한 종목은 오토파일럿이 'state'를 버린다.
@@ -322,7 +323,7 @@ export class FeedSlot {
     this.slopeMeter.record(this.lastTickAt, price);
 
     if (this.martingaleMode) {
-      // 물타기 모드 — 1분봉 마감마다 4선을 재고 진입(정배열·5선 돌파)·물타기(5선 변곡) 신호를 낸다.
+      // ±3% 단타 모드 — 1분봉 마감마다 4선을 재고 진입(정배열·5선 돌파) 신호만 낸다(물타기 신호는 2026-09-01 제거).
       const bar = this.bars.pushTick(price, tsMs);
       if (bar !== null) this.evaluateMartingaleBar(bar, price);
       return null;
@@ -566,8 +567,8 @@ export class FeedSlot {
   }
 
   /**
-   * 물타기 모드 봉 마감 1회 — 진입 봉이면 BUY(kind='entry'), 5선 변곡이면 BUY(kind='add'). 둘 다면 두 번 흘린다
-   * (보유 여부는 오토파일럿이 안다 — 여기서는 판정만). 진입은 정규장 봉·마감 청산 전에만.
+   * ±3% 단타 모드 봉 마감 1회 — 진입 봉이면 BUY(kind='entry')만 흘린다(2026-09-01 물타기 제거 —
+   * 5선 변곡 BUY(kind='add')는 폐기). 진입은 프리·정규·애프터 봉·마감 청산 전에만(isMartingaleEntryBar).
    * price = 마감을 유발한 새 분 첫 틱 가격(추세 모드와 같은 규약).
    */
   private evaluateMartingaleBar(closed: MinuteBar, price: number): void {
@@ -588,10 +589,6 @@ export class FeedSlot {
         kind: 'entry',
         entryEvent: ev.entryEvent ?? 'state',
       });
-    }
-    if (ev.ma5TurnUp) {
-      this.lastSignal = 'BUY';
-      this.trendListener('BUY', { ticker: this.ticker, price, slope: 0, accel: 0, at, kind: 'add' });
     }
   }
 

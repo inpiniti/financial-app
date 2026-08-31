@@ -1,4 +1,4 @@
-// 물타기 시험 모드 어댑터(2026-08-27, ADR 0006) — 모드 판정·인계 문구·5선 변곡 BUY → 배수 물타기 → 평단 갱신 → 익절 사다리 → 정산.
+// ±3% 단타 모드 어댑터(2026-08-27 ADR 0006 → 2026-09-01 물타기 제거 ADR 0007) — 모드 판정·인계 문구·익절·손절·마감 청산 → 정산.
 // 규칙 자체의 판정은 core/martingale/index.test.ts, 여기서는 **배선**을 본다.
 
 import { describe, expect, it } from 'vitest';
@@ -34,7 +34,7 @@ function deps(
   };
 }
 
-/** 2026-08-27 10:00 ET(EDT) — 정규장 한복판. 마감 청산(15:55)까지 여유가 있다. */
+/** 2026-08-27 10:00 ET(EDT) — 정규장 한복판. 마감 청산(19:55)까지 여유가 있다. */
 const TEN_AM_ET = Date.UTC(2026, 7, 27, 14, 0);
 
 function harness(startPrice = 100) {
@@ -51,7 +51,7 @@ function harness(startPrice = 100) {
   return { pm, broker, clock, events, setPrice: (p: number) => (price = p) };
 }
 
-describe('모드 판정 — 물타기 시험이 모델보다 우선한다', () => {
+describe('모드 판정 — ±3% 단타가 모델보다 우선한다', () => {
   it('martingale 주입이 있으면 martingale, 없으면 기존 우선순위', () => {
     expect(resolvePositionMode({ martingale: MARTINGALE_POSITION_CONFIG, model: MODEL_CONFIG, trend: TREND_CONFIG })).toBe(
       'martingale',
@@ -59,23 +59,23 @@ describe('모드 판정 — 물타기 시험이 모델보다 우선한다', () =
     expect(resolvePositionMode({ model: MODEL_CONFIG, trend: TREND_CONFIG })).toBe('model');
   });
 
-  it('설정값이 백테스트 규약 그대로다', () => {
-    expect(MARTINGALE_POSITION_CONFIG.tpLadder).toEqual([0.03, 0.02, 0.01]);
-    expect(MARTINGALE_POSITION_CONFIG.dropStartPct).toBe(0.03);
-    expect(MARTINGALE_POSITION_CONFIG.minGapMs).toBe(5 * 60_000);
+  it('설정값 — 익절 +3% · 손절 −3% · 마감 19:55 ET (2026-09-01 사용자 확정)', () => {
+    expect(MARTINGALE_POSITION_CONFIG.tpPct).toBe(0.03);
+    expect(MARTINGALE_POSITION_CONFIG.stopLossPct).toBe(0.03);
     expect(MARTINGALE_POSITION_CONFIG.closeAtMin).toBe(19 * 60 + 55);
   });
 });
 
-describe('makePositionManager — 물타기 어댑터', () => {
-  it('인계 문구에 익절 목표·사다리·물타기 선이 나오고, 게이지는 익절가/물타기 선', async () => {
+describe('makePositionManager — ±3% 단타 어댑터', () => {
+  it('인계 문구에 익절·손절 선이 나오고, 게이지는 익절가/손절선', async () => {
     const h = harness();
-    expect(h.pm.label).toBe('물타기 관리');
+    expect(h.pm.label).toBe('±3% 관리');
     expect(await h.pm.arm({ qty: 10, avgPrice: 100 })).toEqual({ ok: true });
     const text = h.events.at(-1)!;
-    expect(text).toContain('물타기 관리 인계 · 10주 · 평단 100.00');
-    expect(text).toContain('익절 103.00(+3%, 물타기 뒤 +3%/+2%/+1%)');
-    expect(text).toContain('물타기 선 97.00(−3%)');
+    expect(text).toContain('±3% 관리 인계 · 10주 · 평단 100.00');
+    expect(text).toContain('익절 103.00(+3%)');
+    expect(text).toContain('손절 97.00(−3%)');
+    expect(text).toContain('물타기 없어요');
     expect(text).toContain('19:55 ET 마감 청산');
     const g = h.pm.gaugeView();
     expect(g.rangeKind).toBe('orders');
@@ -101,70 +101,39 @@ describe('makePositionManager — 물타기 어댑터', () => {
     }
   });
 
-  it('물타기: 5선 변곡 BUY가 −3% 아래서 오면 보유량×배수를 사고, 평단·익절 목표(+2%)가 갱신된다', async () => {
+  it('손절: −3%에 닿으면 전량 매도 → STOP_LOSS, exitSnapshot.line = 손절선', async () => {
     const h = harness();
     await h.pm.arm({ qty: 10, avgPrice: 100 });
-    // 진입 직후(간격 5분 미만)는 물타지 않는다.
-    h.pm.onSignal('BUY', 96);
-    await flush();
+    h.setPrice(97.1);
+    await h.pm.tick({ canStart: true });
     expect(h.broker.placed).toHaveLength(0);
-
-    h.clock.advance(5 * 60_000);
-    h.pm.onSignal('BUY', 96); // −4% → 3배 = 30주
-    await flush();
-    expect(h.broker.placed).toHaveLength(1);
-    expect(h.broker.placed[0]).toMatchObject({ side: 'buy', qty: 30 });
-    // 체결 반영 — 잔고는 KIS 정본(가짜 브로커 position)을 쓴다: 40주 · 평단 97.
-    h.broker.position = { qty: 40, avgPrice: 97 };
-    const r = await h.pm.poll();
-    expect(r.kind).toBe('holding');
-    expect(h.events.some((e) => e.includes('물타기 체결 · 30주 · 평단 $97.00 · 40주 보유'))).toBe(true);
-    const g = h.pm.gaugeView();
-    expect(g.holdingQty).toBe(40);
-    expect(g.sellPrice).toBeCloseTo(97 * 1.02, 9); // 1회 물타기 뒤 익절 +2%
-    expect(g.buyPrice).toBeCloseTo(97 * 0.97, 9);
-
-    // 익절 +2% 도달 → 전량 40주 매도.
-    h.setPrice(99);
+    h.setPrice(96.8);
     await h.pm.tick({ canStart: true });
     await flush();
-    const sold = await h.pm.poll();
-    expect(sold.kind).toBe('sold');
-    if (sold.kind === 'sold') {
-      expect(sold.record.exitReason).toBe('TAKE_PROFIT');
-      expect(sold.record.qty).toBe(40);
-      expect(sold.record.entryPrice).toBe(97);
+    expect(h.events.some((e) => e.includes('손절 · 현재가 96.80 ≤ 평단 −3%(97.00)'))).toBe(true);
+    const r = await h.pm.poll();
+    expect(r.kind).toBe('sold');
+    if (r.kind === 'sold') {
+      expect(r.record.exitReason).toBe('STOP_LOSS');
+      expect(r.record.qty).toBe(10);
+      expect(r.record.exitSnapshot).toMatchObject({ price: 96.8, line: 97, kind: 'STOP_LOSS' });
     }
   });
 
-  it('물타기 낙폭이 −3%에 못 미치면 BUY 신호가 와도 사지 않는다', async () => {
+  it('물타기는 없다 — −3% 아래에서 BUY 신호가 와도 사지 않는다', async () => {
     const h = harness();
     await h.pm.arm({ qty: 10, avgPrice: 100 });
     h.clock.advance(5 * 60_000);
-    h.pm.onSignal('BUY', 97.5);
+    h.pm.onSignal('BUY', 96);
     await flush();
-    expect(h.broker.placed).toHaveLength(0);
-  });
-
-  it('현금이 모자라면 그 물타기만 건너뛴다(상한 없음의 유일한 브레이크)', async () => {
-    const h = harness();
-    const pm = makePositionManager(
-      'martingale',
-      { martingale: MARTINGALE_POSITION_CONFIG },
-      deps(h.broker, h.clock, h.events, () => 90, { fetchBuyableUsd: async () => 100 }),
-    );
-    await pm.arm({ qty: 10, avgPrice: 100 });
-    h.clock.advance(5 * 60_000);
-    pm.onSignal('BUY', 90); // −10% → 9배 = 90주 × $90 = $8,100 > $100
-    await flush();
-    expect(h.broker.placed).toHaveLength(0);
-    expect(h.events.some((e) => e.includes('물타기 생략 · 현금 부족'))).toBe(true);
+    // BUY는 규칙(decide)이 null이라 매수가 나가지 않는다 — 대신 다음 틱 판정이 손절을 낸다.
+    expect(h.broker.placed.filter((p) => p.side === 'buy')).toHaveLength(0);
   });
 
   it('마감 청산: 19:55 ET가 되면 목표 미달이어도 전량 매도 → SESSION_END', async () => {
     const h = harness();
     await h.pm.arm({ qty: 10, avgPrice: 100 });
-    h.setPrice(95);
+    h.setPrice(99);
     h.clock.set(Date.UTC(2026, 7, 27, 23, 55)); // 19:55 EDT
     await h.pm.tick({ canStart: true });
     await flush();
@@ -173,10 +142,10 @@ describe('makePositionManager — 물타기 어댑터', () => {
     if (r.kind === 'sold') expect(r.record.exitReason).toBe('SESSION_END');
   });
 
-  it('SELL 신호는 무시한다 — 청산은 익절·마감뿐', async () => {
+  it('SELL 신호는 무시한다 — 청산은 익절·손절·마감뿐(틱 판정)', async () => {
     const h = harness();
     await h.pm.arm({ qty: 10, avgPrice: 100 });
-    h.pm.onSignal('SELL', 90);
+    h.pm.onSignal('SELL', 98);
     await flush();
     expect(h.broker.placed).toHaveLength(0);
   });

@@ -1,5 +1,5 @@
-// 물타기 시험 모드 슬롯(2026-08-27) — 1분봉 합성 + 4선으로 진입(kind='entry')·5선 변곡(kind='add') BUY를 낸다.
-// 판정 규칙은 core/martingale 테스트가, 여기는 **봉 마감 → 신호 종류·정규장 게이트** 배선을 본다.
+// ±3% 단타 모드 슬롯(2026-08-27, 2026-09-01 물타기 제거) — 1분봉 합성 + 4선으로 진입(kind='entry') BUY만 낸다.
+// 판정 규칙은 core/martingale 테스트가, 여기는 **봉 마감 → 신호 종류·세션 게이트** 배선을 본다.
 
 import { describe, expect, it } from 'vitest';
 
@@ -29,7 +29,7 @@ function harness(nowMs: number) {
   return { clock, slot, signals };
 }
 
-describe('FeedSlot 물타기 모드', () => {
+describe('FeedSlot ±3% 단타 모드', () => {
   it('시드 뒤 5선 돌파 봉이 닫히면 BUY(kind=entry), 시드 자체로는 신호가 없다', () => {
     const h = harness(TEN_AM_ET);
     expect(h.slot.seedTrend(seedBars(TEN_AM_ET))).toBe(122);
@@ -42,12 +42,12 @@ describe('FeedSlot 물타기 모드', () => {
     expect(entry).toHaveLength(1);
     expect(entry[0].signal).toBe('BUY');
     expect(entry[0].ctx.price).toBe(231);
-    // 한 봉 눌림으로는 5선이 꺾이지 않았다(계속 상승) — 변곡(add)은 없다.
-    expect(h.signals.some((s) => s.ctx.kind === 'add')).toBe(false);
+    // 물타기 제거(2026-09-01) — entry 외의 신호는 없다.
+    expect(h.signals.every((s) => s.ctx.kind === 'entry')).toBe(true);
     expect(h.slot.getView().martingale?.entry).toBe(true);
   });
 
-  it('프리마켓 봉에서도 진입 신호를 낸다(모든 세션, 2026-08-28)', () => {
+  it('프리마켓 봉에서도 진입 신호를 낸다(프리·정규·애프터, 2026-09-01)', () => {
     const h = harness(FIVE_AM_ET);
     h.slot.seedTrend(seedBars(FIVE_AM_ET));
     h.slot.pushTick(230, FIVE_AM_ET + 10_000);
@@ -56,14 +56,24 @@ describe('FeedSlot 물타기 모드', () => {
     expect(h.signals.filter((s) => s.ctx.kind === 'entry')).toHaveLength(1);
   });
 
-  it('5선 변곡만 있고 정배열 돌파가 아니면 add만 나온다', () => {
+  it('5선 변곡(옛 물타기 시점)이 와도 신호가 없다 — 물타기 제거(2026-09-01)', () => {
     const h = harness(TEN_AM_ET);
     // 하락 추세 시드 — 정배열 아님.
     const endKey = Math.floor(TEN_AM_ET / M);
     h.slot.seedTrend(Array.from({ length: 122 }, (_, i) => ({ minuteKey: endKey - 122 + i, close: 200 - i })));
-    h.slot.pushTick(95, TEN_AM_ET + 10_000); // 반등 봉 → 5선 변곡
+    h.slot.pushTick(95, TEN_AM_ET + 10_000); // 반등 봉 → 5선 변곡이지만 진입 조건 아님
     h.slot.pushTick(96, TEN_AM_ET + M + 1_000);
-    expect(h.signals.map((s) => s.ctx.kind)).toEqual(['add']);
+    expect(h.signals).toHaveLength(0);
+  });
+
+  it('주간거래(ET 20:00~04:00) 봉에서는 조건이 맞아도 진입 신호를 내지 않는다(2026-09-01)', () => {
+    const overnight = Date.UTC(2026, 7, 28, 2, 0); // 2026-08-27 22:00 ET — 주간거래
+    const h = harness(overnight);
+    h.slot.seedTrend(seedBars(overnight));
+    h.slot.pushTick(230, overnight + 10_000);
+    h.slot.pushTick(231, overnight + M + 1_000);
+    expect(h.slot.getView().martingale?.entry).toBe(true); // 판정은 되지만
+    expect(h.signals).toHaveLength(0); // 신호는 없다
   });
 
   it('봉 주기는 1분(주입된 trendBarMinutes보다 우선), 뷰에 판정 스냅샷이 실린다', () => {
@@ -80,7 +90,7 @@ describe('FeedSlot 물타기 모드', () => {
   });
 });
 
-describe('FeedSlot 물타기 모드 — 진입 이벤트 종류(2026-08-28)', () => {
+describe('FeedSlot ±3% 단타 모드 — 진입 이벤트 종류(2026-08-28)', () => {
   it('돌파 봉은 entryEvent=cross, 조건이 이어지는 다음 봉은 state', () => {
     const h = harness(TEN_AM_ET);
     h.slot.seedTrend(seedBars(TEN_AM_ET));

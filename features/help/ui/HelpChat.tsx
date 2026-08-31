@@ -161,10 +161,10 @@ function formatSignalForTool(view: {
 }): string {
   if (MARTINGALE_MODE) {
     const m = view.martingale ?? null;
-    if (m === null || m.aligned === null) return `물타기 시험 모드 — 1분봉 4선 계산 중(봉 ${m?.bars ?? 0}개)`;
+    if (m === null || m.aligned === null) return `±3% 단타 모드 — 1분봉 4선 계산 중(봉 ${m?.bars ?? 0}개)`;
     if (m.condition) {
       const ev = { cross: '5선 돌파', allUp: '4선 상승 성립', ordered: '정배열 성립' } as const;
-      return `물타기 시험 모드 — 진입 조건 충족(정배열·4선 상승·5선 위)${m.entryEvent ? `, 이 봉 이벤트: ${ev[m.entryEvent]}` : ' (이벤트 없음 — 오늘 안 산 종목이면 바로 매수)'}`;
+      return `±3% 단타 모드 — 진입 조건 충족(정배열·4선 상승·5선 위)${m.entryEvent ? `, 이 봉 이벤트: ${ev[m.entryEvent]}` : ' (이벤트 없음 — 오늘 안 산 종목이면 바로 매수)'}`;
     }
     const arrow = (u: boolean | null) => (u === null ? '·' : u ? '↑' : '↓');
     const state = m.aligned
@@ -172,7 +172,7 @@ function formatSignalForTool(view: {
       : m.ordered
         ? `배열은 정배열이지만 기울기가 5${arrow(m.up.ma5)} 20${arrow(m.up.ma20)} 60${arrow(m.up.ma60)} 120${arrow(m.up.ma120)}라 진입 조건 아님`
         : '정배열 아님';
-    return `물타기 시험 모드 — ${state}${m.ma5TurnUp ? ', 5선 변곡' : ''} (봉 ${m.bars})`;
+    return `±3% 단타 모드 — ${state} (봉 ${m.bars})`;
   }
   if (MODEL_MODE) {
     const v = view.modelVerdict;

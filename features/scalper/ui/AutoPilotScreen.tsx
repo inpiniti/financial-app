@@ -139,7 +139,7 @@ export function formatFeedAckSummary(rows: readonly AutoPilotSlotRow[]): string 
 }
 
 /**
- * 물타기 시험 모드 한 줄(2026-08-27) — 마지막 1분봉 기준 "정배열인가 · 진입 봉인가 · 5선 변곡인가 · 봉 수".
+ * ±3% 단타 모드 한 줄(2026-08-27, 2026-09-01 물타기 제거) — 마지막 1분봉 기준 "정배열인가 · 진입 봉인가 · 봉 수".
  * 진입은 정배열 상태에서 종가가 5선을 아래→위로 뚫는 **그 봉**에만 나므로, 정배열이어도 대부분의 봉은 "돌파 대기"다.
  */
 function formatMartingaleLine(ev: MartingaleBarEval | null): string {
@@ -157,8 +157,7 @@ function formatMartingaleLine(ev: MartingaleBarEval | null): string {
       : ev.ordered
         ? `배열은 정배열, 기울기 ${trendArrows(ev.up)}`
         : '정배열 아님';
-  const turn = ev.ma5TurnUp ? ' · 5선 변곡' : '';
-  return `${state}${turn}`;
+  return state;
 }
 
 /**
@@ -292,7 +291,7 @@ function SlotRow({
                 {formatFeedRejectedLine(item.feedRejected)}
               </Text>
             ) : MARTINGALE_MODE ? (
-              // 물타기 시험 모드(2026-08-27) — 모델보다 우선. 1분봉 정배열·5선 돌파·변곡 상태.
+              // ±3% 단타 모드(구 물타기 시험) — 모델보다 우선. 1분봉 정배열·5선 돌파 상태.
               <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
                 {formatMartingaleLine(item.view.martingale)}
               </Text>
@@ -594,13 +593,11 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                 <Text className="px-5 pb-2 text-xs text-[#f04452]">{feedAckSummary}</Text>
               )}
               {MARTINGALE_MODE && (
-                // 물타기 시험 모드(2026-08-27) — 규칙 요약을 여기 한 번만.
+                // ±3% 단타 모드(2026-09-01, 물타기 제거) — 규칙 요약을 여기 한 번만.
                 <Text className="px-5 pb-2 text-xs text-[#8b95a1]">
-                  {`물타기 시험 모드 · 1분봉 5·20·60·120선 정배열(4선 상승)이고 종가가 5선 위면 매수 — 프리·정규·애프터·주간거래 모두(후보 안에서만 · 오늘 이미 산 종목은 5선 돌파·정배열 성립·4선 상승 성립 때만). 익절 평단 ${MARTINGALE_CONFIG.tpLadder
-                    .map((p) => `+${(p * 100).toFixed(0)}%`)
-                    .join('/')}(물타기 0/1/2회+), 5선 변곡에서 평단 −k%면 보유량의 (k−1)배 물타기, ${Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:${String(
+                  {`±3% 단타 모드 · 1분봉 5·20·60·120선 정배열(4선 상승)이고 종가가 5선 위면 매수 — 프리·정규·애프터만(주간거래 제외 · 후보 안에서만 · 오늘 이미 산 종목은 5선 돌파·정배열 성립·4선 상승 성립 때만). 익절 평단 +${(MARTINGALE_CONFIG.tpPct * 100).toFixed(0)}% · 손절 평단 −${(MARTINGALE_CONFIG.stopLossPct * 100).toFixed(0)}% · 물타기 없음, ${Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:${String(
                     MARTINGALE_CONFIG.closeAtMin % 60,
-                  ).padStart(2, '0')} ET 전량 청산. 손절·상한 없음.`}
+                  ).padStart(2, '0')} ET 전량 청산.`}
                 </Text>
               )}
               {!MARTINGALE_MODE && MODEL_MODE && (

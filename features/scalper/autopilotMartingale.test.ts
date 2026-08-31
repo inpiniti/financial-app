@@ -1,4 +1,4 @@
-// 물타기 시험 모드 배선(2026-08-28) — ① 처음 보는 종목은 조건(정배열·4선 상승·5선 위)만 맞으면 이벤트 없이 진입
+// ±3% 단타 모드 배선(2026-08-28, 2026-09-01 물타기 제거) — ① 처음 보는 종목은 조건(정배열·4선 상승·5선 위)만 맞으면 이벤트 없이 진입
 // ② 당일 매매한 종목은 조건만으로는 재진입하지 않고 이벤트(5선 돌파 등)에서만 ③ 추격 게이트 없음 + 매수 미체결은 매도1호가 추종.
 import { describe, expect, it } from 'vitest';
 
@@ -63,7 +63,7 @@ async function fireTimers(h: Harness): Promise<void> {
   await flush();
 }
 
-describe('물타기 시험 모드 — 진입', () => {
+describe('±3% 단타 모드 — 진입', () => {
   it('처음 보는 종목은 조건만 맞으면(이벤트 없는 봉) 바로 산다 — 추격 게이트도 없다', async () => {
     const h = makeHarness();
     h.slots.get('A')!.seedTrend(risingSeed());
@@ -75,7 +75,7 @@ describe('물타기 시험 모드 — 진입', () => {
     expect(h.pilot.getView().activeTickers).toEqual(['A']);
     expect(h.brokers.get('A')!.placed[0]).toMatchObject({ side: 'buy' });
     expect(h.events.some((e) => e.includes('추격 상한'))).toBe(false);
-    expect(h.events.some((e) => e.includes('물타기 관리 인계'))).toBe(true);
+    expect(h.events.some((e) => e.includes('±3% 관리 인계'))).toBe(true);
   });
 
   it('당일 매매한 종목은 조건만으로는 다시 안 사고, 5선 돌파 이벤트 봉에서 재진입한다', async () => {

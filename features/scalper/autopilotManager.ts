@@ -115,8 +115,8 @@ export interface AutoPilotManagerDeps {
    */
   model?: ModelGridConfig;
   /**
-   * 배수 물타기 시험 모드(2026-08-27, ADR 0006) — 주입되고 martingaleMode.MARTINGALE_MODE=true면 슬롯은 **1분봉** 합성+4선으로
-   * 진입(정배열·5선 돌파)·물타기(5선 변곡) 신호를 내고, 포지션 관리는 MartingaleRule이 맡는다. 모델보다 우선한다 —
+   * ±3% 단타 모드(구 배수 물타기 시험 — ADR 0006·0007) — 주입되고 martingaleMode.MARTINGALE_MODE=true면 슬롯은 **1분봉** 합성+4선으로
+   * 진입(정배열·5선 돌파) 신호만 내고(물타기 신호는 2026-09-01 제거), 포지션 관리는 MartingaleRule(±3%·마감 청산)이 맡는다. 모델보다 우선한다 —
    * 모델 스캐너는 돌지 않고 분봉 워밍업(fetchMinuteBars, 1분봉)이 돈다. 미주입이면 기존 동작 — 회귀 안전.
    */
   martingale?: MartingaleGridConfig;
