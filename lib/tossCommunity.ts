@@ -92,6 +92,37 @@ export interface TossCommentStatistic {
   replyCount: number;
 }
 
+/** 첨부 미디어(2026-08-29 실측) — 이미지 URL과 가로/세로 비율. */
+export interface TossCommentMedia {
+  type: string;
+  url: string;
+  pictureRatio?: number | null;
+}
+
+/** 매매 공유(2026-08-29 실측) — "[구매] 테슬라 5주 · 1주당 478,356원 · 8월 29일 02:37". 매도면 손익도 온다. */
+export interface TossCommentExecution {
+  stockName?: string;
+  orderSide: 'BUY' | 'SELL' | string;
+  quantity: number;
+  averageExecutionPriceKrw?: number | null;
+  averageExecutionPriceUsd?: number | null;
+  amountKrw?: number | null;
+  executedAt?: string | null;
+  profitAmountKrw?: number | null;
+  profitRateKrw?: number | null;
+}
+
+export interface TossCommentVoteOption {
+  id: number | string;
+  context: string;
+  votedCount: number;
+}
+
+export interface TossCommentVote {
+  options: TossCommentVoteOption[];
+  votedCount: number;
+}
+
 export interface TossComment {
   /** 실호출 응답에서는 숫자로 내려온다(문자열로 오는 경우도 있어 둘 다 받는다). */
   commentId: string | number;
@@ -99,6 +130,15 @@ export interface TossComment {
   message: TossCommentMessage;
   statistic: TossCommentStatistic;
   createdAt: string;
+  /** 첨부 이미지들(없으면 null/undefined). */
+  media?: TossCommentMedia[] | null;
+  /** 매매 공유 카드(없으면 null). */
+  execution?: TossCommentExecution | null;
+  /** 투표(없으면 null). */
+  vote?: TossCommentVote | null;
+  /** 리포스트 원문(라운지 글 등) — 있으면 인용 상자로. */
+  repostComment?: { author?: TossCommentAuthor; message?: TossCommentMessage } | null;
+  isRepost?: boolean;
 }
 
 export interface TossCommentsPage {

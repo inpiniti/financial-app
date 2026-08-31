@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { Image, Pressable, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { formatTossMessage, type TossComment } from '../../../lib/tossCommunity';
+import { formatTossMessage, type TossComment, type TossCommentExecution } from '../../../lib/tossCommunity';
 
 /** 뱃지 색 키 → 연한 배경 pill 톤(토스 토큰 계열). 알 수 없는 키는 중립 회색으로 안전하게 처리한다. */
 const BADGE_COLOR: Record<string, { bg: string; fg: string }> = {
@@ -26,6 +26,47 @@ export function formatRelativeTime(iso: string): string {
   if (diffHour < 24) return `${diffHour}시간 전`;
   const diffDay = Math.floor(diffHour / 24);
   return `${diffDay}일 전`;
+}
+
+/** "8월 29일 02:37" — 매매 공유 카드의 체결 시각(응답은 KST 벽시계 문자열). */
+function formatExecutedAt(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  if (!m) return '';
+  return `${Number(m[2])}월 ${Number(m[3])}일 ${m[4]}:${m[5]}`;
+}
+
+/** 매매 공유 카드 — 토스 앱의 "[구매] SK하이닉스 1주 / 1주당 1,654,000원 8월 28일 19:12" 문법. */
+function ExecutionCard({ execution }: { execution: TossCommentExecution }) {
+  const buy = execution.orderSide === 'BUY';
+  const price = execution.averageExecutionPriceKrw ?? null;
+  const priceText = price !== null ? `1주당 ${Math.round(price).toLocaleString('ko-KR')}원` : execution.averageExecutionPriceUsd != null ? `1주당 ${execution.averageExecutionPriceUsd}` : '';
+  const profit = execution.profitAmountKrw;
+  const rate = execution.profitRateKrw;
+  return (
+    <View className="mt-2 rounded-xl px-3 py-2.5" style={{ backgroundColor: '#f7f9fc', borderWidth: 1, borderColor: '#e5e8eb' }}>
+      <View className="flex-row items-center" style={{ gap: 6 }}>
+        <View className="rounded px-1.5 py-0.5" style={{ backgroundColor: buy ? '#fdecee' : '#eaf2ff' }}>
+          <Text className="text-[11px] font-bold" style={{ color: buy ? '#f04452' : '#3182f6' }}>
+            {buy ? '구매' : '판매'}
+          </Text>
+        </View>
+        <Text className="text-sm font-bold text-[#191f28]">
+          {execution.stockName ?? ''} {execution.quantity}주
+        </Text>
+      </View>
+      <Text className="mt-1 text-xs text-[#4e5968]">
+        {priceText}
+        {priceText ? '  ' : ''}
+        <Text className="text-[#8b95a1]">{formatExecutedAt(execution.executedAt)}</Text>
+      </Text>
+      {!buy && profit != null && (
+        <Text className="mt-0.5 text-xs font-semibold" style={{ color: profit > 0 ? '#f04452' : profit < 0 ? '#3182f6' : '#8b95a1' }}>
+          {`${profit > 0 ? '+' : ''}${Math.round(profit).toLocaleString('ko-KR')}원${rate != null ? ` (${rate > 0 ? '+' : ''}${rate.toFixed(2)}%)` : ''}`}
+        </Text>
+      )}
+    </View>
+  );
 }
 
 export interface CommentRowProps {
@@ -76,6 +117,52 @@ export function CommentRow({ comment, onPress, asParent = false }: CommentRowPro
           <Text className="mt-1 text-xs font-semibold text-[#3182f6]">더보기</Text>
         </Pressable>
       )}
+
+      {/* 첨부 이미지 — 가로 꽉 채우고 비율(pictureRatio)대로. 여러 장이면 세로로. */}
+      {(comment.media ?? [])
+        .filter((m) => m.type === 'image' && m.url)
+        .map((m, i) => (
+          <Image
+            key={`${m.url}-${i}`}
+            source={{ uri: m.url }}
+            resizeMode="cover"
+            style={{ width: '100%', aspectRatio: m.pictureRatio && m.pictureRatio > 0 ? m.pictureRatio : 1.5, borderRadius: 12, marginTop: 8, backgroundColor: '#f2f4f6' }}
+          />
+        ))}
+
+      {/* 매매 공유 카드 */}
+      {comment.execution ? <ExecutionCard execution={comment.execution} /> : null}
+
+      {/* 리포스트 원문 인용 */}
+      {comment.repostComment?.message && (comment.repostComment.message.title || comment.repostComment.message.message) ? (
+        <View className="mt-2 rounded-xl px-3 py-2.5" style={{ backgroundColor: '#f7f9fc', borderLeftWidth: 3, borderLeftColor: '#d1d6db' }}>
+          {comment.repostComment.author?.nickname ? <Text className="text-xs font-semibold text-[#4e5968]">{comment.repostComment.author.nickname}</Text> : null}
+          {comment.repostComment.message.title ? <Text className="mt-0.5 text-sm font-bold text-[#191f28]">{comment.repostComment.message.title}</Text> : null}
+          {comment.repostComment.message.message ? (
+            <Text className="mt-0.5 text-sm leading-5 text-[#4e5968]" numberOfLines={expanded ? undefined : 4}>
+              {formatTossMessage(comment.repostComment.message.message)}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+
+      {/* 투표 — 항목과 득표수만 보여준다(투표는 토스 앱에서). */}
+      {comment.vote && comment.vote.options?.length ? (
+        <View className="mt-2 rounded-xl px-3 py-2" style={{ backgroundColor: '#f7f9fc', gap: 4 }}>
+          {comment.vote.options.map((o) => {
+            const pct = comment.vote!.votedCount > 0 ? Math.round((o.votedCount / comment.vote!.votedCount) * 100) : 0;
+            return (
+              <View key={String(o.id)} className="flex-row items-center justify-between">
+                <Text className="flex-1 text-xs text-[#4e5968]" numberOfLines={1}>
+                  {o.context}
+                </Text>
+                <Text className="ml-2 text-xs font-semibold text-[#191f28]">{pct}%</Text>
+              </View>
+            );
+          })}
+          <Text className="text-[11px] text-[#8b95a1]">{comment.vote.votedCount}명 참여</Text>
+        </View>
+      ) : null}
 
       <View className="mt-2 flex-row items-center" style={{ gap: 12 }}>
         <View className="flex-row items-center" style={{ gap: 3 }}>
