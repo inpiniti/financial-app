@@ -9,9 +9,10 @@ import { BackHeader } from '../components/BackHeader';
 import { ListRow } from '../components/ListRow';
 import { Panel } from '../components/Panel';
 import { inquireOverseasBalance, type OverseasBalanceSummary } from '../kis/balance';
+import { inquirePsAmount } from '../kis/psamount';
 import { getAccessToken } from '../kis/token';
 import { secureTokenStorage } from '../lib/secureTokenStorage';
-import { formatKrw, formatSignedKrw, formatSignedPercent, pnlColor } from '../lib/format';
+import { formatKrw, formatSignedKrw, formatSignedPercent, formatUsd, pnlColor } from '../lib/format';
 import { clearApprovedAccountNo, loadApprovedAccountNo } from '../lib/gateStorage';
 import { formatAccountNo, loadKisSettings, parseAccountNo, saveKisSettings } from '../lib/kisSettings';
 import { resetUsdKrwCache } from '../lib/usdKrw';
@@ -37,6 +38,40 @@ type BalanceState =
 
 // 실전(LIVE) 전용 — 모의 전환 옵션은 2026-07-30 제거 (loadAppSettings가 'live'로 강제).
 const ENVIRONMENT = 'live' as const;
+
+/** 매수 가능 금액(2026-08-29 데스크탑에서 이식, KIS 매수가능금액조회) — 조회 실패는 null(행을 감춘다). */
+interface BuyableInfo {
+  /** 한투 앱 "외화" 기준 주문가능금액(USD) — ovrs_ord_psbl_amt. */
+  usdOnly: number | null;
+  /** 한투 앱 "통합"(원화 환전 포함) 기준 주문가능금액(USD) — frcr_ord_psbl_amt1. */
+  unified: number | null;
+}
+
+/**
+ * 매수 가능 금액 조회 — 금액 자체는 종목과 무관하지만 API가 종목·단가를 요구해 대표값(NASD·AAPL·$1)으로 묻는다.
+ * 잔고 요약과 별개 API(현금 기준)라 실패해도 잔고 패널은 그려야 한다 — 실패는 null로 삼킨다.
+ */
+async function fetchBuyable(
+  credentials: { appKey: string; appSecret: string },
+  accessToken: string,
+  account: { cano: string; acntPrdtCd: string },
+): Promise<BuyableInfo> {
+  try {
+    const output = await inquirePsAmount(ENVIRONMENT, credentials, accessToken, {
+      account,
+      ovrsExcgCd: 'NASD',
+      ordUnpr: 1,
+      itemCd: 'AAPL',
+    });
+    const num = (v: string | undefined) => {
+      const n = Number.parseFloat(v ?? '');
+      return Number.isFinite(n) ? n : null;
+    };
+    return { usdOnly: num(output.ovrs_ord_psbl_amt), unified: num(output.frcr_ord_psbl_amt1) };
+  } catch {
+    return { usdOnly: null, unified: null };
+  }
+}
 
 function formatHHmm(epochMs: number): string {
   const d = new Date(epochMs);
@@ -137,6 +172,7 @@ export default function AccountScreen() {
   const [tokenStatus, setTokenStatus] = useState<TokenStatus>({ kind: 'idle' });
   const [saving, setSaving] = useState(false);
   const [balance, setBalance] = useState<BalanceState>({ kind: 'idle' });
+  const [buyable, setBuyable] = useState<BuyableInfo>({ usdOnly: null, unified: null });
 
   // 새로 입력했으면 그 값을, 비워 뒀고 이전에 저장돼 있었으면 기존 값을 그대로 쓴다(덮어쓰기는 재입력할 때만).
   const effectiveAppSecret = appSecret.trim() || (hasSavedAppSecret ? savedAppSecret : '');
@@ -152,10 +188,13 @@ export default function AccountScreen() {
     try {
       const credentials = { appKey: kisSettings.appKey, appSecret: kisSettings.appSecret };
       const token = await getAccessToken(ENVIRONMENT, credentials, { storage: secureTokenStorage });
-      const res = await inquireOverseasBalance(ENVIRONMENT, credentials, token.accessToken, {
-        account: { cano: kisSettings.cano, acntPrdtCd: kisSettings.acntPrdtCd },
-      });
+      const account = { cano: kisSettings.cano, acntPrdtCd: kisSettings.acntPrdtCd };
+      const [res, buyableInfo] = await Promise.all([
+        inquireOverseasBalance(ENVIRONMENT, credentials, token.accessToken, { account }),
+        fetchBuyable(credentials, token.accessToken, account),
+      ]);
       setBalance({ kind: 'ready', summary: res.output3 });
+      setBuyable(buyableInfo);
     } catch (e) {
       setBalance({ kind: 'failure', reason: e instanceof Error ? e.message : String(e) });
     }
@@ -248,10 +287,14 @@ export default function AccountScreen() {
         storage: secureTokenStorage,
         forceRefresh: true,
       });
-      const res = await inquireOverseasBalance(ENVIRONMENT, credentials, token.accessToken, { account });
+      const [res, buyableInfo] = await Promise.all([
+        inquireOverseasBalance(ENVIRONMENT, credentials, token.accessToken, { account }),
+        fetchBuyable(credentials, token.accessToken, account),
+      ]);
       setTokenStatus({ kind: 'success', expiresAt: token.expiresAt });
       // 방금 받아 온 응답을 그대로 쓴다 — 검증 직후에 같은 조회를 한 번 더 할 이유가 없다.
       setBalance({ kind: 'ready', summary: res.output3 });
+      setBuyable(buyableInfo);
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       setTokenStatus({ kind: 'failure', reason });
@@ -395,10 +438,17 @@ export default function AccountScreen() {
                   color={pnlColor(balance.summary.evlu_erng_rt1)}
                 />
                 <SummaryRow label="예수금" value={formatKrw(balance.summary.tot_dncl_amt)} />
+                {buyable.usdOnly !== null && (
+                  <SummaryRow label="매수 가능(외화)" value={formatUsd(buyable.usdOnly, 2)} />
+                )}
+                {buyable.unified !== null && (
+                  <SummaryRow label="매수 가능(통합)" value={formatUsd(buyable.unified, 2)} />
+                )}
                 <View className="px-5 pb-4 pt-1">
                   <Text className="text-xs leading-5 text-[#8b95a1]">
                     해외 체결기준 잔고예요. 외화 금액은 당일 최초고시환율로 원화 환산한 값이라 실제 환전액과는
-                    차이가 있어요.
+                    차이가 있어요. 매수 가능 금액은 현금 기준(미수 제외)이에요 — 외화는 가진 달러만, 통합은 원화
+                    환전분까지 합한 값이에요.
                   </Text>
                 </View>
               </>
