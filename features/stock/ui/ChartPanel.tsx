@@ -3,8 +3,8 @@
 // 분봉 원천은 토스 c-chart(lib/tossMinuteChart, 2026-08-18) — 한투 분봉조회는 정규장만 줘서 프리·애프터·주간거래에
 // 4선 오버레이가 꼬였다. 일/주/월봉은 그대로 한투 기간별시세.
 // 캔들 렌더는 react-native-svg(기설치)로 직접 그린다 — 차트 라이브러리 추가 설치 없음.
-import { useEffect, useRef, useState } from 'react';
-import { Pressable, Text, View, useWindowDimensions } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { PanResponder, Pressable, Text, View, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Line, Polyline, Rect, Text as SvgText } from 'react-native-svg';
 import { computeTrendSeries } from '../../../core/trend';
@@ -419,6 +419,34 @@ export function ChartPanel({ ticker, excd }: ChartPanelProps) {
   const [chartReloadKey, setChartReloadKey] = useState(0);
   /** 티커→토스 productCode 캐시(불변) — 분봉 조회마다 검색을 다시 하지 않는다. */
   const tossCodeRef = useRef<{ ticker: string; code: string } | null>(null);
+  // 좌우 드래그로 과거 보기(2026-08-29 데스크탑에서 이식) — 오른쪽 끝에서 숨긴 봉 수. 0 = 최신.
+  const [viewOffset, setViewOffset] = useState(0);
+  const panStart = useRef(0);
+  const offsetRef = useRef(0);
+  const applyOffset = (n: number) => {
+    offsetRef.current = n;
+    setViewOffset(n);
+  };
+  const totalRef = useRef(0);
+  const slotRef = useRef(1);
+  const pan = useMemo(
+    () =>
+      PanResponder.create({
+        // 핸들러는 한 번만 만든다(ref로 상태 접근) — 매 렌더 재생성하면 렌더 순간 제스처가 끊긴다(2026-08-30 데스크탑 실측).
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 2,
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: () => {
+          panStart.current = offsetRef.current;
+        },
+        onPanResponderMove: (_e, g) => {
+          const max = Math.max(0, totalRef.current - MAX_CANDLES);
+          const next = Math.round(panStart.current + g.dx / slotRef.current);
+          applyOffset(Math.max(0, Math.min(max, next)));
+        },
+      }),
+    [],
+  );
 
   // 진입 시 한 번 세션(설정 탭 KIS 키 → accessToken) 로드.
   useEffect(() => {
@@ -529,6 +557,8 @@ export function ChartPanel({ ticker, excd }: ChartPanelProps) {
           }
         }
         if (cancelled) return;
+        // 새 데이터가 오면(티커·모드 전환, 새로고침) 과거 보기를 풀고 최신으로.
+        applyOffset(0);
         setState({ kind: 'ready', candles, verdict });
       } catch (e) {
         if (!cancelled) {
@@ -596,9 +626,24 @@ export function ChartPanel({ ticker, excd }: ChartPanelProps) {
           </View>
         ) : (
           <View>
-            <View className="px-4">
-              <CandleChart candles={state.candles} width={svgWidth} height={chartHeight} trendOverlay={mode === 'minute'} />
-            </View>
+            {(() => {
+              totalRef.current = state.candles.length;
+              slotRef.current = Math.max(1, (svgWidth - RIGHT_AXIS_WIDTH) / MAX_CANDLES);
+              const visible = viewOffset > 0 ? state.candles.slice(0, state.candles.length - viewOffset) : state.candles;
+              return (
+                <View className="px-4" {...pan.panHandlers}>
+                  <CandleChart candles={visible} width={svgWidth} height={chartHeight} trendOverlay={mode === 'minute'} />
+                  {viewOffset > 0 && (
+                    <Pressable
+                      onPress={() => applyOffset(0)}
+                      className="absolute right-6 top-2 rounded-full bg-[#191f28]/70 px-3 py-1 active:opacity-80"
+                    >
+                      <Text className="text-[11px] font-semibold text-white">최신으로</Text>
+                    </Pressable>
+                  )}
+                </View>
+              );
+            })()}
             {mode === 'minute' && (
               <EngineVerdict
                 verdict={state.verdict}
