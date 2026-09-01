@@ -11,6 +11,7 @@ import { computeTrendSeries } from '../../../core/trend';
 import { barKeyOf } from '../../../core/trend/bars';
 import { describeReject, inspectModel, loadModel, type ModelInspection } from '../../../core/model';
 import { MODEL_BAR_MINUTES } from '../../../features/scalper/modelMode';
+import { MARTINGALE_BAR_MINUTES, MARTINGALE_MODE } from '../../../features/scalper/martingaleMode';
 import { getAccessToken } from '../../../kis/token';
 import type { MinuteChartExchangeCode } from '../../../kis/minuteChart';
 import { inquireOverseasPeriodChart, type PeriodChartPeriod } from '../../../kis/periodChart';
@@ -33,9 +34,9 @@ type MinuteInterval = 1 | 3 | 5;
 /**
  * 자동매매 엔진이 실제로 쓰는 봉 주기 — 차트 기본값을 여기에 맞춘다(2026-08-22).
  * 8-18~21 실거래에서 "차트는 꺾였는데 앱은 안 판다"의 큰 몫이 **차트 1분봉 vs 엔진 5분봉**이었다.
- * 지금 엔진은 모델이고, 모델은 이 주기의 봉으로만 학습·판정한다(다른 주기로는 아예 안 돌린다).
+ * 지금 엔진은 ±3% 단타 모드(1분봉 4선 판정)이고, MARTINGALE_MODE=false로 모델 복귀 시 모델 주기를 따른다.
  */
-const ENGINE_INTERVAL: MinuteInterval = MODEL_BAR_MINUTES as MinuteInterval;
+const ENGINE_INTERVAL: MinuteInterval = (MARTINGALE_MODE ? MARTINGALE_BAR_MINUTES : MODEL_BAR_MINUTES) as MinuteInterval;
 
 const MODE_OPTIONS: Array<{ value: ChartMode; label: string }> = [
   { value: 'minute', label: '분봉' },
