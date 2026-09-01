@@ -1,5 +1,6 @@
 // ±3% 단타 모드 슬롯(2026-08-27, 2026-09-01 물타기 제거) — 1분봉 합성 + 4선으로 진입(kind='entry') BUY만 낸다.
-// 판정 규칙은 core/martingale 테스트가, 여기는 **봉 마감 → 신호 종류·세션 게이트** 배선을 본다.
+// 2026-09-01 실시간 진입: 봉 마감을 기다리지 않고 진행 중 봉을 현재가로 넣어 판정한다(봉당 발화 1회).
+// 판정 규칙은 core/martingale 테스트가, 여기는 **틱 → 신호 종류·세션 게이트·중복 방지** 배선을 본다.
 
 import { describe, expect, it } from 'vitest';
 
@@ -30,30 +31,45 @@ function harness(nowMs: number) {
 }
 
 describe('FeedSlot ±3% 단타 모드', () => {
-  it('시드 뒤 5선 돌파 봉이 닫히면 BUY(kind=entry), 시드 자체로는 신호가 없다', () => {
+  it('시드 뒤 5선 돌파는 봉 마감을 기다리지 않고 진행 중 봉 첫 틱에서 BUY(kind=entry), 시드 자체로는 신호가 없다', () => {
     const h = harness(TEN_AM_ET);
     expect(h.slot.seedTrend(seedBars(TEN_AM_ET))).toBe(122);
     expect(h.signals).toHaveLength(0);
     expect(h.slot.getView().martingale?.aligned).toBe(true);
-    // 다음 1분봉(시드 종가 ~218): 크게 반등해 5선 위 종가로 닫힌다(그다음 분 첫 틱이 마감을 유발).
+    // 진행 중 1분봉(시드 종가 ~218): 크게 반등해 5선 위 — 실시간 판정이 그 자리에서 BUY를 낸다(2026-09-01).
     h.slot.pushTick(230, TEN_AM_ET + 10_000);
-    h.slot.pushTick(231, TEN_AM_ET + M + 1_000);
     const entry = h.signals.filter((s) => s.ctx.kind === 'entry');
     expect(entry).toHaveLength(1);
     expect(entry[0].signal).toBe('BUY');
-    expect(entry[0].ctx.price).toBe(231);
+    expect(entry[0].ctx.price).toBe(230);
+    expect(entry[0].ctx.entryEvent).toBe('cross');
+    expect(h.slot.getView().martingaleLive?.condition).toBe(true);
+    // 봉 마감 확정 신호는 그대로 낸다 — 실시간 신호가 오토파일럿에서 버려졌을 때의 재시도(중복은 보유 가드 몫).
+    h.slot.pushTick(231, TEN_AM_ET + M + 1_000);
+    expect(h.signals.filter((s) => s.ctx.kind === 'entry')).toHaveLength(2);
     // 물타기 제거(2026-09-01) — entry 외의 신호는 없다.
     expect(h.signals.every((s) => s.ctx.kind === 'entry')).toBe(true);
     expect(h.slot.getView().martingale?.entry).toBe(true);
   });
 
+  it('같은 진행 봉에서는 실시간 BUY를 한 번만 낸다(1초 스로틀 뒤 재판정에도 재발화 없음)', () => {
+    const h = harness(TEN_AM_ET);
+    h.slot.seedTrend(seedBars(TEN_AM_ET));
+    h.slot.pushTick(230, TEN_AM_ET + 10_000);
+    h.clock.advance(2_000); // 스로틀(1초)을 확실히 넘긴다
+    h.slot.pushTick(232, TEN_AM_ET + 12_000);
+    h.clock.advance(2_000);
+    h.slot.pushTick(234, TEN_AM_ET + 14_000);
+    expect(h.signals.filter((s) => s.ctx.kind === 'entry')).toHaveLength(1);
+  });
+
   it('프리마켓 봉에서도 진입 신호를 낸다(프리·정규·애프터, 2026-09-01)', () => {
     const h = harness(FIVE_AM_ET);
     h.slot.seedTrend(seedBars(FIVE_AM_ET));
-    h.slot.pushTick(230, FIVE_AM_ET + 10_000);
-    h.slot.pushTick(231, FIVE_AM_ET + M + 1_000);
+    h.slot.pushTick(230, FIVE_AM_ET + 10_000); // 실시간 1회
+    h.slot.pushTick(231, FIVE_AM_ET + M + 1_000); // 마감 확정 1회
     expect(h.slot.getView().martingale?.entry).toBe(true);
-    expect(h.signals.filter((s) => s.ctx.kind === 'entry')).toHaveLength(1);
+    expect(h.signals.filter((s) => s.ctx.kind === 'entry')).toHaveLength(2);
   });
 
   it('5선 변곡(옛 물타기 시점)이 와도 신호가 없다 — 물타기 제거(2026-09-01)', () => {
@@ -91,13 +107,13 @@ describe('FeedSlot ±3% 단타 모드', () => {
 });
 
 describe('FeedSlot ±3% 단타 모드 — 진입 이벤트 종류(2026-08-28)', () => {
-  it('돌파 봉은 entryEvent=cross, 조건이 이어지는 다음 봉은 state', () => {
+  it('돌파 봉은 entryEvent=cross(실시간·마감 각 1회), 조건이 이어지는 다음 봉은 state', () => {
     const h = harness(TEN_AM_ET);
     h.slot.seedTrend(seedBars(TEN_AM_ET));
-    h.slot.pushTick(230, TEN_AM_ET + 10_000);
-    h.slot.pushTick(231, TEN_AM_ET + M + 1_000); // 돌파 봉 닫힘
+    h.slot.pushTick(230, TEN_AM_ET + 10_000); // 진행 중 돌파 — 실시간 cross
+    h.slot.pushTick(231, TEN_AM_ET + M + 1_000); // 돌파 봉 닫힘 — 마감 cross(중복은 오토파일럿 가드 몫)
     h.slot.pushTick(232, TEN_AM_ET + 2 * M + 1_000); // 상승 지속 봉 닫힘
     const entries = h.signals.filter((s) => s.ctx.kind === 'entry').map((s) => s.ctx.entryEvent);
-    expect(entries).toEqual(['cross', 'state']);
+    expect(entries).toEqual(['cross', 'cross', 'state']);
   });
 });

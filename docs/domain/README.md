@@ -16,7 +16,7 @@
 |---|---|---|---|
 | [모델](./모델/) | **현행 (진입·청산 신호)** | `core/model`, `features/scalper/modelMode.ts`·`modelScanner.ts` | LightGBM(+5%/−2%/120분 first-touch, 5분봉 Feature 33개) 확률 ≥ 학습 상위 1%면 진입 · 청산은 같은 기하. `MODEL_MODE=true` |
 | [추세](./추세/) | 보존 (롤백 경로) | `core/trend`, `features/scalper/trendMode.ts` | 5분봉 SMA 4선 순수 상태기계(2026-08-21). 2026-08-22 모델로 교체, `MODEL_MODE=false` 시 복귀 |
-| ±3% 단타 (문서 없음 — ADR 0006·0007) | **시험 (켜져 있으면 모델보다 우선)** | `core/martingale`, `features/scalper/martingaleMode.ts` | 1분봉 정배열·5선 돌파 진입(프리·정규·애프터만), 익절 +3% · 손절 −3% · 물타기 없음(2026-09-01), 19:55 ET 마감 청산. `MARTINGALE_MODE=false`로 모델 복귀 |
+| ±3% 단타 (문서 없음 — ADR 0006·0007) | **시험 (켜져 있으면 모델보다 우선)** | `core/martingale`, `features/scalper/martingaleMode.ts` | 1분봉 정배열·5선 돌파 진입(프리·정규·애프터만) — 진행 중 봉 실시간 판정(2026-09-01, `MARTINGALE_LIVE_ENTRY`), 익절 +3% · 손절 −3% · 물타기 없음(2026-09-01), 19:55 ET 마감 청산. `MARTINGALE_MODE=false`로 모델 복귀 |
 | [그리드](./그리드/) | **현행 (포지션 규칙)** | `core/grid`(OCO 매도그리드), `core/conditional`(조건부 그리드) | 평단±폭 물타기·익절, 비대칭 폭, 고정 수량 물타기, 급락 방어 앵커 |
 | [매매](./매매/) | **현행 (체결 실행)** | `core/execution`, `core/reprice` | 현재가 추격 지정가·정정, 취소선은 판단이 주입, 매도 리프라이스 |
 | [오토파일럿](./오토파일럿/) | **현행 (조율자)** | `features/scalper/autopilot*.ts`, `positionManager.ts`, `core/cycle` | SCANNING→ENTERING→HOLDING→EXITING 상태, 모드 스위치, FAULT 격리, 청산 사유 |

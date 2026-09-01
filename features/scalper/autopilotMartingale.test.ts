@@ -78,6 +78,24 @@ describe('±3% 단타 모드 — 진입', () => {
     expect(h.events.some((e) => e.includes('±3% 관리 인계'))).toBe(true);
   });
 
+  it('봉 마감 없이도 진행 중 봉 돌파에서 실시간으로 진입한다(2026-09-01)', async () => {
+    const h = makeHarness();
+    h.slots.get('A')!.seedTrend(risingSeed());
+    h.pilot.start();
+    await tick(h, 216, BASE); // 5선 아래 — 신호 없음, 후보 선정만 된다
+    expect(h.pilot.getView().activeTickers).toEqual([]);
+    // 같은 봉 안에서 5선 위로 돌파 — 봉이 닫히지 않았는데 실시간 판정(1초 스로틀)이 진입을 낸다.
+    h.clock.advance(2_000);
+    h.slots.get('A')!.pushTick(230, BASE * M + 30_000);
+    await flush();
+    await h.pilot.pollCycle();
+    await flush();
+    await h.pilot.pollCycle();
+    await flush();
+    expect(h.pilot.getView().activeTickers).toEqual(['A']);
+    expect(h.brokers.get('A')!.placed[0]).toMatchObject({ side: 'buy' });
+  });
+
   it('당일 매매한 종목은 조건만으로는 다시 안 사고, 5선 돌파 이벤트 봉에서 재진입한다', async () => {
     const h = makeHarness();
     h.slots.get('A')!.seedTrend(risingSeed());
@@ -94,16 +112,18 @@ describe('±3% 단타 모드 — 진입', () => {
     expect(h.trades).toHaveLength(1);
 
     // 조건은 계속 충족(상승 지속) — 이벤트 없는 봉이라 재진입하지 않고 사유를 남긴다.
-    await tick(h, 224, BASE + 2);
-    await tick(h, 225, BASE + 3);
+    // 분을 +12부터 잇는다 — 첫 틱의 실시간 신호(2026-09-01)가 '후보 밖' 드랍 로그로 스로틀 창
+    // (BUY_DROP_LOG_THROTTLE_MS=10분)을 차지해, 그 안에서는 '오늘 이미 매매' 로그가 숨는다(신호 처리는 정상).
+    await tick(h, 224, BASE + 12);
+    await tick(h, 225, BASE + 13);
     expect(h.pilot.getView().activeTickers).toEqual([]);
     expect(h.events.some((e) => e.includes('BUY 무시') && e.includes('오늘 이미 매매한 종목'))).toBe(true);
 
     // 5선 아래로 눌렀다가(조건 깨짐) 다시 위로 돌파 → 이벤트 봉 → 재진입.
-    await tick(h, 200, BASE + 4); // 키 BASE+3 닫힘(225)
-    await tick(h, 199, BASE + 5); // 키 BASE+4 닫힘(200) — 5선 아래
-    await tick(h, 240, BASE + 6); // 키 BASE+5 닫힘(199) — 아직 아래
-    await tick(h, 241, BASE + 7); // 키 BASE+6 닫힘(240) — 5선 위로 돌파(cross) → 재진입
+    await tick(h, 200, BASE + 14); // 키 BASE+13 닫힘(225)
+    await tick(h, 199, BASE + 15); // 키 BASE+14 닫힘(200) — 5선 아래
+    await tick(h, 240, BASE + 16); // 키 BASE+15 닫힘(199) — 아직 아래
+    await tick(h, 241, BASE + 17); // 키 BASE+16 닫힘(240) — 5선 위로 돌파(cross) → 재진입
     expect(h.pilot.getView().activeTickers).toEqual(['A']);
   });
 

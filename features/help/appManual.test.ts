@@ -25,7 +25,7 @@ const pct = (r: number) => `${Number((r * 100).toFixed(2))}%`;
  */
 describe('APP_MANUAL — 코드 상수와 어긋나지 않는다', () => {
   it('봉 주기·동시 그리드 상한·리스트 상한은 코드 값 그대로 들어간다', () => {
-    expect(APP_MANUAL).toContain(`${ENGINE_BAR_MINUTES}분봉이 하나 닫힐 때마다`);
+    expect(APP_MANUAL).toContain(`${ENGINE_BAR_MINUTES}분봉 4개 이동평균`);
     expect(APP_MANUAL).toContain(`최대 ${MAX_GRIDS_LIMIT}개`);
     expect(APP_MANUAL).toContain(`${RANKING_TOTAL_MAX}개의 트레이딩 리스트`);
   });

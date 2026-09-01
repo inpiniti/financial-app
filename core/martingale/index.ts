@@ -8,6 +8,7 @@
 // 규칙:
 //   · 봉 = 1분봉 종가. 4선 = 분봉5·20·60·120선(SMA). 기울기 up_N = ma_N(t) > ma_N(t−1).
 //   · 진입: 정배열(ma5>ma20>ma60>ma120) ∧ 4선 모두 상승 ∧ 종가가 5선을 **아래→위**로 돌파한 봉(close(t−1)<ma5(t−1), close(t)>ma5(t)).
+//     판정은 봉 마감을 기다리지 않는다 — 진행 중 봉을 현재가로 넣어 실시간(1초 주기)으로도 잰다(evaluateMartingaleLive, 2026-09-01 사용자 확정).
 //   · 익절: 평단 +3% 도달 시 전량 매도(TAKE_PROFIT).
 //   · 손절: 평단 −3% 도달 시 전량 매도(STOP_LOSS). 물타기 없음(2026-09-01 — 5선 변곡 매수 제거).
 //   · 세션: 진입은 프리·정규·애프터(04:00~19:55 ET)만 — 주간거래(20:00~04:00 ET) 진입 금지(2026-09-01).
@@ -108,6 +109,33 @@ export function evaluateMartingaleBars(closes: readonly number[]): MartingaleBar
     bars: n,
   };
 }
+
+/**
+ * 진행 중(미완성) 봉을 마지막 봉으로 덧붙여 다시 잰 진입 판정 — **차트가 그리는 것과 같은 기준**(2026-09-01, 사용자 확정).
+ *
+ * 왜: 봉 마감 판정만 쓰면 진입 지연의 하한이 봉 주기 1개(1분) + 다음 분 첫 틱까지다. 토스 차트는 진행 중 봉을
+ * 포함해 4선을 실시간으로 그리므로 눈으로는 돌파가 보이는데 엔진은 최대 1분 뒤에 사서 고점을 잡았다.
+ * 청산(추세 모드 evaluateTrendLive)이 이미 쓰는 방식 그대로 진입도 실시간으로 당긴다 — 봉 중간 가짜 돌파에
+ * 물리는 위험은 ±3% 손절이 받는다(2026-08-22의 "진입은 봉 확정" 결정을 사용자가 직접 뒤집음).
+ *
+ * closedCloses = 닫힌 봉 종가(오름차순), provisionalClose = 진행 중 봉의 현재 종가.
+ * 반환값은 "진행 중 봉을 마지막 봉으로 친" evaluateMartingaleBars 그대로다(entryEvent 의미 동일).
+ */
+export function evaluateMartingaleLive(
+  closedCloses: readonly number[],
+  provisionalClose: number,
+): MartingaleBarEval {
+  if (!Number.isFinite(provisionalClose) || provisionalClose <= 0) {
+    return evaluateMartingaleBars([]);
+  }
+  return evaluateMartingaleBars([...closedCloses, provisionalClose]);
+}
+
+/** 진행 중 봉 재판정 주기(ms) — 틱마다 130봉×4선 재계산 방지(추세 TREND_LIVE_EVAL_MS와 같은 근거). 0이면 매 틱(테스트용). */
+export const MARTINGALE_LIVE_EVAL_MS = 1_000;
+
+/** 진행 중 봉 진입 스위치 — false로 두면 봉 마감 판정만 하던 2026-09-01 이전 동작으로 한 줄 롤백. */
+export const MARTINGALE_LIVE_ENTRY = true;
 
 type Series = { s5: (number | null)[]; s20: (number | null)[]; s60: (number | null)[]; s120: (number | null)[] };
 

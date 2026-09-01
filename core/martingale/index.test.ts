@@ -4,6 +4,7 @@ import {
   MARTINGALE_CONFIG,
   MartingaleRule,
   evaluateMartingaleBars,
+  evaluateMartingaleLive,
   isMartingaleEntryBar,
 } from './index';
 
@@ -35,6 +36,30 @@ describe('evaluateMartingaleBars — 진입(정배열 + 5선 상향 돌파)', ()
     const ev = evaluateMartingaleBars(risingCloses(50));
     expect(ev.aligned).toBeNull();
     expect(ev.entry).toBe(false);
+  });
+});
+
+describe('evaluateMartingaleLive — 진행 중 봉 실시간 진입 판정(2026-09-01)', () => {
+  it('닫힌 봉 + 진행 중 종가를 마지막 봉으로 친 판정과 동일하다', () => {
+    const closed = risingCloses(121);
+    closed.push(closed[closed.length - 1] - 3); // 마지막 닫힌 봉: 5선 아래 눌림
+    const provisional = closed[closed.length - 1] + 11; // 진행 중 봉: 5선 위로 반등 중
+    const live = evaluateMartingaleLive(closed, provisional);
+    expect(live).toEqual(evaluateMartingaleBars([...closed, provisional]));
+    expect(live.condition).toBe(true);
+    expect(live.entryEvent).toBe('cross');
+  });
+
+  it('진행 중 종가가 5선 아래면 조건 불충족 — 봉 마감 전엔 신호가 없다', () => {
+    const closed = risingCloses(121);
+    closed.push(closed[closed.length - 1] - 3);
+    const ev = evaluateMartingaleLive(closed, closed[closed.length - 1] - 1);
+    expect(ev.condition).toBe(false);
+  });
+
+  it('현재가가 비정상(0·NaN)이면 판정하지 않는다(fail-closed)', () => {
+    expect(evaluateMartingaleLive(risingCloses(), 0).condition).toBe(false);
+    expect(evaluateMartingaleLive(risingCloses(), Number.NaN).aligned).toBeNull();
   });
 });
 
