@@ -1,5 +1,6 @@
-// 모델 어댑터 — 진입 후 관리가 백테스트 기하(+5%/−2%/120분)대로 나가는지, 청산 사유가 제대로 붙는지.
+// 모델 어댑터 — 진입 후 관리가 백테스트 기하(±3% 대칭/120분, 2026-09-01)대로 나가는지, 청산 사유가 제대로 붙는지.
 // 규칙 자체의 판정은 core/model/exitRule.test.ts, 여기서는 **배선**(모드 판정·인계 문구·틱 → 매매 → 정산)을 본다.
+// 트레일링(−5%/−2%)은 MODEL_EXIT_SYMMETRIC=false 롤백 경로로 보존 — 그 배선 검증은 스위치를 되돌릴 때 되살린다.
 
 import { describe, expect, it } from 'vitest';
 
@@ -53,108 +54,90 @@ describe('모드 판정 — 모델이 추세보다 우선한다', () => {
   });
 
   it('설정값이 백테스트 기하 그대로다 — 이 값이 바뀌면 검증 숫자의 근거가 사라진다', () => {
+    // 대칭(현행, 2026-09-01 워크포워드): ±3% / 120분. 트레일(롤백)은 trailPct에 남아 있다.
+    expect(MODEL_CONFIG.tpPct).toBe(0.03);
+    expect(MODEL_CONFIG.stopLossPct).toBe(0.03);
+    expect(MODEL_CONFIG.maxHoldMin).toBe(120);
     expect(MODEL_CONFIG.trailPct).toBe(0.05);
-    expect(MODEL_CONFIG.stopLossPct).toBe(0.02);
   });
 });
 
-describe('makePositionManager — 모델 어댑터', () => {
-  it('인계 문구에 손절선과 트레일링이 나오고, 게이지 양끝이 고점·매도선이다', async () => {
+describe('makePositionManager — 모델 어댑터(±3% 대칭)', () => {
+  it('인계 문구에 익절·손절·최장 보유가 나오고, 게이지 양끝이 익절선·손절선이다', async () => {
     const h = harness();
-    expect(h.pm.label).toBe('모델 관리');
+    expect(h.pm.label).toBe('모델 ±3% 관리');
     expect(await h.pm.arm({ qty: 10, avgPrice: 100 })).toEqual({ ok: true });
-    expect(h.events.at(-1)).toContain('모델 관리 인계 · 10주 · 평단 100.00');
-    expect(h.events.at(-1)).toContain('손절 98.00(−2%)');
-    expect(h.events.at(-1)).toContain('고점 대비 −5%로 매도선이 따라 올라가요');
-    expect(h.events.at(-1)).toContain('익절 상한·물타기 없어요');
+    expect(h.events.at(-1)).toContain('모델 ±3% 관리 인계 · 10주 · 평단 100.00');
+    expect(h.events.at(-1)).toContain('익절 103.00(+3%)');
+    expect(h.events.at(-1)).toContain('손절 97.00(−3%)');
+    expect(h.events.at(-1)).toContain('최장 120분 보유');
     const g = h.pm.gaugeView();
     expect(g.rangeKind).toBe('orders');
-    expect([g.buyPrice, g.sellPrice]).toEqual([98, 100]); // 아직 안 올랐다 — 고점=평단, 매도선=손절선
+    expect([g.buyPrice, g.sellPrice]).toEqual([97, 103]);
   });
 
-  it('올라도 안 팔고, 고점 대비 −5%에 닿으면 매도 → 청산 사유는 TRAIL', async () => {
+  it('+3%에 닿으면 전량 매도 → 청산 사유는 TAKE_PROFIT, exitSnapshot에 판정가·익절선이 남는다', async () => {
     const h = harness();
     await h.pm.arm({ qty: 10, avgPrice: 100 });
-    for (const p of [104, 110, 118, 120]) {
-      h.setPrice(p);
-      await h.pm.tick({ canStart: true });
-    }
-    expect(h.broker.placed).toHaveLength(0); // 익절 상한이 없다 — 오르는 동안 안 판다
-    expect(h.pm.gaugeView().sellPrice).toBe(120); // 고점
-    expect(h.pm.gaugeView().buyPrice).toBeCloseTo(114, 9); // 매도선 = 120×0.95
+    h.setPrice(101);
+    await h.pm.tick({ canStart: true });
+    expect(h.broker.placed).toHaveLength(0); // 아직 어느 선에도 안 닿았다
 
-    h.setPrice(113.9);
+    h.setPrice(103.5);
     await h.pm.tick({ canStart: true });
     await flush();
-    expect(h.events.some((e) => e.includes('트레일링 매도 · 고점 120.00 대비 −5%'))).toBe(true);
+    expect(h.events.some((e) => e.includes('익절 · 현재가 103.50 ≥ 평단 +3%'))).toBe(true);
     const result = await h.pm.poll();
     expect(result.kind).toBe('sold');
     if (result.kind === 'sold') {
-      expect(result.record.exitReason).toBe('TRAIL');
+      expect(result.record.exitReason).toBe('TAKE_PROFIT');
       expect(result.record.qty).toBe(10);
+      expect(result.record.exitSnapshot).toMatchObject({ price: 103.5, line: 103, kind: 'TAKE_PROFIT' });
     }
   });
 
-  it('오르기 전에 −2%에 닿으면 전량 매도 → 청산 사유는 STOP_LOSS', async () => {
+  it('−3%에 닿으면 전량 매도 → 청산 사유는 STOP_LOSS, 매도선은 손절선', async () => {
     const h = harness();
     await h.pm.arm({ qty: 10, avgPrice: 100 });
-    h.setPrice(97.5);
+    h.setPrice(96.9);
     await h.pm.tick({ canStart: true });
     await flush();
-    expect(h.events.some((e) => e.includes('손절선 도달'))).toBe(true);
-    const result = await h.pm.poll();
-    expect(result.kind).toBe('sold');
-    if (result.kind === 'sold') expect(result.record.exitReason).toBe('STOP_LOSS');
-  });
-
-  it('정산 기록의 exitSnapshot에 판정가·매도선·고점·종류가 남는다 — 슬리피지 계측(2026-08-26)', async () => {
-    const h = harness();
-    await h.pm.arm({ qty: 10, avgPrice: 100 });
-    for (const p of [110, 120]) {
-      h.setPrice(p);
-      await h.pm.tick({ canStart: true });
-    }
-    h.setPrice(113.5); // 매도선 114(=120×0.95) 아래로 갭 — 판정가 113.5
-    await h.pm.tick({ canStart: true });
-    await flush();
+    expect(h.events.some((e) => e.includes('손절 · 현재가 96.90 ≤ 평단 −3%'))).toBe(true);
     const result = await h.pm.poll();
     expect(result.kind).toBe('sold');
     if (result.kind === 'sold') {
-      const s = result.record.exitSnapshot;
-      expect(s).not.toBeNull();
-      expect(s?.price).toBe(113.5);
-      expect(s?.line).toBeCloseTo(114, 9);
-      expect(s?.peak).toBe(120);
-      expect(s?.kind).toBe('TRAIL');
-      expect(s?.ts).toBe(h.clock.now());
+      expect(result.record.exitReason).toBe('STOP_LOSS');
+      expect(result.record.exitSnapshot).toMatchObject({ price: 96.9, line: 97, kind: 'STOP_LOSS' });
     }
   });
 
-  it('손절 정산의 exitSnapshot — 매도선은 하드 손절선, 종류는 STOP_LOSS', async () => {
+  it('어느 선에도 안 닿고 120분이 지나면 전량 매도 → 청산 사유는 TIMEOUT', async () => {
     const h = harness();
     await h.pm.arm({ qty: 10, avgPrice: 100 });
-    h.setPrice(97.2);
+    h.setPrice(100.5);
+    await h.pm.tick({ canStart: true });
+    expect(h.broker.placed).toHaveLength(0);
+
+    h.clock.advance(120 * 60_000);
     await h.pm.tick({ canStart: true });
     await flush();
+    expect(h.events.some((e) => e.includes('시간 청산 · 진입 후 120분'))).toBe(true);
     const result = await h.pm.poll();
     expect(result.kind).toBe('sold');
-    if (result.kind === 'sold') {
-      expect(result.record.exitSnapshot).toMatchObject({ price: 97.2, line: 98, peak: 100, kind: 'STOP_LOSS' });
-    }
+    if (result.kind === 'sold') expect(result.record.exitReason).toBe('TIMEOUT');
   });
 
   it('오체결 한 건으로는 팔지 않는다 — 다음 틱이 확인해야 반영한다', async () => {
     const h = harness();
     await h.pm.arm({ qty: 10, avgPrice: 100 });
-    h.setPrice(1000); // ×10 오체결
+    h.setPrice(1000); // ×10 오체결 — 익절선(103) 위지만 이상치라 보류
     await h.pm.tick({ canStart: true });
     expect(h.broker.placed).toHaveLength(0);
-    expect(h.pm.gaugeView().sellPrice).toBe(100); // 고점이 튀지 않았다
 
-    h.setPrice(100.5); // 정상 복귀
+    h.setPrice(100.5); // 정상 복귀 — 아무 일도 없다
     await h.pm.tick({ canStart: true });
     expect(h.broker.placed).toHaveLength(0);
-    expect(h.pm.gaugeView().buyPrice).toBeCloseTo(98, 9); // 매도선도 950으로 안 튀었다
+    expect(h.pm.gaugeView().sellPrice).toBe(103);
   });
 
   it('SELL 신호가 와도 아무것도 하지 않는다 — 청산은 장벽 판정만이다', async () => {

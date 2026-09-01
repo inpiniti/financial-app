@@ -5,7 +5,7 @@ import type { OhlcvBar } from '../../core/model/bars';
 import type { GbdtModel } from '../../core/model/gbdt';
 import {
   MODEL_INCREMENTAL_BAR_COUNT,
-  MODEL_SEED_BAR_COUNT,
+  modelSeedBarCount,
   ModelScanner,
   MODEL_SCAN_DELAY_MS,
 } from './modelScanner';
@@ -91,14 +91,16 @@ describe('ModelScanner', () => {
     const all = bars(30, 0.02);
     const h = harness(all);
     await h.scanner.pump();
-    expect(h.counts).toEqual([MODEL_SEED_BAR_COUNT]);
+    expect(h.counts).toEqual([modelSeedBarCount(BAR)]);
+    expect(modelSeedBarCount(5)).toBe(300); // 옛 상수(MODEL_SEED_BAR_COUNT=300)와 같은 값 — 5분봉 동작 보존.
+    expect(modelSeedBarCount(1)).toBe(1452); // 1분봉(2026-09-01)은 하루 24시간 + 여유 12봉.
 
     // 다음 봉이 닫혔다 — 봉 하나를 더 얹고 시계를 옮긴다.
     const nextKey = all[all.length - 1].minuteKey + BAR;
     all.push({ minuteKey: nextKey, open: 100, high: 103, low: 100, close: 103, volume: 100_000 });
     h.now.value = (nextKey + BAR) * 60_000 + MODEL_SCAN_DELAY_MS;
     await h.scanner.pump();
-    expect(h.counts).toEqual([MODEL_SEED_BAR_COUNT, MODEL_INCREMENTAL_BAR_COUNT]);
+    expect(h.counts).toEqual([modelSeedBarCount(BAR), MODEL_INCREMENTAL_BAR_COUNT]);
   });
 
   it('같은 봉을 두 번 판정하지 않는다 — 스캔을 여러 번 돌려도 신호는 한 번', async () => {

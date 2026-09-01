@@ -23,6 +23,8 @@ import { isDaytimeSessionOpen } from '../daySession';
 import { rankingSourceLabelOf } from '../../../core/ranking';
 import { MODEL_BAR_MINUTES, MODEL_MODE } from '../modelMode';
 import { MARTINGALE_MODE } from '../martingaleMode';
+import { getActiveEngineMode } from '../engineMode';
+import { MODEL_SYMMETRIC_EXIT_CONFIG } from '../../../core/model/exitRule';
 import { loadModel } from '../../../core/model';
 import { MARTINGALE_CONFIG, MARTINGALE_MIN_BARS, type MartingaleBarEval } from '../../../core/martingale';
 import { etMinuteOfDay, TRADING_DAY_START_MIN } from '../../../core/model/session';
@@ -298,13 +300,13 @@ function SlotRow({
               <Text className="text-xs text-[#f04452]" numberOfLines={1}>
                 {formatFeedRejectedLine(item.feedRejected)}
               </Text>
-            ) : MARTINGALE_MODE ? (
-              // ±3% 단타 모드(구 물타기 시험) — 모델보다 우선. 1분봉 정배열·5선 돌파 상태.
+            ) : MARTINGALE_MODE && getActiveEngineMode() === 'martingale' ? (
+              // ±3% 단타 모드 — 엔진 모드 설정(2026-09-01)이 martingale일 때. 1분봉 정배열·5선 돌파 상태.
               // 진행 중 봉 포함 실시간 판정을 우선한다(2026-09-01 실시간 진입) — 엔진이 사는 기준을 그대로 보인다.
               <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
                 {formatMartingaleLine(item.view.martingaleLive ?? item.view.martingale)}
               </Text>
-            ) : MODEL_MODE ? (
+            ) : MODEL_MODE && getActiveEngineMode() === 'model' ? (
               // 모델 모드(2026-08-22) — 마지막 봉의 판정 확률과 임계값. 왜 안 사는지 한눈에.
               <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
                 {formatModelLine(item.view.modelVerdict)}
@@ -601,7 +603,7 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                 // 시세 구독 ACK 집계(2026-08-28) — 장이 닫혀 가격으로 셀 수 없을 때도 "요청·수락·거절"을 숫자로. 거절이 있을 때만.
                 <Text className="px-5 pb-2 text-xs text-[#f04452]">{feedAckSummary}</Text>
               )}
-              {MARTINGALE_MODE && (
+              {MARTINGALE_MODE && getActiveEngineMode() === 'martingale' && (
                 // ±3% 단타 모드(2026-09-01, 물타기 제거) — 규칙 요약을 여기 한 번만.
                 <Text className="px-5 pb-2 text-xs text-[#8b95a1]">
                   {`±3% 단타 모드 · 1분봉 5·20·60·120선 정배열(4선 상승)이고 가격이 5선 위면 매수 — 봉 마감을 기다리지 않고 진행 중 봉으로 실시간 판정해요(봉당 1회) · 프리·정규·애프터만(주간거래 제외 · 후보 안에서만 · 오늘 이미 산 종목은 5선 돌파·정배열 성립·4선 상승 성립 때만). 익절 평단 +${(MARTINGALE_CONFIG.tpPct * 100).toFixed(0)}% · 손절 평단 −${(MARTINGALE_CONFIG.stopLossPct * 100).toFixed(0)}% · 물타기 없음, ${Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:${String(
@@ -609,12 +611,14 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                   ).padStart(2, '0')} ET 전량 청산.`}
                 </Text>
               )}
-              {!MARTINGALE_MODE && MODEL_MODE && (
+              {MODEL_MODE && getActiveEngineMode() === 'model' && (
                 // 모델이 뭘 예측하는지·기준값·매수 시간대 — 행마다 반복하지 않고 여기 한 번만(2026-08-25).
                 <Text className="px-5 pb-2 text-xs text-[#8b95a1]">
-                  {`모델 % = 지금 사면 손절(−2%)보다 익절(+5%)에 먼저 닿을 확률. 5분봉마다 갱신, ${(
+                  {`모델 % = 지금 사면 손절(−${(MODEL_SYMMETRIC_EXIT_CONFIG.stopLossPct * 100).toFixed(0)}%)보다 익절(+${(
+                    MODEL_SYMMETRIC_EXIT_CONFIG.tpPct * 100
+                  ).toFixed(0)}%)에 먼저 닿을 확률. ${MODEL_BAR_MINUTES}분봉마다 갱신, ${(
                     loadModel().threshold * 100
-                  ).toFixed(1)}%를 넘으면 정규장에서 매수해요. (참고) = 정규장 밖 판정.`}
+                  ).toFixed(1)}%를 넘으면 정규장에서 매수해요. 최장 ${MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분 보유. (참고) = 정규장 밖 판정.`}
                 </Text>
               )}
             </View>

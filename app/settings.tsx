@@ -11,10 +11,11 @@ import Slider from '@react-native-community/slider';
 import { BackHeader } from '../components/BackHeader';
 import { Panel } from '../components/Panel';
 import { DEFAULT_APP_SETTINGS, loadAppSettings, saveAppSettings, snapToStep } from '../lib/appSettings';
-import { MAX_GRIDS_LIMIT, MODEL_CONFIG, WATCH_COUNT_LIMIT } from '../features/scalper/autopilot';
+import { MAX_GRIDS_LIMIT, WATCH_COUNT_LIMIT } from '../features/scalper/autopilot';
 import { MODEL_BAR_MINUTES } from '../features/scalper/modelMode';
-import { MARTINGALE_BAR_MINUTES, MARTINGALE_MODE } from '../features/scalper/martingaleMode';
+import { MARTINGALE_BAR_MINUTES } from '../features/scalper/martingaleMode';
 import { MARTINGALE_CONFIG } from '../core/martingale';
+import { MODEL_SYMMETRIC_EXIT_CONFIG } from '../core/model/exitRule';
 import {
   RankingSelectionPanel,
   draftFromSelection,
@@ -104,6 +105,10 @@ export default function SettingsScreen() {
     draftFromSelection(normalizeRankingSelection(DEFAULT_APP_SETTINGS.rankingSelection)),
   );
 
+  // 엔진 모드(2026-09-01) — ±3% 단타 규칙 ↔ 예측 모델. 저장 후 앱을 완전히 껐다 켜야 반영된다(engineMode.ts).
+  const [engineMode, setEngineMode] = useState<'martingale' | 'model'>(DEFAULT_APP_SETTINGS.engineMode);
+  const savedEngineModeRef = useRef<'martingale' | 'model'>(DEFAULT_APP_SETTINGS.engineMode);
+
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -126,6 +131,8 @@ export default function SettingsScreen() {
       setWatchCount(appSettings.watchCount);
       setMaxConcurrentGrids(appSettings.maxConcurrentGrids);
       setRankingDraft(draftFromSelection(appSettings.rankingSelection));
+      setEngineMode(appSettings.engineMode);
+      savedEngineModeRef.current = appSettings.engineMode;
     })();
   }, []);
 
@@ -203,6 +210,7 @@ export default function SettingsScreen() {
       // 그리드 폭·배율·사다리 값은 화면에서 내렸다(조합 모드 미사용) — 로드해 둔 저장값 그대로 되쓴다(롤백 보존).
       await saveAppSettings({
         environment: 'live',
+        engineMode,
         orderQty: savedOrderQtyRef.current,
         buyCancelAfterSec,
         ...savedRollbackRef.current,
@@ -215,7 +223,14 @@ export default function SettingsScreen() {
         maxConcurrentGrids: parsedMaxGrids,
         rankingSelection,
       });
-      Alert.alert('알림', '설정을 저장했어요.');
+      const modeChanged = engineMode !== savedEngineModeRef.current;
+      savedEngineModeRef.current = engineMode;
+      Alert.alert(
+        '알림',
+        modeChanged
+          ? '설정을 저장했어요. 엔진 모드는 앱을 완전히 종료했다가 다시 켜면 적용돼요 — 보유·미체결이 없는 상태에서 바꾸는 걸 권해요.'
+          : '설정을 저장했어요.',
+      );
     } finally {
       setSaving(false);
     }
@@ -348,8 +363,47 @@ export default function SettingsScreen() {
         </Panel>
 
         <RankingSelectionPanel draft={rankingDraft} onChange={setRankingDraft} />
-        {MARTINGALE_MODE ? (
-          // ±3% 단타 모드(2026-09-01, ADR 0007) — 스위치를 끄면 아래 모델 패널이 다시 산다.
+
+        <Panel title="엔진 모드">
+          <View className="px-5 pb-5">
+            <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+              무엇으로 매매할지 골라요. 저장한 뒤 <Text className="font-semibold text-[#191f28]">앱을 완전히 종료했다가 다시 켜면</Text>{' '}
+              적용돼요 — 보유·미체결이 없는 상태에서 바꾸는 걸 권해요.
+            </Text>
+            {(
+              [
+                {
+                  value: 'martingale' as const,
+                  title: '±3% 단타 규칙',
+                  desc: `${MARTINGALE_BAR_MINUTES}분봉 4선 정배열·5선 돌파에 사고, 익절 +${Math.round(MARTINGALE_CONFIG.tpPct * 100)}% · 손절 −${Math.round(MARTINGALE_CONFIG.stopLossPct * 100)}%`,
+                },
+                {
+                  value: 'model' as const,
+                  title: '예측 모델',
+                  desc: `${MODEL_BAR_MINUTES}분봉 지표 33개로 "+3%가 −3%보다 먼저 올 확률"을 계산해 상위 1% 기준값을 넘으면 매수`,
+                },
+              ]
+            ).map((opt) => {
+              const selected = engineMode === opt.value;
+              return (
+                <Pressable
+                  key={opt.value}
+                  onPress={() => setEngineMode(opt.value)}
+                  className={`mb-2 rounded-2xl border px-4 py-3 ${selected ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'}`}
+                >
+                  <View className="flex-row items-center justify-between">
+                    <Text className={`text-sm font-semibold ${selected ? 'text-[#3182f6]' : 'text-[#191f28]'}`}>{opt.title}</Text>
+                    {selected && <Text className="text-xs font-semibold text-[#3182f6]">선택됨</Text>}
+                  </View>
+                  <Text className="mt-1 text-xs leading-5 text-[#8b95a1]">{opt.desc}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </Panel>
+
+        {engineMode === 'martingale' ? (
+          // ±3% 단타 모드(2026-09-01, ADR 0007) — 아래 고정값 패널은 선택한 모드 것을 보여준다.
           <Panel title="±3% 단타 (고정값)">
             <View className="px-5 pb-5">
               <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
@@ -393,7 +447,7 @@ export default function SettingsScreen() {
         <Panel title="모델 (고정값)">
           <View className="px-5 pb-5">
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              진입은 예측 모델이, 매도는 따라 올라가는 매도선이 정해요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
+              진입은 예측 모델이, 매도는 ±3% 선이 정해요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
             </Text>
 
             <View className="mb-1 flex-row items-center justify-between">
@@ -401,22 +455,24 @@ export default function SettingsScreen() {
               <Text className="text-sm font-semibold text-[#191f28]">모델 확률 ≥ 상위 1% 기준값</Text>
             </View>
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              {MODEL_BAR_MINUTES}분봉이 닫힐 때마다 리스트 전 종목에 대해 "지금 사면 오를 자리인가"를 지표 33개로 계산해요. 3년 반치
-              과거에서 상위 1%에 해당하는 값을 넘어야 사요 — 신호가 드문 게 정상이에요. 정규장·그날 거래대금 $2M 이상·주가 $1 초과만
-              봐요. 물타기는 하지 않아요.
+              {MODEL_BAR_MINUTES}분봉이 닫힐 때마다 리스트 전 종목에 대해 "+{Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.tpPct * 100)}%가 −
+              {Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.stopLossPct * 100)}%보다 먼저 올 확률"을 지표 33개로 계산해요. 3년 반치 과거에서
+              상위 1%에 해당하는 값을 넘어야 사요 — 신호가 드문 게 정상이에요. 정규장·그날 거래대금 $2M 이상·주가 $1 초과만 봐요.
+              물타기는 하지 않아요.
             </Text>
 
             <View className="mb-1 flex-row items-center justify-between">
               <Text className="text-xs text-[#8b95a1]">매도</Text>
               <Text className="text-sm font-semibold text-[#191f28]">
-                고점 −{Math.round(MODEL_CONFIG.trailPct * 100)}% / 평단 −{Math.round(MODEL_CONFIG.stopLossPct * 100)}%
+                익절 +{Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.tpPct * 100)}% / 손절 −{Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.stopLossPct * 100)}% ·
+                최장 {MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분
               </Text>
             </View>
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              <Text className="font-semibold text-[#191f28]">익절 상한이 없어요.</Text> 오르는 동안 매도선이 최고가를 따라
-              올라가고(고점 −{Math.round(MODEL_CONFIG.trailPct * 100)}%), 한 번 올라간 매도선은 내려오지 않아요. 거기 닿거나 평단보다 −
-              {Math.round(MODEL_CONFIG.stopLossPct * 100)}% 빠지면 전량 매도해요. 봉 마감을 기다리지 않고 체결가가 닿는 순간
-              판단하며, 매도 주문은 체결될 때까지 현재가를 따라가요. 장 마감까지 안 닿으면 그때 정리해요.
+              산 가격보다 +{Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.tpPct * 100)}% 오르면 익절, −
+              {Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.stopLossPct * 100)}% 내리면 손절해요 — 모델이 예측한 사건과 똑같은 기하예요. 산 지{' '}
+              {MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분이 지나도록 어느 쪽에도 안 닿으면 그때 전량 매도해요(시간 청산). 봉 마감을
+              기다리지 않고 체결가가 닿는 순간 판단해요.
             </Text>
 
             <View className="mb-1 flex-row items-center justify-between">
@@ -430,10 +486,10 @@ export default function SettingsScreen() {
 
             <View className="rounded-2xl bg-[#f2f4f6] px-4 py-3">
               <Text className="text-xs leading-5 text-[#4e5968]">
-                검증: 과거 4구간(2024-07~2026-04) 6,121거래 · 승률 34% ·{' '}
-                <Text className="font-semibold text-[#191f28]">거래당 평균 +0.62%</Text>(비용 포함) · 4구간 전부 플러스.
-                승률이 낮은 대신 이길 때 크게 벌어요(실측 최대 한 건 +340%). 한 번 지면 −
-                {Math.round(MODEL_CONFIG.stopLossPct * 100)}%를 감당할 금액으로만 하세요.
+                검증: 과거 4구간(2024-07~2026-04) 19,610거래 · 승률 58% ·{' '}
+                <Text className="font-semibold text-[#191f28]">거래당 평균 +0.2% 언저리</Text>(비용 포함) · 4구간 전부 플러스
+                (2026-09-01 ±3% 대칭·1분봉 재학습). 건당 이익이 얇아 체결이 조금만 불리해도 우위가 줄어요 — 잃어도 되는 금액으로만
+                하세요.
               </Text>
             </View>
           </View>

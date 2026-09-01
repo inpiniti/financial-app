@@ -41,6 +41,7 @@ import type { OverseasExchangeCode } from '../../../kis/trId';
 import { INFLECTION_THRESHOLDS, MARTINGALE_POSITION_CONFIG, MODEL_CONFIG, TREND_CONFIG } from '../autopilot';
 import { MINUTE_BAR_RING_SIZE, TREND_BAR_MINUTES, type MinuteBar } from '../../../core/trend/bars';
 import { MARTINGALE_BAR_MINUTES, MARTINGALE_MODE } from '../martingaleMode';
+import { setActiveEngineMode } from '../engineMode';
 import {
   fetchTossDailyCloses,
   fetchTossMinuteBars,
@@ -157,6 +158,10 @@ async function buildManager(): Promise<ManagerBootstrap> {
   const credentials: KisCredentials = { appKey: kisSettings.appKey, appSecret: kisSettings.appSecret };
   const account: KisAccount = { cano: kisSettings.cano, acntPrdtCd: kisSettings.acntPrdtCd };
   const environment: KisEnvironment = appSettings.environment;
+  // 엔진 모드(2026-09-01) — 설정에서 읽어 앱 수명당 1회 확정한다. 아래 martingale/model 조건부 주입과
+  // 화면·도움말(getActiveEngineMode)이 전부 이 값을 따른다. 설정을 바꾸면 앱을 껐다 켜야 반영된다.
+  const engineMode = appSettings.engineMode;
+  setActiveEngineMode(engineMode);
 
   const approvalKey = await getApprovalKey(environment, credentials);
   // 직전 실행의 구독 키 — 강제 종료로 서버에 남은 등록을 첫 열림에 해제 프레임으로 쓸어낸다(2026-08-28 MAX SUBSCRIBE OVER).
@@ -308,9 +313,9 @@ async function buildManager(): Promise<ManagerBootstrap> {
       tossCodeCache.set(ticker, resolved);
       code = resolved;
     }
-    // 물타기 시험 모드(2026-08-27)는 1분봉 시드 — 켜져 있으면 추세 봉 주기 대신 1분을 쓴다(슬롯 빌더도 1분).
+    // ±3% 단타 모드는 1분봉 시드 — 활성 엔진 모드가 martingale이면 추세 봉 주기 대신 1분을 쓴다(슬롯 빌더도 1분).
     return fetchTossMinuteBars(code, MINUTE_BAR_RING_SIZE, {
-      intervalMin: MARTINGALE_MODE ? MARTINGALE_BAR_MINUTES : TREND_BAR_MINUTES,
+      intervalMin: MARTINGALE_MODE && engineMode === 'martingale' ? MARTINGALE_BAR_MINUTES : TREND_BAR_MINUTES,
     });
   };
 
@@ -391,16 +396,16 @@ async function buildManager(): Promise<ManagerBootstrap> {
     // 변곡점+그리드 조합(2026-08-15 도메인 문서) — 문턱은 문서 §5 고정값(+2%/−3%), 설정 탭 없음.
     // 끄려면 feedSlot.INFLECTION_ENTRY·autopilot.INFLECTION_GRID를 false로(한 줄 롤백) 하거나 이 주입을 뺀다.
     inflection: INFLECTION_THRESHOLDS,
-    // 모델 → 매매 → 그리드(2026-08-22) — **현행**. 위 추세·조합·사다리보다 우선한다(단일 스위치 modelMode.MODEL_MODE).
-    // 신호: ModelScanner가 토스 5분봉으로 LightGBM 확률을 내 임계값(학습 상위 1%)을 넘으면 BUY.
-    // 청산: +5%/−2%/120분(MODEL_CONFIG). 끄려면 MODEL_MODE=false(한 줄 롤백 → 추세) 또는 이 주입 세 줄을 뺀다.
-    model: MODEL_CONFIG,
+    // 모델 → 매매 → 그리드 — engineMode='model'일 때만 주입한다(2026-09-01 설정화). 추세·조합·사다리보다 우선.
+    // 신호: ModelScanner가 토스 1분봉으로 LightGBM(±3% 대칭 라벨) 확률을 내 임계값(학습 상위 1%)을 넘으면 BUY.
+    // 청산: 익절 +3% · 손절 −3% · 최장 120분(MODEL_CONFIG + MODEL_EXIT_SYMMETRIC). 봉 조회기는 항상 주입(화면 참고 판정용).
+    model: engineMode === 'model' ? MODEL_CONFIG : undefined,
     fetchModelBars,
     fetchModelDailyCloses,
-    // ±3% 단타 모드(구 배수 물타기 시험 — ADR 0006·0007) — **켜져 있으면 모델·추세보다 우선**한다(단일 스위치 martingaleMode.MARTINGALE_MODE).
-    // 신호: 슬롯이 1분봉 4선으로 진입(정배열·5선 돌파)만 낸다. 청산: 익절 +3% · 손절 −3% · 19:55 ET 마감 청산(물타기 없음, 2026-09-01).
-    // 끄려면 MARTINGALE_MODE=false(한 줄 롤백 → 모델) 또는 이 주입 한 줄을 뺀다.
-    martingale: MARTINGALE_POSITION_CONFIG,
+    // ±3% 단타 모드(구 배수 물타기 시험 — ADR 0006·0007) — engineMode='martingale'일 때만 주입한다(2026-09-01 설정화).
+    // 주입되면 모델·추세보다 우선(상수 AND 주입 이중 게이트 — martingaleMode.MARTINGALE_MODE는 킬스위치로 유지).
+    // 신호: 슬롯이 1분봉 4선으로 진입(정배열·5선 돌파, 진행 중 봉 실시간)만 낸다. 청산: 익절 +3% · 손절 −3% · 19:55 ET 마감 청산.
+    martingale: engineMode === 'martingale' ? MARTINGALE_POSITION_CONFIG : undefined,
     // 추세 → 그리드 → 매매(2026-08-18 도메인 문서) — 모델 롤백용 보존. 모델이 켜져 있는 동안은 쓰이지 않는다.
     // 끄려면 TREND_MODE=false(한 줄 롤백 → 변곡점 조합) 또는 이 주입 두 줄을 뺀다.
     trend: TREND_CONFIG,

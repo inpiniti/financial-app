@@ -62,11 +62,13 @@ export interface TossMinuteCandle {
  * adjusted=false면 **원시가**(분할·병합 조정 없는 당시 실제 가격) — 모델 경로가 쓴다. 학습 데이터가
  * `useAdjustedRate=false`로 모였고(financial-analyze src/tossChart.ts), 실시간 체결가(한투)도 원시가라
  * 그쪽과 눈금을 맞춘다. 추세 경로는 기존대로 조정가(true).
+ * from을 주면 **그 시각 이전** 봉 페이지를 받는다(과거 소급 커서 — financial-analyze src/tossChart.ts 실측 규약).
  */
-export function buildTossChartUrl(productCode: string, count: number, intervalMin = 1, adjusted = true): string {
+export function buildTossChartUrl(productCode: string, count: number, intervalMin = 1, adjusted = true, from?: string): string {
   const n = Math.max(1, Math.min(TOSS_CHART_MAX_COUNT, Math.floor(count)));
   const iv = Math.max(1, Math.floor(intervalMin));
-  return `${TOSS_CHART_URL}/${encodeURIComponent(productCode)}/min:${iv}?count=${n}&useAdjustedRate=${adjusted}`;
+  const cursor = from ? `&from=${encodeURIComponent(from)}` : '';
+  return `${TOSS_CHART_URL}/${encodeURIComponent(productCode)}/min:${iv}?count=${n}&useAdjustedRate=${adjusted}${cursor}`;
 }
 
 /** 일봉 URL — day:1. 모델 경로의 전일 종가(원시가)용. */
@@ -223,7 +225,12 @@ export interface FetchTossOhlcvOptions extends TossMinuteChartDeps {
   intervalMin?: number;
 }
 
-/** 모델용 N분봉 count개(오름차순, 원시가, 진행 중 봉 제외). */
+/**
+ * 모델용 N분봉 count개(오름차순, 원시가, 진행 중 봉 제외).
+ * count가 회당 상한(TOSS_CHART_MAX_COUNT=300)을 넘으면 **from 커서(nextDateTime)로 과거를 페이징**해 잇는다
+ * (2026-09-01 — 1분봉 전환으로 하루치가 최대 1,440봉이 됐다. 커서 규약은 financial-analyze src/tossChart.ts 실측:
+ * from = 그 시각 이전 봉, 응답 result.nextDateTime = 다음(더 과거) 페이지 커서). 전진 못 하면 중단(무한루프 방어).
+ */
 export async function fetchTossOhlcvBars(
   productCode: string,
   count: number,
@@ -231,12 +238,27 @@ export async function fetchTossOhlcvBars(
 ): Promise<ModelOhlcvBar[]> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const iv = Math.max(1, Math.floor(deps.intervalMin ?? 5));
-  const res = await fetchImpl(buildTossChartUrl(productCode, count, iv, false), {
-    method: 'GET',
-    headers: { accept: 'application/json' },
-  });
   const nowKey = Math.floor((deps.nowMs ?? Date.now()) / (60_000 * iv)) * iv;
-  return parseTossOhlcvBars(await res.json(), nowKey, iv);
+  const want = Math.max(1, Math.floor(count));
+  const maxPages = Math.ceil(want / TOSS_CHART_MAX_COUNT) + 1;
+  const byKey = new Map<number, ModelOhlcvBar>();
+  let from: string | undefined;
+  for (let page = 0; page < maxPages; page++) {
+    const res = await fetchImpl(buildTossChartUrl(productCode, Math.min(want, TOSS_CHART_MAX_COUNT), iv, false, from), {
+      method: 'GET',
+      headers: { accept: 'application/json' },
+    });
+    const body = (await res.json()) as { result?: { nextDateTime?: string } } | null;
+    const bars = parseTossOhlcvBars(body, nowKey, iv);
+    for (const b of bars) if (!byKey.has(b.minuteKey)) byKey.set(b.minuteKey, b);
+    if (byKey.size >= want) break;
+    if (bars.length === 0 && page > 0) break; // 더 과거가 없다(첫 페이지 빈 응답은 그대로 끝).
+    if (bars.length === 0) break;
+    const next = body?.result?.nextDateTime;
+    if (typeof next !== 'string' || (from !== undefined && Date.parse(next) >= Date.parse(from))) break;
+    from = next;
+  }
+  return [...byKey.values()].sort((a, b) => a.minuteKey - b.minuteKey).slice(-want);
 }
 
 /** 일봉 종가 하나 — 거래일(ET, 원문 dt의 날짜 부분)과 원시 종가. */

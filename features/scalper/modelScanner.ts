@@ -16,10 +16,14 @@ import type { GbdtModel } from '../../core/model/gbdt';
 import type { ClockLike } from './types';
 
 /**
- * 첫 조회 봉 수 — 5분봉 300개 = 25시간. 거래일이 주간거래까지 최대 24시간(288봉)이라(2026-08-25
- * 주간거래 봉 포함) 어느 시점에 켜도 그날 04:00 ET(dayOpen)까지 닿는다. 150이던 시절엔 창이 16시간이었다.
+ * 첫 조회 봉 수 — 거래일이 주간거래까지 최대 24시간이라(2026-08-25 주간거래 봉 포함) 어느 시점에 켜도
+ * 그날 04:00 ET(dayOpen)까지 닿는 수 + 여유 12봉. 5분봉이면 300(옛 상수와 같은 값), 1분봉이면 1,452.
+ * 토스 호출은 회당 300봉 상한이라 조회기(lib/tossMinuteChart.fetchTossOhlcvBars)가 from 커서로 페이징한다(2026-09-01).
+ * dayOpen·누적 거래대금이 그날 첫 봉부터 쌓여야 change_from_day_open·거래대금 필터가 학습과 같은 값이 된다.
  */
-export const MODEL_SEED_BAR_COUNT = 300;
+export function modelSeedBarCount(barMinutes: number): number {
+  return Math.ceil((24 * 60) / Math.max(1, Math.floor(barMinutes))) + 12;
+}
 /** 이후 조회 봉 수 — 마감 직후 몇 봉만. 놓친 봉(앱 절전·네트워크 끊김)까지 흡수하도록 여유를 둔다. */
 export const MODEL_INCREMENTAL_BAR_COUNT = 6;
 /** 스캔 점검 주기(ms) — 봉 마감을 놓치지 않을 만큼만 자주 본다. */
@@ -162,7 +166,7 @@ export class ModelScanner {
   private async scanOne(ticker: string, state: SymbolState, targetKey: number): Promise<void> {
     // 첫 조회이거나 봉이 끊겼으면 그날치를 다시 받는다(앱 절전 복귀·거래일 전환).
     const gap = state.bars.lastKey === null ? Infinity : (targetKey - state.bars.lastKey) / this.deps.barMinutes;
-    const count = gap > MODEL_INCREMENTAL_BAR_COUNT - 1 ? MODEL_SEED_BAR_COUNT : MODEL_INCREMENTAL_BAR_COUNT;
+    const count = gap > MODEL_INCREMENTAL_BAR_COUNT - 1 ? modelSeedBarCount(this.deps.barMinutes) : MODEL_INCREMENTAL_BAR_COUNT;
     const fetched = await this.deps.fetchBars(ticker, count);
     state.bars.merge(fetched);
 

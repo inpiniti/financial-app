@@ -23,7 +23,15 @@ import { ConditionalGrid, type ConditionalDecision, type ConditionalGridView, ty
 import type { Signal } from '../../core/detector';
 import { Execution, type ClockLike, type ExecutionResult } from '../../core/execution';
 import { Grid, REBRACKET_RETRY_MS, type BuyLegStatus, type GridPollResult } from '../../core/grid';
-import { ModelExitRule, MODEL_EXIT_CONFIG, type ModelExitConfig } from '../../core/model/exitRule';
+import {
+  ModelExitRule,
+  ModelSymmetricExitRule,
+  MODEL_EXIT_CONFIG,
+  MODEL_EXIT_SYMMETRIC,
+  MODEL_SYMMETRIC_EXIT_CONFIG,
+  type ModelExitConfig,
+  type ModelSymmetricExitConfig,
+} from '../../core/model/exitRule';
 import { MARTINGALE_CONFIG, MartingaleRule, type MartingaleConfig } from '../../core/martingale';
 import { TrendExitRule } from '../../core/trend/exitRule';
 import { CIRCUIT_MODE } from './circuitMode';
@@ -98,18 +106,18 @@ export interface TrendGridConfig {
 export const TREND_CONFIG: TrendGridConfig = { kind: 'trend', stopLossPct: 0 };
 
 /**
- * 모델 청산 설정(2026-08-22) — **주입 자체가 활성화 신호**다(MODEL_MODE AND 주입).
- * 값은 백테스트 기하 그대로다. 바꾸면 FINAL TEST 숫자(PF 1.301)가 그 설정에 대한 근거가 아니게 된다.
+ * 모델 청산 설정 — **주입 자체가 활성화 신호**다(MODEL_MODE AND 주입).
+ * 값은 백테스트 기하 그대로다. 바꾸면 검증 숫자가 그 설정에 대한 근거가 아니게 된다.
+ * 두 기하를 다 담는다 — 실제 선택은 MODEL_EXIT_SYMMETRIC(core/model/exitRule) 스위치:
+ *  · 대칭(현행, 2026-09-01): 익절 +3% · 손절 −3% · 최장 120분 — ±3% 대칭 라벨 재학습과 세트
+ *  · 트레일(롤백): 트레일 −5% + 하드 −2% (docs/analysis/2026-08-24_청산-연구.md) — +5/−2 모델과 세트
  */
-export interface ModelGridConfig extends ModelExitConfig {
+export interface ModelGridConfig extends ModelExitConfig, ModelSymmetricExitConfig {
   readonly kind?: 'model';
 }
 
-/**
- * 모델 설정의 단일 출처 — managerProvider가 주입한다.
- * 근거: financial-analyze `docs/analysis/2026-08-24_청산-연구.md` (트레일 −5% + 하드 손절 −2%, 4폴드 전부 우세).
- */
-export const MODEL_CONFIG: ModelGridConfig = { kind: 'model', ...MODEL_EXIT_CONFIG };
+/** 모델 설정의 단일 출처 — managerProvider가 주입한다. */
+export const MODEL_CONFIG: ModelGridConfig = { kind: 'model', ...MODEL_EXIT_CONFIG, ...MODEL_SYMMETRIC_EXIT_CONFIG };
 
 /**
  * ±3% 단타 모드 설정(구 배수 물타기 시험 — 2026-08-27 ADR 0006, 2026-09-01 물타기 제거 ADR 0007) —
@@ -342,8 +350,53 @@ export function makePositionManager(
     }
     case 'model': {
       const model = cfg.model!;
+      if (MODEL_EXIT_SYMMETRIC) {
+        // ±3% 대칭 청산(2026-09-01) — 모델 라벨(+3% vs −3%, 120분)과 같은 기하. 물타기 없음.
+        const up = (model.tpPct * 100).toFixed(0);
+        const dn = (model.stopLossPct * 100).toFixed(0);
+        return new RulePositionManager(deps, {
+          label: '모델 ±3% 관리',
+          gauge: 'orders', // 위끝 = 익절 목표가(평단 +3%), 아래끝 = 손절선(평단 −3%).
+          manualExitCheckMs: MANUAL_EXIT_CHECK_MS,
+          build: (seed) => {
+            const entryAtMs = deps.entry?.entryTs ?? deps.clock.now();
+            const rule = new ModelSymmetricExitRule(seed, { ...model, entryAtMs, clock: deps.clock });
+            const circuit = new CircuitExitRule(rule, { act: CIRCUIT_MODE });
+            return {
+              rule: circuit,
+              circuit,
+              priceExit: (price) => {
+                const kind = rule.exitKind;
+                if (kind === 'TIMEOUT') {
+                  return {
+                    reason: 'TIMEOUT' as ExitReason,
+                    text: `시간 청산 · 진입 후 ${model.maxHoldMin}분이 지나 남은 수량을 전량 매도해요`,
+                  };
+                }
+                if (kind === 'SESSION_END') {
+                  return { reason: 'SESSION_END' as ExitReason, text: '장 마감 · 남은 수량을 전량 매도해요' };
+                }
+                if (kind === 'STOP_LOSS') {
+                  return {
+                    reason: 'STOP_LOSS' as ExitReason,
+                    text: `손절 · 현재가 ${price.toFixed(2)} ≤ 평단 −${dn}%(${rule.stopPrice.toFixed(2)}) — 전량 매도해요`,
+                    line: rule.stopPrice,
+                  };
+                }
+                return {
+                  reason: 'TAKE_PROFIT' as ExitReason,
+                  text: `익절 · 현재가 ${price.toFixed(2)} ≥ 평단 +${up}%(${rule.targetPrice.toFixed(2)}) — 전량 매도해요`,
+                  line: rule.targetPrice,
+                };
+              },
+              armText: `${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} · 익절 ${rule.targetPrice.toFixed(2)}(+${up}%) · 손절 ${rule.stopPrice.toFixed(2)}(−${dn}%) · 최장 ${model.maxHoldMin}분 보유 — 물타기 없어요`,
+            };
+          },
+        });
+      }
+      // 트레일 −5% + 하드 −2%(롤백 보존, 2026-08-24 청산 연구) — +5/−2 라벨 모델과 세트로만 의미가 있다.
       const trail = (model.trailPct * 100).toFixed(0);
-      const dn = (model.stopLossPct * 100).toFixed(0);
+      const dn = (MODEL_EXIT_CONFIG.stopLossPct * 100).toFixed(0); // 대칭 기하의 stopLossPct(0.03)와 필드가 겹쳐 상수를 직접 읽는다.
       return new RulePositionManager(deps, {
         label: '모델 관리',
         gauge: 'orders', // 게이지 위끝=진입 후 고점, 아래끝=지금 매도선. 추세와 달리 그릴 선이 있다.
@@ -351,7 +404,7 @@ export function makePositionManager(
         build: (seed) => {
           // 청산은 백테스트 기하 그대로 — 트레일 −5% + 하드 손절 −2%, 익절 상한 없음. 물타기 없음.
           const entryAtMs = deps.entry?.entryTs ?? deps.clock.now();
-          const rule = new ModelExitRule(seed, { ...model, entryAtMs, clock: deps.clock });
+          const rule = new ModelExitRule(seed, { trailPct: model.trailPct, stopLossPct: MODEL_EXIT_CONFIG.stopLossPct, entryAtMs, clock: deps.clock });
           // 서킷 데코레이터 — CIRCUIT_MODE=false면 관측(이벤트)만.
           const circuit = new CircuitExitRule(rule, { act: CIRCUIT_MODE });
           return {

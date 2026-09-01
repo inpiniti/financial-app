@@ -10,11 +10,12 @@
 // 매매 파라미터(금액·수량·속도), 오토파일럿 상태·보유 티커까지다.
 import { COMPANY_BRIEF_ENDPOINT } from '../stock/companyBrief';
 import {
-  APP_MANUAL,
+  buildAppManual,
   describeRuntimeState,
   describeUserSettings,
   type HelpRuntimeState,
 } from './appManual';
+import { getActiveEngineMode } from '../scalper/engineMode';
 import type { AppSettings } from '../../lib/appSettings';
 
 /** 기업 탭과 같은 프록시. 별칭을 두는 이유는 "도움말도 이 엔드포인트"를 코드에서 읽히게 하려는 것뿐이다. */
@@ -124,7 +125,8 @@ export function buildHelpSystemInstruction(ctx: HelpPromptContext = {}): string 
     const runtime = describeRuntimeState(ctx.runtime);
     if (runtime) state.push(runtime);
   }
-  const blocks = [systemInstructionHead(state.length > 0), '', '[사용 설명서]', APP_MANUAL];
+  // 매뉴얼은 활성 엔진 모드 본으로 — 모델 모드에서 ±3% 단타 설명을 읽고 답하면 안 된다(2026-09-01 설정화).
+  const blocks = [systemInstructionHead(state.length > 0), '', '[사용 설명서]', buildAppManual(getActiveEngineMode())];
   if (state.length) {
     blocks.push('', '[사용자의 현재 상태] — 설명서의 기본값이 아니라 이 값이 지금 실제로 걸린 값이다.', state.join('\n'));
   }

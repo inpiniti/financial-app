@@ -2,7 +2,14 @@
 // 근거·숫자는 financial-analyze `docs/analysis/2026-08-24_청산-연구.md`.
 
 import { describe, expect, it } from 'vitest';
-import { MODEL_EXIT_CONFIG, ModelExitRule, OUTLIER_JUMP_PCT } from './exitRule';
+import {
+  MODEL_EXIT_CONFIG,
+  MODEL_EXIT_SYMMETRIC,
+  MODEL_SYMMETRIC_EXIT_CONFIG,
+  ModelExitRule,
+  ModelSymmetricExitRule,
+  OUTLIER_JUMP_PCT,
+} from './exitRule';
 
 const seed = { qty: 10, avgPrice: 100 };
 /** 2026-08-24 13:00Z = ET 09:00 — 장중(마감 20:00 ET 전). */
@@ -153,5 +160,73 @@ describe('ModelExitRule — PositionRule 계약', () => {
     expect(r.hardStopPrice).toBeCloseTo(107.8, 9); // 110 × 0.98
     expect(r.peakPrice).toBe(120); // 고점 유지
     expect(r.onPriceAt(114)).toEqual({ side: 'sell', qty: 20 });
+  });
+});
+
+// ── ±3% 대칭 청산(2026-09-01) — 현행. 근거: financial-analyze docs/analysis/2026-09-01_1분봉-대칭-3퍼센트-워크포워드.md ──
+
+describe('ModelSymmetricExitRule — ±3%/120분', () => {
+  const sym = (nowRef?: { now: number }) =>
+    new ModelSymmetricExitRule(seed, {
+      ...MODEL_SYMMETRIC_EXIT_CONFIG,
+      entryAtMs: T0,
+      clock: nowRef ? { now: () => nowRef.now } : undefined,
+    });
+
+  it('스위치·기하 — 대칭 청산이 켜져 있고 값은 워크포워드 그대로다', () => {
+    expect(MODEL_EXIT_SYMMETRIC).toBe(true);
+    expect(MODEL_SYMMETRIC_EXIT_CONFIG).toEqual({ tpPct: 0.03, stopLossPct: 0.03, maxHoldMin: 120 });
+  });
+
+  it('익절선·손절선은 평단 ±3%다', () => {
+    const r = sym();
+    expect(r.targetPrice).toBeCloseTo(103, 9);
+    expect(r.stopPrice).toBeCloseTo(97, 9);
+    expect(r.view.sellLine).toBeCloseTo(103, 9);
+    expect(r.view.buyLine).toBeCloseTo(97, 9);
+  });
+
+  it('+3% 도달 → TAKE_PROFIT, −3% 도달 → STOP_LOSS, 그 사이는 null', () => {
+    const r = sym();
+    expect(r.onPriceAt(102.9)).toBeNull();
+    expect(r.onPriceAt(103)).toEqual({ side: 'sell', qty: 10 });
+    expect(r.exitKind).toBe('TAKE_PROFIT');
+    const r2 = sym();
+    expect(r2.onPriceAt(97)).toEqual({ side: 'sell', qty: 10 });
+    expect(r2.exitKind).toBe('STOP_LOSS');
+  });
+
+  it('120분이 지나면 어느 선에도 안 닿았어도 TIMEOUT으로 판다', () => {
+    const now = { now: T0 };
+    const r = sym(now);
+    expect(r.onPrice(100.5)).toBeNull();
+    now.now = T0 + 120 * 60_000;
+    expect(r.onPrice(100.5)).toEqual({ side: 'sell', qty: 10 });
+    expect(r.exitKind).toBe('TIMEOUT');
+  });
+
+  it('취소선 — 익절 매도만 목표가 아래로 내려가면 접고, 손절·시간 매도는 접지 않는다', () => {
+    const r = sym();
+    r.onPriceAt(103.2); // TAKE_PROFIT 매도 시작
+    expect(r.shouldAbort('sell', 102.5)).toBe(true);
+    expect(r.shouldAbort('sell', 103.5)).toBe(false);
+    const r2 = sym();
+    r2.onPriceAt(96.5); // STOP_LOSS
+    expect(r2.shouldAbort('sell', 99)).toBe(false);
+  });
+
+  it('이상치 방어 — ±30% 튄 틱은 다음 틱 확인 전까지 판정하지 않는다(트레일링 규칙과 같은 규약)', () => {
+    const r = sym();
+    expect(r.onPriceAt(1000)).toBeNull(); // 익절선 위지만 이상치 보류
+    expect(r.onPriceAt(100.5)).toBeNull(); // 정상 복귀 — 아무 일도 없다
+    expect(r.onPriceAt(950)).toBeNull(); // 다시 튐 — 첫 보류와 다른 흐름이라 또 보류
+    expect(r.onPriceAt(960)).toEqual({ side: 'sell', qty: 10 }); // 연속 확인 — 진짜 급등으로 인정, 익절
+  });
+
+  it('동시 터치 성격의 보수 규약 — 손절 판정이 익절보다 먼저다(같은 가격이 둘 다면 손절)', () => {
+    // 평단 100 · ±3%에서 한 가격이 둘 다일 수는 없지만, 판정 순서 자체를 고정해 둔다(라벨 생성 규칙과 동일 정신).
+    const r = new ModelSymmetricExitRule({ qty: 10, avgPrice: 100 }, { tpPct: 0, stopLossPct: 0, maxHoldMin: 120, entryAtMs: T0 });
+    r.onPriceAt(100);
+    expect(r.exitKind).toBe('STOP_LOSS');
   });
 });

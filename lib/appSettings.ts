@@ -11,6 +11,13 @@ const STORAGE_KEY = 'app:settings';
 export interface AppSettings {
   /** 기본 LIVE(실전) — PRD §9-6 확정. PAPER는 전환 옵션. */
   environment: KisEnvironment;
+  /**
+   * 엔진 모드(2026-09-01) — 'martingale'(±3% 단타 규칙: 1분봉 정배열·5선 돌파 진입) 또는
+   * 'model'(LightGBM ±3% 대칭 모델: 확률 상위 1% 진입). 기본 'martingale'(현행 운용).
+   * ⚠ 슬롯 봉 주기·ModelScanner·워밍업이 매니저 생성 시점에 굳으므로 **앱을 완전히 껐다 켜야 반영**된다
+   * (features/scalper/engineMode.ts). 컴파일 킬스위치(MARTINGALE_MODE/MODEL_MODE)가 false인 모드는 선택해도 돌지 않는다.
+   */
+  engineMode: 'martingale' | 'model';
   /** 주문 수량 (고정 수량). */
   orderQty: number;
   /**
@@ -98,6 +105,7 @@ export interface AppSettings {
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   environment: 'live',
+  engineMode: 'martingale',
   orderQty: 1,
   buyCancelAfterSec: 0,
   gridBuyWidthPct: 5,
@@ -159,6 +167,8 @@ export async function loadAppSettings(): Promise<AppSettings> {
     // 키를 명시적으로 골라 담는다 — 저장소에 남은 제거된 옛 키(chunkSeconds 등)를 확실히 버린다.
     return {
       environment: 'live',
+      // 모르는 값(옛 버전·손상)은 기본 'martingale'로 방어 — 엔진 모드가 비정상 문자열로 굳으면 두 모드 다 안 돈다.
+      engineMode: parsed.engineMode === 'model' ? 'model' : DEFAULT_APP_SETTINGS.engineMode,
       orderQty: parsed.orderQty ?? DEFAULT_APP_SETTINGS.orderQty,
       buyCancelAfterSec: parsed.buyCancelAfterSec ?? DEFAULT_APP_SETTINGS.buyCancelAfterSec,
       gridBuyWidthPct: parsed.gridBuyWidthPct ?? parsed.gridWidthPct ?? DEFAULT_APP_SETTINGS.gridBuyWidthPct,

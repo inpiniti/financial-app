@@ -39,6 +39,35 @@ export const MODEL_EXIT_CONFIG: ModelExitConfig = {
   stopLossPct: 0.02,
 };
 
+// ---------------------------------------------------------------------------
+// ±3% 대칭 청산 (2026-09-01 — 1분봉 × ±3% 대칭 라벨 재학습과 세트)
+// ---------------------------------------------------------------------------
+
+/**
+ * 대칭 청산 스위치 — 모델이 예측하는 사건(+3%가 −3%보다 먼저)과 청산 규칙을 한 몸으로 묶는다(학습-실행 일치).
+ * 검증: financial-analyze docs/analysis/2026-09-01_1분봉-대칭-3퍼센트-워크포워드.md — 4폴드 전부 흑자
+ * (승률 58.0~58.4% · PF 1.136~1.164 · 합계 +39.2, 현행 트레일 기하의 +5/−2 모델 +21.9 대비 1.8배).
+ * false로 두면 트레일 −5%/하드 −2%(위 MODEL_EXIT_CONFIG)로 **한 줄 롤백** — 단 그 경우 model.json도
+ * +5/−2 라벨 모델로 되돌려야 학습-실행이 일치한다(2026-08-31 이전 커밋의 model.json).
+ */
+export const MODEL_EXIT_SYMMETRIC = true;
+
+/** 대칭 청산 기하 — 워크포워드가 검증한 값 그대로(±3%/120분). 바꾸면 그 숫자가 근거가 아니게 된다. */
+export interface ModelSymmetricExitConfig {
+  /** 익절 폭(소수, 0.03) — 평단 +3% 도달 시 전량 매도. */
+  tpPct: number;
+  /** 손절 폭(소수, 0.03) — 평단 −3% 도달 시 전량 매도. */
+  stopLossPct: number;
+  /** 최장 보유(분, 120) — 진입 후 이 시간이 지나면 어느 선에도 안 닿았어도 전량 매도(백테스트 horizon). */
+  maxHoldMin: number;
+}
+
+export const MODEL_SYMMETRIC_EXIT_CONFIG: ModelSymmetricExitConfig = {
+  tpPct: 0.03,
+  stopLossPct: 0.03,
+  maxHoldMin: 120,
+};
+
 /**
  * 이상치로 보는 1틱 변동폭. 이보다 크게 튀면 **다음 틱이 같은 방향을 확인할 때까지** 무시한다.
  * 백테스트 세정(bars_io.py)의 꼬리 허용 폭 30%와 같은 값 — 급등주의 진짜 1분 급등은 이 안에 들어온다.
@@ -47,6 +76,9 @@ export const OUTLIER_JUMP_PCT = 0.30;
 
 /** 이번 청산이 어느 조건이었나 — 호출부가 청산 사유(ExitReason)로 옮긴다. */
 export type ModelExitKind = 'TRAIL' | 'STOP_LOSS' | 'SESSION_END';
+
+/** 대칭 청산의 결정 종류 — TAKE_PROFIT(+3%) / STOP_LOSS(−3%) / TIMEOUT(120분) / SESSION_END(20:00 ET). */
+export type ModelSymmetricExitKind = 'TAKE_PROFIT' | 'STOP_LOSS' | 'TIMEOUT' | 'SESSION_END';
 
 export interface ModelExitRuleOptions extends ModelExitConfig {
   /** 진입 시각(epoch ms) — 기록·진단용. */
@@ -195,5 +227,157 @@ export class ModelExitRule {
     this.qty = position.qty;
     this.avgPrice = position.avgPrice;
     if (position.avgPrice > this.peak) this.peak = position.avgPrice;
+  }
+}
+
+export interface ModelSymmetricExitRuleOptions extends ModelSymmetricExitConfig {
+  /** 진입 시각(epoch ms) — 최장 보유(120분) 판정의 기준. */
+  entryAtMs: number;
+  /** 지금 시각 — 최장 보유·장 마감 판정. 없으면 시간 청산 없음(테스트 편의). */
+  clock?: { now(): number };
+}
+
+/**
+ * ±3% 대칭 청산 규칙(2026-09-01) — 모델 라벨(+3%가 −3%보다 먼저, 120분)과 같은 기하로 판다.
+ * 판정 순서는 백테스트(walkforward.simulate)와 같은 보수 규약 — **손절(하단) 먼저**, 동시 터치는 손절.
+ * 익절 매도는 목표가 지정가 의미론(현재가가 목표 아래로 내려가면 접는다 — MartingaleRule과 동일),
+ * 손절·시간·마감 매도는 무조건 체결까지 따라간다. 이상치 방어(acceptPrice)는 트레일링 규칙과 같은 이유로 유지.
+ */
+export class ModelSymmetricExitRule {
+  private qty: number;
+  private avgPrice: number;
+  private readonly entryQty: number;
+  private readonly cfg: ModelSymmetricExitConfig;
+  private readonly entryAtMs: number;
+  private readonly clock: { now(): number } | undefined;
+
+  /** 마지막으로 받아들인 가격 — 이상치 판정 기준선(ModelExitRule.acceptPrice와 같은 규약). */
+  private lastAccepted: number;
+  private pending: number | null = null;
+  private lastKind: ModelSymmetricExitKind | null = null;
+  /** 진행 중 매도가 어떤 결정이었나 — 취소선(shouldAbort) 판정용. */
+  private pendingExit: ModelSymmetricExitKind | null = null;
+
+  constructor(position: ConditionalPosition, options: ModelSymmetricExitRuleOptions) {
+    this.qty = position.qty;
+    this.avgPrice = position.avgPrice;
+    this.entryQty = position.qty;
+    this.entryAtMs = options.entryAtMs;
+    this.clock = options.clock;
+    this.cfg = { tpPct: options.tpPct, stopLossPct: options.stopLossPct, maxHoldMin: options.maxHoldMin };
+    this.lastAccepted = position.avgPrice;
+  }
+
+  /** 익절 목표가 = 평단 × (1 + tpPct). */
+  get targetPrice(): number {
+    return this.avgPrice * (1 + this.cfg.tpPct);
+  }
+
+  /** 손절선 = 평단 × (1 − stopLossPct). */
+  get stopPrice(): number {
+    return this.avgPrice * (1 - this.cfg.stopLossPct);
+  }
+
+  /** 최장 보유 만료 시각(epoch ms). */
+  get holdUntilMs(): number {
+    return this.entryAtMs + this.cfg.maxHoldMin * 60_000;
+  }
+
+  get entryAt(): number {
+    return this.entryAtMs;
+  }
+
+  get exitKind(): ModelSymmetricExitKind | null {
+    return this.lastKind;
+  }
+
+  /** 이상치 필터 — ModelExitRule.acceptPrice와 같은 규약(±30% 튐은 다음 틱 확인까지 보류). */
+  private acceptPrice(price: number): number | null {
+    const lo = this.lastAccepted * (1 - OUTLIER_JUMP_PCT);
+    const hi = this.lastAccepted * (1 + OUTLIER_JUMP_PCT);
+    if (price >= lo && price <= hi) {
+      this.pending = null;
+      this.lastAccepted = price;
+      return price;
+    }
+    if (this.pending !== null) {
+      const confirmLo = this.pending * (1 - OUTLIER_JUMP_PCT);
+      const confirmHi = this.pending * (1 + OUTLIER_JUMP_PCT);
+      if (price >= confirmLo && price <= confirmHi) {
+        this.pending = null;
+        this.lastAccepted = price;
+        return price;
+      }
+    }
+    this.pending = price;
+    return null;
+  }
+
+  /** 틱 판정 — 손절(보수, 동시 터치는 손절) → 익절 → 최장 보유(120분) → 장 마감(20:00 ET). */
+  onPriceAt(price: number, nowMs?: number): ConditionalDecision | null {
+    this.lastKind = null;
+    if (!Number.isFinite(price) || price <= 0 || this.qty <= 0) return null;
+    const accepted = this.acceptPrice(price);
+    if (accepted === null) return null;
+
+    if (accepted <= this.stopPrice) {
+      this.lastKind = 'STOP_LOSS';
+      this.pendingExit = 'STOP_LOSS';
+      return { side: 'sell', qty: this.qty };
+    }
+    if (accepted >= this.targetPrice) {
+      this.lastKind = 'TAKE_PROFIT';
+      this.pendingExit = 'TAKE_PROFIT';
+      return { side: 'sell', qty: this.qty };
+    }
+    if (nowMs !== undefined) {
+      if (nowMs >= this.holdUntilMs) {
+        this.lastKind = 'TIMEOUT';
+        this.pendingExit = 'TIMEOUT';
+        return { side: 'sell', qty: this.qty };
+      }
+      if (etMinuteOfDay(Math.floor(nowMs / 60_000)) >= TRADING_DAY_END_MIN) {
+        this.lastKind = 'SESSION_END';
+        this.pendingExit = 'SESSION_END';
+        return { side: 'sell', qty: this.qty };
+      }
+    }
+    return null;
+  }
+
+  // ---- PositionRule 계약 ----
+
+  onPrice(price: number): ConditionalDecision | null {
+    return this.onPriceAt(price, this.clock?.now());
+  }
+
+  get view(): ConditionalGridView {
+    return {
+      qty: this.qty,
+      avgPrice: this.avgPrice,
+      entryQty: this.entryQty,
+      sellLine: this.targetPrice,
+      buyLine: this.stopPrice,
+    };
+  }
+
+  /** 모델은 청산 신호를 내지 않는다 — 물타기도 없다. */
+  decide(_signal: 'BUY' | 'SELL', _price: number): ConditionalDecision | null {
+    return null;
+  }
+
+  /** 취소선 — 익절 매도만 목표가 아래로 내려가면 접는다. 손절·시간·마감은 무조건 판다. */
+  shouldAbort(side: 'buy' | 'sell', price: number): boolean {
+    if (!Number.isFinite(price) || price <= 0) return false;
+    if (side === 'buy') return false;
+    if (this.pendingExit !== 'TAKE_PROFIT') return false;
+    return price < this.targetPrice;
+  }
+
+  /** 체결·잔고 반영. */
+  setPosition(position: ConditionalPosition): void {
+    if (position.qty >= this.qty) this.pendingExit = null; // 매도가 끝나지 않았다 — 취소선 상태 초기화
+    this.qty = position.qty;
+    this.avgPrice = position.avgPrice;
   }
 }

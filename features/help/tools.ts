@@ -522,10 +522,11 @@ export async function runHelpTool(
           import('../../core/martingale'),
         ]);
         const barKeyOf = (tsMs: number, m: number) => Math.floor(tsMs / (60_000 * m)) * m;
-        // 엔진 봉 주기 — ±3% 단타 모드가 켜져 있으면 1분봉(4선), 아니면 모델 5분봉(2026-09-01 동기화 —
-        // 커밋 56ec78e가 매뉴얼·챗 화면만 ±3%로 바꾸고 이 도구는 5분봉 모델로 남아 "엔진과 같은 계산"이라
-        // 잘못 주장하던 문제).
-        const engineBarMin = MARTINGALE_MODE ? MARTINGALE_BAR_MINUTES : MODEL_BAR_MINUTES;
+        // 엔진 봉 주기·판정 종류 — 활성 엔진 모드(설정, 2026-09-01)를 따른다. 예전 실수(커밋 56ec78e가
+        // 매뉴얼·챗 화면만 ±3%로 바꾸고 이 도구는 5분봉 모델로 남아 "엔진과 같은 계산"이라 잘못 주장)의 재발 방지.
+        const { getActiveEngineMode } = await import('../scalper/engineMode');
+        const mgEngine = MARTINGALE_MODE && getActiveEngineMode() === 'martingale';
+        const engineBarMin = mgEngine ? MARTINGALE_BAR_MINUTES : MODEL_BAR_MINUTES;
         const intervalMin = Math.max(1, Math.floor(num(args.intervalMin) || engineBarMin));
         const count = Math.max(1, Math.min(300, Math.floor(num(args.count) || 130)));
         // 거래소는 종목 검색으로 — 못 찾으면 나스닥으로 시도(getQuote와 같은 관례).
@@ -548,11 +549,11 @@ export async function runHelpTool(
         const sameBar = intervalMin === engineBarMin;
         // ±3% 단타 모드(현행) — 1분봉 4선(core/martingale.evaluateMartingaleBars). 모델은 돌지 않는다.
         const martingaleVerdict =
-          sameBar && MARTINGALE_MODE ? martingaleCore.evaluateMartingaleBars(closed.map((c) => c.close)) : null;
-        const daily = sameBar && !MARTINGALE_MODE
+          sameBar && mgEngine ? martingaleCore.evaluateMartingaleBars(closed.map((c) => c.close)) : null;
+        const daily = sameBar && !mgEngine
           ? await fetchTossDailyCloses(code, 5, { fetchImpl: deps.fetchImpl }).catch(() => [])
           : [];
-        const verdict = sameBar && !MARTINGALE_MODE
+        const verdict = sameBar && !mgEngine
           ? model.inspectModel(model.loadModel(), {
               bars: closed.map((c) => ({
                 minuteKey: c.minuteKey,
@@ -571,7 +572,7 @@ export async function runHelpTool(
           intervalMin,
           engineIntervalMin: engineBarMin,
           note: sameBar
-            ? MARTINGALE_MODE
+            ? mgEngine
               ? '자동매매 엔진(±3% 단타)과 같은 봉 주기예요 — 아래 martingaleVerdict는 엔진이 내리는 것과 같은 계산(1분봉 4선 정배열·5선 돌파)이에요. 청산은 판정이 아니라 보유 평단 ±3%·19:55 ET 마감이라 여기 없어요.'
               : '자동매매 엔진과 같은 봉 주기예요 — 아래 modelVerdict는 엔진이 내리는 것과 같은 계산이에요.'
             : `엔진은 ${engineBarMin}분봉으로만 판정해요 — 다른 주기로는 판정을 돌리지 않고 봉만 보여 줘요.`,

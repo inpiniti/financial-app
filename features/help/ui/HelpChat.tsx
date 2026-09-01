@@ -26,11 +26,12 @@ import { loadAppSettings, type AppSettings } from '../../../lib/appSettings';
 import { peekManagerBootstrap } from '../../scalper/ui/managerProvider';
 import { MODEL_MODE } from '../../scalper/modelMode';
 import { MARTINGALE_MODE } from '../../scalper/martingaleMode';
+import { getActiveEngineMode } from '../../scalper/engineMode';
 import type { MartingaleBarEval } from '../../../core/martingale';
 import type { ModelVerdictView } from '../../scalper/feedSlot';
 import { loadModel } from '../../../core/model';
 import { describeReject } from '../../../core/model/inspect';
-import { APP_MANUAL, type HelpRuntimeState } from '../appManual';
+import { buildAppManual, type HelpRuntimeState } from '../appManual';
 import { SUGGESTED_QUESTIONS, askHelp, type HelpMessage } from '../helpChat';
 import { HELP_TOOL_DECLARATIONS, runHelpTool, type HelpAutopilotSnapshot } from '../tools';
 import {
@@ -161,7 +162,7 @@ function formatSignalForTool(view: {
   trend: TrendLike;
   martingale?: MartingaleBarEval | null;
 }): string {
-  if (MARTINGALE_MODE) {
+  if (MARTINGALE_MODE && getActiveEngineMode() === 'martingale') {
     const m = view.martingale ?? null;
     if (m === null || m.aligned === null) return `±3% 단타 모드 — 1분봉 4선 계산 중(봉 ${m?.bars ?? 0}개)`;
     if (m.condition) {
@@ -176,7 +177,7 @@ function formatSignalForTool(view: {
         : '정배열 아님';
     return `±3% 단타 모드 — ${state} (봉 ${m.bars})`;
   }
-  if (MODEL_MODE) {
+  if (MODEL_MODE && getActiveEngineMode() === 'model') {
     const v = view.modelVerdict;
     if (v === null) return '아직 판정 전(봉 마감 대기)';
     if (v.reject === null) return `모델 확률 ${((v.prob ?? 0) * 100).toFixed(1)}% — 매수 신호`;
@@ -533,7 +534,7 @@ export function HelpChat() {
         <ScrollView className="flex-1" contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}>
           <Panel title="사용 설명서" headerRight="챗봇이 이 내용을 보고 답해요">
             <View className="px-5 pb-5">
-              <Text className="text-[15px] leading-7 text-[#4e5968]">{APP_MANUAL}</Text>
+              <Text className="text-[15px] leading-7 text-[#4e5968]">{buildAppManual(getActiveEngineMode())}</Text>
             </View>
           </Panel>
           <View className="px-5">

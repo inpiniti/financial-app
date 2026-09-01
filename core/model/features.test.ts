@@ -21,9 +21,11 @@ describe('모델 Feature 이식', () => {
 
   it('학습 파이프라인이 낸 정답과 33개 값이 전부 일치한다(12시점)', () => {
     expect(fixtures.cases.length).toBeGreaterThan(0);
+    // −0 정규화 — 파이썬 fixture는 −0.0을, 앱 계산은 +0을 낼 수 있다(수치로는 동일, toEqual은 ±0을 구분).
+    const norm = (v: number | null) => (v === 0 ? 0 : v);
     for (const c of fixtures.cases) {
-      const got = computeFeatures(bars.slice(0, c.index + 1), ctx);
-      const want = (c.expected as (number | null)[]).map(quantize);
+      const got = computeFeatures(bars.slice(0, c.index + 1), ctx).map(norm);
+      const want = (c.expected as (number | null)[]).map(quantize).map(norm);
       // 어느 열이 어긋났는지 바로 보이게 이름을 붙여 비교한다.
       const label = (v: (number | null)[]) => Object.fromEntries(FEATURE_NAMES.map((n, i) => [n, v[i]]));
       expect({ dt: c.dt, ...label(got) }).toEqual({ dt: c.dt, ...label(want) });

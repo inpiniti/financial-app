@@ -4,84 +4,93 @@ import {
   ENGINE_BAR_MINUTES,
   HIDDEN_SETTING_KEYS,
   USER_FACING_SETTING_KEYS,
+  buildAppManual,
   describeRuntimeState,
   describeUserSettings,
 } from './appManual';
 import { DEFAULT_APP_SETTINGS, type AppSettings } from '../../lib/appSettings';
 import { MARTINGALE_CONFIG } from '../../core/martingale';
+import { MODEL_SYMMETRIC_EXIT_CONFIG } from '../../core/model/exitRule';
 import { RANKING_TOTAL_MAX, tossSourceId } from '../../core/ranking';
 import { MAX_GRIDS_LIMIT } from '../scalper/autopilot';
-import { MARTINGALE_MODE } from '../scalper/martingaleMode';
-import { MODEL_CONFIG } from '../scalper/positionManager';
 import { MODEL_BAR_MINUTES } from '../scalper/modelMode';
 
 const pct = (r: number) => `${Number((r * 100).toFixed(2))}%`;
 
+// 두 모드 본을 다 검사한다(2026-09-01 설정화 — 어느 모드를 골라도 챗봇이 맞는 값을 말해야 한다).
+const MG_MANUAL = buildAppManual('martingale');
+const MODEL_MANUAL = buildAppManual('model');
+
 /**
  * 이 파일의 목적은 "문서가 조용히 낡는 것"을 막는 것이다 — 챗봇이 낡은 값을 확신에 차서 말하면
  * 정적 문서보다 나쁘다. 그래서 규칙 값은 코드 상수와 대조하고, 설정 키는 커버리지를 강제한다.
- * 매뉴얼은 MARTINGALE_MODE로 분기하므로(±3% 단타 ↔ 모델 롤백) 검사도 같은 스위치를 따른다 —
- * 스위치를 끄면 모델 검사가 자동으로 살아난다.
  */
 describe('APP_MANUAL — 코드 상수와 어긋나지 않는다', () => {
+  it('APP_MANUAL은 기본 모드(martingale) 고정본이다', () => {
+    expect(APP_MANUAL).toBe(MG_MANUAL);
+  });
+
   it('봉 주기·동시 그리드 상한·리스트 상한은 코드 값 그대로 들어간다', () => {
-    expect(APP_MANUAL).toContain(`${ENGINE_BAR_MINUTES}분봉 4개 이동평균`);
-    expect(APP_MANUAL).toContain(`최대 ${MAX_GRIDS_LIMIT}개`);
-    expect(APP_MANUAL).toContain(`${RANKING_TOTAL_MAX}개의 트레이딩 리스트`);
+    expect(MG_MANUAL).toContain(`${ENGINE_BAR_MINUTES}분봉 4개 이동평균`);
+    expect(MG_MANUAL).toContain(`최대 ${MAX_GRIDS_LIMIT}개`);
+    expect(MG_MANUAL).toContain(`${RANKING_TOTAL_MAX}개의 트레이딩 리스트`);
   });
 
   it('차트 기본 분봉은 엔진 봉 주기와 같다 — 화면과 엔진이 다른 봉을 보면 판정이 어긋난다(2026-08-22 사고)', () => {
-    expect(APP_MANUAL).toContain(`분봉 기본값은 ${ENGINE_BAR_MINUTES}분`);
+    expect(MG_MANUAL).toContain(`분봉 기본값은 ${ENGINE_BAR_MINUTES}분`);
   });
 
   it('현행이 아닌 규칙(추세 플립)을 매매 규칙으로 설명하지 않는다 — 전환 뒤 문서가 뒤처지지 않게', () => {
-    expect(APP_MANUAL).not.toContain('4선이 꺾');
-    expect(APP_MANUAL).not.toContain('플립');
+    for (const manual of [MG_MANUAL, MODEL_MANUAL]) {
+      expect(manual).not.toContain('4선이 꺾');
+      expect(manual).not.toContain('플립');
+    }
   });
 
   it('설정 기본값은 하드코딩이 아니라 DEFAULT_APP_SETTINGS에서 온다', () => {
-    expect(APP_MANUAL).toContain(`기본 $${DEFAULT_APP_SETTINGS.startAmountUsd}`);
-    expect(APP_MANUAL).toContain(`기본 $${DEFAULT_APP_SETTINGS.maxPriceUsd}`);
-    expect(APP_MANUAL).toContain(`기본 ${DEFAULT_APP_SETTINGS.minTickRate}`);
+    expect(MG_MANUAL).toContain(`기본 $${DEFAULT_APP_SETTINGS.startAmountUsd}`);
+    expect(MG_MANUAL).toContain(`기본 $${DEFAULT_APP_SETTINGS.maxPriceUsd}`);
+    expect(MG_MANUAL).toContain(`기본 ${DEFAULT_APP_SETTINGS.minTickRate}`);
   });
 
-  if (MARTINGALE_MODE) {
-    it('±3% 단타: 익절·손절·마감 청산이 MARTINGALE_CONFIG 값을 그대로 따라간다', () => {
-      expect(APP_MANUAL).toContain(`+${pct(MARTINGALE_CONFIG.tpPct)}** 오르면 전량 매도`);
-      expect(APP_MANUAL).toContain(`−${pct(MARTINGALE_CONFIG.stopLossPct)}** 내리면 전량 매도`);
-      const close = `${Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:${String(MARTINGALE_CONFIG.closeAtMin % 60).padStart(2, '0')}`;
-      expect(APP_MANUAL).toContain(`${close} ET`);
-    });
+  it('±3% 단타: 익절·손절·마감 청산이 MARTINGALE_CONFIG 값을 그대로 따라간다', () => {
+    expect(MG_MANUAL).toContain(`+${pct(MARTINGALE_CONFIG.tpPct)}** 오르면 전량 매도`);
+    expect(MG_MANUAL).toContain(`−${pct(MARTINGALE_CONFIG.stopLossPct)}** 내리면 전량 매도`);
+    const close = `${Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:${String(MARTINGALE_CONFIG.closeAtMin % 60).padStart(2, '0')}`;
+    expect(MG_MANUAL).toContain(`${close} ET`);
+  });
 
-    it('±3% 단타: 세션 제한(주간거래 진입 없음)과 정배열 진입 조건이 적혀 있다', () => {
-      expect(APP_MANUAL).toContain('주간거래(미국 밤, 한국 낮) 시간에는 진입하지 않아요');
-      expect(APP_MANUAL).toContain('정배열(5선>20선>60선>120선)');
-    });
+  it('±3% 단타: 세션 제한(주간거래 진입 없음)과 정배열 진입 조건이 적혀 있다', () => {
+    expect(MG_MANUAL).toContain('주간거래(미국 밤, 한국 낮) 시간에는 진입하지 않아요');
+    expect(MG_MANUAL).toContain('정배열(5선>20선>60선>120선)');
+  });
 
-    it('±3% 단타: 검증 안 된 시험 운용임을 숨기지 않는다', () => {
-      expect(APP_MANUAL).toContain('시험 운용 중');
-      expect(APP_MANUAL).toContain('손절이 자주 날 수 있어요');
-    });
-  } else {
-    it('모델: 매도선 2개(트레일링·손절)는 MODEL_CONFIG 값을 그대로 따라간다', () => {
-      expect(APP_MANUAL).toContain(`지금까지의 최고가에서 ${pct(MODEL_CONFIG.trailPct)} 아래`);
-      expect(APP_MANUAL).toContain(`산 가격보다 ${pct(MODEL_CONFIG.stopLossPct)} 아래`);
-    });
+  it('±3% 단타: 검증 안 된 시험 운용임을 숨기지 않는다', () => {
+    expect(MG_MANUAL).toContain('시험 운용 중');
+    expect(MG_MANUAL).toContain('손절이 자주 날 수 있어요');
+  });
 
-    it('모델: 익절 상한이 없다는 사실이 적혀 있다 — 트레일링 전환의 핵심', () => {
-      expect(APP_MANUAL).toContain('얼마를 벌면 판다는 목표가 없어요');
-      expect(APP_MANUAL).toContain('한 번 올라간 매도선은 내려오지 않아요');
-    });
+  it('모델: ±3% 대칭 청산(익절·손절·시간)이 MODEL_SYMMETRIC_EXIT_CONFIG 값을 그대로 따라간다(2026-09-01)', () => {
+    expect(MODEL_MANUAL).toContain(`+${pct(MODEL_SYMMETRIC_EXIT_CONFIG.tpPct)}** 오르면 전량 매도`);
+    expect(MODEL_MANUAL).toContain(`−${pct(MODEL_SYMMETRIC_EXIT_CONFIG.stopLossPct)}** 내리면 전량 매도`);
+    expect(MODEL_MANUAL).toContain(`**${MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분**`);
+    expect(MODEL_MANUAL).toContain('시간 청산');
+    // 트레일링(구모델) 서술이 남아 있으면 안 된다.
+    expect(MODEL_MANUAL).not.toContain('트레일링');
+    expect(MODEL_MANUAL).not.toContain('매도선은 내려오지 않아요');
+  });
 
-    it('모델: 승률이 낮다는 사실을 숨기지 않는다 — 트레일링은 자주 지고 크게 번다', () => {
-      expect(APP_MANUAL).toContain('승률은 **34%로 낮아요**');
-      expect(APP_MANUAL).toContain(`${MODEL_BAR_MINUTES}분봉이 하나 닫힐 때마다`);
-    });
-  }
+  it('모델: 봉 주기·검증 성적(승률 58%·얇은 우위)을 코드 값·최신 워크포워드와 맞춘다', () => {
+    expect(MODEL_MANUAL).toContain(`${MODEL_BAR_MINUTES}분봉이 하나 닫힐 때마다`);
+    expect(MODEL_MANUAL).toContain('승률 58%');
+    expect(MODEL_MANUAL).toContain('체결이 조금만 불리해도');
+  });
 
   it('물타기를 하지 않는다는 사실이 적혀 있다 — 오해가 가장 잦은 지점', () => {
-    expect(APP_MANUAL).toContain('물타기');
-    expect(APP_MANUAL).toContain('하지 않아요');
+    for (const manual of [MG_MANUAL, MODEL_MANUAL]) {
+      expect(manual).toContain('물타기');
+      expect(manual).toContain('하지 않아요');
+    }
   });
 });
 
@@ -94,6 +103,7 @@ describe('설정 키 커버리지 — 설정을 추가하면 문서도 같이 �
 
   it('사용자에게 보이는 설정은 매뉴얼 §7에 설명이 있다', () => {
     const LABEL: Record<(typeof USER_FACING_SETTING_KEYS)[number], string> = {
+      engineMode: '**엔진 모드**',
       startAmountUsd: '**진입금액(USD)**',
       entryQty: '**수량(주)**',
       maxPriceUsd: '**가격 상한(USD)**',
