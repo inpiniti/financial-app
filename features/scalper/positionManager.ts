@@ -29,9 +29,11 @@ import {
   MODEL_EXIT_CONFIG,
   MODEL_EXIT_SYMMETRIC,
   MODEL_SYMMETRIC_EXIT_CONFIG,
+  MODEL_TP_HOLD,
   type ModelExitConfig,
   type ModelSymmetricExitConfig,
 } from '../../core/model/exitRule';
+import { loadModel } from '../../core/model';
 import { MARTINGALE_CONFIG, MartingaleRule, type MartingaleConfig } from '../../core/martingale';
 import { TrendExitRule } from '../../core/trend/exitRule';
 import { CIRCUIT_MODE } from './circuitMode';
@@ -283,6 +285,11 @@ export interface PositionManagerDeps {
    * 실패·미주입이면 null(기존처럼 판정 정지 — 폴백이 없다는 사실은 이벤트로 남는다).
    */
   fetchRestPrice?: () => Promise<number | null>;
+  /**
+   * 이 종목의 최신 모델 판정(2026-09-02, 래칫 청산) — 스캐너가 매 봉 슬롯에 밀어 넣는 값(prob·판정 시각).
+   * 모델 모드의 익절 보류(MODEL_TP_HOLD)가 익절 터치 순간 이걸 읽는다. 미주입·null이면 보류 없이 기존대로 판다.
+   */
+  modelVerdict?: () => { prob: number | null; at: number } | null;
   /** 정규장 판정(서킷 heartbeat 입력). */
   regularSession: (nowMs: number) => boolean;
   /** 매수가능금액 사전 조회(물타기 매수) — null/미지정/throw면 판정 없이 진행(fail-open). */
@@ -360,7 +367,19 @@ export function makePositionManager(
           manualExitCheckMs: MANUAL_EXIT_CHECK_MS,
           build: (seed) => {
             const entryAtMs = deps.entry?.entryTs ?? deps.clock.now();
-            const rule = new ModelSymmetricExitRule(seed, { ...model, entryAtMs, clock: deps.clock });
+            // 익절 보류+래칫(2026-09-02) — 보류 문턱은 model.json 동봉값(학습 분포 상위 10%). 구 모델 파일이거나
+            // 판정 공급이 없으면(입양 등) hold 미주입 → 기존 ±3% 단일 밴드 그대로(fail-safe).
+            const holdThr = MODEL_TP_HOLD ? loadModel().hold_threshold : undefined;
+            const verdict = deps.modelVerdict;
+            const rule = new ModelSymmetricExitRule(seed, {
+              ...model,
+              entryAtMs,
+              clock: deps.clock,
+              hold:
+                holdThr !== undefined && Number.isFinite(holdThr) && verdict !== undefined
+                  ? { threshold: holdThr, verdict }
+                  : undefined,
+            });
             const circuit = new CircuitExitRule(rule, { act: CIRCUIT_MODE });
             return {
               rule: circuit,
@@ -377,19 +396,20 @@ export function makePositionManager(
                   return { reason: 'SESSION_END' as ExitReason, text: '장 마감 · 남은 수량을 전량 매도해요' };
                 }
                 if (kind === 'STOP_LOSS') {
+                  // 래칫 뒤에는 하단이 평단 위일 수 있다(이익 잠금) — 문구는 밴드 기준으로 쓴다.
                   return {
                     reason: 'STOP_LOSS' as ExitReason,
-                    text: `손절 · 현재가 ${price.toFixed(2)} ≤ 평단 −${dn}%(${rule.stopPrice.toFixed(2)}) — 전량 매도해요`,
+                    text: `손절 · 현재가 ${price.toFixed(2)} ≤ 밴드 하단 ${rule.stopPrice.toFixed(2)}(앵커 −${dn}%${rule.rungs > 0 ? ` · 래칫 ${rule.rungs}계단` : ''}) — 전량 매도해요`,
                     line: rule.stopPrice,
                   };
                 }
                 return {
                   reason: 'TAKE_PROFIT' as ExitReason,
-                  text: `익절 · 현재가 ${price.toFixed(2)} ≥ 평단 +${up}%(${rule.targetPrice.toFixed(2)}) — 전량 매도해요`,
+                  text: `익절 · 현재가 ${price.toFixed(2)} ≥ 밴드 상단 ${rule.targetPrice.toFixed(2)}(앵커 +${up}%${rule.rungs > 0 ? ` · 래칫 ${rule.rungs}계단 뒤 확률 꺾임` : ''}) — 전량 매도해요`,
                   line: rule.targetPrice,
                 };
               },
-              armText: `${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} · 익절 ${rule.targetPrice.toFixed(2)}(+${up}%) · 손절 ${rule.stopPrice.toFixed(2)}(−${dn}%) · 최장 ${model.maxHoldMin}분 보유 — 물타기 없어요`,
+              armText: `${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} · 익절 ${rule.targetPrice.toFixed(2)}(+${up}%) · 손절 ${rule.stopPrice.toFixed(2)}(−${dn}%) · 최장 ${model.maxHoldMin}분 보유 — 익절선에서 모델이 아직 좋으면(상위 10%) 팔지 않고 밴드를 +${up}% 위로 올려 달아요(래칫) · 물타기 없어요`,
             };
           },
         });

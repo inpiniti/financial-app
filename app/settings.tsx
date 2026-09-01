@@ -470,9 +470,12 @@ export default function SettingsScreen() {
             </View>
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
               산 가격보다 +{Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.tpPct * 100)}% 오르면 익절, −
-              {Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.stopLossPct * 100)}% 내리면 손절해요 — 모델이 예측한 사건과 똑같은 기하예요. 산 지{' '}
-              {MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분이 지나도록 어느 쪽에도 안 닿으면 그때 전량 매도해요(시간 청산). 봉 마감을
-              기다리지 않고 체결가가 닿는 순간 판단해요.
+              {Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.stopLossPct * 100)}% 내리면 손절해요 — 모델이 예측한 사건과 똑같은 기하예요.
+              단, 익절선에 닿는 순간 모델을 다시 물어 <Text className="font-semibold text-[#191f28]">아직 오를 가능성이 높으면(상위
+              10%) 팔지 않고 밴드를 그 자리 기준 ±{Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.tpPct * 100)}%로 올려 달아요(래칫)</Text> —
+              한 계단만 올라도 아래끝이 본전 근처로 잠겨 "+3% 벌었다가 −3% 반납"이 없어요. 산 지{' '}
+              {MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분이 지나면 전량 매도해요(시간 청산). 봉 마감을 기다리지 않고 체결가가 닿는
+              순간 판단해요.
             </Text>
 
             <View className="mb-1 flex-row items-center justify-between">

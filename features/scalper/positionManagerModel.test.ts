@@ -86,7 +86,7 @@ describe('makePositionManager — 모델 어댑터(±3% 대칭)', () => {
     h.setPrice(103.5);
     await h.pm.tick({ canStart: true });
     await flush();
-    expect(h.events.some((e) => e.includes('익절 · 현재가 103.50 ≥ 평단 +3%'))).toBe(true);
+    expect(h.events.some((e) => e.includes('익절 · 현재가 103.50 ≥ 밴드 상단 103.00'))).toBe(true);
     const result = await h.pm.poll();
     expect(result.kind).toBe('sold');
     if (result.kind === 'sold') {
@@ -102,7 +102,7 @@ describe('makePositionManager — 모델 어댑터(±3% 대칭)', () => {
     h.setPrice(96.9);
     await h.pm.tick({ canStart: true });
     await flush();
-    expect(h.events.some((e) => e.includes('손절 · 현재가 96.90 ≤ 평단 −3%'))).toBe(true);
+    expect(h.events.some((e) => e.includes('손절 · 현재가 96.90 ≤ 밴드 하단 97.00'))).toBe(true);
     const result = await h.pm.poll();
     expect(result.kind).toBe('sold');
     if (result.kind === 'sold') {
@@ -125,6 +125,40 @@ describe('makePositionManager — 모델 어댑터(±3% 대칭)', () => {
     const result = await h.pm.poll();
     expect(result.kind).toBe('sold');
     if (result.kind === 'sold') expect(result.record.exitReason).toBe('TIMEOUT');
+  });
+
+  it('래칫 배선(2026-09-02) — 익절 터치 때 슬롯의 모델 확률이 좋으면 팔지 않고 밴드가 올라간다', async () => {
+    const clock = fakeClock(1_000);
+    const broker = new FakeBroker({ autoFill: true });
+    broker.position = { qty: 10, avgPrice: 100 };
+    const events: string[] = [];
+    let price = 100;
+    const pm = makePositionManager(
+      'model',
+      { model: MODEL_CONFIG },
+      deps(broker, clock, events, () => price, {
+        modelVerdict: () => ({ prob: 0.99, at: clock.now() }), // 스캐너가 방금 밀어 넣은 높은 확률
+      }),
+    );
+    await pm.arm({ qty: 10, avgPrice: 100 });
+    price = 103.5;
+    await pm.tick({ canStart: true });
+    await flush();
+    expect(broker.placed).toHaveLength(0); // 보류 — 안 판다
+    const g = pm.gaugeView();
+    expect(g.sellPrice).toBeCloseTo(106.09, 6); // 밴드가 한 계단 올라갔다
+    expect(g.buyPrice).toBeCloseTo(99.91, 6); // 하단은 본전 근처로 잠김
+
+    price = 99.5; // 되밀림 — 새 하단에서 손절(이익 잠금)
+    await pm.tick({ canStart: true });
+    await flush();
+    const result = await pm.poll();
+    expect(result.kind).toBe('sold');
+    if (result.kind === 'sold') {
+      expect(result.record.exitReason).toBe('STOP_LOSS');
+      expect(result.record.exitSnapshot?.line).toBeCloseTo(99.91, 6);
+    }
+    expect(events.some((e) => e.includes('래칫 1계단'))).toBe(true);
   });
 
   it('오체결 한 건으로는 팔지 않는다 — 다음 틱이 확인해야 반영한다', async () => {

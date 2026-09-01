@@ -1399,6 +1399,11 @@ export class AutoPilot {
         quote: () => active.slot?.quote ?? null,
         // 시세 정지 REST 폴백(2026-09-01) — 구독 거절·WS 무음 정지에도 익절·손절 감시가 이어지게.
         fetchRestPrice: this.deps.fetchRestPrice ? () => this.deps.fetchRestPrice!(ticker) : undefined,
+        // 최신 모델 판정(2026-09-02, 래칫 청산) — 스캐너가 슬롯에 매 봉 밀어 넣는 값. 슬롯 없으면(입양) null.
+        modelVerdict: () => {
+          const v = active.slot?.getView().modelVerdict ?? null;
+          return v ? { prob: v.prob, at: v.at } : null;
+        },
         regularSession: isUsRegularSession,
         fetchBuyableUsd: this.deps.fetchBuyableUsd ? (price) => this.deps.fetchBuyableUsd!(ticker, price) : undefined,
         entry: pos ? { entryTs: pos.entryTs, entrySnapshot: pos.entrySnapshot } : null,

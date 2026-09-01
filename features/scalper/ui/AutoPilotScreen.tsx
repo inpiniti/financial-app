@@ -618,7 +618,7 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                     MODEL_SYMMETRIC_EXIT_CONFIG.tpPct * 100
                   ).toFixed(0)}%)에 먼저 닿을 확률. ${MODEL_BAR_MINUTES}분봉마다 갱신, ${(
                     loadModel().threshold * 100
-                  ).toFixed(1)}%를 넘으면 정규장에서 매수해요. 최장 ${MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분 보유. (참고) = 정규장 밖 판정.`}
+                  ).toFixed(1)}%를 넘으면 정규장에서 매수해요. 익절선에서 모델이 아직 좋으면(상위 10%) 팔지 않고 밴드를 올려 달아요(래칫). 최장 ${MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분 보유. (참고) = 정규장 밖 판정.`}
                 </Text>
               )}
             </View>

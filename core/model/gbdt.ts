@@ -42,6 +42,13 @@ export interface GbdtModel {
   /** 신호 임계값 — 학습 구간 예측 확률의 상위 threshold_quantile 분위. */
   threshold: number;
   threshold_quantile?: number;
+  /**
+   * 익절 보류 문턱(2026-09-02, 래칫 청산) — 익절 터치 시 확률이 이 값(학습 분포 상위 hold_quantile,
+   * 기본 10%) 이상이면 팔지 않고 밴드를 올려 단다. 학습 분포 분위라 앱에서 재계산 불가 — export_model.py가 동봉.
+   * 없으면(구 모델 파일) 보류 없이 기존 ±3% 그대로 판다(fail-safe).
+   */
+  hold_threshold?: number;
+  hold_quantile?: number;
   trees: FlatTree[];
 }
 

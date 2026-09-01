@@ -69,6 +69,25 @@ export const MODEL_SYMMETRIC_EXIT_CONFIG: ModelSymmetricExitConfig = {
 };
 
 /**
+ * 익절 전 모델 재확인 + 래칫(2026-09-02, 사용자 확정) — 익절선 터치 순간 최신 봉 확률이 보류 문턱
+ * (model.json hold_threshold = 학습 분포 상위 10%) 이상이면 팔지 않고, **밴드를 터치 레벨 기준 ±3%로
+ * 올려 단다**(앵커 ×1.03 — "터치 = 수수료 없는 재진입"). 한 계단 오르면 하단이 본전 근처(1.03×0.97 ≈ −0.1%)로
+ * 잠겨 "+3% 벌었다가 −3%로 반납"이 사라진다.
+ * 검증: 보류(래칫 없음) 변형은 워크포워드 4폴드 합계 2.1배·PF 1.22~1.44·최악 −3.35% 동일
+ * (financial-analyze docs/analysis/2026-09-01_익절-전-모델-재확인-청산.md). **래칫 변형 자체는 백테스트를
+ * 돌리지 않고 사용자 지시로 적용**했다("백테스트는 고만하고 반영해줘") — 하단 잠금은 보류 변형의 최악치를
+ * 더 나쁘게 만들 수 없는 방향의 수정이다. false로 두면 기존 ±3% 단일 밴드로 한 줄 롤백.
+ */
+export const MODEL_TP_HOLD = true;
+
+/**
+ * 보류 판정에 쓸 확률의 신선도 한계(ms) — 스캐너는 1분봉 마감마다 판정을 밀어 넣으므로 3분이면
+ * "두 봉 이상 낡음". 이보다 낡거나 확률이 없으면(입양 포지션·장 닫힘·스캐너 실패) 보류하지 않고
+ * 기존대로 익절한다(fail-closed — 검증된 기본 동작으로 후퇴).
+ */
+export const MODEL_HOLD_VERDICT_FRESH_MS = 180_000;
+
+/**
  * 이상치로 보는 1틱 변동폭. 이보다 크게 튀면 **다음 틱이 같은 방향을 확인할 때까지** 무시한다.
  * 백테스트 세정(bars_io.py)의 꼬리 허용 폭 30%와 같은 값 — 급등주의 진짜 1분 급등은 이 안에 들어온다.
  */
@@ -235,6 +254,15 @@ export interface ModelSymmetricExitRuleOptions extends ModelSymmetricExitConfig 
   entryAtMs: number;
   /** 지금 시각 — 최장 보유·장 마감 판정. 없으면 시간 청산 없음(테스트 편의). */
   clock?: { now(): number };
+  /**
+   * 익절 보류 + 래칫(MODEL_TP_HOLD) — 익절 터치 순간 verdict()의 최신 확률이 threshold 이상이면
+   * 팔지 않고 앵커를 ×(1+tpPct) 올린다. 미주입·확률 없음·낡음(MODEL_HOLD_VERDICT_FRESH_MS)이면
+   * 보류 없이 기존대로 판다(fail-closed).
+   */
+  hold?: {
+    threshold: number;
+    verdict: () => { prob: number | null; at: number } | null;
+  };
 }
 
 /**
@@ -242,6 +270,10 @@ export interface ModelSymmetricExitRuleOptions extends ModelSymmetricExitConfig 
  * 판정 순서는 백테스트(walkforward.simulate)와 같은 보수 규약 — **손절(하단) 먼저**, 동시 터치는 손절.
  * 익절 매도는 목표가 지정가 의미론(현재가가 목표 아래로 내려가면 접는다 — MartingaleRule과 동일),
  * 손절·시간·마감 매도는 무조건 체결까지 따라간다. 이상치 방어(acceptPrice)는 트레일링 규칙과 같은 이유로 유지.
+ *
+ * 래칫(2026-09-02, MODEL_TP_HOLD): 밴드 기준은 평단이 아니라 **앵커**다 — 진입 시 앵커=평단이고,
+ * 익절 터치를 보류할 때마다 ×(1+tpPct)로 올라간다(익절선 = 앵커+3%, 손절선 = 앵커−3%).
+ * 첫 계단만 올라도 하단이 본전 근처로 잠긴다. 시간 청산(120분)·장 마감은 래칫과 무관하게 그대로다.
  */
 export class ModelSymmetricExitRule {
   private qty: number;
@@ -250,7 +282,12 @@ export class ModelSymmetricExitRule {
   private readonly cfg: ModelSymmetricExitConfig;
   private readonly entryAtMs: number;
   private readonly clock: { now(): number } | undefined;
+  private readonly hold: ModelSymmetricExitRuleOptions['hold'];
 
+  /** 밴드 앵커 — 진입 평단에서 시작, 익절 보류(래칫)마다 ×(1+tpPct). */
+  private anchor: number;
+  /** 래칫 횟수(뷰·진단용). */
+  private rungCount = 0;
   /** 마지막으로 받아들인 가격 — 이상치 판정 기준선(ModelExitRule.acceptPrice와 같은 규약). */
   private lastAccepted: number;
   private pending: number | null = null;
@@ -264,18 +301,30 @@ export class ModelSymmetricExitRule {
     this.entryQty = position.qty;
     this.entryAtMs = options.entryAtMs;
     this.clock = options.clock;
+    this.hold = options.hold;
     this.cfg = { tpPct: options.tpPct, stopLossPct: options.stopLossPct, maxHoldMin: options.maxHoldMin };
+    this.anchor = position.avgPrice;
     this.lastAccepted = position.avgPrice;
   }
 
-  /** 익절 목표가 = 평단 × (1 + tpPct). */
+  /** 익절 목표가 = 앵커 × (1 + tpPct). 래칫 전에는 앵커=평단. */
   get targetPrice(): number {
-    return this.avgPrice * (1 + this.cfg.tpPct);
+    return this.anchor * (1 + this.cfg.tpPct);
   }
 
-  /** 손절선 = 평단 × (1 − stopLossPct). */
+  /** 손절선 = 앵커 × (1 − stopLossPct). 래칫 뒤에는 평단 위로 올라올 수 있다(이익 잠금). */
   get stopPrice(): number {
-    return this.avgPrice * (1 - this.cfg.stopLossPct);
+    return this.anchor * (1 - this.cfg.stopLossPct);
+  }
+
+  /** 현재 밴드 앵커(뷰·진단용). */
+  get anchorPrice(): number {
+    return this.anchor;
+  }
+
+  /** 지금까지 올라간 래칫 계단 수. */
+  get rungs(): number {
+    return this.rungCount;
   }
 
   /** 최장 보유 만료 시각(epoch ms). */
@@ -313,7 +362,20 @@ export class ModelSymmetricExitRule {
     return null;
   }
 
-  /** 틱 판정 — 손절(보수, 동시 터치는 손절) → 익절 → 최장 보유(120분) → 장 마감(20:00 ET). */
+  /**
+   * 익절 보류 판정(래칫) — 익절 터치 순간 최신 확률이 문턱 이상이고 충분히 신선하면 true.
+   * 확률 없음·낡음·미배선은 전부 false(fail-closed — 기존대로 판다).
+   */
+  private shouldRideAt(nowMs: number | undefined): boolean {
+    if (!this.hold) return false;
+    const v = this.hold.verdict();
+    if (v === null || v.prob === null || !Number.isFinite(v.prob)) return false;
+    const now = nowMs ?? this.clock?.now();
+    if (now !== undefined && now - v.at > MODEL_HOLD_VERDICT_FRESH_MS) return false;
+    return v.prob >= this.hold.threshold;
+  }
+
+  /** 틱 판정 — 손절(보수, 동시 터치는 손절) → 익절(보류 시 래칫) → 최장 보유(120분) → 장 마감(20:00 ET). */
   onPriceAt(price: number, nowMs?: number): ConditionalDecision | null {
     this.lastKind = null;
     if (!Number.isFinite(price) || price <= 0 || this.qty <= 0) return null;
@@ -326,6 +388,12 @@ export class ModelSymmetricExitRule {
       return { side: 'sell', qty: this.qty };
     }
     if (accepted >= this.targetPrice) {
+      if (this.shouldRideAt(nowMs)) {
+        // 래칫 — 팔지 않고 밴드를 한 계단 올린다(틱당 최대 1계단 — 백테스트의 봉당 1계단과 같은 보수 규약).
+        this.anchor *= 1 + this.cfg.tpPct;
+        this.rungCount += 1;
+        return null;
+      }
       this.lastKind = 'TAKE_PROFIT';
       this.pendingExit = 'TAKE_PROFIT';
       return { side: 'sell', qty: this.qty };
@@ -374,10 +442,11 @@ export class ModelSymmetricExitRule {
     return price < this.targetPrice;
   }
 
-  /** 체결·잔고 반영. */
+  /** 체결·잔고 반영. 앵커는 낮추지 않는다(래칫은 한 방향) — 잔고 재조회 평단이 앵커보다 높을 때만 따라 올린다. */
   setPosition(position: ConditionalPosition): void {
     if (position.qty >= this.qty) this.pendingExit = null; // 매도가 끝나지 않았다 — 취소선 상태 초기화
     this.qty = position.qty;
     this.avgPrice = position.avgPrice;
+    if (position.avgPrice > this.anchor) this.anchor = position.avgPrice;
   }
 }

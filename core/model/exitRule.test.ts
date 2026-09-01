@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   MODEL_EXIT_CONFIG,
   MODEL_EXIT_SYMMETRIC,
+  MODEL_HOLD_VERDICT_FRESH_MS,
   MODEL_SYMMETRIC_EXIT_CONFIG,
   ModelExitRule,
   ModelSymmetricExitRule,
@@ -221,6 +222,55 @@ describe('ModelSymmetricExitRule — ±3%/120분', () => {
     expect(r.onPriceAt(100.5)).toBeNull(); // 정상 복귀 — 아무 일도 없다
     expect(r.onPriceAt(950)).toBeNull(); // 다시 튐 — 첫 보류와 다른 흐름이라 또 보류
     expect(r.onPriceAt(960)).toEqual({ side: 'sell', qty: 10 }); // 연속 확인 — 진짜 급등으로 인정, 익절
+  });
+
+  it('래칫(2026-09-02) — 익절 터치 때 확률 ≥ 문턱이면 팔지 않고 밴드를 ×1.03 올린다(하단이 본전 근처로 잠김)', () => {
+    const now = { now: T0 };
+    let prob: number | null = 0.9;
+    const r = new ModelSymmetricExitRule(seed, {
+      ...MODEL_SYMMETRIC_EXIT_CONFIG,
+      entryAtMs: T0,
+      clock: { now: () => now.now },
+      hold: { threshold: 0.4, verdict: () => ({ prob, at: now.now }) },
+    });
+    expect(r.onPrice(103)).toBeNull(); // 보류 — 매도 없음
+    expect(r.rungs).toBe(1);
+    expect(r.anchorPrice).toBeCloseTo(103, 9);
+    expect(r.targetPrice).toBeCloseTo(106.09, 6);
+    expect(r.stopPrice).toBeCloseTo(99.91, 6); // 100×1.03×0.97 — 본전 근처 잠금
+    // 되밀림 — 새 하단에서 손절(이익은 거의 보존)
+    expect(r.onPrice(99.9)).toEqual({ side: 'sell', qty: 10 });
+    expect(r.exitKind).toBe('STOP_LOSS');
+    // 확률이 낮았다면 두 번째 계단은 없다 — 새 익절선에서 그대로 판다.
+    const r2 = new ModelSymmetricExitRule(seed, {
+      ...MODEL_SYMMETRIC_EXIT_CONFIG,
+      entryAtMs: T0,
+      clock: { now: () => now.now },
+      hold: { threshold: 0.4, verdict: () => ({ prob, at: now.now }) },
+    });
+    r2.onPrice(103); // 1계단
+    prob = 0.1;
+    expect(r2.onPrice(106.1)).toEqual({ side: 'sell', qty: 10 });
+    expect(r2.exitKind).toBe('TAKE_PROFIT');
+  });
+
+  it('래칫 — 판정이 없거나 낡으면(3분 초과) 보류하지 않고 기존대로 익절한다(fail-closed)', () => {
+    const now = { now: T0 };
+    const stale = new ModelSymmetricExitRule(seed, {
+      ...MODEL_SYMMETRIC_EXIT_CONFIG,
+      entryAtMs: T0,
+      clock: { now: () => now.now },
+      hold: { threshold: 0.4, verdict: () => ({ prob: 0.9, at: now.now - MODEL_HOLD_VERDICT_FRESH_MS - 1 }) },
+    });
+    expect(stale.onPrice(103)).toEqual({ side: 'sell', qty: 10 });
+    expect(stale.exitKind).toBe('TAKE_PROFIT');
+    const none = new ModelSymmetricExitRule(seed, {
+      ...MODEL_SYMMETRIC_EXIT_CONFIG,
+      entryAtMs: T0,
+      clock: { now: () => now.now },
+      hold: { threshold: 0.4, verdict: () => null },
+    });
+    expect(none.onPrice(103)).toEqual({ side: 'sell', qty: 10 });
   });
 
   it('동시 터치 성격의 보수 규약 — 손절 판정이 익절보다 먼저다(같은 가격이 둘 다면 손절)', () => {

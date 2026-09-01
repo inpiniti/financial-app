@@ -70,11 +70,12 @@ describe('APP_MANUAL — 코드 상수와 어긋나지 않는다', () => {
     expect(MG_MANUAL).toContain('손절이 자주 날 수 있어요');
   });
 
-  it('모델: ±3% 대칭 청산(익절·손절·시간)이 MODEL_SYMMETRIC_EXIT_CONFIG 값을 그대로 따라간다(2026-09-01)', () => {
-    expect(MODEL_MANUAL).toContain(`+${pct(MODEL_SYMMETRIC_EXIT_CONFIG.tpPct)}** 오르면 전량 매도`);
-    expect(MODEL_MANUAL).toContain(`−${pct(MODEL_SYMMETRIC_EXIT_CONFIG.stopLossPct)}** 내리면 전량 매도`);
+  it('모델: ±3% 대칭 밴드·래칫 청산이 MODEL_SYMMETRIC_EXIT_CONFIG 값을 그대로 따라간다(2026-09-02)', () => {
+    expect(MODEL_MANUAL).toContain(`±${pct(MODEL_SYMMETRIC_EXIT_CONFIG.tpPct)}로 올려 달아요`);
+    expect(MODEL_MANUAL).toContain(`평단 −${pct(MODEL_SYMMETRIC_EXIT_CONFIG.stopLossPct)})에 닿으면 전량 매도`);
     expect(MODEL_MANUAL).toContain(`**${MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분**`);
     expect(MODEL_MANUAL).toContain('시간 청산');
+    expect(MODEL_MANUAL).toContain('모델을 다시 물어봐요'); // 익절 보류(래칫) — 사용자 제안의 핵심
     // 트레일링(구모델) 서술이 남아 있으면 안 된다.
     expect(MODEL_MANUAL).not.toContain('트레일링');
     expect(MODEL_MANUAL).not.toContain('매도선은 내려오지 않아요');
