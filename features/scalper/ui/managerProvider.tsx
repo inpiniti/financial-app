@@ -3,6 +3,7 @@
 // 자동 단타(AutoPilotManager)를 만들어 배선한다. 이후에는 모듈 스코프 싱글턴을 재사용해
 // 탭을 오가도(화면이 언마운트/리마운트돼도) 세션·WS 연결이 끊기지 않는다.
 import { useCallback, useState } from 'react';
+import { AppState } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getAccessToken } from '../../../kis/token';
@@ -18,7 +19,9 @@ import {
 import { loadKisSettings } from '../../../lib/kisSettings';
 import { secureTokenStorage } from '../../../lib/secureTokenStorage';
 import { inquireOverseasBalance } from '../../../kis/balance';
+import { inquireOverseasPriceDetail } from '../../../kis/priceDetail';
 import { buyableUsdOf, inquirePsAmount } from '../../../kis/psamount';
+import { isDaytimeSessionOpen } from '../daySession';
 import { fetchTossRankingQueries, type TossRankingRow } from '../../../lib/tossRanking';
 import {
   inquirePriceFluctRanking,
@@ -277,6 +280,21 @@ async function buildManager(): Promise<ManagerBootstrap> {
     }
   };
 
+  // 시세 정지 REST 폴백(2026-09-01) — 보유 종목의 WS 틱이 끊기면(구독 거절·무음 정지) 포지션 관리자가
+  // 현재가상세(HHDFS76200200)로 익절·손절 감시를 잇는다. 주간거래 창이면 주간 코드(BAQ/BAY/BAA)로 조회한다.
+  const DAYTIME_EXCD: Record<WatchMarket, 'BAQ' | 'BAY' | 'BAA'> = { NAS: 'BAQ', NYS: 'BAY', AMS: 'BAA' };
+  const fetchRestPrice = async (ticker: string, market: WatchMarket): Promise<number | null> => {
+    try {
+      const accessToken = await getTokenStr();
+      const excd = isDaytimeSessionOpen(clock.now()) ? DAYTIME_EXCD[market] : market;
+      const detail = await inquireOverseasPriceDetail(credentials, accessToken, { excd, symb: ticker });
+      const last = Number(detail.last);
+      return Number.isFinite(last) && last > 0 ? last : null;
+    } catch {
+      return null;
+    }
+  };
+
   // 추세 워밍업(2026-08-18) — 토스 c-chart 분봉(min:TREND_BAR_MINUTES, lib/tossMinuteChart) 최근 130봉(링 크기)을 시드로.
   // 한투 분봉조회는 정규장만 줘서 프리·애프터·주간거래에 4선이 꼬였다(같은 날 확정) — 토스는 세션 무관 연속 봉.
   // 티커→토스 productCode는 검색 1회로 풀고 세션 동안 캐시(코드는 불변). 못 풀면 throw → 매니저 큐가 1회 재시도,
@@ -365,6 +383,7 @@ async function buildManager(): Promise<ManagerBootstrap> {
       }),
     fetchSnapshot,
     fetchBuyableUsd,
+    fetchRestPrice,
     fetchHoldings,
     // 매도 관리 그리드 인계(D5) — 매수폭·매도폭·매수배율은 설정 탭(매매파라미터)에서 조절한다.
     // ⚠ 아래 inflection·trend가 켜져 있는 동안은 그 경로가 우선이라 이 값은 쓰이지 않는다(롤백용 보존).
@@ -403,6 +422,19 @@ async function buildManager(): Promise<ManagerBootstrap> {
   });
   // 구독 ACK가 오면 행(feedRejected)을 다시 그린다 — 슬롯 틱이 없는(거절된) 종목은 달리 재발행 계기가 없다.
   manager.subscribeFeedDiagnostic(() => autopilot.refreshList());
+
+  // 앱 상태(2026-09-01) — 백그라운드에서는 JS 타이머가 멈춰 폴·세션 키 회전·봉 합성이 전부 서 있다.
+  // 복귀 즉시 밀린 것을 돌리고(onForeground), 2분 넘게 비웠으면 분봉을 다시 시드한다.
+  // buildManager는 앱 수명당 1회라 리스너 해제는 필요 없다(매니저 싱글턴과 수명이 같다).
+  let backgroundAt: number | null = null;
+  AppState.addEventListener('change', (next) => {
+    if (next === 'active') {
+      autopilot.onForeground(backgroundAt);
+      backgroundAt = null;
+    } else if (backgroundAt === null) {
+      backgroundAt = clock.now();
+    }
+  });
 
   // WS 단일 연결 공유 — 피드 허브의 라우터가 오토파일럿 슬롯으로 흘려보낸다.
   manager.setAuxRoutes(autopilot.routeTick, autopilot.routeQuote);

@@ -25,6 +25,7 @@ import { MODEL_BAR_MINUTES, MODEL_MODE } from '../modelMode';
 import { MARTINGALE_MODE } from '../martingaleMode';
 import { loadModel } from '../../../core/model';
 import { MARTINGALE_CONFIG, MARTINGALE_MIN_BARS, type MartingaleBarEval } from '../../../core/martingale';
+import { etMinuteOfDay, TRADING_DAY_START_MIN } from '../../../core/model/session';
 import { TREND_MODE } from '../trendMode';
 import type { TrendEval } from '../../../core/trend/signal';
 import { AdoptSheet } from './AdoptSheet';
@@ -142,16 +143,22 @@ export function formatFeedAckSummary(rows: readonly AutoPilotSlotRow[]): string 
  * ±3% 단타 모드 한 줄(2026-08-27, 2026-09-01 물타기 제거) — 마지막 1분봉 기준 "정배열인가 · 진입 봉인가 · 봉 수".
  * 진입은 정배열 상태에서 종가가 5선을 아래→위로 뚫는 **그 봉**에만 나므로, 정배열이어도 대부분의 봉은 "돌파 대기"다.
  */
-function formatMartingaleLine(ev: MartingaleBarEval | null): string {
+function formatMartingaleLine(ev: MartingaleBarEval | null, nowMs: number = Date.now()): string {
   if (ev === null) return '4선 계산 중';
   if (ev.aligned === null) return `4선 계산 중 · 봉 ${Math.min(ev.bars, MARTINGALE_MIN_BARS)}/${MARTINGALE_MIN_BARS}`;
   // "정배열"은 배열(5>20>60>120)과 4선 기울기 모두 상승을 **둘 다** 뜻한다(백테스트 규약). 눈으로는 배열이 맞아
   // 보여도 5선이 꺾여 있으면 진입 조건이 아니다 — 그 차이를 화살표로 보인다(2026-08-27 CHOW 13:19 ET 제보).
   const eventText = { cross: '5선 돌파', allUp: '4선 상승 성립', ordered: '정배열 성립' } as const;
+  // 세션 게이트를 화면에도 반영(2026-09-01) — 예전엔 주간거래 시간대(한국 낮)에 전 종목 "진입 가능"이
+  // 떴는데 엔진은 절대 사지 않아 화면-엔진이 어긋났다. 진입 창은 04:00~19:55 ET(엔진 isMartingaleEntryBar와 동일).
+  const m = etMinuteOfDay(Math.floor(nowMs / 60_000));
+  const entryWindow = m > TRADING_DAY_START_MIN && m < MARTINGALE_CONFIG.closeAtMin;
   const state = ev.condition
-    ? ev.entryEvent === null
-      ? '조건 충족(정배열 · 5선 위) → 진입 가능'
-      : `조건 충족 · ${eventText[ev.entryEvent]} → 진입 신호`
+    ? entryWindow
+      ? ev.entryEvent === null
+        ? '조건 충족(정배열 · 5선 위) — 후보 상위·미보유면 사요'
+        : `조건 충족 · ${eventText[ev.entryEvent]} → 진입 신호`
+      : '조건 충족 · 진입 시간대 아님(04:00~19:55 ET만 사요)'
     : ev.aligned
       ? '정배열 · 5선 아래(돌파 대기)'
       : ev.ordered

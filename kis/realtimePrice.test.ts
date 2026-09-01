@@ -160,6 +160,7 @@ describe('OverseasRealtimePriceClient', () => {
         onTick: vi.fn(),
         staleSubscriptions: [{ trKey: 'RBAQOLD', trId: REALTIME_PRICE_TR_ID }],
         reconnect: { baseDelayMs: 0, maxDelayMs: 0 },
+        idleTimeoutMs: 0, // setTimeoutImpl이 즉시 실행이라 워치독이 켜져 있으면 열리자마자 발화한다.
       },
       { WebSocketImpl: FakeWebSocket, setTimeoutImpl: (fn) => fn() },
     );
@@ -304,7 +305,8 @@ describe('OverseasRealtimePriceClient', () => {
     const onStatusChange = vi.fn();
     const scheduled: Array<{ fn: () => void; ms: number }> = [];
     const client = new OverseasRealtimePriceClient(
-      { approvalKey: 'approval-key', onTick, onStatusChange, reconnect: { baseDelayMs: 100, maxDelayMs: 1000 } },
+      // idleTimeoutMs 0 — 이 테스트는 재연결 예약 개수를 세므로 무음 워치독 타이머를 끈다(워치독은 전용 테스트).
+      { approvalKey: 'approval-key', onTick, onStatusChange, reconnect: { baseDelayMs: 100, maxDelayMs: 1000 }, idleTimeoutMs: 0 },
       {
         WebSocketImpl: FakeWebSocket,
         setTimeoutImpl: (fn, ms) => {
@@ -403,7 +405,7 @@ describe('OverseasRealtimePriceClient', () => {
     const onTick = vi.fn();
     const scheduled: Array<() => void> = [];
     const client = new OverseasRealtimePriceClient(
-      { approvalKey: 'approval-key', onTick },
+      { approvalKey: 'approval-key', onTick, idleTimeoutMs: 0 },
       { WebSocketImpl: FakeWebSocket, setTimeoutImpl: (fn) => (scheduled.push(fn), scheduled.length) },
     );
     client.connect();
@@ -413,6 +415,45 @@ describe('OverseasRealtimePriceClient', () => {
     client.close();
 
     expect(scheduled).toHaveLength(0);
+  });
+
+  it('무음 워치독(2026-09-01) — idleTimeoutMs 동안 아무 프레임이 없으면 소켓을 버리고 재연결을 예약한다(half-open)', () => {
+    FakeWebSocket.reset();
+    const onError = vi.fn();
+    const scheduled: Array<{ fn: () => void; ms: number }> = [];
+    const client = new OverseasRealtimePriceClient(
+      { approvalKey: 'approval-key', onTick: vi.fn(), onError, idleTimeoutMs: 90_000, reconnect: { baseDelayMs: 100 } },
+      {
+        WebSocketImpl: FakeWebSocket,
+        setTimeoutImpl: (fn, ms) => {
+          scheduled.push({ fn, ms });
+          return scheduled.length;
+        },
+        clearTimeoutImpl: () => {},
+      },
+    );
+    client.connect();
+    const socket1 = FakeWebSocket.instances[0];
+    socket1.triggerOpen();
+    client.subscribe('DNASAAPL');
+    // 열림 시점에 워치독 1개 예약(90초). 메시지가 오면 리셋(새 타이머 예약)된다.
+    expect(scheduled.filter((s) => s.ms === 90_000)).toHaveLength(1);
+    socket1.triggerMessage('{"header":{"tr_id":"PINGPONG"}}');
+    expect(scheduled.filter((s) => s.ms === 90_000)).toHaveLength(2);
+
+    // 마지막 워치독이 만료 — half-open 소켓을 닫고 재연결을 예약한다.
+    scheduled.at(-1)!.fn();
+    expect(onError).toHaveBeenCalled();
+    expect(socket1.closed).toBe(true);
+    const reconnects = scheduled.filter((s) => s.ms === 100);
+    expect(reconnects).toHaveLength(1);
+    reconnects[0].fn();
+    const socket2 = FakeWebSocket.instances[1];
+    socket2.triggerOpen();
+    // 구독 집합은 유지 — 새 소켓에 복원 프레임이 나간다.
+    const frame = JSON.parse(socket2.sent.at(-1)!);
+    expect(frame.body.input.tr_key).toBe('DNASAAPL');
+    expect(frame.header.tr_type).toBe('1');
   });
 });
 
@@ -438,7 +479,7 @@ describe('OverseasRealtimePriceClient — 단일 세션 보장 (ALREADY IN USE a
     const scheduled: Array<() => void> = [];
     const statuses: string[] = [];
     const client = new OverseasRealtimePriceClient(
-      { approvalKey: 'approval-key', onTick: vi.fn(), onStatusChange: (s) => statuses.push(s) },
+      { approvalKey: 'approval-key', onTick: vi.fn(), onStatusChange: (s) => statuses.push(s), idleTimeoutMs: 0 },
       {
         WebSocketImpl: FakeWebSocket,
         setTimeoutImpl: (fn) => {

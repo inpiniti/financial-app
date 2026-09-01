@@ -63,7 +63,7 @@ export const HELP_TOOL_DECLARATIONS = [
   {
     name: 'getWatchlist',
     description:
-      '지금 트레이딩 리스트를 돌려준다(티커·이름·현재가·틱속도·모델 판정 요약·매수 후보 여부). 어떤 종목을 보고 있는지, 왜 진입 신호가 없는지 설명할 때 쓴다. candidate=false면 모델 확률이 높아도 사지 않는다(속도 상위 밖).',
+      '지금 트레이딩 리스트를 돌려준다(티커·이름·현재가·틱속도·진입 판정 요약·매수 후보 여부). 어떤 종목을 보고 있는지, 왜 진입 신호가 없는지 설명할 때 쓴다. candidate=false면 진입 조건이 맞아도 사지 않는다(속도 상위 밖).',
     parameters: { type: 'OBJECT', properties: {} },
   },
   {
@@ -159,8 +159,8 @@ export const HELP_TOOL_DECLARATIONS = [
   {
     name: 'getMinuteCandles',
     description:
-      '미국 종목의 분봉을 토스 차트에서 가져오고, 엔진과 똑같은 절차로 모델 판정(확률·기준값·안 사는 이유)까지 계산해 돌려준다. ' +
-      '기본은 자동매매가 실제로 쓰는 봉 주기다. "지금 이 종목 확률 얼마야?", "왜 안 사?", "차트랑 앱 판정이 왜 달라?" 같은 질문에 쓴다. ' +
+      '미국 종목의 분봉을 토스 차트에서 가져오고, 엔진과 똑같은 절차로 진입 판정(±3% 단타 모드면 1분봉 4선 정배열·5선 돌파, 모델 모드면 확률·기준값)까지 계산해 돌려준다. ' +
+      '기본은 자동매매가 실제로 쓰는 봉 주기다. "왜 안 사?", "차트랑 앱 판정이 왜 달라?" 같은 질문에 쓴다. ' +
       '봉은 진행 중(미완성) 봉을 빼고 본다 — 엔진도 닫힌 봉만 판정하기 때문이다.',
     parameters: {
       type: 'OBJECT',
@@ -508,14 +508,25 @@ export async function runHelpTool(
       case 'getMinuteCandles': {
         const ticker = String(args.ticker ?? '').trim().toUpperCase();
         if (!ticker) return { error: '티커가 필요해요' };
-        const [{ fetchTossMinuteCandles, fetchTossDailyCloses, resolveTossProductCode }, model, { MODEL_BAR_MINUTES }] =
-          await Promise.all([
-            import('../../lib/tossMinuteChart'),
-            import('../../core/model'),
-            import('../scalper/modelMode'),
-          ]);
+        const [
+          { fetchTossMinuteCandles, fetchTossDailyCloses, resolveTossProductCode },
+          model,
+          { MODEL_BAR_MINUTES },
+          { MARTINGALE_BAR_MINUTES, MARTINGALE_MODE },
+          martingaleCore,
+        ] = await Promise.all([
+          import('../../lib/tossMinuteChart'),
+          import('../../core/model'),
+          import('../scalper/modelMode'),
+          import('../scalper/martingaleMode'),
+          import('../../core/martingale'),
+        ]);
         const barKeyOf = (tsMs: number, m: number) => Math.floor(tsMs / (60_000 * m)) * m;
-        const intervalMin = Math.max(1, Math.floor(num(args.intervalMin) || MODEL_BAR_MINUTES));
+        // 엔진 봉 주기 — ±3% 단타 모드가 켜져 있으면 1분봉(4선), 아니면 모델 5분봉(2026-09-01 동기화 —
+        // 커밋 56ec78e가 매뉴얼·챗 화면만 ±3%로 바꾸고 이 도구는 5분봉 모델로 남아 "엔진과 같은 계산"이라
+        // 잘못 주장하던 문제).
+        const engineBarMin = MARTINGALE_MODE ? MARTINGALE_BAR_MINUTES : MODEL_BAR_MINUTES;
+        const intervalMin = Math.max(1, Math.floor(num(args.intervalMin) || engineBarMin));
         const count = Math.max(1, Math.min(300, Math.floor(num(args.count) || 130)));
         // 거래소는 종목 검색으로 — 못 찾으면 나스닥으로 시도(getQuote와 같은 관례).
         const hits = await searchStocks(ticker, { fetchImpl: deps.fetchImpl }).catch(() => []);
@@ -531,14 +542,17 @@ export async function runHelpTool(
         const closed = candles.filter((c) => c.minuteKey < nowBarKey);
         const cur = candles.find((c) => c.minuteKey >= nowBarKey) ?? null;
 
-        // 모델 판정 — 엔진(ModelScanner)과 **같은 절차**(core/model/inspect)로 낸다. 화면·챗봇이 자기 방식으로
-        // 다시 계산해 엔진과 다른 답을 말하던 사고(2026-08-22)를 되풀이하지 않기 위한 단일 통로다.
-        // 봉 주기가 엔진과 다르면 학습과 다른 입력이므로 아예 판정하지 않는다 — 참고 수치도 지어내지 않는다.
-        const sameBar = intervalMin === MODEL_BAR_MINUTES;
-        const daily = sameBar
+        // 진입 판정 — 엔진과 **같은 절차·같은 코드**로 낸다. 화면·챗봇이 자기 방식으로 다시 계산해 엔진과
+        // 다른 답을 말하던 사고(2026-08-22)를 되풀이하지 않기 위한 단일 통로다.
+        // 봉 주기가 엔진과 다르면 다른 입력이므로 아예 판정하지 않는다 — 참고 수치도 지어내지 않는다.
+        const sameBar = intervalMin === engineBarMin;
+        // ±3% 단타 모드(현행) — 1분봉 4선(core/martingale.evaluateMartingaleBars). 모델은 돌지 않는다.
+        const martingaleVerdict =
+          sameBar && MARTINGALE_MODE ? martingaleCore.evaluateMartingaleBars(closed.map((c) => c.close)) : null;
+        const daily = sameBar && !MARTINGALE_MODE
           ? await fetchTossDailyCloses(code, 5, { fetchImpl: deps.fetchImpl }).catch(() => [])
           : [];
-        const verdict = sameBar
+        const verdict = sameBar && !MARTINGALE_MODE
           ? model.inspectModel(model.loadModel(), {
               bars: closed.map((c) => ({
                 minuteKey: c.minuteKey,
@@ -555,13 +569,29 @@ export async function runHelpTool(
         return {
           ticker,
           intervalMin,
-          engineIntervalMin: MODEL_BAR_MINUTES,
+          engineIntervalMin: engineBarMin,
           note: sameBar
-            ? '자동매매 엔진과 같은 봉 주기예요 — 아래 modelVerdict는 엔진이 내리는 것과 같은 계산이에요.'
-            : `엔진은 ${MODEL_BAR_MINUTES}분봉으로만 판정해요 — 다른 주기로는 모델을 돌리지 않고 봉만 보여 줘요.`,
+            ? MARTINGALE_MODE
+              ? '자동매매 엔진(±3% 단타)과 같은 봉 주기예요 — 아래 martingaleVerdict는 엔진이 내리는 것과 같은 계산(1분봉 4선 정배열·5선 돌파)이에요. 청산은 판정이 아니라 보유 평단 ±3%·19:55 ET 마감이라 여기 없어요.'
+              : '자동매매 엔진과 같은 봉 주기예요 — 아래 modelVerdict는 엔진이 내리는 것과 같은 계산이에요.'
+            : `엔진은 ${engineBarMin}분봉으로만 판정해요 — 다른 주기로는 판정을 돌리지 않고 봉만 보여 줘요.`,
           closedBars: closed.length,
           inProgressBar: cur
             ? { time: cur.dt, close: cur.close, volume: cur.volume, note: '아직 안 끝난 봉이라 판정에 넣지 않아요' }
+            : null,
+          martingaleVerdict: martingaleVerdict
+            ? {
+                // 진입 조건(정배열 ∧ 4선 상승 ∧ 종가>5선)이 마지막 닫힌 봉에서 성립하는가.
+                condition: martingaleVerdict.condition,
+                entryEvent: martingaleVerdict.entryEvent,
+                aligned: martingaleVerdict.aligned,
+                ordered: martingaleVerdict.ordered,
+                up: martingaleVerdict.up,
+                ma5: martingaleVerdict.ma5,
+                bars: martingaleVerdict.bars,
+                note:
+                  '실제 매수는 이 조건에 더해 ①진입 시간대(04:00~19:55 ET — 주간거래 제외) ②매수 후보(틱속도 상위 N) ③그리드 빈자리 ④당일 매매 종목은 이벤트 봉만 ⑤현금을 모두 통과해야 나가요.',
+              }
             : null,
           modelVerdict: verdict
             ? {

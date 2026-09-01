@@ -140,7 +140,7 @@ describe('PositionManager — 매도 경로', () => {
     await flush();
     expect(h.pm.busy).toBe(false);
     expect(h.pm.isolated).toBe(false);
-    expect(h.events.some((e) => e.includes('매매 발주 실패'))).toBe(true);
+    expect(h.events.some((e) => e.includes('매도 발주 실패'))).toBe(true);
     h.broker.failPlaceOrder = false;
     h.rule.nextDecide = sell();
     h.pm.onSignal('SELL', 103);
@@ -190,7 +190,7 @@ describe('PositionManager — 매수(물타기)·부분 체결·수동청산', (
     h.pm.onSignal('BUY', 100);
     await flush();
     expect(h.broker.placed).toHaveLength(0);
-    expect(h.events.some((e) => e.includes('물타기 생략'))).toBe(true);
+    expect(h.events.some((e) => e.includes('매수 생략'))).toBe(true);
     buyable = null; // 조회 불가 → fail-open
     h.rule.nextDecide = { side: 'buy', qty: 5 };
     h.pm.onSignal('BUY', 96);
@@ -200,7 +200,7 @@ describe('PositionManager — 매수(물타기)·부분 체결·수동청산', (
     const r = await h.pm.poll();
     expect(r.kind).toBe('holding');
     expect(h.rule.positions.at(-1)).toEqual({ qty: 15, avgPrice: 98.67 });
-    expect(h.events.some((e) => e.includes('물타기 체결'))).toBe(true);
+    expect(h.events.some((e) => e.includes('매수 체결'))).toBe(true);
   });
 
   it('부분 체결 뒤 취소 — 체결분을 잔고(폴백=가중평균)로 반영, 잔고 0이면 정산', async () => {

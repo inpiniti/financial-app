@@ -54,6 +54,31 @@ export const INFLECTION_GRID = true;
 export const MANUAL_EXIT_CHECK_MS = 120_000;
 
 /**
+ * 청산 매도 발주가에 쓸 1호가의 신선도 한계(ms) — OrderPortAdapter.quoteStaleMs와 같은 값.
+ * 이보다 오래된 호가는 쓰지 않고 판정가(체결가)로 폴백한다.
+ */
+export const EXIT_QUOTE_STALE_MS = 10_000;
+
+/**
+ * 시세 정지 판정(ms) — 마지막 체결 틱이 이보다 오래됐으면 WS가 죽었거나 구독이 거절된 것으로 보고
+ * REST 현재가 폴백(fetchRestPrice)으로 청산 감시를 잇는다(2026-09-01 — 2026-08-28 전 종목 구독 거절
+ * 실사고가 보유 중에 재현되면 익절·손절·마감 청산이 전부 멈추던 구멍).
+ */
+export const PRICE_STALE_MS = 20_000;
+/** REST 현재가 폴백 조회 최소 간격(ms) — 종목당. 유량 방어(flow 250ms 간격과 별개의 자기 절제). */
+export const REST_PRICE_PROBE_MS = 10_000;
+
+/**
+ * 청산 매도 발주가 거절됐을 때의 재시도 백오프(ms) — 기본 10초, 연속 거절마다 2배, 상한 60초.
+ * 세션 간극(주문 API가 닫힌 ET 20~21시·03~04시)에는 거절이 정상적으로 이어지므로 격리(FAULT)로
+ * 올리지 않고 최대 1분에 1번만 다시 두드린다(예전엔 1초마다 무한 재발주 — 유량 잠식, 2026-09-01).
+ */
+export const EXIT_RETRY_BASE_MS = 10_000;
+export const EXIT_RETRY_MAX_MS = 60_000;
+/** 청산 발주 실패 이벤트 스로틀(ms) — 첫 실패는 즉시, 이후 같은 상황 반복은 10분에 1번. */
+export const EXIT_FAIL_LOG_THROTTLE_MS = 600_000;
+
+/**
  * 추세 → 그리드 → 매매(2026-08-18 도메인 문서) 설정 — 현재 조절 항목 없음(규칙 전부 문서 고정값).
  * **주입 자체가 활성화 신호**다(TREND_MODE AND 주입).
  */
@@ -239,6 +264,17 @@ export interface PositionManagerDeps {
   clock: ClockLike;
   /** 최신 현재가·마지막 체결 시각·오늘 고저 — 슬롯이 없으면 null을 돌려준다. */
   price: () => PriceView | null;
+  /**
+   * 최신 1호가(체결가 페이로드의 PBID/PASK) — 청산 매도 발주·추격가를 매수1호가로 크로스하는 데 쓴다
+   * (2026-09-01 — 마지막 체결가 지정가는 급락 중 호가 위에 걸려 1초에 한 칸씩 쫓아 내려가며 슬리피지
+   * −0.9%p를 만들었다: docs/분석/2026-08-27_청산-슬리피지-첫-실측과-방향.md). 미주입·null이면 판정가 폴백.
+   */
+  quote?: () => { bid1: number; ask1: number; at: number } | null;
+  /**
+   * REST 현재가 폴백(2026-09-01) — WS 틱이 PRICE_STALE_MS 이상 끊겼을 때 청산 감시를 잇는다.
+   * 실패·미주입이면 null(기존처럼 판정 정지 — 폴백이 없다는 사실은 이벤트로 남는다).
+   */
+  fetchRestPrice?: () => Promise<number | null>;
   /** 정규장 판정(서킷 heartbeat 입력). */
   regularSession: (nowMs: number) => boolean;
   /** 매수가능금액 사전 조회(물타기 매수) — null/미지정/throw면 판정 없이 진행(fail-open). */
@@ -282,7 +318,9 @@ export function makePositionManager(
             priceExit: (price) => {
               const kind = rule.exitKind;
               if (kind === 'SESSION_END') {
-                return { reason: 'SESSION_END' as ExitReason, text: '마감 청산 · 정규장 마감 전이라 남은 수량을 전량 매도해요', line: rule.targetPrice };
+                // line 없음 — 마감 청산은 가격 조건선이 아니라 시각 조건이다. 익절가를 넣으면
+                // 슬리피지 계측(exitSnapshot.line 대비 체결가)이 왜곡된다(2026-09-01 수정).
+                return { reason: 'SESSION_END' as ExitReason, text: '마감 청산 · 확장세션 마감 전이라 남은 수량을 전량 매도해요' };
               }
               if (kind === 'STOP_LOSS') {
                 return {
@@ -444,6 +482,22 @@ export class RulePositionManager implements PositionManager {
   private manualCheckAt: number | undefined;
   private manualMisses = 0;
 
+  // ── 청산 발주 거절 재시도(2026-09-01) ──
+  /** 이 시각 전에는 새 청산 매도를 시작하지 않는다(거절 백오프). */
+  private exitRetryNotBefore = 0;
+  /** 연속 청산 발주 거절 수(성공·체결이 나면 0). 백오프 지수의 밑. */
+  private exitFailStreak = 0;
+  /** 청산 발주 실패 이벤트 마지막 기록 시각(스로틀). */
+  private lastExitFailLogAt = Number.NEGATIVE_INFINITY;
+  /** 발주 거절 + 잔고 없음으로 확정된 외부 청산 — 다음 폴이 sold로 회수한다. */
+  private pendingExternalExit: TradeRecord | null = null;
+
+  // ── 시세 정지 REST 폴백(2026-09-01) ──
+  /** 다음 REST 현재가 조회 허용 시각(ms). */
+  private nextRestProbeAt = 0;
+  /** 시세 정지 안내를 이미 냈는가 — 살아나면 리셋(복구도 알린다). */
+  private staleNoticed = false;
+
   constructor(deps: PositionManagerDeps, opts: RulePositionManagerOptions) {
     this.deps = deps;
     this.opts = opts;
@@ -532,7 +586,7 @@ export class RulePositionManager implements PositionManager {
     if (!this.rule || this.isolated || this.released || this.busy) return false;
     const qty = this.rule.view.qty;
     if (!(qty > 0) || !Number.isFinite(price) || price <= 0) return false;
-    this.event(`사용자 요청 · 전량 ${qty}주 매도를 시작해요 — 체결될 때까지 현재가로 따라가요`);
+    this.event(`사용자 요청 · 전량 ${qty}주 매도를 시작해요 — 체결될 때까지 매수1호가로 따라가요`);
     this.begin({ side: 'sell', qty }, price, 'USER_SELL');
     return true;
   }
@@ -544,7 +598,6 @@ export class RulePositionManager implements PositionManager {
   async tick(opts: { canStart: boolean }): Promise<void> {
     if (!this.rule || this.isolated) return;
     const view = this.deps.price();
-    const price = view?.price ?? null;
     const canStart = opts.canStart && !this.released;
     if (this.circuit && view) {
       const nowMs = this.deps.clock.now();
@@ -556,18 +609,36 @@ export class RulePositionManager implements PositionManager {
       });
       for (const ev of hb.events) this.event(circuitEventText(ev));
       if (hb.events.some((ev) => ev.kind === 'HALT') && this.manualCheckAt !== undefined) this.manualCheckAt = 0; // 정지 감지 → 잔고 재확인 앞당김(수동 매도 인지).
-      if (hb.decision && price !== null && !this.busy && canStart) {
-        this.begin(hb.decision, price, hb.reason === 'CIRCUIT' ? 'CIRCUIT' : 'STOP_LOSS');
+      if (hb.decision && view.price !== null && !this.busy && canStart) {
+        this.begin(hb.decision, view.price, hb.reason === 'CIRCUIT' ? 'CIRCUIT' : 'STOP_LOSS');
         return;
       }
     }
+    // 판정가 — WS 틱이 살아 있으면 그대로(동기 — 여기서 await를 넣으면 폴과의 인터리빙이 바뀌어
+    // Execution.busy에 걸린다), 정지 상태(stale)일 때만 REST 현재가로 잇는다(2026-09-01 stale guard).
+    const now = this.deps.clock.now();
+    const live =
+      view !== null && view.price !== null && view.lastTradeAt !== null && now - view.lastTradeAt <= PRICE_STALE_MS;
+    let price: number | null;
+    if (live) {
+      if (this.staleNoticed) {
+        this.staleNoticed = false;
+        this.event('실시간 시세가 다시 들어와요 — REST 감시를 끝내고 틱 기준으로 돌아가요');
+      }
+      price = view.price;
+    } else if (!this.deps.fetchRestPrice) {
+      price = view?.price ?? null; // 폴백 미배선(옛 하네스) — 기존 동작 그대로(낡은 틱이라도 쓴다).
+    } else {
+      price = await this.probeRestPrice(now);
+    }
     if (this.exec !== null) {
-      if (price !== null) await this.exec.onPrice(price);
+      // 진행 중 매도 추격은 매수1호가로 — 급락 중 체결가는 호가 위라 지정가가 안 붙는다(진입의 매도1호가 크로스와 대칭).
+      if (price !== null) await this.exec.onPrice(this.execSide === 'sell' ? this.exitOrderPrice(price) : price);
       return;
     }
     // 틱 판정 — 매매가 없을 때만. 신호 경로(onSignal)와 같은 게이트·점유 규칙.
     // 추세는 손절선 하나, 모델은 익절·손절·시간 세 갈래다(사유·문구는 build가 준 priceExit이 정한다).
-    if (!this.busy && canStart && price !== null) {
+    if (!this.busy && canStart && price !== null && this.deps.clock.now() >= this.exitRetryNotBefore) {
       const decision = this.rule.onPrice?.(price) ?? null;
       if (decision) {
         const exit = this.priceExit?.(price) ?? {
@@ -580,10 +651,47 @@ export class RulePositionManager implements PositionManager {
     }
   }
 
+  /**
+   * 시세 정지(stale) 시 REST 현재가 폴백 — REST_PRICE_PROBE_MS 간격으로만 조회하고, 진입·복구를 이벤트로
+   * 알린다. 2026-08-28 전 종목 구독 거절 실사고가 보유 중에 나면 청산이 통째로 멈추던 구멍(2026-09-01).
+   */
+  private async probeRestPrice(now: number): Promise<number | null> {
+    if (now < this.nextRestProbeAt) return null; // 조회 간격 사이 — 낡은 틱으로 판정하지 않는다.
+    this.nextRestProbeAt = now + REST_PRICE_PROBE_MS;
+    let rest: number | null = null;
+    try {
+      rest = (await this.deps.fetchRestPrice?.()) ?? null;
+    } catch {
+      rest = null;
+    }
+    if (!this.staleNoticed) {
+      this.staleNoticed = true;
+      this.event(
+        rest !== null && rest > 0
+          ? `실시간 시세가 끊겼어요 — REST 현재가(${rest.toFixed(2)})로 익절·손절 감시를 이어가요`
+          : '실시간 시세가 끊겼고 REST 현재가도 못 받았어요 — 청산 판정이 멈춰 있어요, 계좌를 확인해 주세요',
+      );
+    }
+    return rest !== null && Number.isFinite(rest) && rest > 0 ? rest : null;
+  }
+
+  /** 청산 매도 발주·추격가 — 신선한 매수1호가(bid1)가 있으면 크로스, 없으면 판정가 그대로. */
+  private exitOrderPrice(fallback: number): number {
+    const q = this.deps.quote?.() ?? null;
+    if (q !== null && q.bid1 > 0 && this.deps.clock.now() - q.at <= EXIT_QUOTE_STALE_MS) return q.bid1;
+    return fallback;
+  }
+
   /** 주기 폴 — 진행 중 매매의 체결/취소를 확정한다. 매매가 없으면 수동청산 재확인만. */
   async poll(): Promise<PositionPollResult> {
     if (this.isolated) return { kind: 'isolated', reason: this._isolated! };
     if (!this.rule) return { kind: 'holding' };
+    if (this.pendingExternalExit !== null) {
+      // 발주 거절 + 잔고 없음 — 앱 밖에서 이미 청산된 포지션이다(2026-09-01). 재시도 없이 정산으로 회수한다.
+      const record = this.pendingExternalExit;
+      this.pendingExternalExit = null;
+      return { kind: 'sold', record };
+    }
     const exec = this.exec;
     if (!exec) return this.checkManualExit();
     const r = await exec.poll();
@@ -595,7 +703,7 @@ export class RulePositionManager implements PositionManager {
         const snap = this.pendingExitSnapshot;
         this.clearExec();
         this.event(
-          `${side === 'sell' ? '매도' : '매수'} 추격 취소 · 평단 대비 문턱이 깨져 다음 변곡점을 기다려요${
+          `${side === 'sell' ? '매도' : '매수'} 추격 취소 · 평단 대비 문턱이 깨져 다음 판정을 기다려요${
             r.result.filledQty > 0 ? ` (부분 체결 ${r.result.filledQty}주 반영)` : ''
           }`,
         );
@@ -611,7 +719,7 @@ export class RulePositionManager implements PositionManager {
         const refreshed = await this.refreshPosition(side, r.result, null, null);
         if (refreshed.kind !== 'holding') return refreshed;
         const v = this.rule.view;
-        this.event(`물타기 체결 · ${r.result.filledQty}주 · 평단 $${v.avgPrice.toFixed(2)} · ${v.qty}주 보유`);
+        this.event(`매수 체결 · ${r.result.filledQty}주 · 평단 $${v.avgPrice.toFixed(2)} · ${v.qty}주 보유`);
         return { kind: 'holding' };
       }
       default:
@@ -670,7 +778,7 @@ export class RulePositionManager implements PositionManager {
           buyable = null;
         }
         if (buyable !== null && buyable < needed) {
-          this.event(`물타기 생략 · 현금 부족(필요 $${needed.toFixed(2)} > 주문가능 $${buyable.toFixed(2)}) — 다음 변곡점을 기다려요`);
+          this.event(`매수 생략 · 현금 부족(필요 $${needed.toFixed(2)} > 주문가능 $${buyable.toFixed(2)}) — 다음 판정을 기다려요`);
           return;
         }
       }
@@ -687,18 +795,24 @@ export class RulePositionManager implements PositionManager {
         shouldAbort: (p) => rule.shouldAbort(decision.side, p),
         chaseGate: chaseAfter === null ? undefined : () => (this.deps.price()?.lastTradeAt ?? 0) > chaseAfter,
       });
-      await exec.start(limit ?? price);
+      // 매도 시작가 = 매수1호가 크로스(신선할 때) — 진입(매도1호가 크로스)과 대칭. 청산 슬리피지 실측의 구조 원인 수정(2026-09-01).
+      await exec.start(limit ?? (decision.side === 'sell' ? this.exitOrderPrice(price) : price));
       if (exec.state === 'FAULT') {
-        // 발주 거절은 세션 간극·일시 오류가 흔하다 — 종목을 동결하지 않고 다음 신호에서 다시 시도한다.
-        this.event(`매매 발주 실패 · ${exec.faultText ?? '주문 거절'} — 다음 변곡점에서 다시 시도해요`);
         this.pendingExitReason = null; // 손절·서킷 매도가 발주에 실패하면 다음 틱이 다시 판정한다.
+        if (decision.side === 'sell') {
+          await this.handleExitPlacementFailure(exec.faultText ?? '주문 거절', price);
+        } else {
+          this.event(`매수 발주 실패 · ${exec.faultText ?? '주문 거절'} — 다음 신호에서 다시 시도해요`);
+        }
         return;
       }
+      this.exitFailStreak = 0;
+      this.exitRetryNotBefore = 0;
       this.exec = exec;
       this.execSide = decision.side;
       this.event(
-        `${decision.side === 'sell' ? '전량 매도' : '물타기 매수'} 매매 시작 · ${decision.qty}주 @ ${(exec.orderPrice ?? price).toFixed(2)} ${
-          limit !== null ? '(정지 중 지정가 · 재개 단일가에 소화, 미체결이면 재개 뒤 추격)' : '(현재가 추격)'
+        `${decision.side === 'sell' ? '전량 매도' : '매수'} 매매 시작 · ${decision.qty}주 @ ${(exec.orderPrice ?? price).toFixed(2)} ${
+          limit !== null ? '(정지 중 지정가 · 재개 단일가에 소화, 미체결이면 재개 뒤 추격)' : decision.side === 'sell' ? '(매수1호가 추격)' : '(현재가 추격)'
         }`,
       );
     } finally {
@@ -711,6 +825,49 @@ export class RulePositionManager implements PositionManager {
     this.execSide = null;
     this.pendingExitReason = null;
     this.pendingExitSnapshot = null;
+  }
+
+  /**
+   * 청산 매도 발주 거절 처리(2026-09-01) — 예전엔 이벤트 한 줄 뒤 다음 틱(1초)마다 무한 재발주였다.
+   *  ① 잔고를 즉시 확인한다 — 보유가 없으면(앱 밖 매도·전량 체결 미인지가 거절 원인) 재시도 대신
+   *     외부 청산(MANUAL)으로 정산을 예약한다(2026-09-01 사용자 확정: "보유하지 않은 건 판매 완료로 인식").
+   *  ② 보유가 그대로면 백오프(10초, 연속 거절마다 2배, 최대 60초) 뒤 다음 틱 판정이 다시 시도한다.
+   *     세션 간극(주문 API가 닫힌 ET 20~21시·03~04시)의 연속 거절은 정상이라 격리(FAULT)로 올리지 않는다.
+   *  ③ 이벤트는 첫 실패 즉시, 반복은 10분에 1번(로그 스팸 방지).
+   */
+  private async handleExitPlacementFailure(reason: string, price: number): Promise<void> {
+    this.exitFailStreak += 1;
+    const backoff = Math.min(EXIT_RETRY_BASE_MS * 2 ** (this.exitFailStreak - 1), EXIT_RETRY_MAX_MS);
+    const now = this.deps.clock.now();
+    this.exitRetryNotBefore = now + backoff;
+    // 잔고 확인 — 조회 실패(throw)는 판단하지 않는다(백오프 후 재시도). "행 없음(null)"만 이미 정리됨의 근거다.
+    let checked = false;
+    let pos: ConditionalPosition | null = null;
+    try {
+      pos = await this.deps.broker.fetchPosition();
+      checked = true;
+    } catch {
+      checked = false;
+    }
+    if (checked && (pos === null || pos.qty <= 0)) {
+      const v = this.rule!.view;
+      this.pendingExternalExit = makeTradeRecord({
+        ticker: this.ticker,
+        qty: v.qty,
+        entryPrice: v.avgPrice,
+        exitPrice: price > 0 ? price : v.avgPrice,
+        entry: this.deps.entry,
+        exitReason: 'MANUAL',
+        feeRate: this.deps.feeRate,
+        now,
+      });
+      this.event(`매도 발주가 거절됐고 잔고에도 없어요 — 앱 밖에서 이미 정리된 것으로 보고 정산해요 (사유: ${reason})`);
+      return;
+    }
+    if (this.exitFailStreak === 1 || now - this.lastExitFailLogAt >= EXIT_FAIL_LOG_THROTTLE_MS) {
+      this.lastExitFailLogAt = now;
+      this.event(`매도 발주 실패 · ${reason} — ${Math.round(backoff / 1000)}초 뒤 다시 시도해요 (연속 ${this.exitFailStreak}회)`);
+    }
   }
 
   /**

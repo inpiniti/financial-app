@@ -189,7 +189,7 @@ describe('변곡점+그리드 조합 — 매수(상승 변곡점 + 낙폭 조건
     i = await replay(h, valley(avg, 0.85, 8), i); // 낙폭 문턱은 충족 — 현금 판정에서 생략돼야 한다.
     expect(broker.placed).toHaveLength(1); // 물타기 주문 없음
     expect(h.pilot.getView().activeTickers).toEqual(['A']); // 관리 유지(PAUSED 아님)
-    expect(h.events.some((e) => e.includes('물타기 생략'))).toBe(true);
+    expect(h.events.some((e) => e.includes('매수 생략'))).toBe(true);
   });
 });
 

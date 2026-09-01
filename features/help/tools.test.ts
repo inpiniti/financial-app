@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import { HELP_TOOL_DECLARATIONS, runHelpTool, type HelpAutopilotSnapshot } from './tools';
-import { MODEL_BAR_MINUTES } from '../scalper/modelMode';
 
 const SNAPSHOT: HelpAutopilotSnapshot = {
   state: 'SCANNING',
@@ -182,38 +181,40 @@ describe('runHelpTool — 분봉·차트 조회(2026-08-22)', () => {
     expect(res.recentCandles).toHaveLength(12);
   });
 
-  it('엔진 봉 주기가 아니면 모델을 돌리지 않는다 — 참고 수치를 지어내지 않는다', async () => {
+  it('엔진 봉 주기가 아니면 판정을 돌리지 않는다 — 참고 수치를 지어내지 않는다', async () => {
     const nowMs = 1_800_000_000_000;
     const nowKey = Math.floor(nowMs / 60_000);
-    const fetchImpl = tossFetch(Array.from({ length: 20 }, () => 10), nowKey);
+    const fetchImpl = tossFetch(Array.from({ length: 20 }, () => 10), nowKey, 5);
     const res = (await runHelpTool(
       'getMinuteCandles',
-      { ticker: 'AAA', intervalMin: 1 }, // 엔진은 5분봉
+      { ticker: 'AAA', intervalMin: 5 }, // 엔진(±3% 단타)은 1분봉
       { fetchImpl: fetchImpl as unknown as typeof fetch, now: () => nowMs },
     )) as Record<string, any>;
     expect(res.modelVerdict).toBeNull();
+    expect(res.martingaleVerdict).toBeNull();
     expect(res.note).toContain('분봉으로만 판정해요');
-    expect(res.engineIntervalMin).toBe(MODEL_BAR_MINUTES);
+    expect(res.engineIntervalMin).toBe(1); // ±3% 단타 모드(MARTINGALE_MODE) — 1분봉이 엔진 주기.
   });
 
-  it('엔진과 같은 봉 주기면 모델 판정을 함께 준다 — 확률·기준값·안 사는 이유', async () => {
-    // 정규장 5분봉 20개(09:30 ET~)를 만들어 세션 필터를 통과시킨다.
-    const startKey = Math.floor(Date.parse('2026-08-18T09:30:00-04:00') / 60_000);
-    const lastKey = startKey + 19 * 5;
-    const nowMs = (lastKey + 5) * 60_000 + 1_000; // 마지막 봉은 닫혔고 그다음 봉이 진행 중
-    const fetchImpl = tossFetch(Array.from({ length: 20 }, () => 10), lastKey, 5);
+  it('엔진과 같은 봉 주기면 ±3% 단타 진입 판정을 함께 준다 — 정배열·5선 돌파·이유(2026-09-01 동기화)', async () => {
+    const nowMs = 1_800_000_000_000;
+    const nowKey = Math.floor(nowMs / 60_000);
+    // 122봉 이상 상승 종가 — 4선 판정이 가능해진다(엔진 core/martingale.evaluateMartingaleBars와 같은 코드).
+    const closes = Array.from({ length: 130 }, (_, i) => 100 + i);
+    const fetchImpl = tossFetch(closes, nowKey);
     const res = (await runHelpTool(
       'getMinuteCandles',
-      { ticker: 'AAA', intervalMin: MODEL_BAR_MINUTES },
+      { ticker: 'AAA', intervalMin: 1 },
       { fetchImpl: fetchImpl as unknown as typeof fetch, now: () => nowMs },
     )) as Record<string, any>;
-    expect(res.modelVerdict).not.toBeNull();
-    expect(res.modelVerdict.thresholdPct).toBeGreaterThan(0);
-    expect(res.modelVerdict.etDate).toBe('2026-08-18');
-    expect(res.modelVerdict.dayBars).toBe(20);
-    // 실제 모델은 이 밋밋한 봉에 신호를 내지 않는다 — 안 사는 이유가 사람 문장으로 온다.
-    expect(res.modelVerdict.buy).toBe(false);
-    expect(typeof res.modelVerdict.whyNot).toBe('string');
+    expect(res.error).toBeUndefined();
+    expect(res.engineIntervalMin).toBe(1);
+    expect(res.note).toContain('±3% 단타');
+    expect(res.modelVerdict).toBeNull(); // ±3% 모드에서는 모델을 돌리지 않는다 — 엔진과 같은 사실.
+    expect(res.martingaleVerdict).not.toBeNull();
+    expect(typeof res.martingaleVerdict.condition).toBe('boolean');
+    expect(res.martingaleVerdict.aligned).not.toBeNull(); // 봉이 충분해 4선 판정이 나온다.
+    expect(res.martingaleVerdict.note).toContain('진입 시간대');
   });
 
   it('토스에서 종목을 못 찾으면 error 객체', async () => {

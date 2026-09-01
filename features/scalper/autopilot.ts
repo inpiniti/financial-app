@@ -219,6 +219,11 @@ export interface AutoPilotDeps {
    * 판정 없이 진행한다(주문 거절은 기존 FAULT 인터록이 받는다 — plan §2-4 폴백).
    */
   fetchBuyableUsd?: (ticker: string, price: number) => Promise<number | null>;
+  /**
+   * REST 현재가 조회(2026-09-01) — 보유 종목의 WS 틱이 끊겼을 때(구독 거절·무음 정지) 포지션 관리자가
+   * 청산 감시를 잇는 폴백. 실패/미주입이면 null(폴백 없음 — 이벤트로만 알린다).
+   */
+  fetchRestPrice?: (ticker: string) => Promise<number | null>;
   clock: ClockLike;
   scheduler: SchedulerLike;
   storage: KeyValueStore;
@@ -355,6 +360,21 @@ interface PersistedV4 {
   /** 현금 부족 일시정지 — 재시작에도 복원돼야 한다(자동 재개 금지). */
   paused: boolean;
   daily: { date: string; cycles: number; cumPnl: number } | null;
+}
+
+/**
+ * 영속 v5(2026-09-01) — v4 + 관리 중이던 종목·진입일.
+ *  · actives: 앱이 죽을 때 관리하던 티커. 다음 start()가 잔고 대조 후 **자동 재등록**(adoptPosition)해
+ *    ±3% 손절 관리를 잇는다 — 예전엔 사용자가 "보유 종목 등록"을 눌러야 해서, 앱이 죽으면 손절이 사라졌다.
+ *    (전 종목 자동 편입 금지 원칙은 유지된다 — 이 목록은 "계좌의 아무 보유"가 아니라 "우리가 관리하던 것"뿐이다.)
+ *  · enteredOn: 티커 → 진입 거래일(ET) — "당일 매매 종목은 이벤트 봉에서만 재진입" 게이트의 영속.
+ */
+interface PersistedV5 {
+  version: 5;
+  paused: boolean;
+  daily: { date: string; cycles: number; cumPnl: number } | null;
+  actives: string[];
+  enteredOn: Record<string, string>;
 }
 
 /** 옛 저장 포맷(마이그레이션 파싱 전용) — v3는 config 동봉, v2는 세션, v1은 baseAmountUsd 단일 값. */
@@ -636,8 +656,28 @@ export class AutoPilot {
     const raw = await this.deps.storage.getItem(AUTOPILOT_STORAGE_KEY);
     if (!raw) return;
     try {
-      const parsed = JSON.parse(raw) as Partial<PersistedV4> & LegacyPersisted;
-      if (parsed.version === 4) {
+      const parsed = JSON.parse(raw) as Partial<PersistedV5> & Partial<PersistedV4> & LegacyPersisted;
+      if (parsed.version === 5) {
+        this.paused = parsed.paused === true;
+        if (parsed.daily && typeof parsed.daily.date === 'string') {
+          this.dailyDate = parsed.daily.date;
+          this.cycles = parsed.daily.cycles ?? 0;
+          this.cumPnl = parsed.daily.cumPnl ?? 0;
+        }
+        this.restoredActives = Array.isArray(parsed.actives)
+          ? parsed.actives.filter((t): t is string => typeof t === 'string' && t.length > 0)
+          : [];
+        if (parsed.enteredOn && typeof parsed.enteredOn === 'object') {
+          for (const [t, d] of Object.entries(parsed.enteredOn)) {
+            if (typeof d === 'string') this.enteredOn.set(t, d);
+          }
+        }
+        if (this.restoredActives.length > 0) {
+          this.event(
+            `지난 실행에서 관리하던 종목이 있어요(${this.restoredActives.join(', ')}) — 자동 트레이딩을 시작하면 잔고를 확인하고 자동으로 다시 등록해 익절·손절 관리를 이어가요`,
+          );
+        }
+      } else if (parsed.version === 4) {
         this.paused = parsed.paused === true;
         if (parsed.daily && typeof parsed.daily.date === 'string') {
           this.dailyDate = parsed.daily.date;
@@ -682,13 +722,21 @@ export class AutoPilot {
   }
 
   private async persist(): Promise<void> {
-    const data: PersistedV4 = {
-      version: 4,
+    // enteredOn은 오늘(ET)치만 남긴다 — 게이트가 오늘만 보므로 지난 날짜는 저장 낭비다.
+    const today = etDateOf(this.deps.clock.now());
+    const enteredOn: Record<string, string> = {};
+    for (const [t, d] of this.enteredOn) {
+      if (d === today) enteredOn[t] = d;
+    }
+    const data: PersistedV5 = {
+      version: 5,
       paused: this.paused,
       daily:
         this.dailyDate === null
           ? null
           : { date: this.dailyDate, cycles: this.cycles, cumPnl: this.cumPnl },
+      actives: [...this.actives.keys()],
+      enteredOn,
     };
     await this.deps.storage.setItem(AUTOPILOT_STORAGE_KEY, JSON.stringify(data));
   }
@@ -729,6 +777,8 @@ export class AutoPilot {
     this.event(
       `자동 트레이딩을 시작했어요 · 종목당 ${fixedQty !== null ? `${fixedQty}주 고정` : `${this.config.startAmountUsd.toFixed(2)}`} · 그리드 최대 ${this.maxGrids}개`,
     );
+    // 지난 실행에서 관리하던 종목 자동 재등록(2026-09-01) — 손절 관리 공백을 사람 손 없이 잇는다.
+    if (this.restoredActives.length > 0) void this.readoptRestored();
     void this.persist();
     this.emit();
   }
@@ -975,6 +1025,35 @@ export class AutoPilot {
   /** 오늘(ET) 진입한 종목 → 그 거래일. 물타기 모드의 "당일 매매 종목은 이벤트에서만 재진입" 판정용(2026-08-28). */
   private readonly enteredOn = new Map<string, string>();
 
+  /** 지난 실행(v5 영속)에서 관리하던 티커 — 다음 start()가 자동 재등록(adoptPosition)한다(2026-09-01). */
+  private restoredActives: string[] = [];
+
+  /**
+   * 영속 복원분 자동 재등록(2026-09-01) — start() 직후 1회. 잔고 확인·arm은 adoptPosition이 한다
+   * (잔고에 없으면 "등록 실패" 문구가 돌아온다 = 그 사이 정리된 것 — 그대로 알리고 넘어간다).
+   */
+  private async readoptRestored(): Promise<void> {
+    const tickers = this.restoredActives;
+    this.restoredActives = [];
+    for (const ticker of tickers) {
+      if (!this.running || this.faulted || this.paused || this.stopRequested) return;
+      if (this.actives.has(ticker)) continue;
+      const err = await this.adoptPosition(ticker);
+      if (err) this.event(`${ticker} 자동 재등록 못 했어요 · ${err}`);
+    }
+  }
+
+  /**
+   * 앱 포그라운드 복귀(2026-09-01) — 백그라운드에서는 JS 타이머가 멈춰 폴·틱이 서 있었다.
+   * 복귀 즉시 일일 롤오버·재선정·폴 1회를 돌려 밀린 체결 확인·수동청산 감지를 앞당긴다.
+   */
+  wake(): void {
+    if (!this.running) return;
+    this.rolloverDailyIfNeeded();
+    this.reselect();
+    void this.pollCycle();
+  }
+
   private tradedToday(ticker: string): boolean {
     return this.enteredOn.get(ticker) === etDateString(Math.floor(this.deps.clock.now() / 60_000));
   }
@@ -1176,6 +1255,7 @@ export class AutoPilot {
     });
     this.actives.set(ctx.ticker, active);
     this.enteredOn.set(ctx.ticker, etDateString(Math.floor(this.deps.clock.now() / 60_000)));
+    void this.persist(); // 관리 종목 변화는 즉시 영속(v5) — 앱이 죽어도 다음 start()가 재등록한다.
     this.deps.pin(ctx.ticker);
     // 이 종목은 이제 "감시 후보"가 아니다 — 목록에서 빼고 빈 자리를 다른 종목으로 채운다(감시 계속).
     this.watchedTickers = this.watchedTickers.filter((t) => t !== ctx.ticker);
@@ -1315,6 +1395,10 @@ export class AutoPilot {
           const v = active.slot?.getView();
           return v ? { price: v.price, lastTradeAt: v.lastTradeAt, dayLow: v.dayLow, dayHigh: v.dayHigh } : null;
         },
+        // 청산 매도 발주가용 매수1호가(2026-09-01) — 체결가 틱 페이로드의 PBID. 슬롯이 없으면(입양) null → 판정가 폴백.
+        quote: () => active.slot?.quote ?? null,
+        // 시세 정지 REST 폴백(2026-09-01) — 구독 거절·WS 무음 정지에도 익절·손절 감시가 이어지게.
+        fetchRestPrice: this.deps.fetchRestPrice ? () => this.deps.fetchRestPrice!(ticker) : undefined,
         regularSession: isUsRegularSession,
         fetchBuyableUsd: this.deps.fetchBuyableUsd ? (price) => this.deps.fetchBuyableUsd!(ticker, price) : undefined,
         entry: pos ? { entryTs: pos.entryTs, entrySnapshot: pos.entrySnapshot } : null,
@@ -1486,6 +1570,7 @@ export class AutoPilot {
   private teardownActive(active: ActiveCycle): void {
     active.slot?.detachDetector();
     this.actives.delete(active.ticker);
+    void this.persist(); // 관리 종목 변화 즉시 영속(v5) — 정리된 종목을 다음 실행이 헛되이 재등록하지 않게.
     this.deps.unpin(active.ticker);
     if (this.actives.size === 0) this.stopPollTimer();
   }

@@ -172,6 +172,12 @@ export interface RealtimePriceClientConfig {
   onStatusChange?(status: 'connecting' | 'open' | 'closed' | 'reconnecting'): void;
   reconnect?: RealtimeReconnectOptions;
   /**
+   * 무음 워치독(2026-09-01) — 이 시간(ms) 동안 아무 프레임(PINGPONG 포함)이 없으면 소켓을 죽은 것으로
+   * 보고 끊고 재연결한다. KIS는 유휴 세션에도 PINGPONG을 주기적으로 보내므로, 이 시간의 무음은
+   * half-open(모바일 WiFi↔LTE 전환에서 흔함 — onclose가 영영 안 온다)이다. 0이면 끔. 기본 90초.
+   */
+  idleTimeoutMs?: number;
+  /**
    * 첫 연결이 열리자마자 **해제(tr_type '2') 프레임을 보낼 옛 구독** — 직전 실행이 강제 종료돼(해제 프레임 없이
    * 끊김) 서버에 남은 등록을 쓸어내는 용도. 2026-08-28 실사고: 앱을 여러 번 껐다 켠 뒤 새 연결에서 3건만 성공하고
    * 18건이 "MAX SUBSCRIBE OVER" — KIS가 등록 수(41)를 세션이 아니라 계정 단위로 세고 죽은 세션 등록이 남는 정황.
@@ -211,6 +217,9 @@ export class OverseasRealtimePriceClient {
   private reconnectAttempt = 0;
   private reconnectTimer: unknown = null;
   private manuallyClosed = false;
+  /** 무음 워치독 타이머 — 수신 프레임마다 리셋. */
+  private idleTimer: unknown = null;
+  private readonly idleTimeoutMs: number;
 
   constructor(config: RealtimePriceClientConfig, deps: RealtimePriceClientDeps = {}) {
     this.config = config;
@@ -218,6 +227,7 @@ export class OverseasRealtimePriceClient {
     this.setTimeoutImpl = deps.setTimeoutImpl ?? ((fn, ms) => setTimeout(fn, ms));
     this.clearTimeoutImpl = deps.clearTimeoutImpl ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
     this.reconnectOpts = { ...DEFAULT_RECONNECT, ...config.reconnect };
+    this.idleTimeoutMs = config.idleTimeoutMs ?? 90_000;
     this.staleToSweep = [...(config.staleSubscriptions ?? [])];
     this.approvalKey = config.approvalKey;
   }
@@ -255,6 +265,7 @@ export class OverseasRealtimePriceClient {
   /** 사용자가 명시적으로 닫음 — 이후 자동 재연결하지 않는다. */
   close(): void {
     this.manuallyClosed = true;
+    this.clearIdleWatchdog();
     if (this.reconnectTimer !== null) {
       this.clearTimeoutImpl(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -322,9 +333,11 @@ export class OverseasRealtimePriceClient {
       for (const { trKey, trId } of this.subscriptions.values()) {
         this.sendRegisterFrame(trKey, trId, '1');
       }
+      this.bumpIdleWatchdog();
     };
 
     socket.onmessage = (ev: { data: unknown }) => {
+      this.bumpIdleWatchdog();
       try {
         this.handleMessage(String(ev.data));
       } catch (err) {
@@ -338,12 +351,49 @@ export class OverseasRealtimePriceClient {
 
     socket.onclose = () => {
       if (this.socket !== socket) return; // 이미 새 소켓으로 교체됐다면 낡은 소켓의 종료는 무시
+      this.clearIdleWatchdog();
       this.config.onStatusChange?.('closed');
       this.socket = null;
       if (!this.manuallyClosed) {
         this.scheduleReconnect();
       }
     };
+  }
+
+  private clearIdleWatchdog(): void {
+    if (this.idleTimer !== null) {
+      this.clearTimeoutImpl(this.idleTimer);
+      this.idleTimer = null;
+    }
+  }
+
+  /**
+   * 무음 워치독 리셋(2026-09-01) — 열림·수신 프레임마다 부른다. idleTimeoutMs 동안 아무 프레임이 없으면
+   * half-open(소켓은 OPEN인데 서버와는 끊김 — 모바일 네트워크 전환에서 흔하고 onclose가 영영 안 온다)으로
+   * 보고 소켓을 버린 뒤 재연결 경로(scheduleReconnect)를 태운다. 구독 집합은 유지돼 열릴 때 복원된다.
+   */
+  private bumpIdleWatchdog(): void {
+    this.clearIdleWatchdog();
+    if (this.idleTimeoutMs <= 0) return;
+    this.idleTimer = this.setTimeoutImpl(() => {
+      this.idleTimer = null;
+      const dead = this.socket;
+      if (this.manuallyClosed || !dead || dead.readyState !== 1 /* OPEN */) return;
+      this.config.onError?.(
+        new Error(
+          `[kis/realtimePrice] ${Math.round(this.idleTimeoutMs / 1000)}초간 수신이 없어 연결을 다시 만듭니다(half-open 의심)`,
+        ),
+      );
+      // 죽은 소켓의 늦은 이벤트가 재연결을 방해하지 않게 먼저 떼어낸 뒤 최선껏 닫고, 즉시 재연결을 예약한다.
+      this.socket = null;
+      try {
+        dead.close();
+      } catch {
+        // half-open 소켓의 close 실패는 정상 범주다.
+      }
+      this.config.onStatusChange?.('closed');
+      this.scheduleReconnect();
+    }, this.idleTimeoutMs);
   }
 
   private handleMessage(raw: string): void {

@@ -88,6 +88,11 @@ export interface AutoPilotManagerDeps {
   fetchSnapshot: () => Promise<RankingSnapshot>;
   /** 매수가능금액(USD) 사전 조회 — 현금 부족 PAUSED 판정. 실패/미주입 시 판정 생략. */
   fetchBuyableUsd?: (ticker: string, price: number, exchange: OverseasExchangeCode) => Promise<number | null>;
+  /**
+   * REST 현재가 조회(2026-09-01) — 보유 종목의 WS 틱이 끊겼을 때(구독 거절·무음 정지) 포지션 관리자가
+   * 청산 감시를 잇는 폴백. market은 채용 거래소(주간거래 창이면 주간 코드로 바꿔 조회하는 건 구현 몫).
+   */
+  fetchRestPrice?: (ticker: string, market: WatchMarket) => Promise<number | null>;
   /** 매도 관리 그리드 설정(폭·매수배율) — 주입되면 진입 후 청산을 ±w OCO 그리드가 인계한다(D5). 미주입이면 기존 청산. */
   gridConfig?: GridExitConfig;
   /**
@@ -317,6 +322,7 @@ export class AutoPilotManager {
       fetchBuyableUsd: deps.fetchBuyableUsd
         ? (t, price) => deps.fetchBuyableUsd!(t, price, MARKET_TO_EXCHANGE[this.marketOf(t)])
         : undefined,
+      fetchRestPrice: deps.fetchRestPrice ? (t) => deps.fetchRestPrice!(t, this.marketOf(t)) : undefined,
       positionManagement: {
         grid: deps.gridConfig,
         inflection: deps.inflection,
@@ -507,6 +513,26 @@ export class AutoPilotManager {
   /** 관리 중인 1종목을 사용자 요청으로 전량 매도한다(게이지 두 번 누르기). 성공하면 null, 실패하면 사용자 문구. */
   sellNow(ticker: string): string | null {
     return this.pilot.sellNow(ticker);
+  }
+
+  /**
+   * 앱 포그라운드 복귀(2026-09-01, managerProvider의 AppState 리스너가 부른다) —
+   * 백그라운드에서는 JS 타이머가 전부 멈춰 있었다: 세션 키 회전·폴·봉 합성이 밀린 상태다.
+   *  · 세션 키 회전을 즉시 재판정(10:00/16:00 KST 경계를 백그라운드로 지나쳤을 수 있다).
+   *  · 오토파일럿 폴·재선정 1회(밀린 체결 확인·수동청산 감지 앞당김).
+   *  · 2분 넘게 비웠으면 봉 링에 구멍이 났다 — 전 슬롯 분봉 재시드(4선이 옛 봉으로 판정하지 않게).
+   */
+  onForeground(backgroundAtMs: number | null): void {
+    this.rotateSessionKeys();
+    this.pilot.wake();
+    const now = this.deps.clock.now();
+    if (backgroundAtMs !== null && now - backgroundAtMs > 120_000) {
+      this.pushEvent({
+        at: now,
+        text: `앱 복귀 · ${Math.round((now - backgroundAtMs) / 60_000)}분 비운 사이 봉이 끊겨 분봉을 다시 받아요`,
+      });
+      for (const ticker of this.slots.keys()) this.enqueueTrendWarmup(ticker);
+    }
   }
 
   dispose(): void {

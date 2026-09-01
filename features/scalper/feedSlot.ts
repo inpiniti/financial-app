@@ -127,8 +127,6 @@ export const FEED_RATE_WINDOW_MS = 10_000;
 /** 시계열 칸 간격 — 윈도우와 동일(겹침 0). 5칸 × 10초 = 최근 50초. */
 export const FEED_SERIES_STEP_MS = 10_000;
 export const FEED_SERIES_POINTS = 5;
-/** 과거 칸 계산에 필요한 이력 보존 — (칸수−1) × 간격. */
-const FEED_SERIES_HISTORY_MS = (FEED_SERIES_POINTS - 1) * FEED_SERIES_STEP_MS;
 
 export interface SlotSignalContext {
   readonly ticker: string;
@@ -157,15 +155,13 @@ export interface FeedSlotView {
   readonly ticker: string;
   /** 현재 시점 틱/초(10초 윈도우 순간값 — FEED_RATE_WINDOW_MS). */
   readonly tickRate: number;
-  /** 틱/초 시계열 — 겹침 없는 10초 봉 5칸 [40초전, 30초전, 20초전, 10초전, 현재]. */
-  readonly tickRateSeries: number[];
   /**
    * 현재 시점 기울기(직전 10초 봉 평균 대비 현재 봉 평균의 %변화, v2) — 판정 불가는 null(0=평균 동일과 다름).
    * ⚠ 아래 slope(SG %/청크, 감시 중에만)와 다른 값 — 도메인 문서 §2 용어 구분.
+   * (시계열 5칸(tickRateSeries/slopeRateSeries)은 2026-08-29 화면 행 정리로 소비처가 사라져 2026-09-01 제거 —
+   *  getView마다 슬롯당 보존 큐 풀스캔 10회를 돌리는 죽은 계산이었다.)
    */
   readonly slopeRate: number | null;
-  /** 기울기 시계열 — 겹침 없는 10초 봉 5칸 [40초전, 30초전, 20초전, 10초전, 현재]. */
-  readonly slopeRateSeries: (number | null)[];
   readonly price: number | null;
   readonly warmedUp: boolean;
   /** detector 부착 여부(= 변곡점 감시 중). */
@@ -296,8 +292,9 @@ export class FeedSlot {
     );
     this.inflectionMode =
       !this.martingaleMode && !this.modelMode && !this.trendMode && INFLECTION_ENTRY && options.inflection === true;
-    this.meter = new TickRateMeter(options.tickRateWindowMs ?? FEED_RATE_WINDOW_MS, FEED_SERIES_HISTORY_MS);
-    this.slopeMeter = new SlopeMeter(options.slopeWindowMs ?? FEED_RATE_WINDOW_MS, FEED_SERIES_HISTORY_MS);
+    // 이력 보존 0 — 시계열 조회(series)를 뷰에서 제거해(2026-09-01) 과거 칸 되계산용 40초 이력이 필요 없다.
+    this.meter = new TickRateMeter(options.tickRateWindowMs ?? FEED_RATE_WINDOW_MS, 0);
+    this.slopeMeter = new SlopeMeter(options.slopeWindowMs ?? FEED_RATE_WINDOW_MS, 0);
     this.resampler = new Resampler({
       // 조합 모드는 문서 고정값(청크 1초·버퍼 21)을 강제한다 — 주입값이 뭐든 판정 주기가 흔들리면 안 된다.
       chunkSeconds: this.inflectionMode ? INFLECTION_CHUNK_SECONDS : options.chunkSeconds,
@@ -659,9 +656,7 @@ export class FeedSlot {
     return {
       ticker: this.ticker,
       tickRate: this.tickRate(now),
-      tickRateSeries: this.meter.series(now, FEED_SERIES_POINTS, FEED_SERIES_STEP_MS),
       slopeRate: this.slopeMeter.rate(now),
-      slopeRateSeries: this.slopeMeter.series(now, FEED_SERIES_POINTS, FEED_SERIES_STEP_MS),
       price: this.price,
       warmedUp: this.resampler.warmedUp,
       watched: this.watched,

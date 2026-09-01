@@ -10,6 +10,7 @@ import {
   etDateOf,
   fixedEntryQtyOf,
   GRID_BUY_LEG_DELAY_MS,
+  MARTINGALE_POSITION_CONFIG,
   MAX_GRIDS_LIMIT,
   maxGridsOf,
   qtyForAmount,
@@ -545,7 +546,7 @@ describe('AutoPilot — Stop·FAULT·영속화·마이그레이션', () => {
     });
   }
 
-  it('영속화 v4 — 진입 설정은 저장하지 않는다(정본은 lib/appSettings), 일시정지·일일 통계만', async () => {
+  it('영속화 v5 — 진입 설정은 저장하지 않는다(정본은 lib/appSettings), 일시정지·일일 통계·관리 종목만', async () => {
     const h = makeHarness(['A'], {
       config: { startAmountUsd: 50, minTickRate: 2 },
     });
@@ -553,8 +554,9 @@ describe('AutoPilot — Stop·FAULT·영속화·마이그레이션', () => {
     h.pilot.stop();
 
     const raw = JSON.parse((await h.store.getItem(AUTOPILOT_STORAGE_KEY))!);
-    expect(raw.version).toBe(4);
+    expect(raw.version).toBe(5);
     expect(raw.config).toBeUndefined();
+    expect(raw.actives).toEqual([]);
     const pilot2 = makeBarePilot(h.store);
     await pilot2.restore();
     const view = pilot2.getView();
@@ -562,7 +564,7 @@ describe('AutoPilot — Stop·FAULT·영속화·마이그레이션', () => {
     expect(view.paused).toBe(false);
   });
 
-  it('영속화 v3(옛) — 동봉된 진입 설정은 폴백으로 승계하고 v4로 다시 저장한다', async () => {
+  it('영속화 v3(옛) — 동봉된 진입 설정은 폴백으로 승계하고 v5로 다시 저장한다', async () => {
     const store = new FakeStore();
     await store.setItem(
       AUTOPILOT_STORAGE_KEY,
@@ -573,8 +575,71 @@ describe('AutoPilot — Stop·FAULT·영속화·마이그레이션', () => {
     expect(pilot.getView().config).toEqual({ startAmountUsd: 50, minTickRate: 2 });
     expect(pilot.getView().paused).toBe(true);
     const raw = JSON.parse((await store.getItem(AUTOPILOT_STORAGE_KEY))!);
-    expect(raw.version).toBe(4);
+    expect(raw.version).toBe(5);
     expect(raw.config).toBeUndefined();
+  });
+
+  it('영속화 v5 — 관리 중이던 종목을 저장하고, 재시작 start()가 잔고 확인 후 자동 재등록한다(2026-09-01)', async () => {
+    const store = new FakeStore();
+    await store.setItem(
+      AUTOPILOT_STORAGE_KEY,
+      JSON.stringify({ version: 5, paused: false, daily: null, actives: ['A'], enteredOn: {} }),
+    );
+    const clock = fakeClock(1000);
+    const broker = new FakeBroker({ autoFill: true });
+    broker.position = { qty: 10, avgPrice: 100 }; // 잔고에 그대로 남아 있는 포지션.
+    const events: string[] = [];
+    const pilot = new AutoPilot({
+      slots: () => [],
+      pin: () => {},
+      unpin: () => {},
+      makeBroker: () => broker,
+      positionManagement: { martingale: MARTINGALE_POSITION_CONFIG },
+      clock,
+      scheduler: noopScheduler(),
+      storage: store,
+      onEvent: (e) => events.push(e.text),
+    });
+    await pilot.restore();
+    expect(events.some((e) => e.includes('관리하던 종목이 있어요'))).toBe(true);
+    pilot.setConfig({ startAmountUsd: 50, minTickRate: 2 });
+    pilot.start();
+    await flush();
+    await flush();
+    expect(pilot.getView().activeTickers).toEqual(['A']); // 자동 재등록 — 손절 관리가 이어진다.
+    expect(events.some((e) => e.includes('±3% 관리 등록'))).toBe(true);
+    const raw = JSON.parse((await store.getItem(AUTOPILOT_STORAGE_KEY))!);
+    expect(raw.version).toBe(5);
+    expect(raw.actives).toEqual(['A']);
+  });
+
+  it('영속화 v5 — 잔고에 없는 복원 종목은 재등록하지 않고 사유를 남긴다', async () => {
+    const store = new FakeStore();
+    await store.setItem(
+      AUTOPILOT_STORAGE_KEY,
+      JSON.stringify({ version: 5, paused: false, daily: null, actives: ['A'], enteredOn: {} }),
+    );
+    const clock = fakeClock(1000);
+    const broker = new FakeBroker({ autoFill: true }); // position = null — 이미 정리된 종목.
+    const events: string[] = [];
+    const pilot = new AutoPilot({
+      slots: () => [],
+      pin: () => {},
+      unpin: () => {},
+      makeBroker: () => broker,
+      positionManagement: { martingale: MARTINGALE_POSITION_CONFIG },
+      clock,
+      scheduler: noopScheduler(),
+      storage: store,
+      onEvent: (e) => events.push(e.text),
+    });
+    await pilot.restore();
+    pilot.setConfig({ startAmountUsd: 50, minTickRate: 2 });
+    pilot.start();
+    await flush();
+    await flush();
+    expect(pilot.getView().activeTickers).toEqual([]);
+    expect(events.some((e) => e.includes('A 자동 재등록 못 했어요'))).toBe(true);
   });
 
   it('applySettings — 그리드·매수취소는 실행 중에도 즉시, 진입 설정은 IDLE에서만(거절 사유 반환)', async () => {
@@ -626,9 +691,9 @@ describe('AutoPilot — Stop·FAULT·영속화·마이그레이션', () => {
     const view = pilot.getView();
     expect(view.config).toEqual({ startAmountUsd: 30, minTickRate: 2, maxConcurrentGrids: 2 });
     expect(view.paused).toBe(true); // session.paused 승계 — 입금 대기 중이던 상태를 잃지 않는다.
-    // v4로 다시 저장됐다(세션 키·설정값 소멸 — 설정 정본은 appSettings).
+    // v5로 다시 저장됐다(세션 키·설정값 소멸 — 설정 정본은 appSettings).
     const raw = JSON.parse((await store.getItem(AUTOPILOT_STORAGE_KEY))!);
-    expect(raw.version).toBe(4);
+    expect(raw.version).toBe(5);
     expect(raw.session).toBeUndefined();
     expect(raw.config).toBeUndefined();
   });
