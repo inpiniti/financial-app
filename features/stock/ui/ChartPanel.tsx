@@ -3,10 +3,10 @@
 // 분봉 원천은 토스 c-chart(lib/tossMinuteChart, 2026-08-18) — 한투 분봉조회는 정규장만 줘서 프리·애프터·주간거래에
 // 4선 오버레이가 꼬였다. 일/주/월봉은 그대로 한투 기간별시세.
 // 캔들 렌더는 react-native-svg(기설치)로 직접 그린다 — 차트 라이브러리 추가 설치 없음.
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { PanResponder, Pressable, Text, View, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import Svg, { Line, Polyline, Rect, Text as SvgText } from 'react-native-svg';
+import Svg, { G, Line, Polyline, Rect, Text as SvgText } from 'react-native-svg';
 import { computeTrendSeries } from '../../../core/trend';
 import { barKeyOf } from '../../../core/trend/bars';
 import { describeReject, inspectModel, loadModel, type ModelInspection } from '../../../core/model';
@@ -168,7 +168,7 @@ const TREND_LINE_COLORS: Record<'ma5' | 'ma20' | 'ma60' | 'ma120', string> = {
   ma120: '#22c55e',
 };
 
-function CandleChart({
+const CandleChart = memo(function CandleChart({
   candles,
   width,
   height,
@@ -180,51 +180,85 @@ function CandleChart({
   /** 분봉 모드 — 추세 4선(core/trend) 오버레이. 전체 봉으로 계산해 표시 구간만 그린다. */
   trendOverlay?: boolean;
 }) {
-  // 시트(고정 260)와 달리 상세화면은 세로 공간이 넉넉하다 — height를 받아 영역을 나눈다.
-  const volumeHeight = Math.round(height * 0.15);
-  const priceHeight = height - volumeHeight - 8; // 8 = 가격/거래량 영역 사이 여백
+  // 파생값(표시 봉·스케일·추세 4선·라벨)은 봉 배열·치수가 바뀔 때만 다시 계산한다 —
+  // memo(props 참조 비교) + useMemo로, 부모가 다른 이유로 리렌더돼도 SVG ~250노드 재구성을 물지 않게(2026-09-01).
+  const {
+    volumeHeight,
+    priceHeight,
+    shown,
+    chartWidth,
+    slotWidth,
+    bodyWidth,
+    priceToY,
+    volumeToH,
+    last,
+    lastY,
+    trendLines,
+    priceLabels,
+    timeLabels,
+  } = useMemo(() => {
+    // 시트(고정 260)와 달리 상세화면은 세로 공간이 넉넉하다 — height를 받아 영역을 나눈다.
+    const volumeHeight = Math.round(height * 0.15);
+    const priceHeight = height - volumeHeight - 8; // 8 = 가격/거래량 영역 사이 여백
 
-  const shown = candles.slice(-MAX_CANDLES);
-  const chartWidth = Math.max(0, width - RIGHT_AXIS_WIDTH);
-  const slotWidth = shown.length > 0 ? chartWidth / shown.length : chartWidth;
-  const bodyWidth = Math.max(2, slotWidth * 0.6);
+    const shown = candles.slice(-MAX_CANDLES);
+    const chartWidth = Math.max(0, width - RIGHT_AXIS_WIDTH);
+    const slotWidth = shown.length > 0 ? chartWidth / shown.length : chartWidth;
+    const bodyWidth = Math.max(2, slotWidth * 0.6);
 
-  const highs = shown.map((c) => c.high);
-  const lows = shown.map((c) => c.low);
-  const priceMax = Math.max(...highs);
-  const priceMin = Math.min(...lows);
-  const priceRange = priceMax - priceMin || 1;
+    const highs = shown.map((c) => c.high);
+    const lows = shown.map((c) => c.low);
+    const priceMax = Math.max(...highs);
+    const priceMin = Math.min(...lows);
+    const priceRange = priceMax - priceMin || 1;
 
-  const volumes = shown.map((c) => c.volume);
-  const volumeMax = Math.max(...volumes, 1);
+    const volumes = shown.map((c) => c.volume);
+    const volumeMax = Math.max(...volumes, 1);
 
-  const priceToY = (price: number) => priceHeight - ((price - priceMin) / priceRange) * priceHeight;
-  const volumeToH = (vol: number) => (vol / volumeMax) * volumeHeight;
+    const priceToY = (price: number) => priceHeight - ((price - priceMin) / priceRange) * priceHeight;
+    const volumeToH = (vol: number) => (vol / volumeMax) * volumeHeight;
 
-  const last = shown[shown.length - 1];
-  const lastY = priceToY(last.close);
+    const last = shown[shown.length - 1];
+    const lastY = priceToY(last.close);
 
-  // 추세 4선 — 전체 candles로 SMA를 계산하고(표시 구간 앞의 봉이 창을 채운다) 표시 구간만 폴리라인으로.
-  const trendLines = (() => {
-    if (!trendOverlay || candles.length < 2) return [];
-    const series = computeTrendSeries(candles.map((c) => c.close));
-    const offset = candles.length - shown.length;
-    return (Object.keys(TREND_LINE_COLORS) as Array<keyof typeof TREND_LINE_COLORS>).map((key) => {
-      const pts: string[] = [];
-      for (let i = 0; i < shown.length; i += 1) {
-        const v = series[key][offset + i];
-        if (v === null) continue;
-        pts.push(`${(i * slotWidth + slotWidth / 2).toFixed(1)},${priceToY(v).toFixed(1)}`);
-      }
-      return { key, color: TREND_LINE_COLORS[key], points: pts.join(' ') };
-    });
-  })();
+    // 추세 4선 — 전체 candles로 SMA를 계산하고(표시 구간 앞의 봉이 창을 채운다) 표시 구간만 폴리라인으로.
+    const trendLines = (() => {
+      if (!trendOverlay || candles.length < 2) return [];
+      const series = computeTrendSeries(candles.map((c) => c.close));
+      const offset = candles.length - shown.length;
+      return (Object.keys(TREND_LINE_COLORS) as Array<keyof typeof TREND_LINE_COLORS>).map((key) => {
+        const pts: string[] = [];
+        for (let i = 0; i < shown.length; i += 1) {
+          const v = series[key][offset + i];
+          if (v === null) continue;
+          pts.push(`${(i * slotWidth + slotWidth / 2).toFixed(1)},${priceToY(v).toFixed(1)}`);
+        }
+        return { key, color: TREND_LINE_COLORS[key], points: pts.join(' ') };
+      });
+    })();
 
-  const priceLabels = [priceMax, priceMin + priceRange / 2, priceMin];
-  const timeLabels =
-    shown.length >= 2
-      ? [shown[0], shown[Math.floor((shown.length - 1) / 2)], shown[shown.length - 1]]
-      : shown;
+    const priceLabels = [priceMax, priceMin + priceRange / 2, priceMin];
+    const timeLabels =
+      shown.length >= 2
+        ? [shown[0], shown[Math.floor((shown.length - 1) / 2)], shown[shown.length - 1]]
+        : shown;
+
+    return {
+      volumeHeight,
+      priceHeight,
+      shown,
+      chartWidth,
+      slotWidth,
+      bodyWidth,
+      priceToY,
+      volumeToH,
+      last,
+      lastY,
+      trendLines,
+      priceLabels,
+      timeLabels,
+    };
+  }, [candles, width, height, trendOverlay]);
 
   return (
     <View>
@@ -241,7 +275,8 @@ function CandleChart({
           const bodyHeight = Math.max(1, Math.abs(yClose - yOpen));
 
           return (
-            <View key={candle.key}>
+            // SVG 트리 안에서는 RN View가 아니라 react-native-svg의 <G>로 묶는다(불필요한 네이티브 뷰 생성 방지).
+            <G key={candle.key}>
               <Line
                 x1={cx}
                 x2={cx}
@@ -262,7 +297,7 @@ function CandleChart({
                 strokeWidth={candle.inProgress ? 1 : undefined}
                 strokeDasharray={candle.inProgress ? '2,2' : undefined}
               />
-            </View>
+            </G>
           );
         })}
 
@@ -344,7 +379,7 @@ function CandleChart({
       </Svg>
     </View>
   );
-}
+});
 
 const UP_MARK = { true: '상', false: '하', null: '?' } as const;
 
@@ -410,7 +445,9 @@ function EngineVerdict({
   );
 }
 
-export function ChartPanel({ ticker, excd }: ChartPanelProps) {
+// memo — 부모(종목 상세화면)가 실시간 체결가로 1초마다 리렌더돼도, props(ticker·excd 문자열)가
+// 같으면 차트 탭 전체가 다시 그려지지 않게 한다(2026-09-01 렌더 격리).
+export const ChartPanel = memo(function ChartPanel({ ticker, excd }: ChartPanelProps) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const [mode, setMode] = useState<ChartMode>('minute');
   const [minuteInterval, setMinuteInterval] = useState<MinuteInterval>(ENGINE_INTERVAL);
@@ -585,6 +622,14 @@ export function ChartPanel({ ticker, excd }: ChartPanelProps) {
   // 세로 공간이 넉넉한 상세화면 — 창 높이의 42%(최소 260, 최대 420)로 그린다.
   const chartHeight = Math.min(420, Math.max(260, Math.round(windowHeight * 0.42)));
 
+  // 과거 보기 표시 구간 — 봉 데이터·offset이 바뀔 때만 새 배열을 만든다. CandleChart는 memo라
+  // 이 참조가 같으면(= 봉 단위로 offset이 실제로 움직였을 때만) 재계산한다(드래그 중 리렌더 격리).
+  const readyCandles = state.kind === 'ready' ? state.candles : null;
+  const visibleCandles = useMemo(() => {
+    if (readyCandles === null) return null;
+    return viewOffset > 0 ? readyCandles.slice(0, readyCandles.length - viewOffset) : readyCandles;
+  }, [readyCandles, viewOffset]);
+
   return (
     <View className="flex-1 bg-white">
       <View className="flex-row items-center justify-between px-4 pt-4">
@@ -630,7 +675,7 @@ export function ChartPanel({ ticker, excd }: ChartPanelProps) {
             {(() => {
               totalRef.current = state.candles.length;
               slotRef.current = Math.max(1, (svgWidth - RIGHT_AXIS_WIDTH) / MAX_CANDLES);
-              const visible = viewOffset > 0 ? state.candles.slice(0, state.candles.length - viewOffset) : state.candles;
+              const visible = visibleCandles ?? state.candles;
               return (
                 <View className="px-4" {...pan.panHandlers}>
                   <CandleChart candles={visible} width={svgWidth} height={chartHeight} trendOverlay={mode === 'minute'} />
@@ -657,4 +702,4 @@ export function ChartPanel({ ticker, excd }: ChartPanelProps) {
       </View>
     </View>
   );
-}
+});

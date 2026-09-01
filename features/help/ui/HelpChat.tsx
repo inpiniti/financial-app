@@ -5,7 +5,7 @@
 //
 // 상태·설정은 화면이 모아 넘긴다: 설정은 AsyncStorage에서 읽고, 오토파일럿은 **이미 돌고 있을 때만**
 // (peekManagerBootstrap) 곁들인다 — 도움말을 열었다는 이유로 KIS 세션·WS를 만들지 않는다.
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -80,7 +80,9 @@ interface Bubble extends HelpMessage {
   failed?: boolean;
 }
 
-function UserBubble({ text }: { text: string }) {
+// memo — 타이핑 인터벌(24ms)마다 마지막 버블만 새 객체로 바뀐다(patchLast가 나머지 참조를 유지).
+// 그래서 이전 말풍선들은 props가 그대로라 여기서 리렌더가 끊긴다.
+const UserBubble = memo(function UserBubble({ text }: { text: string }) {
   return (
     <View className="mb-3 items-end px-5">
       <View className="max-w-[85%] rounded-2xl bg-[#3182f6] px-4 py-3">
@@ -88,9 +90,9 @@ function UserBubble({ text }: { text: string }) {
       </View>
     </View>
   );
-}
+});
 
-function ModelBubble({ bubble, note }: { bubble: Bubble; note?: string | null }) {
+const ModelBubble = memo(function ModelBubble({ bubble, note }: { bubble: Bubble; note?: string | null }) {
   const empty = bubble.text.trim() === '';
   return (
     <View className="mb-3 items-start px-5">
@@ -109,7 +111,7 @@ function ModelBubble({ bubble, note }: { bubble: Bubble; note?: string | null })
       </View>
     </View>
   );
-}
+});
 
 /** 지금 오토파일럿이 돌고 있으면 그 상황을 한 덩이로 — 안 돌고 있으면 null(상태 블록 자체를 안 만든다). */
 function readRuntimeState(): HelpRuntimeState | null {
@@ -402,6 +404,7 @@ export function HelpChat() {
         { role: 'user' as const, text },
       ];
       setBubbles((prev) => [...prev, { role: 'user', text }, { role: 'model', text: '', pending: true }]);
+      // 마지막 버블만 새 객체로 — 나머지 버블은 참조를 유지해 memo된 UserBubble/ModelBubble이 리렌더되지 않게.
       const patchLast = (next: Partial<Bubble>) =>
         setBubbles((prev) => prev.map((b, i) => (i === prev.length - 1 ? { ...b, ...next } : b)));
 

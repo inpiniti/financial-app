@@ -4,7 +4,7 @@
 // 토스 순위(lib/tossRanking.ts)는 KIS 키가 없어도 보이는 공개 API라 세션 게이트를 걸지 않는다 —
 // 그래서 안내(설정 필요·오류)는 화면 전체가 아니라 목록 자리에만 그린다(선택 상자를 남겨
 // 사용자가 다시 토스 순위로 돌아올 수 있게).
-import { useCallback, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import { FlatList, RefreshControl, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import { ListRow } from '../../components/ListRow';
@@ -136,6 +136,33 @@ function signColor(sign: string): string {
   return '#3182f6';
 }
 
+/** 순위 목록 한 행 — memo: 셀렉트 변경 등 화면 리렌더에서 행 데이터·콜백 참조가 같으면 다시 그리지 않는다. */
+const RankingRow = memo(function RankingRow({
+  item,
+  onPressRow,
+}: {
+  item: RankingRowShape;
+  onPressRow: (row: RankingRowShape) => void;
+}) {
+  const handlePress = useCallback(() => onPressRow(item), [onPressRow, item]);
+  return (
+    <ListRow
+      onPress={handlePress}
+      leading={<TickerAvatar ticker={item.symb} />}
+      title={item.symb}
+      subtitle={rowName(item)}
+      trailing={
+        <>
+          <Text className="text-lg font-bold text-[#191f28]">{formatUsd(item.last)}</Text>
+          <Text style={{ color: signColor(item.sign) }} className="mt-0.5 text-sm font-bold">
+            {item.rate}%
+          </Text>
+        </>
+      }
+    />
+  );
+});
+
 export function Ranking() {
   const [reloadKey, setReloadKey] = useState(0);
   const session = useKisSession(reloadKey);
@@ -256,6 +283,12 @@ export function Ranking() {
     });
   }, []);
 
+  // renderItem을 렌더마다 새로 만들지 않는다 — FlatList가 행 재렌더 여부를 안정적으로 판단하게.
+  const renderRow = useCallback(
+    ({ item }: { item: RankingRowShape }) => <RankingRow item={item} onPressRow={handleRowPress} />,
+    [handleRowPress],
+  );
+
   const isToss = isTossKind(kind);
   // 토스 순위는 기간(실시간·1일)·위험종목 포함 여부를 따로 고르고 방향 선택은 없다. 시간창 라벨은 KIS 순위에서만 쓴다.
   const timeUnit = isToss ? 'none' : RANKING_TIME_UNIT[kind];
@@ -336,22 +369,7 @@ export function Ranking() {
           <FlatList
             data={rows ?? []}
             keyExtractor={(item, idx) => `${item.symb}-${idx}`}
-            renderItem={({ item }) => (
-              <ListRow
-                onPress={() => handleRowPress(item)}
-                leading={<TickerAvatar ticker={item.symb} />}
-                title={item.symb}
-                subtitle={rowName(item)}
-                trailing={
-                  <>
-                    <Text className="text-lg font-bold text-[#191f28]">{formatUsd(item.last)}</Text>
-                    <Text style={{ color: signColor(item.sign) }} className="mt-0.5 text-sm font-bold">
-                      {item.rate}%
-                    </Text>
-                  </>
-                }
-              />
-            )}
+            renderItem={renderRow}
             contentContainerStyle={{ flexGrow: 1 }}
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#3182f6" />}
             ListEmptyComponent={<EmptyState icon="bar-chart-outline" title="조건에 맞는 종목이 없어요" description="다른 종류나 기간으로 바꿔보세요" />}

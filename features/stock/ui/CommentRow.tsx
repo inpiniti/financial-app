@@ -1,5 +1,5 @@
 // 토스 커뮤니티 댓글/답글 공용 행 — 목록(CommentsPanel)과 답글 시트(RepliesSheet)가 같은 모양을 쓴다.
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { Image, Pressable, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { formatTossMessage, type TossComment, type TossCommentExecution } from '../../../lib/tossCommunity';
@@ -77,7 +77,9 @@ export interface CommentRowProps {
   asParent?: boolean;
 }
 
-export function CommentRow({ comment, onPress, asParent = false }: CommentRowProps) {
+// memo — 목록 리렌더(페이지 추가·당겨서 새로고침 등)에서 props 참조가 같은 행은 다시 그리지 않는다.
+// 호출부는 onPress를 안정된 참조로 넘겨야 효과가 있다(CommentsPanel의 CommentItem 참고).
+export const CommentRow = memo(function CommentRow({ comment, onPress, asParent = false }: CommentRowProps) {
   const [expanded, setExpanded] = useState(asParent);
   const message = formatTossMessage(comment.message.message ?? '');
   const truncated = !expanded && message.length > PREVIEW_CHAR_LIMIT;
@@ -195,7 +197,7 @@ export function CommentRow({ comment, onPress, asParent = false }: CommentRowPro
       {body}
     </Pressable>
   );
-}
+});
 
 export function CommentSkeletonRow() {
   return (

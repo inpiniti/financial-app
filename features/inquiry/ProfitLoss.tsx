@@ -10,7 +10,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, Pressable, RefreshControl, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ListRow } from '../../components/ListRow';
@@ -41,11 +41,18 @@ import {
 
 const clock = { now: () => Date.now() };
 
-function DailyRow({ day, onPress }: { day: DailyProfit; onPress: () => void }) {
+// memo — onSelect(안정 참조)와 day(월 데이터가 그대로면 참조 유지)만 비교해, 목록 리렌더에서 바뀐 행만 다시 그린다.
+const DailyRow = memo(function DailyRow({
+  day,
+  onSelect,
+}: {
+  day: DailyProfit;
+  onSelect: (tradeDt: string) => void;
+}) {
   return (
     <ListRow
       title={formatDayLabel(day.tradeDt)}
-      onPress={onPress}
+      onPress={() => onSelect(day.tradeDt)}
       trailing={
         <>
           <Text style={{ color: pnlColor(day.totalPnl) }} className="text-sm font-bold">
@@ -58,7 +65,7 @@ function DailyRow({ day, onPress }: { day: DailyProfit; onPress: () => void }) {
       }
     />
   );
-}
+});
 
 /** 오늘예상 행 — 일별 행(DailyRow)과 같은 시각 형식, 환율이 없을 때만 USD로 표시한다. */
 function TodayEstimateRow({ tradeDt, estimate }: { tradeDt: string; estimate: TodayEstimate }) {
@@ -80,7 +87,7 @@ function TodayEstimateRow({ tradeDt, estimate }: { tradeDt: string; estimate: To
 }
 
 /** 일별 상세의 종목 행 — "테슬라 · TSLA · 672원 → 692원 · 729주" + 우측 실현손익/수익률. 탭하면 종목상세. */
-function DayTickerRow({ row }: { row: DayTickerProfit }) {
+const DayTickerRow = memo(function DayTickerRow({ row }: { row: DayTickerProfit }) {
   const priceNote =
     row.avgBuyPrice !== null && row.avgSellPrice !== null
       ? ` · ${formatKrw(row.avgBuyPrice)} → ${formatKrw(row.avgSellPrice)}`
@@ -110,7 +117,7 @@ function DayTickerRow({ row }: { row: DayTickerProfit }) {
       }
     />
   );
-}
+});
 
 /**
  * 일별 상세 — 상단 "< 2026년 07월 31일 (금)" 바 + 그 날의 종목별 합계 리스트.
@@ -120,6 +127,8 @@ function DayTickerRow({ row }: { row: DayTickerProfit }) {
 function DayDetail({ day, onBack }: { day: DailyProfit; onBack: () => void }) {
   const rows = useMemo(() => aggregateDayByTicker(day.items), [day]);
   const insets = useSafeAreaInsets();
+  // renderItem을 렌더마다 새로 만들지 않는다 — FlatList가 행 재렌더 여부를 안정적으로 판단하게.
+  const renderRow = useCallback(({ item: row }: { item: DayTickerProfit }) => <DayTickerRow row={row} />, []);
   return (
     <View className="flex-1 bg-[#f2f4f6]">
       <View className="mb-2 flex-row items-center bg-white px-2 py-1" style={{ paddingTop: insets.top + 4 }}>
@@ -138,7 +147,7 @@ function DayDetail({ day, onBack }: { day: DailyProfit; onBack: () => void }) {
         <FlatList
           data={rows}
           keyExtractor={(row) => row.pdno}
-          renderItem={({ item: row }) => <DayTickerRow row={row} />}
+          renderItem={renderRow}
           ListHeaderComponent={
             <View className="border-b border-[#e5e8eb] px-5 pb-4 pt-2">
               <Text className="text-xs text-[#8b95a1]">이 날 실현손익</Text>
@@ -234,6 +243,14 @@ export function ProfitLoss({ onDetailOpenChange }: ProfitLossProps = {}) {
     fetchProfit();
   }, [fetchProfit]);
 
+  // 일별 행 탭 — 안정 참조로 내려 DailyRow memo가 살아 있게 한다.
+  const openDay = useCallback((tradeDt: string) => setSelectedDt(tradeDt), []);
+  // renderItem을 렌더마다 새로 만들지 않는다 — FlatList가 행 재렌더 여부를 안정적으로 판단하게.
+  const renderDaily = useCallback(
+    ({ item: day }: { item: DailyProfit }) => <DailyRow day={day} onSelect={openDay} />,
+    [openDay],
+  );
+
   // 원화 환산용 환율 — 응답 summary의 exrt → 종목 행 exrt → 잔고 환율(lib/usdKrw) 순.
   // ⚠ 이 달에 청산 내역이 아직 없으면 기간손익 응답이 통째로 비어 exrt도 0이라, 정작 "오늘예상"이
   //   필요한 날에 환율이 없었다(= 달러 표시). 잔고 기준 환율 폴백이 그 구멍을 메운다.
@@ -305,7 +322,7 @@ export function ProfitLoss({ onDetailOpenChange }: ProfitLossProps = {}) {
           <FlatList
             data={kisFailed ? [] : dailyList}
             keyExtractor={(day) => day.tradeDt}
-            renderItem={({ item: day }) => <DailyRow day={day} onPress={() => setSelectedDt(day.tradeDt)} />}
+            renderItem={renderDaily}
             contentContainerStyle={{ flexGrow: 1 }}
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#3182f6" />}
             ListHeaderComponent={

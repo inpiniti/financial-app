@@ -1,6 +1,6 @@
 // 검색 화면 — 티커·종목명(한글/영문)으로 미국 종목을 찾아 종목상세로 진입한다(옛 조회 화면 대체).
 // 데이터 소스는 토스 자동완성(lib/tossSearch.ts, 비공식·로그인 불필요). 뒤로가기 시 홈 복귀.
-import { useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -17,7 +17,8 @@ const MARKET_LABEL: Record<TossSearchResult['market'], string> = {
   AMS: '아멕스',
 };
 
-function ResultRow({ item }: { item: TossSearchResult }) {
+// memo — 검색 중 화면 리렌더(로딩 토스트 등)에서 결과 행(item 참조 동일)을 다시 그리지 않는다.
+const ResultRow = memo(function ResultRow({ item }: { item: TossSearchResult }) {
   const handlePress = () => {
     router.push({
       pathname: '/stock/[ticker]',
@@ -33,7 +34,7 @@ function ResultRow({ item }: { item: TossSearchResult }) {
       trailing={<Ionicons name="chevron-forward" size={16} color="#8b95a1" />}
     />
   );
-}
+});
 
 export default function SearchScreen() {
   const [query, setQuery] = useState('');
@@ -73,6 +74,9 @@ export default function SearchScreen() {
     return () => clearTimeout(timer);
   }, [query]);
 
+  // renderItem을 렌더마다 새로 만들지 않는다 — FlatList가 행 재렌더 여부를 안정적으로 판단하게.
+  const renderResult = useCallback(({ item }: { item: TossSearchResult }) => <ResultRow item={item} />, []);
+
   return (
     <View className="flex-1 bg-[#f2f4f6]">
       <BackHeader title="검색" />
@@ -111,7 +115,7 @@ export default function SearchScreen() {
           <FlatList
             data={results}
             keyExtractor={(item) => `${item.market}-${item.symbol}`}
-            renderItem={({ item }) => <ResultRow item={item} />}
+            renderItem={renderResult}
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={{ flexGrow: 1 }}
             ListEmptyComponent={

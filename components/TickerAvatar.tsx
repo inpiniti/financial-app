@@ -4,7 +4,7 @@
 // SvgUri 대신 SVG 텍스트를 직접 받아 SvgXml로 그린다 — 트레이딩뷰 로고 일부는 viewBox가 없어
 // SvgUri로는 스케일링이 안 되고 좌상단에 쏠린다(ensureViewBox로 보정). 받은 텍스트는 메모리에 캐시해
 // 리스트 스크롤(행 재마운트)마다 재요청하지 않는다.
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { Text, View } from 'react-native';
 import { SvgXml } from 'react-native-svg';
 import { avatarColorFor, avatarInitial } from '../lib/format';
@@ -44,7 +44,8 @@ async function loadSvg(uri: string): Promise<string | 'FAILED'> {
   return pending;
 }
 
-export function TickerAvatar({ ticker, size = 40 }: TickerAvatarProps) {
+// memo — props(ticker·size 원시값)가 같으면 리렌더하지 않는다(리스트 리렌더 때 SVG 재구성 방지).
+export const TickerAvatar = memo(function TickerAvatar({ ticker, size = 40 }: TickerAvatarProps) {
   const [xml, setXml] = useState<string | null>(null);
 
   // 로고 맵은 앱 시작 직후엔 비어 있다가 캐시/조회로 채워진다 — 교체 통지 때 다시 조회한다.
@@ -102,4 +103,4 @@ export function TickerAvatar({ ticker, size = 40 }: TickerAvatarProps) {
       <Text style={{ color: fg, fontSize: size * 0.42, fontWeight: '700' }}>{avatarInitial(ticker)}</Text>
     </View>
   );
-}
+});

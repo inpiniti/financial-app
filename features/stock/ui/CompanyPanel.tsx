@@ -3,7 +3,7 @@
 // → 종목+거래일 캐시. 캐시가 있으면 호출하지 않고, 헤더 우측 "새로고침"으로만 다시 만든다.
 // 옛 호가 탭이 갖고 있던 실시간 구독 진단(구독 성공/실패·마지막 수신)은 이 탭 하단 한 줄로 옮겼다 —
 // 실기기에서 "왜 시세가 안 오지?"를 확인할 유일한 자리이기 때문.
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Linking, Pressable, ScrollView, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Panel } from '../../../components/Panel';
@@ -322,6 +322,14 @@ export function CompanyPanel({ ticker, excd, name, manager, quoteState, trKey }:
     void generate(false);
   }, [detail, state.kind, generate]);
 
+  // 스트리밍 부분 파싱은 진행 텍스트가 바뀔 때만 — 이 패널은 quoteState(실시간 체결가)로 1초마다
+  // 리렌더되므로, 렌더 본문에서 매번 파싱하면 그때마다 전체 텍스트를 다시 훑는다(2026-09-01).
+  const progress = state.kind === 'loading' ? state.progress : null;
+  const partial = useMemo(
+    () => (progress?.stage === 'generate' && progress.text ? parsePartialCompanyBrief(progress.text) : null),
+    [progress],
+  );
+
   const headerRight =
     state.kind === 'ready' ? (
       <Pressable
@@ -340,30 +348,24 @@ export function CompanyPanel({ ticker, excd, name, manager, quoteState, trKey }:
     <ScrollView className="flex-1" contentContainerStyle={{ paddingBottom: 24 }}>
       <Panel title="기업 정보" headerRight={headerRight}>
         {state.kind === 'idle' || state.kind === 'loading' ? (
-          (() => {
-            const progress = state.kind === 'loading' ? state.progress : null;
-            const partial = progress?.stage === 'generate' && progress.text ? parsePartialCompanyBrief(progress.text) : null;
-            return (
+          <>
+            <ProgressSteps progress={progress} />
+            {partial ? (
+              // 모델이 쓰는 대로 섹션에 글자가 차오른다 — 목록(호재/악재 등)은 완성 후 NewsAnalysisPanel에서.
               <>
-                <ProgressSteps progress={progress} />
-                {partial ? (
-                  // 모델이 쓰는 대로 섹션에 글자가 차오른다 — 목록(호재/악재 등)은 완성 후 NewsAnalysisPanel에서.
-                  <>
-                    <Section title="어떤 회사인가요" body={partial.about} writing={partial.writing === 'about'} />
-                    <Section title="주력 사업·수익원" body={partial.business} writing={partial.writing === 'business'} />
-                    <Section title="현재 상황" body={partial.situation} writing={partial.writing === 'situation'} />
-                    <Section title="최근 뉴스 종합" body={partial.newsDigest} writing={partial.writing === 'newsDigest'} />
-                  </>
-                ) : (
-                  <View className="px-5 pb-4">
-                    <SkeletonLine width="90%" />
-                    <SkeletonLine width="70%" />
-                    <SkeletonLine width="80%" />
-                  </View>
-                )}
+                <Section title="어떤 회사인가요" body={partial.about} writing={partial.writing === 'about'} />
+                <Section title="주력 사업·수익원" body={partial.business} writing={partial.writing === 'business'} />
+                <Section title="현재 상황" body={partial.situation} writing={partial.writing === 'situation'} />
+                <Section title="최근 뉴스 종합" body={partial.newsDigest} writing={partial.writing === 'newsDigest'} />
               </>
-            );
-          })()
+            ) : (
+              <View className="px-5 pb-4">
+                <SkeletonLine width="90%" />
+                <SkeletonLine width="70%" />
+                <SkeletonLine width="80%" />
+              </View>
+            )}
+          </>
         ) : state.kind === 'error' ? (
           <View className="px-5 pb-4">
             <Text className="text-[15px] font-semibold text-[#191f28]">기업 정보를 불러오지 못했어요</Text>

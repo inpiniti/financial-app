@@ -94,6 +94,8 @@ export default function StockDetailScreen() {
   const [tab, setTab] = useState<DetailTab>('chart');
 
   // 진입~이탈 동안 체결가 구독 유지(PriceHeader 실시간가·기업 탭 하단 구독 진단) — market이 없으면(null) 아무것도 구독하지 않는다.
+  // quoteState는 1초 간격으로 바뀌어 이 화면 루트를 매초 리렌더한다 — 실소비자가 아닌
+  // ChartPanel·CommentsPanel은 각자 memo(props는 문자열뿐)라 그 리렌더가 아래로 번지지 않는다(2026-09-01).
   const { state: quoteState, trKey } = useQuoteFeed(manager, ticker, market);
 
   const title = name ?? ticker;

@@ -1,6 +1,6 @@
 // 종목 상세화면 "커뮤니티" 탭 — 토스 커뮤니티 댓글 뷰. 댓글을 누르면 답글 시트(RepliesSheet)가 열린다.
 // 진입 시에만 조회한다 — 폴링·자동 갱신 금지(lib/tossCommunity.ts 주석과 동일 원칙).
-import { useCallback, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, RefreshControl, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
@@ -48,7 +48,24 @@ function SegmentToggle({ value, onChange }: { value: TossCommentSort; onChange: 
   );
 }
 
-export function CommentsPanel({ ticker }: CommentsPanelProps) {
+/**
+ * 목록 행 래퍼 — comment·onOpen 참조가 같으면 리렌더하지 않는다. CommentRow에 인라인 화살표
+ * onPress를 바로 넘기면 매 렌더 새 함수라 memo가 무력해져서, 여기서 안정된 onPress를 만들어 넘긴다.
+ */
+const CommentItem = memo(function CommentItem({
+  comment,
+  onOpen,
+}: {
+  comment: TossComment;
+  onOpen: (comment: TossComment) => void;
+}) {
+  const handlePress = useCallback(() => onOpen(comment), [onOpen, comment]);
+  return <CommentRow comment={comment} onPress={handlePress} />;
+});
+
+// memo — 부모(종목 상세화면)가 실시간 체결가로 1초마다 리렌더돼도, props(ticker 문자열)가
+// 같으면 커뮤니티 탭 전체가 다시 그려지지 않게 한다(2026-09-01 렌더 격리).
+export const CommentsPanel = memo(function CommentsPanel({ ticker }: CommentsPanelProps) {
   const [sort, setSort] = useState<TossCommentSort>('RECENT');
   const [productCode, setProductCode] = useState<string | null>(null);
   const [comments, setComments] = useState<TossComment[]>([]);
@@ -148,6 +165,14 @@ export function CommentsPanel({ ticker }: CommentsPanelProps) {
     }
   }, [productCode, hasNext, nextKey, loadingMore, sort, state.kind]);
 
+  const openComment = useCallback((comment: TossComment) => setOpenedComment(comment), []);
+
+  // renderItem을 렌더마다 새로 만들지 않는다 — FlatList가 행 재렌더 여부를 안정적으로 판단하게.
+  const renderComment = useCallback(
+    ({ item }: { item: TossComment }) => <CommentItem comment={item} onOpen={openComment} />,
+    [openComment],
+  );
+
   return (
     <View className="flex-1 bg-white">
       {state.kind !== 'notFound' && (
@@ -181,7 +206,7 @@ export function CommentsPanel({ ticker }: CommentsPanelProps) {
           <FlatList
             data={comments}
             keyExtractor={(item) => String(item.commentId)}
-            renderItem={({ item }) => <CommentRow comment={item} onPress={() => setOpenedComment(item)} />}
+            renderItem={renderComment}
             contentContainerStyle={{ paddingBottom: 24, flexGrow: 1 }}
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#3182f6" />}
             onEndReachedThreshold={0.4}
@@ -200,4 +225,4 @@ export function CommentsPanel({ ticker }: CommentsPanelProps) {
       <RepliesSheet comment={openedComment} onClose={() => setOpenedComment(null)} />
     </View>
   );
-}
+});
