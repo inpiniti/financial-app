@@ -187,19 +187,19 @@ describe('runHelpTool — 분봉·차트 조회(2026-08-22)', () => {
     const fetchImpl = tossFetch(Array.from({ length: 20 }, () => 10), nowKey, 5);
     const res = (await runHelpTool(
       'getMinuteCandles',
-      { ticker: 'AAA', intervalMin: 5 }, // 엔진(±3% 단타)은 1분봉
+      { ticker: 'AAA', intervalMin: 5 }, // 엔진(5선 물타기 단타)은 1분봉
       { fetchImpl: fetchImpl as unknown as typeof fetch, now: () => nowMs },
     )) as Record<string, any>;
     expect(res.modelVerdict).toBeNull();
     expect(res.martingaleVerdict).toBeNull();
     expect(res.note).toContain('분봉으로만 판정해요');
-    expect(res.engineIntervalMin).toBe(1); // ±3% 단타 모드(MARTINGALE_MODE) — 1분봉이 엔진 주기.
+    expect(res.engineIntervalMin).toBe(1); // 5선 물타기 단타 모드(MARTINGALE_MODE) — 1분봉이 엔진 주기.
   });
 
-  it('엔진과 같은 봉 주기면 ±3% 단타 진입 판정을 함께 준다 — 정배열·5선 돌파·이유(2026-09-01 동기화)', async () => {
+  it('엔진과 같은 봉 주기면 5선 물타기 단타 매수 판정을 함께 준다 — 5선 상승·돌파·이유(2026-09-02 동기화)', async () => {
     const nowMs = 1_800_000_000_000;
     const nowKey = Math.floor(nowMs / 60_000);
-    // 122봉 이상 상승 종가 — 4선 판정이 가능해진다(엔진 core/martingale.evaluateMartingaleBars와 같은 코드).
+    // 122봉 이상 상승 종가 — 5선 판정이 가능해진다(엔진 core/martingale.evaluateMartingaleBars와 같은 코드).
     const closes = Array.from({ length: 130 }, (_, i) => 100 + i);
     const fetchImpl = tossFetch(closes, nowKey);
     const res = (await runHelpTool(
@@ -209,12 +209,13 @@ describe('runHelpTool — 분봉·차트 조회(2026-08-22)', () => {
     )) as Record<string, any>;
     expect(res.error).toBeUndefined();
     expect(res.engineIntervalMin).toBe(1);
-    expect(res.note).toContain('±3% 단타');
-    expect(res.modelVerdict).toBeNull(); // ±3% 모드에서는 모델을 돌리지 않는다 — 엔진과 같은 사실.
+    expect(res.note).toContain('5선 물타기 단타');
+    expect(res.modelVerdict).toBeNull(); // 물타기 단타 모드에서는 모델을 돌리지 않는다 — 엔진과 같은 사실.
     expect(res.martingaleVerdict).not.toBeNull();
-    expect(typeof res.martingaleVerdict.condition).toBe('boolean');
-    expect(res.martingaleVerdict.aligned).not.toBeNull(); // 봉이 충분해 4선 판정이 나온다.
-    expect(res.martingaleVerdict.note).toContain('진입 시간대');
+    expect(typeof res.martingaleVerdict.entry).toBe('boolean');
+    expect(res.martingaleVerdict.ma5Up).toBe(true); // 봉이 충분해 5선 판정이 나온다(상승 종가).
+    expect(res.martingaleVerdict.note).toContain('매매 시간대');
+    expect(res.martingaleVerdict.note).toContain('물타기');
   });
 
   it('토스에서 종목을 못 찾으면 error 객체', async () => {

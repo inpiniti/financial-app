@@ -108,10 +108,11 @@ export interface FeedSlotOptions {
    */
   model?: boolean;
   /**
-   * ±3% 단타 모드(구 배수 물타기 시험 — 2026-08-27 ADR 0006, 2026-09-01 물타기 제거 ADR 0007) —
-   * true고 MARTINGALE_MODE=true면 **1분봉** 합성 + 4선으로 진입(정배열·5선 상향 돌파, ctx.kind='entry')만 BUY로 낸다.
+   * 5선 물타기 단타 모드(2026-08-27 ADR 0006 → 2026-09-01 ADR 0007 → 2026-09-02 ADR 0010) —
+   * true고 MARTINGALE_MODE=true면 **1분봉** 합성 + 5선으로 "5선 상승 ∧ 종가 5선 상향 돌파" 봉마다 BUY(ctx.kind='entry')를 낸다.
    * 판정은 봉 마감 + 진행 중 봉 실시간(1초 주기, 2026-09-01 — 봉당 발화는 1회) 둘 다다.
-   * 물타기(5선 변곡) 신호는 없다. 청산(±3%·마감)은 포지션 규칙(MartingaleRule)의 틱 판정 몫.
+   * 같은 신호를 오토파일럿이 미보유면 진입, 보유 중이면 물타기 후보(낙폭 판정은 MartingaleRule.decide)로 나눈다.
+   * 청산(익절 +3%·마감)은 포지션 규칙(MartingaleRule)의 틱 판정 몫.
    * 모델·추세·조합·사다리보다 우선한다. 미주입이면 기존 동작 그대로 — 회귀 안전.
    */
   martingale?: boolean;
@@ -144,15 +145,12 @@ export interface SlotSignalContext {
    */
   readonly bandWidthPct?: number | null;
   /**
-   * ±3% 단타 모드의 BUY 종류 — 'entry'=진입 봉(정배열·5선 돌파)뿐이다(2026-09-01 물타기 제거로 'add' 폐기).
-   * 오토파일럿이 보유 여부로 거른다(보유 중엔 entry 무시). 다른 모드는 undefined.
+   * 물타기 단타 모드의 BUY 종류 — 'entry'=5선 상승·상향 돌파 봉(2026-09-02). 오토파일럿이 미보유면 진입,
+   * 보유 중이면 물타기 후보로 포지션 규칙에 넘긴다(낙폭 −3% 미만이면 규칙이 거른다). 다른 모드는 undefined.
    */
   readonly kind?: 'entry';
-  /**
-   * 물타기 모드 진입 신호의 근거(2026-08-28) — 'cross'/'allUp'/'ordered'는 조건을 이 봉에서 성립시킨 이벤트,
-   * 'state'는 이벤트 없이 조건만 맞는 봉. 당일 이미 매매한 종목은 오토파일럿이 'state'를 버린다.
-   */
-  readonly entryEvent?: MartingaleEntryEvent | 'state';
+  /** 물타기 단타 모드 신호의 근거 — 지금은 'cross'(5선 상향 돌파) 하나. */
+  readonly entryEvent?: MartingaleEntryEvent;
 }
 
 export interface FeedSlotView {
@@ -205,7 +203,7 @@ export interface FeedSlotView {
    * 스캐너가 매 봉 밀어 넣는다. BUY가 안 나는 대부분의 시간에 화면이 상황을 설명할 유일한 근거다.
    */
   readonly modelVerdict: ModelVerdictView | null;
-  /** 물타기 모드의 마지막 봉 판정(진입·5선 변곡·정배열) — 다른 모드면 null. 화면·진단 전용. */
+  /** 물타기 단타 모드의 마지막 봉 판정(5선 상승·돌파) — 다른 모드면 null. 화면·진단 전용. */
   readonly martingale: MartingaleBarEval | null;
   /**
    * 진행 중(미완성) 봉까지 포함한 ±3% 단타 판정 — 차트가 그리는 것과 같은 기준(2026-09-01 실시간 진입).
@@ -584,8 +582,8 @@ export class FeedSlot {
   }
 
   /**
-   * ±3% 단타 모드 봉 마감 1회 — 진입 봉이면 BUY(kind='entry')만 흘린다(2026-09-01 물타기 제거 —
-   * 5선 변곡 BUY(kind='add')는 폐기). 진입은 프리·정규·애프터 봉·마감 청산 전에만(isMartingaleEntryBar).
+   * 물타기 단타 모드 봉 마감 1회 — 5선 상승·상향 돌파 봉이면 BUY(kind='entry')를 흘린다(미보유=진입, 보유=물타기 후보 —
+   * 가르는 건 오토파일럿). 세션 게이트는 진입·물타기 공통(프리·정규·애프터 봉·마감 청산 전 — isMartingaleEntryBar).
    * price = 마감을 유발한 새 분 첫 틱 가격(추세 모드와 같은 규약).
    */
   private evaluateMartingaleBar(closed: MinuteBar, price: number): void {
@@ -593,12 +591,13 @@ export class FeedSlot {
     this.martingaleEval = ev;
     this.martingaleLiveEval = null; // 새 봉이 열렸다 — 진행 중 판정은 다음 틱에서 다시 만든다.
     if (this.trendListener === null) return;
-    // 같은 봉에서 실시간 BUY(2026-09-01)를 이미 냈어도 마감 확정 신호는 그대로 낸다 — 실시간 신호가
-    // 후보 밖·속도 미달 등으로 버려졌을 수 있고, 중복이면 오토파일럿이 보유·발주 중 가드로 무시한다.
+    // 봉당 신호 1회(2026-09-02 ADR 0010) — 같은 봉에서 실시간 BUY를 이미 냈으면 마감 확정 신호는 내지 않는다.
+    // 2026-09-01엔 "재시도"로 다시 냈지만(중복은 오토파일럿의 보유·발주 중 가드가 무시), 물타기가 돌아오면서
+    // 보유 중의 BUY는 무시되지 않고 규칙(낙폭 배수)으로 흘러가므로 — 진입 1분 뒤 다음 분 첫 틱 가격으로 물타기가
+    // 나갈 수 있었다. 실시간이 꺼져 있거나(MARTINGALE_LIVE_ENTRY=false) 봉 중간 틱이 없던 봉만 마감에서 낸다.
+    if (this.liveEntryBarKey === closed.minuteKey) return;
     const at = this.lastTickAt ?? this.clock.now();
-    // 조건(정배열·4선 상승·종가>5선)이 맞는 봉마다 진입 신호를 흘린다 — 이벤트 봉인지(cross/allUp/ordered)
-    // 조건만 이어지는 봉인지(state)를 실어, 당일 매매 여부에 따른 거름은 오토파일럿이 한다(2026-08-28).
-    if (ev.condition && isMartingaleEntryBar(closed.minuteKey)) {
+    if (ev.entry && isMartingaleEntryBar(closed.minuteKey)) {
       this.lastSignal = 'BUY';
       this.trendListener('BUY', {
         ticker: this.ticker,
@@ -607,18 +606,18 @@ export class FeedSlot {
         accel: 0,
         at,
         kind: 'entry',
-        entryEvent: ev.entryEvent ?? 'state',
+        entryEvent: 'cross',
       });
     }
   }
 
   /**
-   * ±3% 단타 진행 중 봉 실시간 판정(2026-09-01, 사용자 확정) — 진행 중 봉을 현재가로 넣어 다시 재고,
-   * 조건이 맞으면 봉 마감을 기다리지 않고 그 자리에서 BUY(kind='entry')를 낸다. **차트가 그리는 것과 같은 기준**이라
+   * 물타기 단타 진행 중 봉 실시간 판정(2026-09-01, 사용자 확정) — 진행 중 봉을 현재가로 넣어 다시 재고,
+   * 5선 상승·돌파면 봉 마감을 기다리지 않고 그 자리에서 BUY(kind='entry')를 낸다. **차트가 그리는 것과 같은 기준**이라
    * "눈으로는 돌파가 보이는데 엔진은 1분 뒤에 산다"는 지연이 사라진다(청산 evaluateTrendLive와 같은 문법).
    * 같은 진행 봉에서는 딱 한 번만 발화하고, MARTINGALE_LIVE_EVAL_MS로 재계산을 스로틀한다. 봉 마감 확정
    * 신호는 그대로 나간다(실시간 신호가 버려졌을 때의 재시도 — 중복은 오토파일럿 가드 몫).
-   * 봉 중간 가짜 돌파에 물리는 위험은 ±3% 손절 몫이다.
+   * 봉 중간 가짜 돌파에 물리는 위험은 물타기(낙폭 배수 매수)가 받는다 — 손절은 없다(2026-09-02).
    */
   private evaluateMartingaleLive(): void {
     const cur = this.bars.inProgress;
@@ -629,7 +628,7 @@ export class FeedSlot {
     const ev = evaluateMartingaleLive(this.bars.closes, cur.close);
     this.martingaleLiveEval = ev;
     if (!MARTINGALE_LIVE_ENTRY) return;
-    if (!ev.condition) return;
+    if (!ev.entry) return;
     if (this.liveEntryBarKey === cur.minuteKey) return; // 이 진행 봉에서 이미 냈다.
     if (this.trendListener === null) return;
     if (!isMartingaleEntryBar(cur.minuteKey)) return; // 세션 게이트는 마감 판정과 동일(프리·정규·애프터만).
@@ -642,7 +641,7 @@ export class FeedSlot {
       accel: 0,
       at: now,
       kind: 'entry',
-      entryEvent: ev.entryEvent ?? 'state',
+      entryEvent: 'cross',
     });
   }
 

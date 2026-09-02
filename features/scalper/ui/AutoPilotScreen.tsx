@@ -142,32 +142,23 @@ export function formatFeedAckSummary(rows: readonly AutoPilotSlotRow[]): string 
 }
 
 /**
- * ±3% 단타 모드 한 줄(2026-08-27, 2026-09-01 물타기 제거) — "정배열인가 · 진입 봉인가 · 봉 수".
+ * 5선 물타기 단타 모드 한 줄(2026-09-02) — "5선 방향 · 돌파 봉인가 · 봉 수".
  * 입력은 진행 중 봉 포함 실시간 판정을 우선한다(2026-09-01 실시간 진입 — 차트·엔진과 같은 기준).
- * 진입은 정배열 상태에서 종가가 5선을 아래→위로 뚫는 **그 봉**에만 나므로, 정배열이어도 대부분의 봉은 "돌파 대기"다.
+ * 신호는 5선이 오르는 중에 종가가 5선을 아래→위로 뚫는 **그 봉**에만 나므로 대부분의 봉은 "돌파 대기"다.
  */
 function formatMartingaleLine(ev: MartingaleBarEval | null, nowMs: number = Date.now()): string {
-  if (ev === null) return '4선 계산 중';
-  if (ev.aligned === null) return `4선 계산 중 · 봉 ${Math.min(ev.bars, MARTINGALE_MIN_BARS)}/${MARTINGALE_MIN_BARS}`;
-  // "정배열"은 배열(5>20>60>120)과 4선 기울기 모두 상승을 **둘 다** 뜻한다(백테스트 규약). 눈으로는 배열이 맞아
-  // 보여도 5선이 꺾여 있으면 진입 조건이 아니다 — 그 차이를 화살표로 보인다(2026-08-27 CHOW 13:19 ET 제보).
-  const eventText = { cross: '5선 돌파', allUp: '4선 상승 성립', ordered: '정배열 성립' } as const;
+  if (ev === null) return '5선 계산 중';
+  if (ev.ma5Up === null) return `5선 계산 중 · 봉 ${Math.min(ev.bars, MARTINGALE_MIN_BARS)}/${MARTINGALE_MIN_BARS}`;
   // 세션 게이트를 화면에도 반영(2026-09-01) — 예전엔 주간거래 시간대(한국 낮)에 전 종목 "진입 가능"이
   // 떴는데 엔진은 절대 사지 않아 화면-엔진이 어긋났다. 진입 창은 04:00~19:55 ET(엔진 isMartingaleEntryBar와 동일).
   const m = etMinuteOfDay(Math.floor(nowMs / 60_000));
   const entryWindow = m > TRADING_DAY_START_MIN && m < MARTINGALE_CONFIG.closeAtMin;
-  const state = ev.condition
-    ? entryWindow
-      ? ev.entryEvent === null
-        ? '조건 충족(정배열 · 5선 위) — 후보 상위·미보유면 사요'
-        : `조건 충족 · ${eventText[ev.entryEvent]} → 진입 신호`
-      : '조건 충족 · 진입 시간대 아님(04:00~19:55 ET만 사요)'
-    : ev.aligned
-      ? '정배열 · 5선 아래(돌파 대기)'
-      : ev.ordered
-        ? `배열은 정배열, 기울기 ${trendArrows(ev.up)}`
-        : '정배열 아님';
-  return state;
+  if (ev.entry) {
+    return entryWindow
+      ? '5선 상승 · 5선 돌파 → 매수 신호(미보유면 진입 · 보유 중이면 평단 −3% 아래일 때 물타기)'
+      : '5선 돌파 · 매매 시간대 아님(04:00~19:55 ET만 사요)';
+  }
+  return ev.ma5Up ? '5선 상승 중 · 돌파 대기' : '5선 하락 중';
 }
 
 /**
@@ -609,9 +600,9 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                 <Text className="px-5 pb-2 text-xs text-[#f04452]">{feedAckSummary}</Text>
               )}
               {MARTINGALE_MODE && getActiveEngineMode() === 'martingale' && (
-                // ±3% 단타 모드(2026-09-01, 물타기 제거) — 규칙 요약을 여기 한 번만.
+                // 5선 물타기 단타 모드(2026-09-02) — 규칙 요약을 여기 한 번만.
                 <Text className="px-5 pb-2 text-xs text-[#8b95a1]">
-                  {`±3% 단타 모드 · 1분봉 5·20·60·120선 정배열(4선 상승)이고 가격이 5선 위면 매수 — 봉 마감을 기다리지 않고 진행 중 봉으로 실시간 판정해요(봉당 1회) · 프리·정규·애프터만(주간거래 제외 · 후보 안에서만 · 오늘 이미 산 종목은 5선 돌파·정배열 성립·4선 상승 성립 때만). 익절 평단 +${(MARTINGALE_CONFIG.tpPct * 100).toFixed(0)}% · 손절 평단 −${(MARTINGALE_CONFIG.stopLossPct * 100).toFixed(0)}% · 물타기 없음, ${Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:${String(
+                  {`5선 물타기 단타 · 1분봉 5선이 오르는 중에 가격이 5선을 위로 뚫으면 매수 — 봉 마감을 기다리지 않고 진행 중 봉으로 실시간 판정해요(봉당 1회) · 프리·정규·애프터만(주간거래 제외 · 후보 안에서만). 보유 중엔 평단 −${(MARTINGALE_CONFIG.dropStartPct * 100).toFixed(0)}% 아래에서 같은 돌파가 오면 낙폭 k%당 보유량 ×(k−1) 물타기 · 손절 없음. 익절 평단 +${(MARTINGALE_CONFIG.tpPct * 100).toFixed(0)}%, ${Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:${String(
                     MARTINGALE_CONFIG.closeAtMin % 60,
                   ).padStart(2, '0')} ET 전량 청산.`}
                 </Text>

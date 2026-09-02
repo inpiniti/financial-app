@@ -606,8 +606,8 @@ describe('AutoPilot — Stop·FAULT·영속화·마이그레이션', () => {
     pilot.start();
     await flush();
     await flush();
-    expect(pilot.getView().activeTickers).toEqual(['A']); // 자동 재등록 — 손절 관리가 이어진다.
-    expect(events.some((e) => e.includes('±3% 관리 등록'))).toBe(true);
+    expect(pilot.getView().activeTickers).toEqual(['A']); // 자동 재등록 — 익절·물타기 관리가 이어진다.
+    expect(events.some((e) => e.includes('5선 물타기 관리 등록'))).toBe(true);
     const raw = JSON.parse((await store.getItem(AUTOPILOT_STORAGE_KEY))!);
     expect(raw.version).toBe(5);
     expect(raw.actives).toEqual(['A']);

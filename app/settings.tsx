@@ -105,7 +105,7 @@ export default function SettingsScreen() {
     draftFromSelection(normalizeRankingSelection(DEFAULT_APP_SETTINGS.rankingSelection)),
   );
 
-  // 엔진 모드(2026-09-01) — ±3% 단타 규칙 ↔ 예측 모델. 저장 후 앱을 완전히 껐다 켜야 반영된다(engineMode.ts).
+  // 엔진 모드(2026-09-01) — 5선 물타기 단타 ↔ 예측 모델. 저장 후 앱을 완전히 껐다 켜야 반영된다(engineMode.ts).
   const [engineMode, setEngineMode] = useState<'martingale' | 'model'>(DEFAULT_APP_SETTINGS.engineMode);
   const savedEngineModeRef = useRef<'martingale' | 'model'>(DEFAULT_APP_SETTINGS.engineMode);
 
@@ -374,8 +374,8 @@ export default function SettingsScreen() {
               [
                 {
                   value: 'martingale' as const,
-                  title: '±3% 단타 규칙',
-                  desc: `${MARTINGALE_BAR_MINUTES}분봉 4선 정배열·5선 돌파에 사고, 익절 +${Math.round(MARTINGALE_CONFIG.tpPct * 100)}% · 손절 −${Math.round(MARTINGALE_CONFIG.stopLossPct * 100)}%`,
+                  title: '5선 물타기 단타',
+                  desc: `${MARTINGALE_BAR_MINUTES}분봉 5선 상승·돌파에 사고, 익절 +${Math.round(MARTINGALE_CONFIG.tpPct * 100)}% · 평단 −${Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 아래 5선 돌파면 낙폭 k%당 (k−1)배 물타기 · 손절 없음`,
                 },
                 {
                   value: 'model' as const,
@@ -403,42 +403,51 @@ export default function SettingsScreen() {
         </Panel>
 
         {engineMode === 'martingale' ? (
-          // ±3% 단타 모드(2026-09-01, ADR 0007) — 아래 고정값 패널은 선택한 모드 것을 보여준다.
-          <Panel title="±3% 단타 (고정값)">
+          // 5선 물타기 단타 모드(2026-09-02, ADR 0010) — 아래 고정값 패널은 선택한 모드 것을 보여준다.
+          <Panel title="5선 물타기 단타 (고정값)">
             <View className="px-5 pb-5">
               <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                진입은 {MARTINGALE_BAR_MINUTES}분봉 이동평균 4선이, 매도는 ±3% 선이 정해요. 아래 값은 설계 고정값이라 여기서 바꿀 수
-                없어요.
+                진입·물타기는 {MARTINGALE_BAR_MINUTES}분봉 5선 돌파가, 매도는 +3% 선과 마감 시각이 정해요. 아래 값은 설계 고정값이라 여기서
+                바꿀 수 없어요.
               </Text>
 
               <View className="mb-1 flex-row items-center justify-between">
                 <Text className="text-xs text-[#8b95a1]">진입</Text>
-                <Text className="text-sm font-semibold text-[#191f28]">정배열 + 5선 위</Text>
+                <Text className="text-sm font-semibold text-[#191f28]">5선 상승 + 5선 돌파</Text>
               </View>
               <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                {MARTINGALE_BAR_MINUTES}분봉이 닫힐 때마다 이동평균 4선(5·20·60·120봉)을 다시 계산해요. 정배열(5&gt;20&gt;60&gt;120)이고 네
-                선이 다 오르는 중이며 종가가 5선 위면 사요. 프리·정규·애프터에서만 진입하고 주간거래 시간엔 쉬어요. 오늘 이미 매매한
-                종목은 조건이 새로 만들어진 봉에서만 다시 사요.
+                {MARTINGALE_BAR_MINUTES}분봉 5선(최근 5봉 평균)이 오르는 중이고 종가가 5선을 아래에서 위로 뚫는 봉에 사요. 봉이 닫히기를
+                기다리지 않고 진행 중 봉을 현재가로 넣어 실시간으로 판단해요(봉당 1회). 프리·정규·애프터에서만 진입하고 주간거래 시간엔
+                쉬어요.
+              </Text>
+
+              <View className="mb-1 flex-row items-center justify-between">
+                <Text className="text-xs text-[#8b95a1]">물타기</Text>
+                <Text className="text-sm font-semibold text-[#191f28]">
+                  평단 −{Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 아래 5선 돌파 → (k−1)배
+                </Text>
+              </View>
+              <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                보유 중 현재가가 평단보다 −{Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 이상 내려간 상태에서 같은 5선 돌파가 오면
+                추가로 사요. 낙폭 k%(내림)면 지금 보유량의 (k−1)배 — −3% 2배 · −4% 3배 · … · −
+                {Math.round(MARTINGALE_CONFIG.dropMaxPct * 100)}% {Math.round(MARTINGALE_CONFIG.dropMaxPct * 100) - 1}배가 상한이에요.
+                횟수·금액 상한은 없고, 현금이 모자라면 그 물타기만 건너뛰어요. 손절은 없어요.
               </Text>
 
               <View className="mb-1 flex-row items-center justify-between">
                 <Text className="text-xs text-[#8b95a1]">매도</Text>
-                <Text className="text-sm font-semibold text-[#191f28]">
-                  익절 +{Math.round(MARTINGALE_CONFIG.tpPct * 100)}% / 손절 −{Math.round(MARTINGALE_CONFIG.stopLossPct * 100)}%
-                </Text>
+                <Text className="text-sm font-semibold text-[#191f28]">익절 +{Math.round(MARTINGALE_CONFIG.tpPct * 100)}%</Text>
               </View>
               <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                산 가격보다 +{Math.round(MARTINGALE_CONFIG.tpPct * 100)}% 오르면 익절, −
-                {Math.round(MARTINGALE_CONFIG.stopLossPct * 100)}% 내리면 손절해요. 물타기는 하지 않아요. 어느 쪽에도 안 닿으면{' '}
-                {Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:{String(MARTINGALE_CONFIG.closeAtMin % 60).padStart(2, '0')} ET에 전량
-                청산해요 — 다음 날로 들고 가지 않아요. 봉 마감을 기다리지 않고 체결가가 닿는 순간 판단해요.
+                평단보다 +{Math.round(MARTINGALE_CONFIG.tpPct * 100)}% 오르면 전량 익절해요(물타기로 평단이 내려가면 목표가도 따라 내려와요).
+                안 닿으면 {Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:{String(MARTINGALE_CONFIG.closeAtMin % 60).padStart(2, '0')} ET에
+                전량 청산해요 — 다음 날로 들고 가지 않아요. 봉 마감을 기다리지 않고 체결가가 닿는 순간 판단해요.
               </Text>
 
               <View className="rounded-2xl bg-[#f2f4f6] px-4 py-3">
                 <Text className="text-xs leading-5 text-[#4e5968]">
-                  이 규칙은 시험 운용 중이에요(2026-09-01 물타기 제거·손절 전환). 손실은 건당 −
-                  {Math.round(MARTINGALE_CONFIG.stopLossPct * 100)}% 언저리로 제한되지만 손절이 자주 날 수 있어요. 잃어도 되는 금액으로만
-                  하세요.
+                  이 규칙은 시험 운용 중이에요(2026-09-02 물타기 복원·손절 제거). 손절이 없어서 한 종목에 돈이 크게 몰릴 수 있어요 —
+                  낙폭이 깊을수록 배수가 커져요. 잃어도 되는 금액으로만 하세요.
                 </Text>
               </View>
             </View>

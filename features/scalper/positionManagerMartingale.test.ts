@@ -1,4 +1,4 @@
-// ±3% 단타 모드 어댑터(2026-08-27 ADR 0006 → 2026-09-01 물타기 제거 ADR 0007) — 모드 판정·인계 문구·익절·손절·마감 청산 → 정산.
+// 5선 물타기 단타 모드 어댑터(ADR 0006 → 0007 → 2026-09-02 ADR 0010) — 모드 판정·인계 문구·익절·물타기·마감 청산 → 정산.
 // 규칙 자체의 판정은 core/martingale/index.test.ts, 여기서는 **배선**을 본다.
 
 import { describe, expect, it } from 'vitest';
@@ -55,7 +55,7 @@ function harness(startPrice = 100) {
   return { pm, broker, clock, events, setPrice: (p: number) => (price = p) };
 }
 
-describe('모드 판정 — ±3% 단타가 모델보다 우선한다', () => {
+describe('모드 판정 — 5선 물타기 단타가 모델보다 우선한다', () => {
   it('martingale 주입이 있으면 martingale, 없으면 기존 우선순위', () => {
     expect(resolvePositionMode({ martingale: MARTINGALE_POSITION_CONFIG, model: MODEL_CONFIG, trend: TREND_CONFIG })).toBe(
       'martingale',
@@ -63,23 +63,24 @@ describe('모드 판정 — ±3% 단타가 모델보다 우선한다', () => {
     expect(resolvePositionMode({ model: MODEL_CONFIG, trend: TREND_CONFIG })).toBe('model');
   });
 
-  it('설정값 — 익절 +3% · 손절 −3% · 마감 19:55 ET (2026-09-01 사용자 확정)', () => {
+  it('설정값 — 익절 +3% · 물타기 −3%부터(상한 −50%) · 마감 19:55 ET (2026-09-02 사용자 확정)', () => {
     expect(MARTINGALE_POSITION_CONFIG.tpPct).toBe(0.03);
-    expect(MARTINGALE_POSITION_CONFIG.stopLossPct).toBe(0.03);
+    expect(MARTINGALE_POSITION_CONFIG.dropStartPct).toBe(0.03);
+    expect(MARTINGALE_POSITION_CONFIG.dropMaxPct).toBe(0.5);
     expect(MARTINGALE_POSITION_CONFIG.closeAtMin).toBe(19 * 60 + 55);
   });
 });
 
-describe('makePositionManager — ±3% 단타 어댑터', () => {
-  it('인계 문구에 익절·손절 선이 나오고, 게이지는 익절가/손절선', async () => {
+describe('makePositionManager — 5선 물타기 단타 어댑터', () => {
+  it('인계 문구에 익절·물타기 선이 나오고, 게이지는 익절가/첫 물타기 선', async () => {
     const h = harness();
-    expect(h.pm.label).toBe('±3% 관리');
+    expect(h.pm.label).toBe('5선 물타기 관리');
     expect(await h.pm.arm({ qty: 10, avgPrice: 100 })).toEqual({ ok: true });
     const text = h.events.at(-1)!;
-    expect(text).toContain('±3% 관리 인계 · 10주 · 평단 100.00');
+    expect(text).toContain('5선 물타기 관리 인계 · 10주 · 평단 100.00');
     expect(text).toContain('익절 103.00(+3%)');
-    expect(text).toContain('손절 97.00(−3%)');
-    expect(text).toContain('물타기 없어요');
+    expect(text).toContain('물타기 선 97.00(−3%');
+    expect(text).toContain('손절 없어요');
     expect(text).toContain('19:55 ET 마감 청산');
     const g = h.pm.gaugeView();
     expect(g.rangeKind).toBe('orders');
@@ -105,33 +106,67 @@ describe('makePositionManager — ±3% 단타 어댑터', () => {
     }
   });
 
-  it('손절: −3%에 닿으면 전량 매도 → STOP_LOSS, exitSnapshot.line = 손절선', async () => {
+  it('손절은 없다 — −3% 아래로 내려가도 틱 판정은 팔지 않는다', async () => {
     const h = harness();
     await h.pm.arm({ qty: 10, avgPrice: 100 });
-    h.setPrice(97.1);
-    await h.pm.tick({ canStart: true });
-    expect(h.broker.placed).toHaveLength(0);
     h.setPrice(96.8);
     await h.pm.tick({ canStart: true });
     await flush();
-    expect(h.events.some((e) => e.includes('손절 · 현재가 96.80 ≤ 평단 −3%(97.00)'))).toBe(true);
+    h.setPrice(80);
+    await h.pm.tick({ canStart: true });
+    await flush();
+    expect(h.broker.placed).toHaveLength(0);
+    expect((await h.pm.poll()).kind).toBe('holding');
+  });
+
+  it('물타기: 평단 −4%에서 5선 돌파 BUY가 오면 보유량 ×3(30주)을 사고, 체결 뒤 익절 목표가 새 평단을 따른다', async () => {
+    const h = harness();
+    await h.pm.arm({ qty: 10, avgPrice: 100 });
+    h.setPrice(96);
+    h.pm.onSignal('BUY', 96);
+    await flush();
+    expect(h.broker.placed).toHaveLength(1);
+    expect(h.broker.placed[0]).toMatchObject({ side: 'buy', qty: 30 });
+    // 체결 뒤 잔고(브로커 조회값) 40주 · 평단 97 — 폴이 반영하면 익절 목표는 97×1.03=99.91.
+    h.broker.position = { qty: 40, avgPrice: 97 };
     const r = await h.pm.poll();
-    expect(r.kind).toBe('sold');
-    if (r.kind === 'sold') {
-      expect(r.record.exitReason).toBe('STOP_LOSS');
-      expect(r.record.qty).toBe(10);
-      expect(r.record.exitSnapshot).toMatchObject({ price: 96.8, line: 97, kind: 'STOP_LOSS' });
+    expect(r.kind).toBe('holding');
+    expect(h.pm.gaugeView().sellPrice).toBeCloseTo(97 * 1.03, 6);
+    // 회복해 새 목표에 닿으면 전량(40주) 익절.
+    h.setPrice(100);
+    await h.pm.tick({ canStart: true });
+    await flush();
+    const sold = await h.pm.poll();
+    expect(sold.kind).toBe('sold');
+    if (sold.kind === 'sold') {
+      expect(sold.record.exitReason).toBe('TAKE_PROFIT');
+      expect(sold.record.qty).toBe(40);
     }
   });
 
-  it('물타기는 없다 — −3% 아래에서 BUY 신호가 와도 사지 않는다', async () => {
+  it('물타기: 낙폭이 −3%에 못 미치면 BUY 신호가 와도 사지 않는다', async () => {
     const h = harness();
     await h.pm.arm({ qty: 10, avgPrice: 100 });
-    h.clock.advance(5 * 60_000);
-    h.pm.onSignal('BUY', 96);
+    h.pm.onSignal('BUY', 97.5);
     await flush();
-    // BUY는 규칙(decide)이 null이라 매수가 나가지 않는다 — 대신 다음 틱 판정이 손절을 낸다.
-    expect(h.broker.placed.filter((p) => p.side === 'buy')).toHaveLength(0);
+    expect(h.broker.placed).toHaveLength(0);
+  });
+
+  it('물타기: 현금이 모자라면 그 물타기만 건너뛴다(fail-open 아님 — 조회값이 있으면 판정)', async () => {
+    const clock = fakeClock(TEN_AM_ET);
+    const broker = new FakeBroker({ autoFill: true });
+    broker.position = { qty: 10, avgPrice: 100 };
+    const events: string[] = [];
+    const pm = makePositionManager(
+      'martingale',
+      { martingale: MARTINGALE_POSITION_CONFIG },
+      deps(broker, clock, events, () => 96, { fetchBuyableUsd: async () => 100 }), // 필요 30×96=2880 > 100
+    );
+    await pm.arm({ qty: 10, avgPrice: 100 });
+    pm.onSignal('BUY', 96);
+    await flush();
+    expect(broker.placed).toHaveLength(0);
+    expect(events.some((e) => e.includes('현금 부족'))).toBe(true);
   });
 
   it('마감 청산: 19:55 ET가 되면 목표 미달이어도 전량 매도 → SESSION_END', async () => {
@@ -146,7 +181,7 @@ describe('makePositionManager — ±3% 단타 어댑터', () => {
     if (r.kind === 'sold') expect(r.record.exitReason).toBe('SESSION_END');
   });
 
-  it('SELL 신호는 무시한다 — 청산은 익절·손절·마감뿐(틱 판정)', async () => {
+  it('SELL 신호는 무시한다 — 청산은 익절·마감뿐(틱 판정)', async () => {
     const h = harness();
     await h.pm.arm({ qty: 10, avgPrice: 100 });
     h.pm.onSignal('SELL', 98);
@@ -166,15 +201,15 @@ describe('청산 매도 발주가 — 매수1호가 크로스(2026-09-01)', () =
       'martingale',
       { martingale: MARTINGALE_POSITION_CONFIG },
       deps(broker, clock, events, () => price, {
-        quote: () => ({ bid1: 96.5, ask1: 96.7, at: clock.now() }), // 신선한 1호가
+        quote: () => ({ bid1: 102.9, ask1: 103.1, at: clock.now() }), // 신선한 1호가
       }),
     );
     await pm.arm({ qty: 10, avgPrice: 100 });
-    price = 96.8; // 손절선(97) 이하 — 급락 중이라 체결가(96.8)는 bid1(96.5)보다 위다.
+    price = 103.2; // 익절 목표(103) 이상 — 체결가(103.2)보다 bid1(102.9)이 아래다.
     await pm.tick({ canStart: true });
     await flush();
     expect(broker.placed).toHaveLength(1);
-    expect(broker.placed[0].price).toBe(96.5); // 체결가가 아니라 bid1 — 즉시 크로스 체결.
+    expect(broker.placed[0].price).toBe(102.9); // 체결가가 아니라 bid1 — 즉시 크로스 체결.
     expect(events.some((e) => e.includes('매수1호가 추격'))).toBe(true);
   });
 
@@ -188,14 +223,14 @@ describe('청산 매도 발주가 — 매수1호가 크로스(2026-09-01)', () =
     const pm = makePositionManager(
       'martingale',
       { martingale: MARTINGALE_POSITION_CONFIG },
-      deps(broker, clock, events, () => price, { quote: () => ({ bid1: 96.5, ask1: 96.7, at: staleAt }) }),
+      deps(broker, clock, events, () => price, { quote: () => ({ bid1: 102.9, ask1: 103.1, at: staleAt }) }),
     );
     await pm.arm({ qty: 10, avgPrice: 100 });
     clock.advance(EXIT_QUOTE_STALE_MS + 1);
-    price = 96.8;
+    price = 103.2;
     await pm.tick({ canStart: true });
     await flush();
-    expect(broker.placed[0]?.price).toBe(96.8);
+    expect(broker.placed[0]?.price).toBe(103.2);
   });
 });
 
@@ -205,7 +240,7 @@ describe('청산 발주 거절 처리(2026-09-01) — 무한 재시도 대신 �
     await h.pm.arm({ qty: 10, avgPrice: 100 });
     h.broker.failPlaceOrder = true;
     h.broker.position = null; // 앱 밖에서 이미 팔린 상태 — 거절의 진짜 원인.
-    h.setPrice(96.8);
+    h.setPrice(103.2);
     await h.pm.tick({ canStart: true });
     await flush();
     expect(h.events.some((e) => e.includes('잔고에도 없어요'))).toBe(true);
@@ -222,16 +257,16 @@ describe('청산 발주 거절 처리(2026-09-01) — 무한 재시도 대신 �
     const h = harness();
     await h.pm.arm({ qty: 10, avgPrice: 100 });
     h.broker.failPlaceOrder = true; // 잔고는 그대로(harness가 10주 세팅) — 세션 간극류 거절.
-    h.setPrice(96.8);
+    h.setPrice(103.2);
     await h.pm.tick({ canStart: true });
     await flush();
-    expect(h.events.filter((e) => e.includes('손절 ·'))).toHaveLength(1);
+    expect(h.events.filter((e) => e.includes('익절 ·'))).toHaveLength(1);
     expect(h.events.some((e) => e.includes('매도 발주 실패') && e.includes('10초 뒤'))).toBe(true);
     // 1초 뒤(예전엔 매초 재발주하던 자리) — 백오프 안이라 판정 자체를 쉰다.
     h.clock.advance(1_000);
     await h.pm.tick({ canStart: true });
     await flush();
-    expect(h.events.filter((e) => e.includes('손절 ·'))).toHaveLength(1);
+    expect(h.events.filter((e) => e.includes('익절 ·'))).toHaveLength(1);
     // 백오프가 지나면 다시 시도 — 이번엔 접수돼 정산까지 간다.
     h.broker.failPlaceOrder = false;
     h.clock.advance(EXIT_RETRY_BASE_MS);
@@ -239,12 +274,12 @@ describe('청산 발주 거절 처리(2026-09-01) — 무한 재시도 대신 �
     await flush();
     expect(h.broker.placed).toHaveLength(1);
     const r = await h.pm.poll();
-    expect(r.kind === 'sold' && r.record.exitReason).toBe('STOP_LOSS');
+    expect(r.kind === 'sold' && r.record.exitReason).toBe('TAKE_PROFIT');
   });
 });
 
 describe('시세 정지 REST 폴백(2026-09-01) — 구독 거절·WS 무음에도 청산 감시', () => {
-  it('틱이 20초 넘게 끊기면 REST 현재가로 손절을 발화한다', async () => {
+  it('틱이 20초 넘게 끊기면 REST 현재가로 익절을 발화한다', async () => {
     const clock = fakeClock(TEN_AM_ET);
     const broker = new FakeBroker({ autoFill: true });
     broker.position = { qty: 10, avgPrice: 100 };
@@ -256,7 +291,7 @@ describe('시세 정지 REST 폴백(2026-09-01) — 구독 거절·WS 무음에�
       deps(broker, clock, events, () => 100, {
         // 마지막 틱이 옛날에 멈춘 슬롯 — price는 100에 고정돼 있다(구독 거절 상황 재현).
         price: () => ({ price: 100, lastTradeAt: lastTickAt, dayLow: 90, dayHigh: 110 }),
-        fetchRestPrice: async () => 96.5, // 실제 시장은 이미 손절선 아래.
+        fetchRestPrice: async () => 103.5, // 실제 시장은 이미 익절 목표 위.
       }),
     );
     await pm.arm({ qty: 10, avgPrice: 100 });
@@ -264,9 +299,9 @@ describe('시세 정지 REST 폴백(2026-09-01) — 구독 거절·WS 무음에�
     await pm.tick({ canStart: true });
     await flush();
     expect(events.some((e) => e.includes('실시간 시세가 끊겼어요'))).toBe(true);
-    expect(broker.placed).toHaveLength(1); // 낡은 틱(100)이었다면 안 팔았다 — REST(96.5)로 손절.
+    expect(broker.placed).toHaveLength(1); // 낡은 틱(100)이었다면 안 팔았다 — REST(103.5)로 익절.
     const r = await pm.poll();
-    expect(r.kind === 'sold' && r.record.exitReason).toBe('STOP_LOSS');
+    expect(r.kind === 'sold' && r.record.exitReason).toBe('TAKE_PROFIT');
   });
 
   it('REST 폴백은 10초 간격으로만 조회한다(유량 방어)', async () => {
@@ -281,7 +316,7 @@ describe('시세 정지 REST 폴백(2026-09-01) — 구독 거절·WS 무음에�
         price: () => ({ price: 100, lastTradeAt: 0, dayLow: 90, dayHigh: 110 }),
         fetchRestPrice: async () => {
           calls += 1;
-          return 99; // 손절선 위 — 발주 없이 감시만.
+          return 99; // 익절 목표 아래 — 발주 없이 감시만.
         },
       }),
     );

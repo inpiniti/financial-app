@@ -122,9 +122,9 @@ export interface ModelGridConfig extends ModelExitConfig, ModelSymmetricExitConf
 export const MODEL_CONFIG: ModelGridConfig = { kind: 'model', ...MODEL_EXIT_CONFIG, ...MODEL_SYMMETRIC_EXIT_CONFIG };
 
 /**
- * ±3% 단타 모드 설정(구 배수 물타기 시험 — 2026-08-27 ADR 0006, 2026-09-01 물타기 제거 ADR 0007) —
- * **주입 자체가 활성화 신호**다(MARTINGALE_MODE AND 주입). 값: 익절 +3% / 손절 −3% / 마감 청산 19:55 ET.
- * 진입은 프리·정규·애프터만(주간거래 제외 — isMartingaleEntryBar), 물타기·상한 없음.
+ * 5선 물타기 단타 모드 설정(ADR 0006 → 0007 → 2026-09-02 ADR 0010) — **주입 자체가 활성화 신호**다(MARTINGALE_MODE AND 주입).
+ * 값: 익절 +3% / 물타기 평단 −k%(k≥3)에서 5선 돌파 시 보유량의 (k−1)배(상한 −50%) / 손절 없음 / 마감 청산 19:55 ET.
+ * 진입·물타기는 프리·정규·애프터만(주간거래 제외 — isMartingaleEntryBar), 투입 상한 없음(현금 부족이면 그 물타기만 건너뜀).
  */
 export interface MartingaleGridConfig extends MartingaleConfig {
   readonly kind?: 'martingale';
@@ -327,10 +327,10 @@ export function makePositionManager(
     case 'martingale': {
       const mg = cfg.martingale!;
       const up = (mg.tpPct * 100).toFixed(0);
-      const dn = (mg.stopLossPct * 100).toFixed(0);
+      const dn = (mg.dropStartPct * 100).toFixed(0);
       return new RulePositionManager(deps, {
-        label: '±3% 관리',
-        gauge: 'orders', // 위끝 = 익절 목표가(평단 +3%), 아래끝 = 손절선(평단 −3%).
+        label: '5선 물타기 관리',
+        gauge: 'orders', // 위끝 = 익절 목표가(평단 +3%), 아래끝 = 첫 물타기 선(평단 −3%).
         manualExitCheckMs: MANUAL_EXIT_CHECK_MS,
         build: (seed) => {
           const rule = new MartingaleRule(seed, { config: mg, clock: deps.clock });
@@ -343,20 +343,13 @@ export function makePositionManager(
                 // 슬리피지 계측(exitSnapshot.line 대비 체결가)이 왜곡된다(2026-09-01 수정).
                 return { reason: 'SESSION_END' as ExitReason, text: '마감 청산 · 확장세션 마감 전이라 남은 수량을 전량 매도해요' };
               }
-              if (kind === 'STOP_LOSS') {
-                return {
-                  reason: 'STOP_LOSS' as ExitReason,
-                  text: `손절 · 현재가 ${price.toFixed(2)} ≤ 평단 −${dn}%(${rule.stopPrice.toFixed(2)}) — 물타기 없이 전량 매도해요`,
-                  line: rule.stopPrice,
-                };
-              }
               return {
                 reason: 'TAKE_PROFIT' as ExitReason,
                 text: `익절 · 현재가 ${price.toFixed(2)} ≥ 평단 +${up}%(${rule.targetPrice.toFixed(2)}) — 전량 매도해요`,
                 line: rule.targetPrice,
               };
             },
-            armText: `${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} · 익절 ${rule.targetPrice.toFixed(2)}(+${up}%) · 손절 ${rule.stopPrice.toFixed(2)}(−${dn}%) — 물타기 없어요(2026-09-01) · ${Math.floor(mg.closeAtMin / 60)}:${String(mg.closeAtMin % 60).padStart(2, '0')} ET 마감 청산`,
+            armText: `${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} · 익절 ${rule.targetPrice.toFixed(2)}(+${up}%) · 물타기 선 ${rule.buyLinePrice.toFixed(2)}(−${dn}%, 5선 돌파 시 낙폭 k%면 보유량 ×(k−1)) — 손절 없어요 · ${Math.floor(mg.closeAtMin / 60)}:${String(mg.closeAtMin % 60).padStart(2, '0')} ET 마감 청산`,
           };
         },
       });

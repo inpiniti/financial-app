@@ -164,18 +164,10 @@ function formatSignalForTool(view: {
 }): string {
   if (MARTINGALE_MODE && getActiveEngineMode() === 'martingale') {
     const m = view.martingale ?? null;
-    if (m === null || m.aligned === null) return `±3% 단타 모드 — 1분봉 4선 계산 중(봉 ${m?.bars ?? 0}개)`;
-    if (m.condition) {
-      const ev = { cross: '5선 돌파', allUp: '4선 상승 성립', ordered: '정배열 성립' } as const;
-      return `±3% 단타 모드 — 진입 조건 충족(정배열·4선 상승·5선 위)${m.entryEvent ? `, 이 봉 이벤트: ${ev[m.entryEvent]}` : ' (이벤트 없음 — 오늘 안 산 종목이면 바로 매수)'}`;
-    }
-    const arrow = (u: boolean | null) => (u === null ? '·' : u ? '↑' : '↓');
-    const state = m.aligned
-      ? '정배열(4선 상승), 5선 아래라 돌파 대기'
-      : m.ordered
-        ? `배열은 정배열이지만 기울기가 5${arrow(m.up.ma5)} 20${arrow(m.up.ma20)} 60${arrow(m.up.ma60)} 120${arrow(m.up.ma120)}라 진입 조건 아님`
-        : '정배열 아님';
-    return `±3% 단타 모드 — ${state} (봉 ${m.bars})`;
+    if (m === null || m.ma5Up === null) return `5선 물타기 단타 — 1분봉 5선 계산 중(봉 ${m?.bars ?? 0}개)`;
+    if (m.entry) return '5선 물타기 단타 — 5선 상승 중 종가가 5선을 위로 뚫은 봉(매수 신호 — 미보유면 진입, 보유 중이면 평단 −3% 아래일 때 물타기)';
+    const state = m.ma5Up ? '5선 상승 중이지만 돌파 봉이 아니라 대기' : '5선 하락 중이라 매수 조건 아님';
+    return `5선 물타기 단타 — ${state} (봉 ${m.bars})`;
   }
   if (MODEL_MODE && getActiveEngineMode() === 'model') {
     const v = view.modelVerdict;

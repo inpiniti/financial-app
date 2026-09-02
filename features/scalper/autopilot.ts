@@ -998,20 +998,14 @@ export class AutoPilot {
     const active0 = this.actives.get(ctx.ticker);
     if (active0?.cond) {
       if (active0.gridFaulted || this.stopRequested || !this.running || this.faulted || this.paused) return;
-      // ±3% 단타 모드(2026-09-01, 물타기 제거): 보유 중엔 진입 봉(kind='entry')은 의미가 없다 — 청산은 틱 판정 몫.
-      if (ctx.kind === 'entry') return;
+      // 물타기 단타 모드(2026-09-02): 보유 중 5선 돌파 봉(kind='entry')은 물타기 후보다 — 낙폭(평단 −k%, k≥3)과
+      // 배수((k−1)배)는 규칙(MartingaleRule.decide)이 판정한다. 청산(익절·마감)은 틱 판정 몫.
       active0.cond.onSignal(signal, ctx.price);
       return;
     }
     if (signal === 'BUY') {
-      // ±3% 단타 모드(2026-08-28): 당일 이미 매매한 종목은 조건만 맞는 봉(state)으로는 재진입하지 않는다 —
-      // 5선 돌파·4선 상승 성립·정배열 성립 이벤트 봉에서만. 처음 보는 종목은 조건이 맞으면 바로 산다.
-      if (ctx.kind === 'entry' && ctx.entryEvent === 'state' && this.tradedToday(ctx.ticker)) {
-        if (!this.actives.has(ctx.ticker) && !this.pendingBuys.has(ctx.ticker)) {
-          this.dropBuySignal(ctx.ticker, '오늘 이미 매매한 종목 — 조건만으로는 다시 안 사고, 5선 돌파·정배열 성립·4선 상승 성립에서만 재진입해요');
-        }
-        return;
-      }
+      // 물타기 단타 모드(2026-09-02): 신호는 5선 상승·돌파 봉에서만 나므로 "당일 매매 종목은 이벤트 봉만" 게이트(2026-08-28)는
+      // 자연히 충족된다 — 별도 거름 없음.
       this.handleBuySignal(ctx);
       return;
     }
@@ -1066,10 +1060,6 @@ export class AutoPilot {
     this.rolloverDailyIfNeeded();
     this.reselect();
     void this.pollCycle();
-  }
-
-  private tradedToday(ticker: string): boolean {
-    return this.enteredOn.get(ticker) === etDateString(Math.floor(this.deps.clock.now() / 60_000));
   }
 
   /** BUY 신호 폐기 — 사유를 이벤트로 남긴다(종목당 10분에 1번). 2026-08-20 분석: 무음 폐기가 원인 파악을 이틀 늦췄다. */

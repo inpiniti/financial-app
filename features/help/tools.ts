@@ -159,7 +159,7 @@ export const HELP_TOOL_DECLARATIONS = [
   {
     name: 'getMinuteCandles',
     description:
-      '미국 종목의 분봉을 토스 차트에서 가져오고, 엔진과 똑같은 절차로 진입 판정(±3% 단타 모드면 1분봉 4선 정배열·5선 돌파, 모델 모드면 확률·기준값)까지 계산해 돌려준다. ' +
+      '미국 종목의 분봉을 토스 차트에서 가져오고, 엔진과 똑같은 절차로 진입 판정(5선 물타기 단타 모드면 1분봉 5선 상승·돌파, 모델 모드면 확률·기준값)까지 계산해 돌려준다. ' +
       '기본은 자동매매가 실제로 쓰는 봉 주기다. "왜 안 사?", "차트랑 앱 판정이 왜 달라?" 같은 질문에 쓴다. ' +
       '봉은 진행 중(미완성) 봉을 빼고 본다 — 엔진도 닫힌 봉만 판정하기 때문이다.',
     parameters: {
@@ -573,7 +573,7 @@ export async function runHelpTool(
           engineIntervalMin: engineBarMin,
           note: sameBar
             ? mgEngine
-              ? '자동매매 엔진(±3% 단타)과 같은 봉 주기예요 — 아래 martingaleVerdict는 엔진이 내리는 것과 같은 계산(1분봉 4선 정배열·5선 돌파)이에요. 청산은 판정이 아니라 보유 평단 ±3%·19:55 ET 마감이라 여기 없어요.'
+              ? '자동매매 엔진(5선 물타기 단타)과 같은 봉 주기예요 — 아래 martingaleVerdict는 엔진이 내리는 것과 같은 계산(1분봉 5선 상승·상향 돌파)이에요. 물타기 배수(평단 낙폭)·익절 +3%·19:55 ET 마감은 보유 포지션 기준이라 여기 없어요.'
               : '자동매매 엔진과 같은 봉 주기예요 — 아래 modelVerdict는 엔진이 내리는 것과 같은 계산이에요.'
             : `엔진은 ${engineBarMin}분봉으로만 판정해요 — 다른 주기로는 판정을 돌리지 않고 봉만 보여 줘요.`,
           closedBars: closed.length,
@@ -582,16 +582,13 @@ export async function runHelpTool(
             : null,
           martingaleVerdict: martingaleVerdict
             ? {
-                // 진입 조건(정배열 ∧ 4선 상승 ∧ 종가>5선)이 마지막 닫힌 봉에서 성립하는가.
-                condition: martingaleVerdict.condition,
-                entryEvent: martingaleVerdict.entryEvent,
-                aligned: martingaleVerdict.aligned,
-                ordered: martingaleVerdict.ordered,
-                up: martingaleVerdict.up,
+                // 매수 신호(5선 상승 ∧ 종가가 5선을 아래→위로 돌파)가 마지막 닫힌 봉에서 성립하는가.
+                entry: martingaleVerdict.entry,
+                ma5Up: martingaleVerdict.ma5Up,
                 ma5: martingaleVerdict.ma5,
                 bars: martingaleVerdict.bars,
                 note:
-                  '실제 매수는 이 조건에 더해 ①진입 시간대(04:00~19:55 ET — 주간거래 제외) ②매수 후보(틱속도 상위 N) ③그리드 빈자리 ④당일 매매 종목은 이벤트 봉만 ⑤현금을 모두 통과해야 나가요.',
+                  '실제 진입은 이 신호에 더해 ①매매 시간대(04:00~19:55 ET — 주간거래 제외) ②매수 후보(틱속도 상위 N) ③그리드 빈자리 ④현금을 모두 통과해야 나가요. 보유 중이면 같은 신호가 물타기 후보가 되고, 평단 대비 −3% 이상 내려가 있어야 사요(낙폭 k%면 보유량의 (k−1)배).',
               }
             : null,
           modelVerdict: verdict

@@ -31,7 +31,7 @@ describe('APP_MANUAL — 코드 상수와 어긋나지 않는다', () => {
   });
 
   it('봉 주기·동시 그리드 상한·리스트 상한은 코드 값 그대로 들어간다', () => {
-    expect(MG_MANUAL).toContain(`${ENGINE_BAR_MINUTES}분봉 4개 이동평균`);
+    expect(MG_MANUAL).toContain(`${ENGINE_BAR_MINUTES}분봉 5선(최근 5봉 평균)`);
     expect(MG_MANUAL).toContain(`최대 ${MAX_GRIDS_LIMIT}개`);
     expect(MG_MANUAL).toContain(`${RANKING_TOTAL_MAX}개의 트레이딩 리스트`);
   });
@@ -53,21 +53,24 @@ describe('APP_MANUAL — 코드 상수와 어긋나지 않는다', () => {
     expect(MG_MANUAL).toContain(`기본 ${DEFAULT_APP_SETTINGS.minTickRate}`);
   });
 
-  it('±3% 단타: 익절·손절·마감 청산이 MARTINGALE_CONFIG 값을 그대로 따라간다', () => {
+  it('5선 물타기 단타: 익절·물타기 선·마감 청산이 MARTINGALE_CONFIG 값을 그대로 따라간다', () => {
     expect(MG_MANUAL).toContain(`+${pct(MARTINGALE_CONFIG.tpPct)}** 오르면 전량 매도`);
-    expect(MG_MANUAL).toContain(`−${pct(MARTINGALE_CONFIG.stopLossPct)}** 내리면 전량 매도`);
+    expect(MG_MANUAL).toContain(`평단 −${pct(MARTINGALE_CONFIG.dropStartPct)} 아래에서 5선 돌파`);
+    expect(MG_MANUAL).toContain(`−${pct(MARTINGALE_CONFIG.dropMaxPct)}에서 상한`);
+    expect(MG_MANUAL).toContain('손절은 없어요');
     const close = `${Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:${String(MARTINGALE_CONFIG.closeAtMin % 60).padStart(2, '0')}`;
     expect(MG_MANUAL).toContain(`${close} ET`);
   });
 
-  it('±3% 단타: 세션 제한(주간거래 진입 없음)과 정배열 진입 조건이 적혀 있다', () => {
+  it('5선 물타기 단타: 세션 제한(주간거래 진입 없음)과 5선 돌파 진입 조건이 적혀 있다', () => {
     expect(MG_MANUAL).toContain('주간거래(미국 밤, 한국 낮) 시간에는 진입하지 않아요');
-    expect(MG_MANUAL).toContain('정배열(5선>20선>60선>120선)');
+    expect(MG_MANUAL).toContain('5선이 오르는 중이고 가격이 5선을 아래에서 위로 뚫는 봉');
+    expect(MG_MANUAL).not.toContain('정배열');
   });
 
-  it('±3% 단타: 검증 안 된 시험 운용임을 숨기지 않는다', () => {
+  it('5선 물타기 단타: 검증 안 된 시험 운용임을 숨기지 않는다', () => {
     expect(MG_MANUAL).toContain('시험 운용 중');
-    expect(MG_MANUAL).toContain('손절이 자주 날 수 있어요');
+    expect(MG_MANUAL).toContain('한 종목에 돈이 크게 몰릴 수 있어요');
   });
 
   it('모델: ±3% 대칭 밴드·래칫 청산이 MODEL_SYMMETRIC_EXIT_CONFIG 값을 그대로 따라간다(2026-09-02)', () => {
