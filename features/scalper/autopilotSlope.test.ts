@@ -12,7 +12,7 @@ import { FakeBroker, FakeStore, fakeClock, flush, noopScheduler } from './fakes'
 const T0 = Date.UTC(2026, 7, 28, 2, 0);
 const CONFIG: AutoPilotConfig = { startAmountUsd: 10_000, minTickRate: 0.01 };
 
-function makeHarness() {
+function makeHarness(opts: { autoFill?: boolean } = {}) {
   const clock = fakeClock(T0);
   const slot = new FeedSlot({ ticker: 'A', clock, slope: true, martingale: true, model: true });
   const brokers = new Map<string, FakeBroker>();
@@ -32,7 +32,7 @@ function makeHarness() {
     pin: () => {},
     unpin: () => {},
     makeBroker: (t) => {
-      const b = new FakeBroker({ autoFill: true });
+      const b = new FakeBroker({ autoFill: opts.autoFill ?? true });
       brokers.set(t, b);
       return b;
     },
@@ -114,6 +114,24 @@ describe('기울기 단타 모드 — 진입·청산', () => {
     expect(broker.placed).toHaveLength(2);
     expect(broker.placed[1]).toMatchObject({ side: 'sell' });
     expect(h.events.some((e) => e.includes('체결 끊김'))).toBe(true);
+  });
+
+  it('매수는 신호 시점 현재가 지정가 — 매도1호가가 위에 있어도 크로스하지 않고, 미체결이어도 호가를 따라 정정하지 않는다', async () => {
+    const h = makeHarness({ autoFill: false });
+    h.pilot.start();
+    await warm(h);
+    h.slot.pushQuote(101.4, 103); // 매도1호가 103 — 물타기 모드였다면 103에 걸었다
+    await tick(h, 101.5, T0 + 14_000); // 신호가 101.5
+    const broker = h.brokers.get('A')!;
+    expect(broker.placed).toHaveLength(1);
+    expect(broker.placed[0]).toMatchObject({ side: 'buy', price: 101.5 });
+    // 호가가 더 달아나도 정정하지 않는다 — 미체결 정리는 매수 미체결 취소 설정 몫.
+    h.slot.pushQuote(104, 105);
+    h.clock.advance(2_000);
+    for (const fn of h.scheduler.fired) fn();
+    await flush();
+    await flush();
+    expect(broker.amended).toHaveLength(0);
   });
 
   it('보유 중 청산 판정 타이머는 SLOPE_EXIT_TICK_MS(100ms)로 등록된다', async () => {

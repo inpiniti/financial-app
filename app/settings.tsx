@@ -473,7 +473,8 @@ export default function SettingsScreen() {
               </View>
               <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
                 체결 틱이 올 때마다 다시 재서, 기울기가 +{SLOPE_CONFIG.entryPct}% 아래에서 이상으로 올라서는 순간 사요. 봉·이동평균·확률·
-                시간대 조건은 없어요(매수 후보 안·최소 속도·현금·자리 같은 공통 게이트만). 매수는 매도1호가를 따라가며 체결시켜요.
+                시간대 조건은 없어요(매수 후보 안·최소 속도·현금·자리 같은 공통 게이트만). 매수는 신호 순간의 현재가로 한 번 걸고 호가를 따라 정정하지 않아요 —
+                안 붙으면 아래 "주문"의 매수 미체결 취소(초)가 취소해요(0이면 체결까지 대기 — 이 모드에선 2~3초를 권해요).
               </Text>
 
               <View className="mb-1 flex-row items-center justify-between">

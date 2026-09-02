@@ -1187,7 +1187,9 @@ export class AutoPilot {
     }
 
     const broker = this.deps.makeBroker(ctx.ticker);
-    const adapter = new OrderPortAdapter({ broker, clock: this.deps.clock });
+    // 기울기 단타(2026-09-02 사용자 확정): 매수는 신호 시점 현재가 지정가 — 매도1호가 크로스·정정 추격 없음("호가로 거니 손해").
+    // 안 붙으면 설정의 매수 미체결 취소(buyCancelAfterMs)가 정리하고 다음 신호를 기다린다.
+    const adapter = new OrderPortAdapter({ broker, clock: this.deps.clock, buyAtLastPrice: this.positionMode === 'slope' });
     const fault = await adapter.preflightCheckFills();
     if (this.stopRequested) return giveUp();
     if (fault) {
@@ -1741,8 +1743,9 @@ export class AutoPilot {
           if (quote) active.adapter.setQuote(quote.bid1, quote.ask1, quote.at);
           await active.adapter.repriceSell();
         } else {
-          // 물타기 시험 모드(2026-08-28)·기울기 단타(2026-09-02): 매수도 매도처럼 호가를 따라간다 — 매도1호가가 바뀌면 그 가격으로 정정.
-          if (this.positionMode === 'martingale' || this.positionMode === 'slope') {
+          // 물타기 시험 모드(2026-08-28): 매수도 매도처럼 호가를 따라간다 — 매도1호가가 바뀌면 그 가격으로 정정.
+          // 기울기 단타는 반대로 현재가 지정가를 그대로 둔다(정정 없음 — 미체결은 매수 미체결 취소 설정이 정리).
+          if (this.positionMode === 'martingale') {
             const quote = active.slot.quote;
             if (quote) active.adapter.setQuote(quote.bid1, quote.ask1, quote.at);
             await active.adapter.repriceBuy();

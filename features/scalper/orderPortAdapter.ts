@@ -108,6 +108,11 @@ export interface OrderPortAdapterOptions {
   clock?: ClockLike;
   /** 호가를 "오래됐다"고 보는 기준(ms, 기본 10000). 초과하면 마지막 체결가로 폴백한다. */
   quoteStaleMs?: number;
+  /**
+   * 매수 발주가를 **마지막 체결가(limitPrice)**로 — 매도1호가 크로스를 쓰지 않는다(2026-09-02 기울기 단타, 사용자 확정:
+   * "호가로 주문을 거니 너무 손해보고 매수한다"). 안 붙으면 설정의 매수 미체결 취소가 정리한다. 매도는 그대로 매수1호가 크로스.
+   */
+  buyAtLastPrice?: boolean;
 }
 
 export class OrderPortAdapter implements OrderPort {
@@ -115,6 +120,7 @@ export class OrderPortAdapter implements OrderPort {
   private readonly onError?: (err: unknown) => void;
   private readonly clock: ClockLike;
   private readonly quoteStaleMs: number;
+  private readonly buyAtLastPrice: boolean;
   private readonly orders = new Map<OrderRef, PendingOrder>();
   private seq = 0;
   /** 지정가 발주에 쓸 폴백 기준가(마지막 체결가) — 러너가 신호 직전 최신가로 갱신한다. 호가가 없거나 오래됐을 때만 쓴다. */
@@ -134,6 +140,7 @@ export class OrderPortAdapter implements OrderPort {
     this.onError = options.onError;
     this.clock = options.clock ?? { now: () => Date.now() };
     this.quoteStaleMs = options.quoteStaleMs ?? 10_000;
+    this.buyAtLastPrice = options.buyAtLastPrice ?? false;
   }
 
   /** 감지됐지만 아직 회수되지 않은 오류가 있는가(러너의 동기 가드용). */
@@ -189,6 +196,8 @@ export class OrderPortAdapter implements OrderPort {
    * resolveOrderPrice(실제 발주 경로)·previewOrderPrice(표시 전용)가 이 계산 하나를 공유한다(단일 소스, 중복 구현 없음).
    */
   private computeOrderPrice(side: 'buy' | 'sell'): { price: number; usedQuote: boolean } {
+    // 매수를 현재가로(buyAtLastPrice) — 호가 크로스 없이 마지막 체결가에 건다(기울기 단타). 폴백 경로와 같은 값.
+    if (side === 'buy' && this.buyAtLastPrice && this.limitPrice > 0) return { price: this.limitPrice, usedQuote: false };
     const fresh = this.clock.now() - this.quoteAt <= this.quoteStaleMs;
     if (fresh) {
       if (side === 'buy' && this.ask1 > 0) return { price: this.ask1, usedQuote: true };
