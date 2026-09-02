@@ -15,6 +15,7 @@ import { MAX_GRIDS_LIMIT, WATCH_COUNT_LIMIT } from '../features/scalper/autopilo
 import { MODEL_BAR_MINUTES } from '../features/scalper/modelMode';
 import { MARTINGALE_BAR_MINUTES } from '../features/scalper/martingaleMode';
 import { MARTINGALE_CONFIG } from '../core/martingale';
+import { SLOPE_CONFIG, SLOPE_EXIT_TICK_MS } from '../core/slope';
 import { MODEL_SYMMETRIC_EXIT_CONFIG } from '../core/model/exitRule';
 import {
   RankingSelectionPanel,
@@ -106,8 +107,8 @@ export default function SettingsScreen() {
   );
 
   // 엔진 모드(2026-09-01) — 5선 물타기 단타 ↔ 예측 모델. 저장 후 앱을 완전히 껐다 켜야 반영된다(engineMode.ts).
-  const [engineMode, setEngineMode] = useState<'martingale' | 'model'>(DEFAULT_APP_SETTINGS.engineMode);
-  const savedEngineModeRef = useRef<'martingale' | 'model'>(DEFAULT_APP_SETTINGS.engineMode);
+  const [engineMode, setEngineMode] = useState<'martingale' | 'model' | 'slope'>(DEFAULT_APP_SETTINGS.engineMode);
+  const savedEngineModeRef = useRef<'martingale' | 'model' | 'slope'>(DEFAULT_APP_SETTINGS.engineMode);
 
   const [saving, setSaving] = useState(false);
 
@@ -382,6 +383,11 @@ export default function SettingsScreen() {
                   title: '예측 모델',
                   desc: `${MODEL_BAR_MINUTES}분봉 지표 33개로 "+3%가 −3%보다 먼저 올 확률"을 계산해 상위 1% 기준값을 넘으면 매수`,
                 },
+                {
+                  value: 'slope' as const,
+                  title: '기울기 단타',
+                  desc: `리스트의 기울기/10초가 +${SLOPE_CONFIG.entryPct}% 이상이면 사고, +${SLOPE_CONFIG.exitPct}% 아래로 내려오면 조건 없이 즉시 전량 매도 — 익절·손절·물타기 없음`,
+                },
               ]
             ).map((opt) => {
               const selected = engineMode === opt.value;
@@ -448,6 +454,42 @@ export default function SettingsScreen() {
                 <Text className="text-xs leading-5 text-[#4e5968]">
                   이 규칙은 시험 운용 중이에요(2026-09-02 물타기 복원·손절 제거). 손절이 없어서 한 종목에 돈이 크게 몰릴 수 있어요 —
                   낙폭이 깊을수록 배수가 커져요. 잃어도 되는 금액으로만 하세요.
+                </Text>
+              </View>
+            </View>
+          </Panel>
+        ) : engineMode === 'slope' ? (
+          // 기울기 단타 모드(2026-09-02, ADR 0011) — 조건이 둘뿐이라 패널도 짧다.
+          <Panel title="기울기 단타 (고정값)">
+            <View className="px-5 pb-5">
+              <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                살 때도 팔 때도 트레이딩 리스트에 보이는 <Text className="font-semibold text-[#191f28]">기울기/10초</Text> 하나만 봐요 —
+                직전 10초 평균가 대비 지금 10초 평균가가 몇 % 움직였는지예요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
+              </Text>
+
+              <View className="mb-1 flex-row items-center justify-between">
+                <Text className="text-xs text-[#8b95a1]">진입</Text>
+                <Text className="text-sm font-semibold text-[#191f28]">기울기 ≥ +{SLOPE_CONFIG.entryPct}%</Text>
+              </View>
+              <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                체결 틱이 올 때마다 다시 재서, 기울기가 +{SLOPE_CONFIG.entryPct}% 아래에서 이상으로 올라서는 순간 사요. 봉·이동평균·확률·
+                시간대 조건은 없어요(매수 후보 안·최소 속도·현금·자리 같은 공통 게이트만). 매수는 매도1호가를 따라가며 체결시켜요.
+              </Text>
+
+              <View className="mb-1 flex-row items-center justify-between">
+                <Text className="text-xs text-[#8b95a1]">매도</Text>
+                <Text className="text-sm font-semibold text-[#191f28]">기울기 &lt; +{SLOPE_CONFIG.exitPct}% → 즉시 전량</Text>
+              </View>
+              <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                보유 중 기울기가 +{SLOPE_CONFIG.exitPct}% 아래로 내려오면 수익이든 손실이든 보지 않고 그 자리에서 전량 매도해요. 체결 틱마다,
+                그리고 틱이 없어도 {SLOPE_EXIT_TICK_MS}ms마다 다시 재요(기울기는 시간이 흐르면 저절로 내려가요). 10초 넘게 체결이 끊겨
+                기울기를 잴 수 없어도 팔아요. 매도 주문은 접지 않고 체결될 때까지 매수1호가를 따라가요.
+              </Text>
+
+              <View className="rounded-2xl bg-[#f2f4f6] px-4 py-3">
+                <Text className="text-xs leading-5 text-[#4e5968]">
+                  익절·손절·물타기·마감 청산이 전부 없어요. 기울기 +{SLOPE_CONFIG.exitPct}%는 오래 유지되기 어려워 보유 시간이 매우 짧고 거래가
+                  잦아요 — 슬리피지가 성과를 정해요. 잃어도 되는 금액으로만 하세요.
                 </Text>
               </View>
             </View>

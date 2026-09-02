@@ -38,7 +38,7 @@ import {
 import { planFromSelection, rankingPlanKey, type KisMetric, type KisWindow, type RankingPlan } from '../../../core/ranking';
 import { buildRankingSnapshot } from '../rankingSnapshot';
 import type { OverseasExchangeCode } from '../../../kis/trId';
-import { INFLECTION_THRESHOLDS, MARTINGALE_POSITION_CONFIG, MODEL_CONFIG, TREND_CONFIG } from '../autopilot';
+import { INFLECTION_THRESHOLDS, MARTINGALE_POSITION_CONFIG, MODEL_CONFIG, SLOPE_POSITION_CONFIG, TREND_CONFIG } from '../autopilot';
 import { MINUTE_BAR_RING_SIZE, TREND_BAR_MINUTES, type MinuteBar } from '../../../core/trend/bars';
 import { MARTINGALE_BAR_MINUTES, MARTINGALE_MODE } from '../martingaleMode';
 import { setActiveEngineMode } from '../engineMode';
@@ -406,6 +406,9 @@ async function buildManager(): Promise<ManagerBootstrap> {
     // 주입되면 모델·추세보다 우선(상수 AND 주입 이중 게이트 — martingaleMode.MARTINGALE_MODE는 킬스위치로 유지).
     // 신호: 슬롯이 1분봉 4선으로 진입(정배열·5선 돌파, 진행 중 봉 실시간)만 낸다. 청산: 익절 +3% · 손절 −3% · 19:55 ET 마감 청산.
     martingale: engineMode === 'martingale' ? MARTINGALE_POSITION_CONFIG : undefined,
+    // 기울기 단타(2026-09-02 ADR 0011) — engineMode='slope'일 때만 주입한다. 주입되면 모든 모드보다 우선(SLOPE_MODE 킬스위치 AND).
+    // 신호: 슬롯이 틱마다 기울기/10초 문턱(+1%) 전환으로 BUY/SELL. 청산: 기울기 < +1% 즉시 전량 매도(100ms 틱), 그 외 조건 없음.
+    slope: engineMode === 'slope' ? SLOPE_POSITION_CONFIG : undefined,
     // 추세 → 그리드 → 매매(2026-08-18 도메인 문서) — 모델 롤백용 보존. 모델이 켜져 있는 동안은 쓰이지 않는다.
     // 끄려면 TREND_MODE=false(한 줄 롤백 → 변곡점 조합) 또는 이 주입 두 줄을 뺀다.
     trend: TREND_CONFIG,

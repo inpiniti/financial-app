@@ -7,10 +7,10 @@
 //
 // 값은 managerProvider.buildManager가 설정을 읽어 앱 수명당 1회 확정하고(setActiveEngineMode),
 // 화면·도움말·차트 기본 분봉은 전부 getActiveEngineMode()를 읽는다 — 컴파일 상수 분기는 이 파일로 대체됐다.
-// 컴파일 상수(MARTINGALE_MODE·MODEL_MODE)는 "기능 존재" 킬스위치로 남는다 — 상수가 false면 설정과 무관하게
+// 컴파일 상수(MARTINGALE_MODE·MODEL_MODE·SLOPE_MODE)는 "기능 존재" 킬스위치로 남는다 — 상수가 false면 설정과 무관하게
 // 그 모드는 주입되지 않는다(autopilotManager의 "상수 AND 주입" 이중 게이트 그대로).
 
-export type EngineMode = 'martingale' | 'model';
+export type EngineMode = 'martingale' | 'model' | 'slope';
 
 /** 부트 전 기본값 — 설정 기본값(DEFAULT_APP_SETTINGS.engineMode)과 같은 'martingale'. */
 let active: EngineMode = 'martingale';

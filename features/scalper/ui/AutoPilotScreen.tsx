@@ -23,6 +23,8 @@ import { isDaytimeSessionOpen } from '../daySession';
 import { rankingSourceLabelOf } from '../../../core/ranking';
 import { MODEL_BAR_MINUTES, MODEL_MODE } from '../modelMode';
 import { MARTINGALE_MODE } from '../martingaleMode';
+import { SLOPE_MODE } from '../slopeMode';
+import { SLOPE_CONFIG, SLOPE_EXIT_TICK_MS } from '../../../core/slope';
 import { getActiveEngineMode } from '../engineMode';
 import { MODEL_SYMMETRIC_EXIT_CONFIG } from '../../../core/model/exitRule';
 import { loadModel } from '../../../core/model';
@@ -139,6 +141,13 @@ export function formatFeedAckSummary(rows: readonly AutoPilotSlotRow[]): string 
   const ok = rows.filter((r) => r.feedAck === 'ok').length;
   const pending = rows.length - ok - rejected;
   return `시세 구독 ${rows.length}건 · 수락 ${ok} · 거절 ${rejected} · 응답 없음 ${pending}`;
+}
+
+/** 기울기 단타 한 줄(2026-09-02 ADR 0011) — 문턱(+1%) 대비 지금 상태. 값 자체는 행 머리의 "기울기"가 이미 보인다. */
+function formatSlopeModeLine(rate: number | null): string {
+  if (rate === null) return `기울기 판정 불가(10초 봉이 비었어요) — 보유 중이면 매도`;
+  if (rate >= SLOPE_CONFIG.entryPct) return `기울기 +${rate.toFixed(1)}% ≥ +${SLOPE_CONFIG.entryPct}% — 올라선 순간 매수, 내려오면 매도`;
+  return `기울기 ${rate > 0 ? '+' : ''}${rate.toFixed(1)}% < +${SLOPE_CONFIG.entryPct}% — 대기(보유 중이면 매도)`;
 }
 
 /**
@@ -290,6 +299,11 @@ function SlotRow({
               // 주간 키(R+BAQ…) 거절은 대개 주간거래 미지원 종목 — 16:00 KST 뒤 D키로 회전하면 다시 받는다.
               <Text className="text-xs text-[#f04452]" numberOfLines={1}>
                 {formatFeedRejectedLine(item.feedRejected)}
+              </Text>
+            ) : SLOPE_MODE && getActiveEngineMode() === 'slope' ? (
+              // 기울기 단타(2026-09-02) — 지표는 위 줄의 기울기 그대로. 문턱 대비 상태만 말한다.
+              <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
+                {formatSlopeModeLine(item.view.slopeRate)}
               </Text>
             ) : MARTINGALE_MODE && getActiveEngineMode() === 'martingale' ? (
               // ±3% 단타 모드 — 엔진 모드 설정(2026-09-01)이 martingale일 때. 1분봉 정배열·5선 돌파 상태.
@@ -598,6 +612,12 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
               {feedAckSummary !== null && (
                 // 시세 구독 ACK 집계(2026-08-28) — 장이 닫혀 가격으로 셀 수 없을 때도 "요청·수락·거절"을 숫자로. 거절이 있을 때만.
                 <Text className="px-5 pb-2 text-xs text-[#f04452]">{feedAckSummary}</Text>
+              )}
+              {SLOPE_MODE && getActiveEngineMode() === 'slope' && (
+                // 기울기 단타(2026-09-02 ADR 0011) — 규칙 요약을 여기 한 번만.
+                <Text className="px-5 pb-2 text-xs text-[#8b95a1]">
+                  {`기울기 단타 · 기울기/10초가 +${SLOPE_CONFIG.entryPct}% 이상으로 올라서면 매수(후보 안에서만), 보유 중 +${SLOPE_CONFIG.exitPct}% 아래로 내려오면 손익 무관 즉시 전량 매도 — 틱마다 + ${SLOPE_EXIT_TICK_MS}ms 재판정. 익절·손절·물타기·시간대·마감 청산 없음.`}
+                </Text>
               )}
               {MARTINGALE_MODE && getActiveEngineMode() === 'martingale' && (
                 // 5선 물타기 단타 모드(2026-09-02) — 규칙 요약을 여기 한 번만.

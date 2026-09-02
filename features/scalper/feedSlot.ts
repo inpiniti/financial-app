@@ -33,6 +33,8 @@ import {
   type MartingaleEntryEvent,
 } from '../../core/martingale';
 import { MARTINGALE_BAR_MINUTES, MARTINGALE_MODE } from './martingaleMode';
+import { SLOPE_MODE } from './slopeMode';
+import { evaluateSlopeTransition, SLOPE_CONFIG, type SlopeState } from '../../core/slope';
 import { TREND_MODE } from './trendMode';
 import { TickRateMeter } from './tickRate';
 import { SlopeMeter } from './slopeRate';
@@ -116,6 +118,12 @@ export interface FeedSlotOptions {
    * 모델·추세·조합·사다리보다 우선한다. 미주입이면 기존 동작 그대로 — 회귀 안전.
    */
   martingale?: boolean;
+  /**
+   * 기울기 단타 모드(2026-09-02 ADR 0011) — true고 SLOPE_MODE=true면 봉·4선·모델을 전부 끄고 **틱마다** 기울기/10초를 재서
+   * 문턱(+1%) **전환**에서만 BUY(아래→이상)/SELL(이상→미만·null)을 낸다(스로틀 없음). 다른 모든 모드보다 우선한다.
+   * 미주입이면 기존 동작 그대로 — 회귀 안전.
+   */
+  slope?: boolean;
 }
 
 /** 변곡점 신호 콜백 — attach 시 등록. */
@@ -266,7 +274,11 @@ export class FeedSlot {
   private readonly modelMode: boolean;
   /** 추세 모드인가 — 생성 시 확정(TREND_MODE AND trend 주입). 조합·사다리보다 우선. */
   private readonly trendMode: boolean;
-  /** 배수 물타기 시험 모드인가 — 생성 시 확정(MARTINGALE_MODE AND martingale 주입). 모든 모드보다 우선. */
+  /** 기울기 단타 모드인가 — 생성 시 확정(SLOPE_MODE AND slope 주입). 모든 모드보다 우선. */
+  private readonly slopeMode: boolean;
+  /** 기울기 모드 문턱 상태(위/아래/모름) — 전환에서만 신호. */
+  private slopeState: SlopeState = null;
+  /** 배수 물타기 시험 모드인가 — 생성 시 확정(MARTINGALE_MODE AND martingale 주입). 기울기 모드 다음 우선. */
   private readonly martingaleMode: boolean;
   /** 물타기 모드 마지막 봉 판정(뷰용). */
   private martingaleEval: MartingaleBarEval | null = null;
@@ -293,16 +305,17 @@ export class FeedSlot {
   constructor(options: FeedSlotOptions) {
     this.ticker = options.ticker;
     this.clock = options.clock;
-    this.martingaleMode = MARTINGALE_MODE && options.martingale === true;
-    this.modelMode = !this.martingaleMode && MODEL_MODE && options.model === true;
-    this.trendMode = !this.martingaleMode && !this.modelMode && TREND_MODE && options.trend === true;
+    this.slopeMode = SLOPE_MODE && options.slope === true;
+    this.martingaleMode = !this.slopeMode && MARTINGALE_MODE && options.martingale === true;
+    this.modelMode = !this.slopeMode && !this.martingaleMode && MODEL_MODE && options.model === true;
+    this.trendMode = !this.slopeMode && !this.martingaleMode && !this.modelMode && TREND_MODE && options.trend === true;
     // 물타기 모드는 봉 주기가 1분(백테스트 규약) — 주입값보다 우선한다.
     this.bars = new MinuteBarBuilder(
       undefined,
       this.martingaleMode ? MARTINGALE_BAR_MINUTES : (options.trendBarMinutes ?? TREND_BAR_MINUTES),
     );
     this.inflectionMode =
-      !this.martingaleMode && !this.modelMode && !this.trendMode && INFLECTION_ENTRY && options.inflection === true;
+      !this.slopeMode && !this.martingaleMode && !this.modelMode && !this.trendMode && INFLECTION_ENTRY && options.inflection === true;
     // 이력 보존 0 — 시계열 조회(series)를 뷰에서 제거해(2026-09-01) 과거 칸 되계산용 40초 이력이 필요 없다.
     this.meter = new TickRateMeter(options.tickRateWindowMs ?? FEED_RATE_WINDOW_MS, 0);
     this.slopeMeter = new SlopeMeter(options.slopeWindowMs ?? FEED_RATE_WINDOW_MS, 0);
@@ -329,6 +342,12 @@ export class FeedSlot {
     if (extras?.dayLow !== undefined) this.dayLow = extras.dayLow;
     this.meter.record(this.lastTickAt);
     this.slopeMeter.record(this.lastTickAt, price);
+
+    if (this.slopeMode) {
+      // 기울기 단타(ADR 0011) — 틱마다 기울기/10초를 재서 문턱 전환에서만 신호. 스로틀·봉·세션 게이트 없음.
+      this.evaluateSlopeTick(price);
+      return null;
+    }
 
     if (this.martingaleMode) {
       // ±3% 단타 모드 — 봉 마감마다 확정 판정, 봉 중간엔 진행 중 봉을 현재가로 넣은 실시간 판정(2026-09-01 실시간 진입).
@@ -427,7 +446,7 @@ export class FeedSlot {
    * 버퍼는 이미 차 있으므로 다음 청크 마감부터 바로 판정한다(워밍업 공백 없음 — plan §2-1).
    */
   attachDetector(onSignal: SlotSignalListener): void {
-    if (this.modelMode || this.martingaleMode) {
+    if (this.modelMode || this.martingaleMode || this.slopeMode) {
       // 모델 모드 — 감지기 객체가 없다. 리스너만 등록하고 신호는 ModelScanner가 emitSignal로 민다.
       this.trendListener = onSignal;
       this.detector = null;
@@ -643,6 +662,20 @@ export class FeedSlot {
       kind: 'entry',
       entryEvent: 'cross',
     });
+  }
+
+  /**
+   * 기울기 단타 틱 판정(2026-09-02 ADR 0011) — 지금 기울기/10초로 문턱 전환을 잰다. 위로 올라서면 BUY(오토파일럿이
+   * 미보유면 진입, 보유 중이면 규칙이 무시), 아래로 내려오면 SELL(보유 중이면 규칙이 전량 매도, 미보유면 오토파일럿이 무시).
+   * 리스너가 없어도 상태는 갱신한다 — 부착 순간 "이미 위"인 종목이 가짜 BUY를 내지 않게.
+   */
+  private evaluateSlopeTick(price: number): void {
+    const now = this.lastTickAt ?? this.clock.now();
+    const t = evaluateSlopeTransition(this.slopeState, this.slopeMeter.rate(now), SLOPE_CONFIG);
+    this.slopeState = t.state;
+    if (t.signal === null || this.trendListener === null) return;
+    this.lastSignal = t.signal;
+    this.trendListener(t.signal, { ticker: this.ticker, price, slope: 0, accel: 0, at: now });
   }
 
   /** 봉 마감 1회 처리 — 4선 재계산·스냅샷 갱신·신호 전달. price = 마감을 유발한 새 분 첫 틱 가격. */

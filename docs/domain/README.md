@@ -16,6 +16,7 @@
 |---|---|---|---|
 | [모델](./모델/) | **현행 (설정 `engineMode='model'` 선택 시)** | `core/model`, `features/scalper/modelMode.ts`·`modelScanner.ts` | LightGBM(±3%/120분 first-touch 대칭, 1분봉 Feature 33개 — ADR 0008) 확률 ≥ 학습 상위 1%면 진입 · 청산은 ±3% 밴드 + 익절 보류 래칫(확률 ≥ 상위 10%면 앵커 ×1.03, ADR 0009 `MODEL_TP_HOLD`) · 최장 120분(`MODEL_EXIT_SYMMETRIC`). 모드 전환은 앱 재시작 시 반영 |
 | [추세](./추세/) | 보존 (롤백 경로) | `core/trend`, `features/scalper/trendMode.ts` | 5분봉 SMA 4선 순수 상태기계(2026-08-21). 2026-08-22 모델로 교체, `MODEL_MODE=false` 시 복귀 |
+| 기울기 단타 (문서 없음 — ADR 0011) | **현행 선택지 (설정 `engineMode='slope'`)** | `core/slope`, `features/scalper/slopeMode.ts` | 기울기/10초 ≥ +1% 전환에 진입, 보유 중 < +1%(또는 null)면 손익 무관 즉시 전량 매도(틱마다 + 100ms 타이머). 익절·손절·물타기·세션·마감 청산 없음. 켜면 모든 모드보다 우선 |
 | 5선 물타기 단타 (문서 없음 — ADR 0006·0007·0010) | **현행 기본 (설정 `engineMode='martingale'`, 기본값)** | `core/martingale`, `features/scalper/martingaleMode.ts` | 1분봉 5선 상승·상향 돌파 봉에 매수(프리·정규·애프터만) — 진행 중 봉 실시간 판정(`MARTINGALE_LIVE_ENTRY`, 봉당 1회). 미보유면 진입, 보유 중이면 평단 −k%(k≥3)에서 보유량 ×(k−1) 물타기(2026-09-02). 익절 +3% · 손절 없음 · 19:55 ET 마감 청산. 모델 전환은 설정 엔진 모드(ADR 0008, 앱 재시작 반영) |
 | [그리드](./그리드/) | **현행 (포지션 규칙)** | `core/grid`(OCO 매도그리드), `core/conditional`(조건부 그리드) | 평단±폭 물타기·익절, 비대칭 폭, 고정 수량 물타기, 급락 방어 앵커 |
 | [매매](./매매/) | **현행 (체결 실행)** | `core/execution`, `core/reprice` | 현재가 추격 지정가·정정, 취소선은 판단이 주입, 매도 리프라이스 |
@@ -23,7 +24,7 @@
 | [순위](./순위/) | 현행 | `core/ranking`, `features/scalper/watchlist.ts` | 트레이딩 리스트 원천(토스8·한투7) 선택, 합≤30 |
 | [서킷](./서킷/) | 관측 단계 (`CIRCUIT_MODE=false`) | `core/circuit`, `features/scalper/circuitMode.ts` | LULD 정지 감지, 하킷 2연속 재개 단일가 매도(예정) |
 | [켈리](./켈리/) | 현행 (참고 지표) | `core/kelly` | 실거래 승률·손익비로 포지션 사이징 제안 |
-| [기울기](./기울기/) | 현행 (표시 지표) | `features/scalper/slopeRate.ts`, `tickRate.ts` | 기울기/10초·틱/초 — 매매 판정엔 안 쓰임 |
+| [기울기](./기울기/) | 현행 (표시 지표 + 기울기 단타 모드 판정 지표) | `features/scalper/slopeRate.ts`, `tickRate.ts` | 기울기/10초·틱/초 — 2026-09-02부터 기울기 단타 모드(ADR 0011)의 유일한 판정 지표 |
 | [설정](./설정/) | 현행 | `lib/appSettings.ts` | 옵션별 의미와 반영 경로 |
 | [사다리](./사다리/) | 보존 (롤백 경로) | `core/ladder` | 홀 카운트 진입 감지기. `TREND_MODE=false` 시 진입 감지 |
 | [변곡점](./변곡점/) | 보존 (롤백 경로) | `core/detector`, `core/resample` | SG 기울기 부호 전환, 리샘플 청크, BUY 게이트. 2026-08-18 추세로 교체 |

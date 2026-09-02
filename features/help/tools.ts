@@ -526,7 +526,8 @@ export async function runHelpTool(
         // 매뉴얼·챗 화면만 ±3%로 바꾸고 이 도구는 5분봉 모델로 남아 "엔진과 같은 계산"이라 잘못 주장)의 재발 방지.
         const { getActiveEngineMode } = await import('../scalper/engineMode');
         const mgEngine = MARTINGALE_MODE && getActiveEngineMode() === 'martingale';
-        const engineBarMin = mgEngine ? MARTINGALE_BAR_MINUTES : MODEL_BAR_MINUTES;
+        const slopeEngine = getActiveEngineMode() === 'slope';
+        const engineBarMin = mgEngine || slopeEngine ? MARTINGALE_BAR_MINUTES : MODEL_BAR_MINUTES;
         const intervalMin = Math.max(1, Math.floor(num(args.intervalMin) || engineBarMin));
         const count = Math.max(1, Math.min(300, Math.floor(num(args.count) || 130)));
         // 거래소는 종목 검색으로 — 못 찾으면 나스닥으로 시도(getQuote와 같은 관례).
@@ -571,7 +572,9 @@ export async function runHelpTool(
           ticker,
           intervalMin,
           engineIntervalMin: engineBarMin,
-          note: sameBar
+          note: slopeEngine
+            ? '자동매매 엔진(기울기 단타)은 봉을 보지 않아요 — 틱마다 기울기/10초(직전 10초 평균 대비 %)로만 판정해요. 여기 봉·판정은 참고용이에요.'
+            : sameBar
             ? mgEngine
               ? '자동매매 엔진(5선 물타기 단타)과 같은 봉 주기예요 — 아래 martingaleVerdict는 엔진이 내리는 것과 같은 계산(1분봉 5선 상승·상향 돌파)이에요. 물타기 배수(평단 낙폭)·익절 +3%·19:55 ET 마감은 보유 포지션 기준이라 여기 없어요.'
               : '자동매매 엔진과 같은 봉 주기예요 — 아래 modelVerdict는 엔진이 내리는 것과 같은 계산이에요.'

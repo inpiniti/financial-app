@@ -10,6 +10,7 @@ import {
 } from './appManual';
 import { DEFAULT_APP_SETTINGS, type AppSettings } from '../../lib/appSettings';
 import { MARTINGALE_CONFIG } from '../../core/martingale';
+import { SLOPE_CONFIG, SLOPE_EXIT_TICK_MS } from '../../core/slope';
 import { MODEL_SYMMETRIC_EXIT_CONFIG } from '../../core/model/exitRule';
 import { RANKING_TOTAL_MAX, tossSourceId } from '../../core/ranking';
 import { MAX_GRIDS_LIMIT } from '../scalper/autopilot';
@@ -20,6 +21,7 @@ const pct = (r: number) => `${Number((r * 100).toFixed(2))}%`;
 // 두 모드 본을 다 검사한다(2026-09-01 설정화 — 어느 모드를 골라도 챗봇이 맞는 값을 말해야 한다).
 const MG_MANUAL = buildAppManual('martingale');
 const MODEL_MANUAL = buildAppManual('model');
+const SLOPE_MANUAL = buildAppManual('slope');
 
 /**
  * 이 파일의 목적은 "문서가 조용히 낡는 것"을 막는 것이다 — 챗봇이 낡은 값을 확신에 차서 말하면
@@ -66,6 +68,16 @@ describe('APP_MANUAL — 코드 상수와 어긋나지 않는다', () => {
     expect(MG_MANUAL).toContain('주간거래(미국 밤, 한국 낮) 시간에는 진입하지 않아요');
     expect(MG_MANUAL).toContain('5선이 오르는 중이고 가격이 5선을 아래에서 위로 뚫는 봉');
     expect(MG_MANUAL).not.toContain('정배열');
+  });
+
+  it('기울기 단타(2026-09-02): 문턱·재판정 주기가 SLOPE_CONFIG를 따라가고, 익절·손절·물타기 없음을 말한다', () => {
+    expect(SLOPE_MANUAL).toContain(`기울기 ≥ +${SLOPE_CONFIG.entryPct}%`);
+    expect(SLOPE_MANUAL).toContain(`기울기 < +${SLOPE_CONFIG.exitPct}%`);
+    expect(SLOPE_MANUAL).toContain(`${SLOPE_EXIT_TICK_MS}ms마다 다시 재요`);
+    expect(SLOPE_MANUAL).toContain('익절·손절·물타기·시간 청산·마감 청산이 전부 없어요');
+    expect(SLOPE_MANUAL).toContain('시험 운용 중');
+    expect(SLOPE_MANUAL).not.toContain('5선 돌파');
+    expect(SLOPE_MANUAL).not.toContain('모델 확률이 기준값을 넘고');
   });
 
   it('5선 물타기 단타: 검증 안 된 시험 운용임을 숨기지 않는다', () => {

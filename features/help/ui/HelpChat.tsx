@@ -26,6 +26,8 @@ import { loadAppSettings, type AppSettings } from '../../../lib/appSettings';
 import { peekManagerBootstrap } from '../../scalper/ui/managerProvider';
 import { MODEL_MODE } from '../../scalper/modelMode';
 import { MARTINGALE_MODE } from '../../scalper/martingaleMode';
+import { SLOPE_MODE } from '../../scalper/slopeMode';
+import { SLOPE_CONFIG } from '../../../core/slope';
 import { getActiveEngineMode } from '../../scalper/engineMode';
 import type { MartingaleBarEval } from '../../../core/martingale';
 import type { ModelVerdictView } from '../../scalper/feedSlot';
@@ -161,7 +163,15 @@ function formatSignalForTool(view: {
   modelVerdict: ModelVerdictView | null;
   trend: TrendLike;
   martingale?: MartingaleBarEval | null;
+  slopeRate?: number | null;
 }): string {
+  if (SLOPE_MODE && getActiveEngineMode() === 'slope') {
+    const r = view.slopeRate ?? null;
+    if (r === null) return `기울기 단타 — 기울기/10초 판정 불가(10초 봉이 비었어요) — 보유 중이면 매도`;
+    return r >= SLOPE_CONFIG.entryPct
+      ? `기울기 단타 — 기울기/10초 +${r.toFixed(1)}% ≥ +${SLOPE_CONFIG.entryPct}% (올라선 순간 매수, 내려오면 즉시 전량 매도)`
+      : `기울기 단타 — 기울기/10초 ${r > 0 ? '+' : ''}${r.toFixed(1)}% < +${SLOPE_CONFIG.entryPct}% (대기 · 보유 중이면 매도)`;
+  }
   if (MARTINGALE_MODE && getActiveEngineMode() === 'martingale') {
     const m = view.martingale ?? null;
     if (m === null || m.ma5Up === null) return `5선 물타기 단타 — 1분봉 5선 계산 중(봉 ${m?.bars ?? 0}개)`;

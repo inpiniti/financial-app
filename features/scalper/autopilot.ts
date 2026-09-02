@@ -26,6 +26,7 @@ import { entryChaseExceeded, TREND_ENTRY_GATE_QUOTE_FRESH_MS } from '../../core/
 import { etDateString } from '../../core/model/session';
 import type { ConditionalPosition } from '../../core/conditional';
 import type { Signal } from '../../core/detector';
+import { SLOPE_EXIT_TICK_MS } from '../../core/slope';
 import { isDaytimeSessionOpen } from './daySession';
 import { FeedSlot, type SlotSignalContext } from './feedSlot';
 import { OrderPortAdapter } from './orderPortAdapter';
@@ -46,6 +47,7 @@ export {
   INFLECTION_THRESHOLDS,
   MANUAL_EXIT_CHECK_MS,
   MARTINGALE_POSITION_CONFIG,
+  SLOPE_POSITION_CONFIG,
   MODEL_CONFIG,
   TREND_CONFIG,
   type GridExitConfig,
@@ -452,7 +454,9 @@ export class AutoPilot {
     this.deps = deps;
     this.positionManagement = deps.positionManagement ? { ...deps.positionManagement } : undefined;
     this.pollIntervalMs = deps.pollIntervalMs ?? 2000;
-    this.repriceIntervalMs = deps.repriceIntervalMs ?? 1000;
+    // 기울기 단타(2026-09-02 ADR 0011)는 보유 중 청산 판정을 100ms로 돈다 — 기울기는 틱 없이도 창이 미끄러지며 변한다.
+    this.repriceIntervalMs =
+      deps.repriceIntervalMs ?? (resolvePositionMode(deps.positionManagement) === 'slope' ? SLOPE_EXIT_TICK_MS : 1000);
     this.buyCancelAfterMs = deps.buyCancelAfterMs ?? 0;
     this.gridBuyLegDelayMs = deps.gridBuyLegDelayMs ?? GRID_BUY_LEG_DELAY_MS;
     this.reselectIntervalMs = deps.reselectIntervalMs ?? RESELECT_INTERVAL_MS;
@@ -1408,6 +1412,8 @@ export class AutoPilot {
           const v = active.slot?.getView().modelVerdict ?? null;
           return v ? { prob: v.prob, at: v.at } : null;
         },
+        // 기울기 단타(2026-09-02) — 슬롯의 기울기/10초. 슬롯이 없으면(입양) 미주입 → 규칙이 틱 판정을 하지 않는다.
+        slopeRate: active.slot ? () => active.slot!.slopeRate(this.deps.clock.now()) : undefined,
         regularSession: isUsRegularSession,
         fetchBuyableUsd: this.deps.fetchBuyableUsd ? (price) => this.deps.fetchBuyableUsd!(ticker, price) : undefined,
         entry: pos ? { entryTs: pos.entryTs, entrySnapshot: pos.entrySnapshot } : null,
@@ -1735,8 +1741,8 @@ export class AutoPilot {
           if (quote) active.adapter.setQuote(quote.bid1, quote.ask1, quote.at);
           await active.adapter.repriceSell();
         } else {
-          // 물타기 시험 모드(2026-08-28): 매수도 매도처럼 호가를 따라간다 — 매도1호가가 바뀌면 그 가격으로 정정.
-          if (this.positionMode === 'martingale') {
+          // 물타기 시험 모드(2026-08-28)·기울기 단타(2026-09-02): 매수도 매도처럼 호가를 따라간다 — 매도1호가가 바뀌면 그 가격으로 정정.
+          if (this.positionMode === 'martingale' || this.positionMode === 'slope') {
             const quote = active.slot.quote;
             if (quote) active.adapter.setQuote(quote.bid1, quote.ask1, quote.at);
             await active.adapter.repriceBuy();

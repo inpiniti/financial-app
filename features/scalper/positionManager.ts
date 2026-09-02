@@ -35,12 +35,14 @@ import {
 } from '../../core/model/exitRule';
 import { loadModel } from '../../core/model';
 import { MARTINGALE_CONFIG, MartingaleRule, type MartingaleConfig } from '../../core/martingale';
+import { SLOPE_CONFIG, SlopeRule, type SlopeConfig } from '../../core/slope';
 import { TrendExitRule } from '../../core/trend/exitRule';
 import { CIRCUIT_MODE } from './circuitMode';
 import { createExecutionPort } from './executionPort';
 import { createGridOrderPort } from './gridOrderPort';
 import { MARTINGALE_MODE } from './martingaleMode';
 import { MODEL_MODE } from './modelMode';
+import { SLOPE_MODE } from './slopeMode';
 import { TREND_MODE } from './trendMode';
 import type { ScalperBroker } from './types';
 
@@ -132,6 +134,16 @@ export interface MartingaleGridConfig extends MartingaleConfig {
 
 export const MARTINGALE_POSITION_CONFIG: MartingaleGridConfig = { kind: 'martingale', ...MARTINGALE_CONFIG };
 
+/**
+ * 기울기 단타 모드 설정(2026-09-02 ADR 0011) — **주입 자체가 활성화 신호**다(SLOPE_MODE AND 주입). 값: 진입 기울기/10초 ≥ +1% ·
+ * 청산 < +1%(또는 null) 즉시 전량 매도. 익절·손절·물타기·세션·마감 청산 없음. 모든 모드보다 우선.
+ */
+export interface SlopeGridConfig extends SlopeConfig {
+  readonly kind?: 'slope';
+}
+
+export const SLOPE_POSITION_CONFIG: SlopeGridConfig = { kind: 'slope', ...SLOPE_CONFIG };
+
 /** 조건부 그리드 문턱 — 문서 §5 고정값(+2%/−3%)을 managerProvider가 주입한다. */
 export interface InflectionGridConfig {
   /** 매도 수익 문턱(소수, 0.02=+2%). */
@@ -168,9 +180,11 @@ export interface PositionManagementConfig {
   model?: ModelGridConfig;
   /** 배수 물타기 시험 모드(2026-08-27) — 켜면 모델보다 우선한다. */
   martingale?: MartingaleGridConfig;
+  /** 기울기 단타 모드(2026-09-02 ADR 0011) — 켜면 물타기·모델보다 우선한다. */
+  slope?: SlopeGridConfig;
 }
 
-export type PositionMode = 'martingale' | 'model' | 'trend' | 'inflection' | 'oco';
+export type PositionMode = 'slope' | 'martingale' | 'model' | 'trend' | 'inflection' | 'oco';
 
 /**
  * 모드 판정 — **유일한** 자리. 우선순위 물타기 시험 > 모델 > 추세 > 변곡점 조합 > OCO 그리드, 각각 스위치 상수 AND 설정 주입.
@@ -178,6 +192,7 @@ export type PositionMode = 'martingale' | 'model' | 'trend' | 'inflection' | 'oc
  */
 export function resolvePositionMode(cfg: PositionManagementConfig | undefined): PositionMode | null {
   if (!cfg) return null;
+  if (SLOPE_MODE && cfg.slope !== undefined) return 'slope';
   if (MARTINGALE_MODE && cfg.martingale !== undefined) return 'martingale';
   if (MODEL_MODE && cfg.model !== undefined) return 'model';
   if (TREND_MODE && cfg.trend !== undefined) return 'trend';
@@ -296,6 +311,11 @@ export interface PositionManagerDeps {
    * 모델 모드의 익절 보류(MODEL_TP_HOLD)가 익절 터치 순간 이걸 읽는다. 미주입·null이면 보류 없이 기존대로 판다.
    */
   modelVerdict?: () => { prob: number | null; at: number } | null;
+  /**
+   * 이 종목의 지금 기울기/10초(2026-09-02 기울기 단타) — 슬롯 SlopeMeter. 기울기 모드의 틱 판정이 매 틱 읽어 +1% 미만이면
+   * 전량 매도한다. **미주입(슬롯 없는 입양)이면 틱 판정 없음**, null이면 체결 끊김으로 보고 판다.
+   */
+  slopeRate?: () => number | null;
   /** 정규장 판정(서킷 heartbeat 입력). */
   regularSession: (nowMs: number) => boolean;
   /** 매수가능금액 사전 조회(물타기 매수) — null/미지정/throw면 판정 없이 진행(fail-open). */
@@ -324,6 +344,26 @@ export function makePositionManager(
   deps: PositionManagerDeps,
 ): PositionManager {
   switch (mode) {
+    case 'slope': {
+      const sl = cfg.slope!;
+      const fmt = (r: number | null) => (r === null ? '— (체결 끊김)' : `${r > 0 ? '+' : ''}${r.toFixed(1)}%`);
+      return new RulePositionManager(deps, {
+        label: '기울기 관리',
+        gauge: 'dayRange', // 가격 조건선이 없다 — 오늘 고저 축으로만 그린다.
+        manualExitCheckMs: MANUAL_EXIT_CHECK_MS,
+        build: (seed) => {
+          const rule = new SlopeRule(seed, { config: sl, slope: deps.slopeRate });
+          return {
+            rule,
+            priceExit: (price) => ({
+              reason: 'SELL_SIGNAL' as ExitReason,
+              text: `기울기 청산 · 기울기/10초 ${fmt(rule.lastRate)} < +${sl.exitPct}% — 현재가 ${price.toFixed(2)}에서 전량 매도해요(취소선 없음)`,
+            }),
+            armText: `${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} · 기울기/10초가 +${sl.exitPct}% 아래로 내려오면 즉시 전량 매도 — 익절·손절·물타기·마감 청산 없어요`,
+          };
+        },
+      });
+    }
     case 'martingale': {
       const mg = cfg.martingale!;
       const up = (mg.tpPct * 100).toFixed(0);

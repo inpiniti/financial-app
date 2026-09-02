@@ -26,10 +26,12 @@ import {
 import { isDaytimeSessionOpen } from './daySession';
 import { FeedSlot, INFLECTION_ENTRY, LADDER_ENTRY, type FeedSlotView, type LadderEntryOptions } from './feedSlot';
 import { MARTINGALE_MODE } from './martingaleMode';
+import { SLOPE_MODE } from './slopeMode';
 import { MODEL_BAR_MINUTES, MODEL_MODE } from './modelMode';
 import { ModelScanner } from './modelScanner';
 import { TREND_MODE } from './trendMode';
 import type { TradeStrategy } from './tradeResults';
+import type { SlopeGridConfig } from './positionManager';
 import type { TradeRecord } from '../../core/cycle';
 import { ScalperWatchlist, type RankingSnapshot, type WatchEntry, type WatchMarket } from './watchlist';
 
@@ -134,6 +136,12 @@ export interface AutoPilotManagerDeps {
    * 모델 스캐너는 돌지 않고 분봉 워밍업(fetchMinuteBars, 1분봉)이 돈다. 미주입이면 기존 동작 — 회귀 안전.
    */
   martingale?: MartingaleGridConfig;
+  /**
+   * 기울기 단타 모드(2026-09-02 ADR 0011) — 주입되고 slopeMode.SLOPE_MODE=true면 슬롯은 봉·4선·모델 없이 **틱마다** 기울기/10초로
+   * 문턱(+1%) 전환 BUY/SELL을 내고, 포지션 관리는 SlopeRule(기울기 < +1% 즉시 전량 매도)이 맡는다. 모든 모드보다 우선 —
+   * 워밍업·모델 스캐너는 돌지 않는다. 미주입이면 기존 동작 — 회귀 안전.
+   */
+  slope?: SlopeGridConfig;
   /** 모델 봉 조회 — 토스 5분봉 OHLCV(원시가) count개, 오름차순·진행 중 봉 제외. 실패는 throw. */
   fetchModelBars?: (ticker: string, market: WatchMarket, count: number) => Promise<OhlcvBar[]>;
   /** 모델 전일 종가 조회 — 토스 일봉(원시가) 최근 몇 개. 거래일당 1회만 부른다. */
@@ -338,6 +346,7 @@ export class AutoPilotManager {
         trend: deps.trend,
         model: deps.model,
         martingale: deps.martingale,
+        slope: deps.slope,
       },
       clock: deps.clock,
       scheduler,
@@ -477,12 +486,17 @@ export class AutoPilotManager {
 
   /** 모델 경로가 실제로 도는가 — 스위치 AND 설정 주입. 워밍업·전략 태그가 이 하나를 읽는다. */
   private get modelActive(): boolean {
-    return !this.martingaleActive && MODEL_MODE && this.deps.model !== undefined;
+    return !this.slopeActive && !this.martingaleActive && MODEL_MODE && this.deps.model !== undefined;
   }
 
   /** 물타기 시험 모드가 실제로 도는가 — 스위치 AND 설정 주입. 켜지면 모델·추세는 돌지 않는다. */
   private get martingaleActive(): boolean {
-    return MARTINGALE_MODE && this.deps.martingale !== undefined;
+    return !this.slopeActive && MARTINGALE_MODE && this.deps.martingale !== undefined;
+  }
+
+  /** 기울기 단타 모드가 실제로 도는가(2026-09-02) — 스위치 AND 설정 주입. 켜지면 다른 모드는 전부 돌지 않는다. */
+  private get slopeActive(): boolean {
+    return SLOPE_MODE && this.deps.slope !== undefined;
   }
 
   /** 앱 재시작 복원 — 금액 상태 로드(+보유 감지는 start 시점에 다시 한다). */
@@ -664,6 +678,7 @@ export class AutoPilotManager {
 
   /** 현재 배선의 진입·청산 규칙 태그(거래 결과 기록용) — 스위치·주입 조합을 그대로 읽는다. */
   strategyTag(): TradeStrategy {
+    if (this.slopeActive) return 'slope';
     if (this.martingaleActive) return 'martingale';
     if (this.modelActive) return 'model';
     if (TREND_MODE && this.deps.trend !== undefined) return 'trend';
@@ -734,6 +749,7 @@ export class AutoPilotManager {
       trend: this.deps.trend !== undefined,
       model: this.deps.model !== undefined,
       martingale: this.deps.martingale !== undefined,
+      slope: this.deps.slope !== undefined,
     });
     this.slots.set(ticker, slot);
     const trKey = this.marketTrKeyOf(ticker); // 체결가 — 전 종목(정규장 D 또는 주간거래 R).
@@ -742,7 +758,8 @@ export class AutoPilotManager {
     this.persistTickKeys();
     // 모델 모드는 봉을 스캐너가 토스에서 직접 읽는다 — 추세 워밍업(분봉 시드)은 돌리지 않는다.
     // 물타기 모드는 1분봉 시드가 필요하다(fetchMinuteBars가 1분봉을 준다 — managerProvider).
-    if (!this.modelActive) this.enqueueTrendWarmup(ticker);
+    // 기울기 모드는 봉을 쓰지 않는다 — 워밍업도 없다.
+    if (!this.modelActive && !this.slopeActive) this.enqueueTrendWarmup(ticker);
   }
 
   // ---- 추세 워밍업 큐(REST 분봉조회 → FeedSlot.seedTrend) — 직렬 1개, 티커 중복 제거, 실패 1회 재시도 ----
