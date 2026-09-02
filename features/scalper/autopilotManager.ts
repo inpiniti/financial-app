@@ -32,6 +32,7 @@ import { ModelScanner } from './modelScanner';
 import { TREND_MODE } from './trendMode';
 import type { TradeStrategy } from './tradeResults';
 import type { SlopeGridConfig } from './positionManager';
+import { anyEntryFilter, type EntryFilters } from '../../core/martingale';
 import type { TradeRecord } from '../../core/cycle';
 import { ScalperWatchlist, type RankingSnapshot, type WatchEntry, type WatchMarket } from './watchlist';
 
@@ -142,6 +143,12 @@ export interface AutoPilotManagerDeps {
    * 워밍업·모델 스캐너는 돌지 않는다. 미주입이면 기존 동작 — 회귀 안전.
    */
   slope?: SlopeGridConfig;
+  /**
+   * 엔진 옵션(2026-09-03 ADR 0012) — 진입 필터(정배열·5선 상승·4선 모두 상승, AND)는 슬롯에, (k−1)배 물타기는 포지션 관리자에.
+   * 세 엔진 공통. 미주입이면 5선 돌파 엔진의 옛 동작(5선 상승 + 물타기), 모델·기울기는 옵션 없음 — 회귀 안전.
+   */
+  entryFilters?: EntryFilters;
+  averagingDown?: boolean;
   /** 모델 봉 조회 — 토스 5분봉 OHLCV(원시가) count개, 오름차순·진행 중 봉 제외. 실패는 throw. */
   fetchModelBars?: (ticker: string, market: WatchMarket, count: number) => Promise<OhlcvBar[]>;
   /** 모델 전일 종가 조회 — 토스 일봉(원시가) 최근 몇 개. 거래일당 1회만 부른다. */
@@ -347,6 +354,7 @@ export class AutoPilotManager {
         model: deps.model,
         martingale: deps.martingale,
         slope: deps.slope,
+        averagingDown: deps.averagingDown,
       },
       clock: deps.clock,
       scheduler,
@@ -750,6 +758,7 @@ export class AutoPilotManager {
       model: this.deps.model !== undefined,
       martingale: this.deps.martingale !== undefined,
       slope: this.deps.slope !== undefined,
+      entryFilters: this.deps.entryFilters,
     });
     this.slots.set(ticker, slot);
     const trKey = this.marketTrKeyOf(ticker); // 체결가 — 전 종목(정규장 D 또는 주간거래 R).
@@ -758,8 +767,13 @@ export class AutoPilotManager {
     this.persistTickKeys();
     // 모델 모드는 봉을 스캐너가 토스에서 직접 읽는다 — 추세 워밍업(분봉 시드)은 돌리지 않는다.
     // 물타기 모드는 1분봉 시드가 필요하다(fetchMinuteBars가 1분봉을 준다 — managerProvider).
-    // 기울기 모드는 봉을 쓰지 않는다 — 워밍업도 없다.
-    if (!this.modelActive && !this.slopeActive) this.enqueueTrendWarmup(ticker);
+    // 모델·기울기 모드는 봉을 쓰지 않는다 — 워밍업도 없다. 단 진입 필터(엔진 옵션)가 켜져 있으면 4선용 1분봉 시드가 필요하다.
+    if ((!this.modelActive && !this.slopeActive) || this.entryFiltersOn) this.enqueueTrendWarmup(ticker);
+  }
+
+  /** 진입 필터(엔진 옵션)가 하나라도 켜져 있는가 — 모델·기울기 모드의 1분봉 워밍업 여부. */
+  private get entryFiltersOn(): boolean {
+    return anyEntryFilter(this.deps.entryFilters);
   }
 
   // ---- 추세 워밍업 큐(REST 분봉조회 → FeedSlot.seedTrend) — 직렬 1개, 티커 중복 제거, 실패 1회 재시도 ----
@@ -769,7 +783,7 @@ export class AutoPilotManager {
   private readonly trendWarmupAttempts = new Map<string, number>();
 
   private enqueueTrendWarmup(ticker: string): void {
-    if ((this.deps.trend === undefined && !this.martingaleActive) || !this.deps.fetchMinuteBars) return;
+    if ((this.deps.trend === undefined && !this.martingaleActive && !this.entryFiltersOn) || !this.deps.fetchMinuteBars) return;
     if (this.trendWarmupQueue.includes(ticker)) return;
     this.trendWarmupQueue.push(ticker);
     void this.drainTrendWarmup();

@@ -67,7 +67,7 @@ describe('APP_MANUAL — 코드 상수와 어긋나지 않는다', () => {
   it('5선 물타기 단타: 세션 제한(주간거래 진입 없음)과 5선 돌파 진입 조건이 적혀 있다', () => {
     expect(MG_MANUAL).toContain('주간거래(미국 밤, 한국 낮) 시간에는 진입하지 않아요');
     expect(MG_MANUAL).toContain('5선이 오르는 중이고 가격이 5선을 아래에서 위로 뚫는 봉');
-    expect(MG_MANUAL).not.toContain('정배열');
+    expect(MG_MANUAL).not.toContain('정배열(5선>20선>60선>120선)이고 네 선이'); // 옛 고정 규칙 문구 — 옵션 설명의 '정배열'은 허용
   });
 
   it('기울기 단타(2026-09-02): 문턱·재판정 주기가 SLOPE_CONFIG를 따라가고, 익절·손절·물타기 없음을 말한다', () => {
@@ -120,6 +120,7 @@ describe('설정 키 커버리지 — 설정을 추가하면 문서도 같이 �
   it('사용자에게 보이는 설정은 매뉴얼 §7에 설명이 있다', () => {
     const LABEL: Record<(typeof USER_FACING_SETTING_KEYS)[number], string> = {
       engineMode: '**엔진 모드**',
+      engineOptions: '**엔진 옵션(중복 선택)**',
       startAmountUsd: '**진입금액(USD)**',
       entryQty: '**수량(주)**',
       maxPriceUsd: '**가격 상한(USD)**',

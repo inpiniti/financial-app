@@ -24,3 +24,40 @@ export function setActiveEngineMode(mode: EngineMode): void {
 export function getActiveEngineMode(): EngineMode {
   return active;
 }
+
+/**
+ * 엔진 옵션(2026-09-03 ADR 0012) — 엔진(택1)과 별개로 **중복 선택**하는 조건. 세 엔진 공통.
+ *  · ordered / ma5Up / allUp : 진입 필터(1분봉 4선 — 정배열 · 5선 상승 · 4선 모두 상승), 체크한 것끼리 AND
+ *  · martingale             : (k−1)배 물타기(보유 중 그 엔진의 BUY 신호에서 평단 −k%면 보유량 ×(k−1))
+ * 기본값(DEFAULT_ENGINE_OPTIONS)은 2026-09-02 5선 돌파 엔진의 동작 그대로(5선 상승 + 물타기).
+ */
+export interface EngineOptions {
+  ordered: boolean;
+  ma5Up: boolean;
+  allUp: boolean;
+  martingale: boolean;
+}
+
+export const DEFAULT_ENGINE_OPTIONS: EngineOptions = { ordered: false, ma5Up: true, allUp: false, martingale: true };
+
+let activeOptions: EngineOptions = DEFAULT_ENGINE_OPTIONS;
+
+/** buildManager 전용 — 매니저 생성 직전에 설정값으로 1회 확정한다. */
+export function setActiveEngineOptions(options: EngineOptions): void {
+  activeOptions = options;
+}
+
+/** 지금 활성 엔진 옵션 — 화면·도움말 문구용. */
+export function getActiveEngineOptions(): EngineOptions {
+  return activeOptions;
+}
+
+/** 옵션을 사람 말로 — "정배열 · 5선 상승 · 물타기" / "없음". */
+export function describeEngineOptions(o: EngineOptions = activeOptions): string {
+  const parts: string[] = [];
+  if (o.ordered) parts.push('정배열');
+  if (o.ma5Up) parts.push('5선 상승');
+  if (o.allUp) parts.push('4선 모두 상승');
+  if (o.martingale) parts.push('(k−1)배 물타기');
+  return parts.length ? parts.join(' · ') : '없음';
+}

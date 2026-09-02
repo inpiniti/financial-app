@@ -1,6 +1,7 @@
 // 매매 파라미터(민감정보 아님) — AsyncStorage에 저장한다 (PRD §5 / §4-E). KIS 키는 lib/kisSettings.ts(secure-store) 담당.
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { KisEnvironment } from '../kis/types';
+import { DEFAULT_ENGINE_OPTIONS, type EngineOptions } from '../features/scalper/engineMode';
 import { DEFAULT_RANKING_SELECTION, normalizeRankingSelection, type RankingSelection } from '../core/ranking';
 
 const STORAGE_KEY = 'app:settings';
@@ -19,6 +20,11 @@ export interface AppSettings {
    * (features/scalper/engineMode.ts). 컴파일 킬스위치(MARTINGALE_MODE/MODEL_MODE)가 false인 모드는 선택해도 돌지 않는다.
    */
   engineMode: 'martingale' | 'model' | 'slope';
+  /**
+   * 엔진 옵션(2026-09-03 ADR 0012) — 엔진과 별개로 중복 선택. 진입 필터(정배열·5선 상승·4선 모두 상승, AND)와 (k−1)배 물타기.
+   * 세 엔진 공통. 기본값은 옛 5선 돌파 규칙 그대로(5선 상승 + 물타기). 반영은 엔진 모드처럼 앱 재시작.
+   */
+  engineOptions: EngineOptions;
   /** 주문 수량 (고정 수량). */
   orderQty: number;
   /**
@@ -107,6 +113,7 @@ export interface AppSettings {
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   environment: 'live',
   engineMode: 'martingale',
+  engineOptions: DEFAULT_ENGINE_OPTIONS,
   orderQty: 1,
   buyCancelAfterSec: 0,
   gridBuyWidthPct: 5,
@@ -170,6 +177,12 @@ export async function loadAppSettings(): Promise<AppSettings> {
       environment: 'live',
       // 모르는 값(옛 버전·손상)은 기본 'martingale'로 방어 — 엔진 모드가 비정상 문자열로 굳으면 두 모드 다 안 돈다.
       engineMode: parsed.engineMode === 'model' || parsed.engineMode === 'slope' ? parsed.engineMode : DEFAULT_APP_SETTINGS.engineMode,
+      engineOptions: {
+        ordered: typeof parsed.engineOptions?.ordered === 'boolean' ? parsed.engineOptions.ordered : DEFAULT_ENGINE_OPTIONS.ordered,
+        ma5Up: typeof parsed.engineOptions?.ma5Up === 'boolean' ? parsed.engineOptions.ma5Up : DEFAULT_ENGINE_OPTIONS.ma5Up,
+        allUp: typeof parsed.engineOptions?.allUp === 'boolean' ? parsed.engineOptions.allUp : DEFAULT_ENGINE_OPTIONS.allUp,
+        martingale: typeof parsed.engineOptions?.martingale === 'boolean' ? parsed.engineOptions.martingale : DEFAULT_ENGINE_OPTIONS.martingale,
+      },
       orderQty: parsed.orderQty ?? DEFAULT_APP_SETTINGS.orderQty,
       buyCancelAfterSec: parsed.buyCancelAfterSec ?? DEFAULT_APP_SETTINGS.buyCancelAfterSec,
       gridBuyWidthPct: parsed.gridBuyWidthPct ?? parsed.gridWidthPct ?? DEFAULT_APP_SETTINGS.gridBuyWidthPct,

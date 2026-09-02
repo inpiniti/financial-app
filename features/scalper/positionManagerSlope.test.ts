@@ -59,7 +59,8 @@ describe('makePositionManager — 기울기 단타 어댑터', () => {
     const text = h.events.at(-1)!;
     expect(text).toContain('기울기 관리 인계 · 10주 · 평단 100.00');
     expect(text).toContain('+1% 아래로 내려오면 즉시 전량 매도');
-    expect(text).toContain('익절·손절·물타기·마감 청산 없어요');
+    expect(text).toContain('익절·손절·마감 청산 없어요');
+    expect(text).toContain('물타기 없어요');
     expect(h.pm.gaugeView().rangeKind).toBe('dayRange');
   });
 

@@ -34,7 +34,7 @@ import {
   type ModelSymmetricExitConfig,
 } from '../../core/model/exitRule';
 import { loadModel } from '../../core/model';
-import { MARTINGALE_CONFIG, MartingaleRule, type MartingaleConfig } from '../../core/martingale';
+import { AveragingDownRule, MARTINGALE_CONFIG, MartingaleRule, type MartingaleConfig } from '../../core/martingale';
 import { SLOPE_CONFIG, SlopeRule, type SlopeConfig } from '../../core/slope';
 import { TrendExitRule } from '../../core/trend/exitRule';
 import { CIRCUIT_MODE } from './circuitMode';
@@ -182,6 +182,11 @@ export interface PositionManagementConfig {
   martingale?: MartingaleGridConfig;
   /** 기울기 단타 모드(2026-09-02 ADR 0011) — 켜면 물타기·모델보다 우선한다. */
   slope?: SlopeGridConfig;
+  /**
+   * (k−1)배 물타기(2026-09-03 ADR 0012, 설정 "엔진 옵션") — 세 엔진 공통. 5선 돌파 엔진은 MartingaleRule의 스위치,
+   * 모델·기울기 엔진은 AveragingDownRule 데코레이터. 미주입이면 5선 돌파 엔진만 기존대로 켬(회귀 안전).
+   */
+  averagingDown?: boolean;
 }
 
 export type PositionMode = 'slope' | 'martingale' | 'model' | 'trend' | 'inflection' | 'oco';
@@ -354,12 +359,12 @@ export function makePositionManager(
         build: (seed) => {
           const rule = new SlopeRule(seed, { config: sl, slope: deps.slopeRate });
           return {
-            rule,
+            rule: cfg.averagingDown === true ? new AveragingDownRule(rule) : rule,
             priceExit: (price) => ({
               reason: 'SELL_SIGNAL' as ExitReason,
               text: `기울기 청산 · 기울기/10초 ${fmt(rule.lastRate)} < +${sl.exitPct}% — 현재가 ${price.toFixed(2)}에서 전량 매도해요(취소선 없음)`,
             }),
-            armText: `${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} · 기울기/10초가 +${sl.exitPct}% 아래로 내려오면 즉시 전량 매도 — 익절·손절·물타기·마감 청산 없어요`,
+            armText: `${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} · 기울기/10초가 +${sl.exitPct}% 아래로 내려오면 즉시 전량 매도 — 익절·손절·마감 청산 없어요${cfg.averagingDown === true ? ' · 옵션: 보유 중 기울기 BUY에서 평단 −k%면 보유량 ×(k−1) 물타기' : ' · 물타기 없어요'}`,
           };
         },
       });
@@ -373,7 +378,7 @@ export function makePositionManager(
         gauge: 'orders', // 위끝 = 익절 목표가(평단 +3%), 아래끝 = 첫 물타기 선(평단 −3%).
         manualExitCheckMs: MANUAL_EXIT_CHECK_MS,
         build: (seed) => {
-          const rule = new MartingaleRule(seed, { config: mg, clock: deps.clock });
+          const rule = new MartingaleRule(seed, { config: mg, clock: deps.clock, averagingDown: cfg.averagingDown ?? true });
           return {
             rule,
             priceExit: (price) => {
@@ -389,7 +394,11 @@ export function makePositionManager(
                 line: rule.targetPrice,
               };
             },
-            armText: `${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} · 익절 ${rule.targetPrice.toFixed(2)}(+${up}%) · 물타기 선 ${rule.buyLinePrice.toFixed(2)}(−${dn}%, 5선 돌파 시 낙폭 k%면 보유량 ×(k−1)) — 손절 없어요 · ${Math.floor(mg.closeAtMin / 60)}:${String(mg.closeAtMin % 60).padStart(2, '0')} ET 마감 청산`,
+            armText: `${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} · 익절 ${rule.targetPrice.toFixed(2)}(+${up}%) · ${
+              cfg.averagingDown ?? true
+                ? `물타기 선 ${rule.buyLinePrice.toFixed(2)}(−${dn}%, 5선 돌파 시 낙폭 k%면 보유량 ×(k−1))`
+                : '물타기 없어요(옵션 꺼짐)'
+            } — 손절 없어요 · ${Math.floor(mg.closeAtMin / 60)}:${String(mg.closeAtMin % 60).padStart(2, '0')} ET 마감 청산`,
           };
         },
       });
@@ -419,7 +428,8 @@ export function makePositionManager(
                   ? { threshold: holdThr, verdict }
                   : undefined,
             });
-            const circuit = new CircuitExitRule(rule, { act: CIRCUIT_MODE });
+            // (k−1)배 물타기(엔진 옵션) — 데코레이터로 얹는다. 서킷이 바깥, 물타기가 안쪽(정지 중엔 서킷이 신호를 잡는다).
+            const circuit = new CircuitExitRule(cfg.averagingDown === true ? new AveragingDownRule(rule) : rule, { act: CIRCUIT_MODE });
             return {
               rule: circuit,
               circuit,
@@ -448,7 +458,7 @@ export function makePositionManager(
                   line: rule.targetPrice,
                 };
               },
-              armText: `${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} · 익절 ${rule.targetPrice.toFixed(2)}(+${up}%) · 손절 ${rule.stopPrice.toFixed(2)}(−${dn}%) · 최장 ${model.maxHoldMin}분 보유 — 익절선에서 모델이 아직 좋으면(상위 10%) 팔지 않고 밴드를 +${up}% 위로 올려 달아요(래칫) · 물타기 없어요`,
+              armText: `${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} · 익절 ${rule.targetPrice.toFixed(2)}(+${up}%) · 손절 ${rule.stopPrice.toFixed(2)}(−${dn}%) · 최장 ${model.maxHoldMin}분 보유 — 익절선에서 모델이 아직 좋으면(상위 10%) 팔지 않고 밴드를 +${up}% 위로 올려 달아요(래칫)${cfg.averagingDown === true ? ' · 옵션: 보유 중 모델 BUY에서 평단 −k%면 보유량 ×(k−1) 물타기' : ' · 물타기 없어요'}`,
             };
           },
         });
@@ -464,8 +474,8 @@ export function makePositionManager(
           // 청산은 백테스트 기하 그대로 — 트레일 −5% + 하드 손절 −2%, 익절 상한 없음. 물타기 없음.
           const entryAtMs = deps.entry?.entryTs ?? deps.clock.now();
           const rule = new ModelExitRule(seed, { trailPct: model.trailPct, stopLossPct: MODEL_EXIT_CONFIG.stopLossPct, entryAtMs, clock: deps.clock });
-          // 서킷 데코레이터 — CIRCUIT_MODE=false면 관측(이벤트)만.
-          const circuit = new CircuitExitRule(rule, { act: CIRCUIT_MODE });
+          // 서킷 데코레이터 — CIRCUIT_MODE=false면 관측(이벤트)만. (k−1)배 물타기(엔진 옵션)는 안쪽에.
+          const circuit = new CircuitExitRule(cfg.averagingDown === true ? new AveragingDownRule(rule) : rule, { act: CIRCUIT_MODE });
           return {
             rule: circuit,
             circuit,

@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { snapToStep, DEFAULT_APP_SETTINGS } from './appSettings';
 
 describe('DEFAULT_APP_SETTINGS', () => {
+  it('엔진 옵션 기본값은 5선 상승 + 물타기 — 옛 5선 돌파 규칙 그대로(ADR 0012)', () => {
+    expect(DEFAULT_APP_SETTINGS.engineOptions).toEqual({ ordered: false, ma5Up: true, allUp: false, martingale: true });
+  });
+
   it('기본 모드는 LIVE다 (PRD §9-6 확정)', () => {
     expect(DEFAULT_APP_SETTINGS.environment).toBe('live');
   });

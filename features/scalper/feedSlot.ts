@@ -24,9 +24,14 @@ import {
 import { MODEL_MODE } from './modelMode';
 import type { ModelEval } from '../../core/model/signal';
 import {
+  anyEntryFilter,
+  DEFAULT_ENTRY_FILTERS,
+  entryFiltersPass,
   evaluateMartingaleBars,
   evaluateMartingaleLive,
   isMartingaleEntryBar,
+  NO_ENTRY_FILTERS,
+  type EntryFilters,
   MARTINGALE_LIVE_ENTRY,
   MARTINGALE_LIVE_EVAL_MS,
   type MartingaleBarEval,
@@ -124,6 +129,12 @@ export interface FeedSlotOptions {
    * 미주입이면 기존 동작 그대로 — 회귀 안전.
    */
   slope?: boolean;
+  /**
+   * 진입 필터(2026-09-03 ADR 0012, 설정 "엔진 옵션") — 1분봉 4선 기준 정배열·5선 상승·4선 모두 상승, 체크한 것끼리 AND.
+   * 5선 돌파 모드는 돌파 봉에 AND(미주입이면 DEFAULT_ENTRY_FILTERS = 5선 상승 — 2026-09-02 규칙 보존).
+   * 모델·기울기 모드는 하나라도 켜져 있으면 1분봉을 같이 쌓아 BUY를 낼 때 AND(미주입이면 필터 없음 — 회귀 안전).
+   */
+  entryFilters?: EntryFilters;
 }
 
 /** 변곡점 신호 콜백 — attach 시 등록. */
@@ -218,6 +229,11 @@ export interface FeedSlotView {
    * 엔진이 실시간으로 이걸 보고 사므로 화면도 이걸 우선 보여야 화면-엔진이 일치한다. 진행 중 봉이 없으면 null.
    */
   readonly martingaleLive: MartingaleBarEval | null;
+  /**
+   * 모델·기울기 모드의 진입 필터(엔진 옵션) 마지막 판정 — 필터가 꺼져 있으면 null. 화면이 "신호는 왔는데 옵션 미충족"을 보인다.
+   * 5선 돌파 모드는 martingale/martingaleLive의 filtersPass가 같은 역할이다.
+   */
+  readonly entryFilterPass: boolean | null;
 }
 
 /** 화면용 모델 판정 스냅샷 — ModelEval에서 화면이 쓰는 것만 + 판정 시각. */
@@ -276,6 +292,12 @@ export class FeedSlot {
   private readonly trendMode: boolean;
   /** 기울기 단타 모드인가 — 생성 시 확정(SLOPE_MODE AND slope 주입). 모든 모드보다 우선. */
   private readonly slopeMode: boolean;
+  /** 진입 필터(엔진 옵션) — 5선 돌파 모드는 돌파 판정에, 모델·기울기 모드는 BUY 게이트에 쓴다. */
+  private readonly entryFilters: EntryFilters;
+  /** 모델·기울기 모드에서 필터가 켜져 1분봉을 같이 쌓는가. */
+  private readonly filterBars: boolean;
+  /** 마지막 필터 판정(모델·기울기 모드 화면용) — 필터가 없으면 null. */
+  private entryFilterPass: boolean | null = null;
   /** 기울기 모드 문턱 상태(위/아래/모름) — 전환에서만 신호. */
   private slopeState: SlopeState = null;
   /** 배수 물타기 시험 모드인가 — 생성 시 확정(MARTINGALE_MODE AND martingale 주입). 기울기 모드 다음 우선. */
@@ -309,10 +331,12 @@ export class FeedSlot {
     this.martingaleMode = !this.slopeMode && MARTINGALE_MODE && options.martingale === true;
     this.modelMode = !this.slopeMode && !this.martingaleMode && MODEL_MODE && options.model === true;
     this.trendMode = !this.slopeMode && !this.martingaleMode && !this.modelMode && TREND_MODE && options.trend === true;
-    // 물타기 모드는 봉 주기가 1분(백테스트 규약) — 주입값보다 우선한다.
+    this.entryFilters = options.entryFilters ?? (this.martingaleMode ? DEFAULT_ENTRY_FILTERS : NO_ENTRY_FILTERS);
+    this.filterBars = (this.slopeMode || this.modelMode) && anyEntryFilter(this.entryFilters);
+    // 물타기 모드·진입 필터는 봉 주기가 1분(4선 정의) — 주입값보다 우선한다.
     this.bars = new MinuteBarBuilder(
       undefined,
-      this.martingaleMode ? MARTINGALE_BAR_MINUTES : (options.trendBarMinutes ?? TREND_BAR_MINUTES),
+      this.martingaleMode || this.filterBars ? MARTINGALE_BAR_MINUTES : (options.trendBarMinutes ?? TREND_BAR_MINUTES),
     );
     this.inflectionMode =
       !this.slopeMode && !this.martingaleMode && !this.modelMode && !this.trendMode && INFLECTION_ENTRY && options.inflection === true;
@@ -345,6 +369,7 @@ export class FeedSlot {
 
     if (this.slopeMode) {
       // 기울기 단타(ADR 0011) — 틱마다 기울기/10초를 재서 문턱 전환에서만 신호. 스로틀·봉·세션 게이트 없음.
+      if (this.filterBars) this.bars.pushTick(price, tsMs); // 진입 필터(엔진 옵션)용 1분봉만 쌓는다.
       this.evaluateSlopeTick(price);
       return null;
     }
@@ -359,6 +384,7 @@ export class FeedSlot {
 
     if (this.modelMode) {
       // 모델 모드 — 판정은 ModelScanner(토스 5분봉)가 한다. 여기서는 틱/초·기울기·호가만 유지한다.
+      if (this.filterBars) this.bars.pushTick(price, tsMs); // 진입 필터(엔진 옵션)용 1분봉만 쌓는다.
       return null;
     }
 
@@ -548,6 +574,8 @@ export class FeedSlot {
     if (!this.modelMode || this.trendListener === null) return false;
     const price = this.price !== null && this.price > 0 ? this.price : fallbackPrice;
     if (!Number.isFinite(price) || price <= 0) return false;
+    // 진입 필터(엔진 옵션, ADR 0012) — BUY만 거른다. 판정 불가(봉 부족)도 미충족(fail-closed).
+    if (signal === 'BUY' && !this.passesEntryFilterNow()) return false;
     this.lastSignal = signal;
     this.trendListener(signal, {
       ticker: this.ticker,
@@ -571,11 +599,17 @@ export class FeedSlot {
   }
 
   seedTrend(bars: readonly MinuteBar[]): number {
+    if (this.filterBars) {
+      // 모델·기울기 모드 + 진입 필터 — 1분봉 시드(필터 계산용). 신호는 내지 않는다.
+      const n = this.bars.seed(bars);
+      if (n > 0) this.entryFilterPass = entryFiltersPass(evaluateMartingaleBars(this.bars.closes, this.entryFilters), this.entryFilters);
+      return n;
+    }
     if (this.martingaleMode) {
       // 물타기 모드 — 1분봉 시드. 판정 스냅샷만 갱신하고 신호는 내지 않는다(과거 봉으로 진입하지 않는다).
       const n = this.bars.seed(bars);
       if (n > 0) {
-        this.martingaleEval = evaluateMartingaleBars(this.bars.closes);
+        this.martingaleEval = evaluateMartingaleBars(this.bars.closes, this.entryFilters);
         // 시드가 봉 링을 통째로 갈아끼웠다 — 진행 중 판정도 버리고 다음 틱에서 새로 만든다(추세 시드와 동일).
         this.martingaleLiveEval = null;
         this.liveEntryBarKey = null;
@@ -606,7 +640,7 @@ export class FeedSlot {
    * price = 마감을 유발한 새 분 첫 틱 가격(추세 모드와 같은 규약).
    */
   private evaluateMartingaleBar(closed: MinuteBar, price: number): void {
-    const ev = evaluateMartingaleBars(this.bars.closes);
+    const ev = evaluateMartingaleBars(this.bars.closes, this.entryFilters);
     this.martingaleEval = ev;
     this.martingaleLiveEval = null; // 새 봉이 열렸다 — 진행 중 판정은 다음 틱에서 다시 만든다.
     if (this.trendListener === null) return;
@@ -644,7 +678,7 @@ export class FeedSlot {
     const now = this.lastTickAt ?? this.clock.now();
     if (now - this.lastLiveEvalAt < MARTINGALE_LIVE_EVAL_MS) return;
     this.lastLiveEvalAt = now;
-    const ev = evaluateMartingaleLive(this.bars.closes, cur.close);
+    const ev = evaluateMartingaleLive(this.bars.closes, cur.close, this.entryFilters);
     this.martingaleLiveEval = ev;
     if (!MARTINGALE_LIVE_ENTRY) return;
     if (!ev.entry) return;
@@ -674,8 +708,26 @@ export class FeedSlot {
     const t = evaluateSlopeTransition(this.slopeState, this.slopeMeter.rate(now), SLOPE_CONFIG);
     this.slopeState = t.state;
     if (t.signal === null || this.trendListener === null) return;
+    // 진입 필터(엔진 옵션, ADR 0012) — BUY만 거른다(상태 전환은 이미 반영됐으니 다음 전환까지 조용).
+    if (t.signal === 'BUY' && !this.passesEntryFilterNow()) return;
     this.lastSignal = t.signal;
     this.trendListener(t.signal, { ticker: this.ticker, price, slope: 0, accel: 0, at: now });
+  }
+
+  /**
+   * 모델·기울기 모드의 진입 필터 판정(엔진 옵션) — 진행 중 1분봉을 현재가로 넣은 4선 상태로 정배열·5선 상승·4선 상승을 본다.
+   * 필터가 없으면 항상 true. 봉 부족(판정 불가)은 false(fail-closed). 결과는 뷰(entryFilterPass)에도 남긴다.
+   */
+  private passesEntryFilterNow(): boolean {
+    if (!this.filterBars) return true;
+    const cur = this.bars.inProgress;
+    const ev =
+      cur !== null
+        ? evaluateMartingaleLive(this.bars.closes, cur.close, this.entryFilters)
+        : evaluateMartingaleBars(this.bars.closes, this.entryFilters);
+    const pass = entryFiltersPass(ev, this.entryFilters) === true; // 판정 불가(null)는 미충족으로 보인다.
+    this.entryFilterPass = pass;
+    return pass;
   }
 
   /** 봉 마감 1회 처리 — 4선 재계산·스냅샷 갱신·신호 전달. price = 마감을 유발한 새 분 첫 틱 가격. */
@@ -765,6 +817,7 @@ export class FeedSlot {
       modelProb: this.modelMode ? (this.modelVerdict?.prob ?? null) : null,
       modelVerdict: this.modelMode ? this.modelVerdict : null,
       martingale: this.martingaleMode ? this.martingaleEval : null,
+      entryFilterPass: this.filterBars ? this.entryFilterPass : null,
       martingaleLive: this.martingaleMode ? this.martingaleLiveEval : null,
     };
   }

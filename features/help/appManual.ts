@@ -13,7 +13,7 @@ import { RANKING_TOTAL_MAX, rankingSourceLabelOf } from '../../core/ranking';
 import { ABANDON_COOLDOWN_MS, ABANDON_COOLDOWN_STREAK, MAX_GRIDS_LIMIT } from '../scalper/autopilot';
 import { MARTINGALE_BAR_MINUTES } from '../scalper/martingaleMode';
 import { MODEL_BAR_MINUTES } from '../scalper/modelMode';
-import type { EngineMode } from '../scalper/engineMode';
+import { describeEngineOptions, type EngineMode, type EngineOptions } from '../scalper/engineMode';
 import { DEFAULT_APP_SETTINGS, type AppSettings } from '../../lib/appSettings';
 
 const pct = (ratio: number) => `${Number((ratio * 100).toFixed(2))}%`;
@@ -191,6 +191,7 @@ ${
 
 ## 7. 설정 항목
 - **엔진 모드** — 무엇으로 매매할지 골라요: **5선 물타기 단타**(1분봉 5선 상승·돌파에 사고, 평단 −3% 아래 돌파면 낙폭 배수로 물타기, +3%에 파는 규칙 — 손절 없음) · **예측 모델**(과거 데이터로 학습한 모델이 "+3%가 −3%보다 먼저 올 확률"이 높을 때만 사는 방식) · **기울기 단타**(기울기/10초가 ${SL_IN} 이상이면 사고 ${SL_OUT} 아래면 조건 없이 즉시 전량 파는 규칙). 바꾸면 **앱을 완전히 껐다가 다시 켜야** 적용돼요.
+- **엔진 옵션(중복 선택)** — 어느 엔진이든 함께 걸리는 조건이에요. **정배열**(5>20>60>120) · **5선만 상승** · **5·20·60·120 모두 상승**은 ${MARTINGALE_BAR_MINUTES}분봉 이동평균 기준 **진입 조건**이라 체크한 것끼리 다 맞아야 사요(모델·기울기 엔진도 신호가 나도 이 조건이 안 맞으면 안 사요). **(k−1)배 물타기**를 체크하면 보유 중 그 엔진의 매수 신호가 다시 왔을 때 평단보다 −${MG_DN} 넘게 내려가 있으면 낙폭 k%당 보유량의 (k−1)배를 더 사요. 기본은 "5선만 상승 + 물타기"예요. 바꾸면 **앱을 완전히 껐다가 다시 켜야** 적용돼요.
 - **진입금액(USD)** — 종목 하나를 살 때 쓰는 금액(기본 $${DEFAULT_APP_SETTINGS.startAmountUsd}). 비어 있으면 자동 트레이딩이 시작되지 않아요.
 - **수량(주)** — 정하면 종목 가격과 상관없이 딱 이 수량만 사요. 비우면 진입금액 ÷ 현재가로 계산해요.
 - **가격 상한(USD)** — 수량을 정했을 때만 써요. 이 가격 이하 종목만 감시해요(기본 $${DEFAULT_APP_SETTINGS.maxPriceUsd}). 상한이 낮으면 리스트가 초저가 급등주로만 채워져요. 수량을 비우면(금액 모드) 진입금액이 상한 역할을 해요.
@@ -286,6 +287,7 @@ export const APP_MANUAL = buildAppManual();
  */
 export const USER_FACING_SETTING_KEYS = [
   'engineMode',
+  'engineOptions',
   'startAmountUsd',
   'entryQty',
   'maxPriceUsd',
@@ -311,6 +313,7 @@ export const HIDDEN_SETTING_KEYS = [
 /** 사용자의 현재 설정을 대화에 붙이는 블록 — 매뉴얼에 없는 "지금 내 값"을 답할 수 있게 한다. */
 export function describeUserSettings(settings: AppSettings): string {
   const lines: string[] = [];
+  lines.push(`엔진 옵션: ${describeEngineOptions(settings.engineOptions as EngineOptions)}`);
   lines.push(
     settings.entryQty > 0
       ? `진입 방식: 수량 고정 ${settings.entryQty}주 (가격 상한 ${

@@ -23,16 +23,49 @@ import { smaSeries } from '../trend';
 // 신호 (봉 종가 배열 → 진입 / 물타기 시점)
 // ---------------------------------------------------------------------------
 
-/** 매수 신호의 근거 — 지금은 'cross'(5선 상승 중 종가가 5선을 아래→위로 돌파) 하나. 2026-08-28의 allUp·ordered는 ADR 0010으로 폐기. */
+/** 매수 신호의 근거 — 지금은 'cross'(종가가 5선을 아래→위로 돌파) 하나. 2026-08-28의 allUp·ordered는 ADR 0010으로 폐기. */
 export type MartingaleEntryEvent = 'cross';
 
+/**
+ * 진입 필터(2026-09-03 ADR 0012, 설정 "엔진 옵션") — 1분봉 4선(5·20·60·120 SMA) 기준, 체크한 것끼리 AND.
+ *  · ordered : 정배열(ma5 > ma20 > ma60 > ma120)
+ *  · ma5Up   : 5선 상승(ma5(t) > ma5(t−1))
+ *  · allUp   : 4선 모두 상승
+ * 세 엔진(5선 돌파·모델·기울기) 공통 — 5선 돌파 엔진은 돌파 봉에 AND, 모델·기울기는 BUY 신호를 낼 때 AND.
+ * 판정 불가(봉 부족 → null)는 fail-closed(미충족).
+ */
+export interface EntryFilters {
+  ordered: boolean;
+  ma5Up: boolean;
+  allUp: boolean;
+}
+
+/** 5선 돌파 엔진의 기본(= 설정 기본값과 동일 — 2026-09-02 규칙 "5선 상승 ∧ 돌파"를 그대로 보존). */
+export const DEFAULT_ENTRY_FILTERS: EntryFilters = { ordered: false, ma5Up: true, allUp: false };
+/** 필터 없음 — 모델·기울기 엔진의 기본(옵션 미체크). */
+export const NO_ENTRY_FILTERS: EntryFilters = { ordered: false, ma5Up: false, allUp: false };
+
+export function anyEntryFilter(f: EntryFilters | undefined): boolean {
+  return f !== undefined && (f.ordered || f.ma5Up || f.allUp);
+}
+
 export interface MartingaleBarEval {
-  /** 이 봉이 매수 신호 봉인가 — 5선 상승 ∧ 종가 5선 상향 돌파. 미보유면 진입, 보유 중이면 물타기 후보(낙폭은 MartingaleRule이 판정). */
+  /** 이 봉이 매수 신호 봉인가 — 5선 상향 돌파 ∧ 진입 필터 충족. 미보유면 진입, 보유 중이면 물타기 후보(낙폭은 MartingaleRule이 판정). */
   entry: boolean;
+  /** 종가가 5선을 아래→위로 돌파한 봉인가(필터 무관) — 화면이 "돌파는 했는데 옵션 미충족"을 가르는 데 쓴다. */
+  crossUp: boolean;
+  /** 진입 필터 충족 여부 — 판정 불가(봉 부족)면 null(fail-closed). 필터가 하나도 없으면 true. */
+  filtersPass: boolean | null;
   /** 이 봉에서 5선이 상승으로 바뀌었나 — 5선 변곡. */
   ma5TurnUp: boolean;
   /** 5선 상승 여부(직전 봉 대비). 판정 불가 null. */
   ma5Up: boolean | null;
+  /** 정배열(ma5>ma20>ma60>ma120) — 4선 중 하나라도 없으면 null. */
+  ordered: boolean | null;
+  /** 4선 모두 상승 — 하나라도 판정 불가면 null. */
+  allUp: boolean | null;
+  /** 각 선의 상승 여부(직전 봉 대비 strict). */
+  up: { ma5: boolean | null; ma20: boolean | null; ma60: boolean | null; ma120: boolean | null };
   ma5: number | null;
   bars: number;
 }
@@ -48,20 +81,42 @@ function upAt(s: readonly (number | null)[], i: number): boolean | null {
   return a > b;
 }
 
-/** 마지막 봉 기준 판정 — 입력은 오름차순 종가. 봉 부족·null이면 전부 false(fail-closed). */
-export function evaluateMartingaleBars(closes: readonly number[]): MartingaleBarEval {
+/** 진입 필터 판정 — 체크한 것끼리 AND. 필요한 값이 null이면 null(fail-closed). 필터가 없으면 true. */
+export function entryFiltersPass(
+  ev: Pick<MartingaleBarEval, 'ordered' | 'ma5Up' | 'allUp'>,
+  filters: EntryFilters,
+): boolean | null {
+  const need: Array<boolean | null> = [];
+  if (filters.ordered) need.push(ev.ordered);
+  if (filters.ma5Up) need.push(ev.ma5Up);
+  if (filters.allUp) need.push(ev.allUp);
+  if (need.some((v) => v === null)) return null;
+  return need.every((v) => v === true);
+}
+
+/** 마지막 봉 기준 판정 — 입력은 오름차순 종가. 봉 부족·null이면 전부 false(fail-closed). filters = 진입 필터(기본 5선 상승). */
+export function evaluateMartingaleBars(closes: readonly number[], filters: EntryFilters = DEFAULT_ENTRY_FILTERS): MartingaleBarEval {
   const n = closes.length;
   const last = n - 1;
+  const nullUp = { ma5: null, ma20: null, ma60: null, ma120: null };
   const none: MartingaleBarEval = {
     entry: false,
+    crossUp: false,
+    filtersPass: anyEntryFilter(filters) ? null : true,
     ma5TurnUp: false,
     ma5Up: null,
+    ordered: null,
+    allUp: null,
+    up: nullUp,
     ma5: null,
     bars: n,
   };
-  // 봉 부족은 fail-closed — 5선만 쓰지만 문턱은 MARTINGALE_MIN_BARS(옛 4선 규칙과 같은 122봉)로 유지한다.
+  // 봉 부족은 fail-closed — 문턱은 MARTINGALE_MIN_BARS(4선 규칙과 같은 122봉 — 정배열·4선 상승 필터가 ma120을 쓴다).
   if (n < MARTINGALE_MIN_BARS) return none;
   const s5 = smaSeries(closes, 5);
+  const s20 = smaSeries(closes, 20);
+  const s60 = smaSeries(closes, 60);
+  const s120 = smaSeries(closes, 120);
   const ma5 = s5[last];
   const ma5Prev = s5[last - 1];
   const up5 = upAt(s5, last);
@@ -73,12 +128,26 @@ export function evaluateMartingaleBars(closes: readonly number[]): MartingaleBar
   // 5선 상향 돌파 — 종가가 5선을 아래→위로 지나감.
   const crossUp =
     ma5 !== null && ma5Prev !== null && Number.isFinite(close) && Number.isFinite(closePrev) && closePrev < ma5Prev && close > ma5;
-  // 초기 진입: 5선 상승 + 5선 돌파
-  const entry = up5 === true && crossUp;
+  const up = { ma5: up5, ma20: upAt(s20, last), ma60: upAt(s60, last), ma120: upAt(s120, last) };
+  const m20 = s20[last];
+  const m60 = s60[last];
+  const m120 = s120[last];
+  const ordered =
+    ma5 === null || m20 === null || m60 === null || m120 === null || ma5 === undefined || m20 === undefined || m60 === undefined || m120 === undefined
+      ? null
+      : ma5 > m20 && m20 > m60 && m60 > m120;
+  const ups = [up.ma5, up.ma20, up.ma60, up.ma120];
+  const allUp = ups.some((u) => u === null) ? null : ups.every((u) => u === true);
+  const filtersPass = entryFiltersPass({ ordered, ma5Up: up5, allUp }, filters);
   return {
-    entry,
+    entry: crossUp && filtersPass === true,
+    crossUp,
+    filtersPass,
     ma5TurnUp,
     ma5Up: up5,
+    ordered,
+    allUp,
+    up,
     ma5,
     bars: n,
   };
@@ -98,11 +167,12 @@ export function evaluateMartingaleBars(closes: readonly number[]): MartingaleBar
 export function evaluateMartingaleLive(
   closedCloses: readonly number[],
   provisionalClose: number,
+  filters: EntryFilters = DEFAULT_ENTRY_FILTERS,
 ): MartingaleBarEval {
   if (!Number.isFinite(provisionalClose) || provisionalClose <= 0) {
-    return evaluateMartingaleBars([]);
+    return evaluateMartingaleBars([], filters);
   }
-  return evaluateMartingaleBars([...closedCloses, provisionalClose]);
+  return evaluateMartingaleBars([...closedCloses, provisionalClose], filters);
 }
 
 /** 진행 중 봉 재판정 주기(ms) — 틱마다 130봉×4선 재계산 방지(추세 TREND_LIVE_EVAL_MS와 같은 근거). 0이면 매 틱(테스트용). */
@@ -165,6 +235,8 @@ export interface MartingaleRuleOptions {
   config?: MartingaleConfig;
   /** 지금 시각 — 마감 판정. 없으면 마감 없음(테스트 편의). */
   clock?: { now(): number };
+  /** (k−1)배 물타기 켬(기본 true — 설정 "엔진 옵션"의 물타기 체크). false면 BUY 신호를 무시한다. */
+  averagingDown?: boolean;
 }
 
 export class MartingaleRule {
@@ -173,6 +245,7 @@ export class MartingaleRule {
   private readonly entryQty: number;
   private readonly cfg: MartingaleConfig;
   private readonly clock: { now(): number } | undefined;
+  private readonly averagingDown: boolean;
   /** 물타기 횟수(추가 진입 count) — setPosition에서 수량이 늘면 +1. */
   private _adds = 0;
   private lastKind: MartingaleExitKind | null = null;
@@ -185,6 +258,7 @@ export class MartingaleRule {
     this.entryQty = position.qty;
     this.cfg = options.config ?? MARTINGALE_CONFIG;
     this.clock = options.clock;
+    this.averagingDown = options.averagingDown ?? true;
   }
 
   get adds(): number {
@@ -225,14 +299,8 @@ export class MartingaleRule {
    * 낙폭이 첫 물타기 선(−3%)에 못 미치면 null. 수량 = 현재 보유량 × (k−1), 1주 미만이면 null.
    */
   decide(signal: 'BUY' | 'SELL', price: number): ConditionalDecision | null {
-    if (signal !== 'BUY') return null;
-    if (!Number.isFinite(price) || price <= 0 || this.qty <= 0 || !(this.avgPrice > 0)) return null;
-    const drop = 1 - price / this.avgPrice;
-    const mult = multiplierForDrop(drop, this.cfg);
-    if (mult <= 0) return null;
-    const addQty = Math.floor(this.qty * mult);
-    if (addQty < 1) return null;
-    return { side: 'buy', qty: addQty };
+    if (signal !== 'BUY' || !this.averagingDown) return null;
+    return averagingDownDecision(this.qty, this.avgPrice, price, this.cfg);
   }
 
   /** 틱 판정 — 익절 목표 도달 또는 마감 시각이면 전량 매도. */
@@ -273,5 +341,74 @@ export class MartingaleRule {
     if (position.qty >= this.qty) this.pendingExit = null; // 매도가 끝나지 않았다 — 취소선 상태 초기화
     this.qty = position.qty;
     this.avgPrice = position.avgPrice;
+  }
+}
+
+/** (k−1)배 물타기 결정 하나 — 현재 보유·평단·가격으로. 낙폭이 dropStart 미만이거나 1주 미만이면 null. */
+export function averagingDownDecision(
+  qty: number,
+  avgPrice: number,
+  price: number,
+  cfg: Pick<MartingaleConfig, 'dropStartPct' | 'dropMaxPct'> = MARTINGALE_CONFIG,
+): ConditionalDecision | null {
+  if (!Number.isFinite(price) || price <= 0 || qty <= 0 || !(avgPrice > 0)) return null;
+  const drop = 1 - price / avgPrice;
+  const mult = multiplierForDrop(drop, cfg);
+  if (mult <= 0) return null;
+  const addQty = Math.floor(qty * mult);
+  if (addQty < 1) return null;
+  return { side: 'buy', qty: addQty };
+}
+
+/** 데코레이터가 감싸는 규칙의 최소 계약(PositionRule과 구조 동일). */
+export interface AveragingDownInner {
+  readonly view: ConditionalGridView;
+  decide(signal: 'BUY' | 'SELL', price: number): ConditionalDecision | null;
+  onPrice?(price: number): ConditionalDecision | null;
+  shouldAbort(side: 'buy' | 'sell', price: number): boolean;
+  setPosition(position: ConditionalPosition): void;
+  readonly stopLossPrice?: number | null;
+}
+
+/**
+ * (k−1)배 물타기 데코레이터(2026-09-03 ADR 0012) — 모델·기울기 엔진에 설정 "엔진 옵션 > 물타기"를 얹는다.
+ * BUY 신호: 안쪽 규칙이 결정을 내면 그대로, null이면 평단 대비 낙폭 k%(k≥3)에 현재 보유량 ×(k−1) 매수.
+ * 나머지(틱 판정·취소선·잔고 반영·뷰)는 전부 안쪽 규칙 그대로 — 물타기가 체결되면 setPosition으로 새 평단이 안쪽에 들어가
+ * 익절·손절선이 새 평단을 따른다(엔진마다 그 규칙의 몫).
+ */
+export class AveragingDownRule<T extends AveragingDownInner = AveragingDownInner> implements AveragingDownInner {
+  readonly inner: T;
+  private readonly cfg: Pick<MartingaleConfig, 'dropStartPct' | 'dropMaxPct'>;
+
+  constructor(inner: T, cfg: Pick<MartingaleConfig, 'dropStartPct' | 'dropMaxPct'> = MARTINGALE_CONFIG) {
+    this.inner = inner;
+    this.cfg = cfg;
+  }
+
+  get view(): ConditionalGridView {
+    return this.inner.view;
+  }
+
+  get stopLossPrice(): number | null | undefined {
+    return this.inner.stopLossPrice;
+  }
+
+  decide(signal: 'BUY' | 'SELL', price: number): ConditionalDecision | null {
+    const own = this.inner.decide(signal, price);
+    if (own !== null || signal !== 'BUY') return own;
+    const v = this.inner.view;
+    return averagingDownDecision(v.qty, v.avgPrice, price, this.cfg);
+  }
+
+  onPrice(price: number): ConditionalDecision | null {
+    return this.inner.onPrice?.(price) ?? null;
+  }
+
+  shouldAbort(side: 'buy' | 'sell', price: number): boolean {
+    return this.inner.shouldAbort(side, price);
+  }
+
+  setPosition(position: ConditionalPosition): void {
+    this.inner.setPosition(position);
   }
 }

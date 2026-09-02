@@ -25,7 +25,7 @@ import { MODEL_BAR_MINUTES, MODEL_MODE } from '../modelMode';
 import { MARTINGALE_MODE } from '../martingaleMode';
 import { SLOPE_MODE } from '../slopeMode';
 import { SLOPE_CONFIG, SLOPE_EXIT_TICK_MS } from '../../../core/slope';
-import { getActiveEngineMode } from '../engineMode';
+import { describeEngineOptions, getActiveEngineMode, getActiveEngineOptions } from '../engineMode';
 import { MODEL_SYMMETRIC_EXIT_CONFIG } from '../../../core/model/exitRule';
 import { loadModel } from '../../../core/model';
 import { MARTINGALE_CONFIG, MARTINGALE_MIN_BARS, type MartingaleBarEval } from '../../../core/martingale';
@@ -164,10 +164,31 @@ function formatMartingaleLine(ev: MartingaleBarEval | null, nowMs: number = Date
   const entryWindow = m > TRADING_DAY_START_MIN && m < MARTINGALE_CONFIG.closeAtMin;
   if (ev.entry) {
     return entryWindow
-      ? '5선 상승 · 5선 돌파 → 매수 신호(미보유면 진입 · 보유 중이면 평단 −3% 아래일 때 물타기)'
+      ? `5선 돌파${filterTag(ev)} → 매수 신호(미보유면 진입${getActiveEngineOptions().martingale ? ' · 보유 중이면 평단 −3% 아래일 때 물타기' : ''})`
       : '5선 돌파 · 매매 시간대 아님(04:00~19:55 ET만 사요)';
   }
-  return ev.ma5Up ? '5선 상승 중 · 돌파 대기' : '5선 하락 중';
+  if (ev.crossUp && ev.filtersPass !== true) return `5선 돌파했지만 옵션 미충족(${missingFilters(ev)})`;
+  return ev.ma5Up ? '5선 상승 중 · 돌파 대기' : '5선 하락 중 · 돌파 대기';
+}
+
+/** 체크된 진입 필터 중 이 봉에서 어긋난 것 — "정배열 아님 · 4선 상승 아님". */
+function missingFilters(ev: MartingaleBarEval): string {
+  const o = getActiveEngineOptions();
+  const miss: string[] = [];
+  if (o.ordered && ev.ordered !== true) miss.push('정배열 아님');
+  if (o.ma5Up && ev.ma5Up !== true) miss.push('5선 상승 아님');
+  if (o.allUp && ev.allUp !== true) miss.push('4선 상승 아님');
+  return miss.length ? miss.join(' · ') : '판정 불가';
+}
+
+/** 진입 필터가 켜져 있으면 " + 정배열 · 5선 상승" 꼬리표. */
+function filterTag(_ev: MartingaleBarEval): string {
+  const o = getActiveEngineOptions();
+  const on: string[] = [];
+  if (o.ordered) on.push('정배열');
+  if (o.ma5Up) on.push('5선 상승');
+  if (o.allUp) on.push('4선 상승');
+  return on.length ? ` + ${on.join('·')}` : '';
 }
 
 /**
@@ -303,7 +324,7 @@ function SlotRow({
             ) : SLOPE_MODE && getActiveEngineMode() === 'slope' ? (
               // 기울기 단타(2026-09-02) — 지표는 위 줄의 기울기 그대로. 문턱 대비 상태만 말한다.
               <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
-                {formatSlopeModeLine(item.view.slopeRate)}
+                {formatSlopeModeLine(item.view.slopeRate) + (item.view.entryFilterPass === false ? ' · 옵션 조건 미충족' : '')}
               </Text>
             ) : MARTINGALE_MODE && getActiveEngineMode() === 'martingale' ? (
               // ±3% 단타 모드 — 엔진 모드 설정(2026-09-01)이 martingale일 때. 1분봉 정배열·5선 돌파 상태.
@@ -314,7 +335,7 @@ function SlotRow({
             ) : MODEL_MODE && getActiveEngineMode() === 'model' ? (
               // 모델 모드(2026-08-22) — 마지막 봉의 판정 확률과 임계값. 왜 안 사는지 한눈에.
               <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
-                {formatModelLine(item.view.modelVerdict)}
+                {formatModelLine(item.view.modelVerdict) + (item.view.entryFilterPass === false ? ' · 옵션 조건 미충족' : '')}
               </Text>
             ) : TREND_MODE ? (
               // 추세 모드(2026-08-18, 롤백 보존) — 4선 방향·위치·봉 수.
@@ -616,13 +637,13 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
               {SLOPE_MODE && getActiveEngineMode() === 'slope' && (
                 // 기울기 단타(2026-09-02 ADR 0011) — 규칙 요약을 여기 한 번만.
                 <Text className="px-5 pb-2 text-xs text-[#8b95a1]">
-                  {`기울기 단타 · 기울기/10초가 +${SLOPE_CONFIG.entryPct}% 이상으로 올라서면 매수(후보 안에서만), 보유 중 +${SLOPE_CONFIG.exitPct}% 아래로 내려오면 손익 무관 즉시 전량 매도 — 틱마다 + ${SLOPE_EXIT_TICK_MS}ms 재판정. 익절·손절·물타기·시간대·마감 청산 없음.`}
+                  {`기울기 단타 · 기울기/10초가 +${SLOPE_CONFIG.entryPct}% 이상으로 올라서면 매수(후보 안에서만), 보유 중 +${SLOPE_CONFIG.exitPct}% 아래로 내려오면 손익 무관 즉시 전량 매도 — 틱마다 + ${SLOPE_EXIT_TICK_MS}ms 재판정. 익절·손절·시간대·마감 청산 없음 · 옵션: ${describeEngineOptions()}.`}
                 </Text>
               )}
               {MARTINGALE_MODE && getActiveEngineMode() === 'martingale' && (
                 // 5선 물타기 단타 모드(2026-09-02) — 규칙 요약을 여기 한 번만.
                 <Text className="px-5 pb-2 text-xs text-[#8b95a1]">
-                  {`5선 물타기 단타 · 1분봉 5선이 오르는 중에 가격이 5선을 위로 뚫으면 매수 — 봉 마감을 기다리지 않고 진행 중 봉으로 실시간 판정해요(봉당 1회) · 프리·정규·애프터만(주간거래 제외 · 후보 안에서만). 보유 중엔 평단 −${(MARTINGALE_CONFIG.dropStartPct * 100).toFixed(0)}% 아래에서 같은 돌파가 오면 낙폭 k%당 보유량 ×(k−1) 물타기 · 손절 없음. 익절 평단 +${(MARTINGALE_CONFIG.tpPct * 100).toFixed(0)}%, ${Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:${String(
+                  {`5선 돌파 · 1분봉 가격이 5선을 아래→위로 뚫으면 매수 — 봉 마감을 기다리지 않고 진행 중 봉으로 실시간 판정해요(봉당 1회) · 프리·정규·애프터만(주간거래 제외 · 후보 안에서만) · 옵션: ${describeEngineOptions()}${getActiveEngineOptions().martingale ? ` — 보유 중 평단 −${(MARTINGALE_CONFIG.dropStartPct * 100).toFixed(0)}% 아래에서 같은 돌파가 오면 낙폭 k%당 보유량 ×(k−1)` : ''} · 손절 없음. 익절 평단 +${(MARTINGALE_CONFIG.tpPct * 100).toFixed(0)}%, ${Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:${String(
                     MARTINGALE_CONFIG.closeAtMin % 60,
                   ).padStart(2, '0')} ET 전량 청산.`}
                 </Text>
@@ -634,7 +655,7 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                     MODEL_SYMMETRIC_EXIT_CONFIG.tpPct * 100
                   ).toFixed(0)}%)에 먼저 닿을 확률. ${MODEL_BAR_MINUTES}분봉마다 갱신, ${(
                     loadModel().threshold * 100
-                  ).toFixed(1)}%를 넘으면 정규장에서 매수해요. 익절선에서 모델이 아직 좋으면(상위 10%) 팔지 않고 밴드를 올려 달아요(래칫). 최장 ${MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분 보유. (참고) = 정규장 밖 판정.`}
+                  ).toFixed(1)}%를 넘으면 정규장에서 매수해요(옵션: ${describeEngineOptions()}). 익절선에서 모델이 아직 좋으면(상위 10%) 팔지 않고 밴드를 올려 달아요(래칫). 최장 ${MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분 보유. (참고) = 정규장 밖 판정.`}
                 </Text>
               )}
             </View>

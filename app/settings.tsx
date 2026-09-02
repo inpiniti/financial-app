@@ -16,6 +16,16 @@ import { MODEL_BAR_MINUTES } from '../features/scalper/modelMode';
 import { MARTINGALE_BAR_MINUTES } from '../features/scalper/martingaleMode';
 import { MARTINGALE_CONFIG } from '../core/martingale';
 import { SLOPE_CONFIG, SLOPE_EXIT_TICK_MS } from '../core/slope';
+import { DEFAULT_ENGINE_OPTIONS, type EngineOptions } from '../features/scalper/engineMode';
+
+/** 엔진 옵션의 진입 필터를 짧게 — " + 정배열 · 5선 상승" / "". 5선 돌파 패널 머리줄용. */
+function describeFilters(o: EngineOptions): string {
+  const parts: string[] = [];
+  if (o.ordered) parts.push('정배열');
+  if (o.ma5Up) parts.push('5선 상승');
+  if (o.allUp) parts.push('4선 모두 상승');
+  return parts.length ? ` + ${parts.join(' · ')}` : '';
+}
 import { MODEL_SYMMETRIC_EXIT_CONFIG } from '../core/model/exitRule';
 import {
   RankingSelectionPanel,
@@ -109,6 +119,9 @@ export default function SettingsScreen() {
   // 엔진 모드(2026-09-01) — 5선 물타기 단타 ↔ 예측 모델. 저장 후 앱을 완전히 껐다 켜야 반영된다(engineMode.ts).
   const [engineMode, setEngineMode] = useState<'martingale' | 'model' | 'slope'>(DEFAULT_APP_SETTINGS.engineMode);
   const savedEngineModeRef = useRef<'martingale' | 'model' | 'slope'>(DEFAULT_APP_SETTINGS.engineMode);
+  // 엔진 옵션(2026-09-03 ADR 0012) — 엔진과 별개로 중복 선택. 반영은 엔진 모드와 같은 규약(앱 재시작).
+  const [engineOptions, setEngineOptions] = useState<EngineOptions>(DEFAULT_ENGINE_OPTIONS);
+  const savedEngineOptionsRef = useRef<EngineOptions>(DEFAULT_ENGINE_OPTIONS);
 
   const [saving, setSaving] = useState(false);
 
@@ -134,6 +147,8 @@ export default function SettingsScreen() {
       setRankingDraft(draftFromSelection(appSettings.rankingSelection));
       setEngineMode(appSettings.engineMode);
       savedEngineModeRef.current = appSettings.engineMode;
+      setEngineOptions(appSettings.engineOptions);
+      savedEngineOptionsRef.current = appSettings.engineOptions;
     })();
   }, []);
 
@@ -212,6 +227,7 @@ export default function SettingsScreen() {
       await saveAppSettings({
         environment: 'live',
         engineMode,
+        engineOptions,
         orderQty: savedOrderQtyRef.current,
         buyCancelAfterSec,
         ...savedRollbackRef.current,
@@ -224,12 +240,16 @@ export default function SettingsScreen() {
         maxConcurrentGrids: parsedMaxGrids,
         rankingSelection,
       });
-      const modeChanged = engineMode !== savedEngineModeRef.current;
+      const optionsChanged = (Object.keys(engineOptions) as Array<keyof EngineOptions>).some(
+        (k) => engineOptions[k] !== savedEngineOptionsRef.current[k],
+      );
+      const modeChanged = engineMode !== savedEngineModeRef.current || optionsChanged;
       savedEngineModeRef.current = engineMode;
+      savedEngineOptionsRef.current = engineOptions;
       Alert.alert(
         '알림',
         modeChanged
-          ? '설정을 저장했어요. 엔진 모드는 앱을 완전히 종료했다가 다시 켜면 적용돼요 — 보유·미체결이 없는 상태에서 바꾸는 걸 권해요.'
+          ? '설정을 저장했어요. 엔진 모드·옵션은 앱을 완전히 종료했다가 다시 켜면 적용돼요 — 보유·미체결이 없는 상태에서 바꾸는 걸 권해요.'
           : '설정을 저장했어요.',
       );
     } finally {
@@ -375,8 +395,8 @@ export default function SettingsScreen() {
               [
                 {
                   value: 'martingale' as const,
-                  title: '5선 물타기 단타',
-                  desc: `${MARTINGALE_BAR_MINUTES}분봉 5선 상승·돌파에 사고, 익절 +${Math.round(MARTINGALE_CONFIG.tpPct * 100)}% · 평단 −${Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 아래 5선 돌파면 낙폭 k%당 (k−1)배 물타기 · 손절 없음`,
+                  title: '5선 돌파',
+                  desc: `${MARTINGALE_BAR_MINUTES}분봉 종가가 5선을 아래→위로 뚫으면 사고, 익절 +${Math.round(MARTINGALE_CONFIG.tpPct * 100)}% · ${Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:${String(MARTINGALE_CONFIG.closeAtMin % 60).padStart(2, '0')} ET 마감 청산 · 손절 없음 — 진입 조건·물타기는 아래 옵션으로`,
                 },
                 {
                   value: 'model' as const,
@@ -386,7 +406,7 @@ export default function SettingsScreen() {
                 {
                   value: 'slope' as const,
                   title: '기울기 단타',
-                  desc: `리스트의 기울기/10초가 +${SLOPE_CONFIG.entryPct}% 이상이면 사고, +${SLOPE_CONFIG.exitPct}% 아래로 내려오면 조건 없이 즉시 전량 매도 — 익절·손절·물타기 없음`,
+                  desc: `리스트의 기울기/10초가 +${SLOPE_CONFIG.entryPct}% 이상이면 사고, +${SLOPE_CONFIG.exitPct}% 아래로 내려오면 조건 없이 즉시 전량 매도 — 익절·손절 없음`,
                 },
               ]
             ).map((opt) => {
@@ -405,39 +425,73 @@ export default function SettingsScreen() {
                 </Pressable>
               );
             })}
+
+            {/* 엔진 옵션(2026-09-03 ADR 0012) — 엔진과 별개로 중복 선택. 세 엔진 공통. */}
+            <Text className="mb-1 mt-4 text-xs font-semibold text-[#191f28]">옵션 (중복 선택)</Text>
+            <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+              어느 엔진을 골랐든 함께 걸려요. 위 셋은 {MARTINGALE_BAR_MINUTES}분봉 이동평균(5·20·60·120) 기준 <Text className="font-semibold text-[#191f28]">진입 조건</Text>
+              이고 체크한 것끼리 모두 맞아야 사요. 물타기는 <Text className="font-semibold text-[#191f28]">보유 중</Text> 그 엔진의 매수 신호가 다시 왔을 때
+              평단보다 −{Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 넘게 내려가 있으면 낙폭 k%당 보유량의 (k−1)배를 더 사요.
+            </Text>
+            {(
+              [
+                { key: 'ordered' as const, title: '정배열', desc: '5선 > 20선 > 60선 > 120선일 때만' },
+                { key: 'ma5Up' as const, title: '5선만 상승', desc: '5선이 직전 봉보다 오르는 중일 때만' },
+                { key: 'allUp' as const, title: '5·20·60·120 모두 상승', desc: '네 선이 전부 직전 봉보다 오르는 중일 때만' },
+                { key: 'martingale' as const, title: '(k−1)배 물타기', desc: `보유 중 평단 −k%(k≥${Math.round(MARTINGALE_CONFIG.dropStartPct * 100)})에서 매수 신호면 보유량 ×(k−1) 추가 매수 · 상한 −${Math.round(MARTINGALE_CONFIG.dropMaxPct * 100)}%` },
+              ]
+            ).map((opt) => {
+              const on = engineOptions[opt.key];
+              return (
+                <Pressable
+                  key={opt.key}
+                  onPress={() => setEngineOptions({ ...engineOptions, [opt.key]: !on })}
+                  className={`mb-2 flex-row items-center rounded-2xl border px-4 py-3 ${on ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'}`}
+                >
+                  <View
+                    className={`mr-3 h-5 w-5 items-center justify-center rounded-md border ${on ? 'border-[#3182f6] bg-[#3182f6]' : 'border-[#d1d6db] bg-white'}`}
+                  >
+                    {on && <Text className="text-xs font-bold text-white">✓</Text>}
+                  </View>
+                  <View className="flex-1">
+                    <Text className={`text-sm font-semibold ${on ? 'text-[#3182f6]' : 'text-[#191f28]'}`}>{opt.title}</Text>
+                    <Text className="mt-0.5 text-xs leading-5 text-[#8b95a1]">{opt.desc}</Text>
+                  </View>
+                </Pressable>
+              );
+            })}
           </View>
         </Panel>
 
         {engineMode === 'martingale' ? (
-          // 5선 물타기 단타 모드(2026-09-02, ADR 0010) — 아래 고정값 패널은 선택한 모드 것을 보여준다.
-          <Panel title="5선 물타기 단타 (고정값)">
+          // 5선 돌파 엔진(2026-09-02 ADR 0010 · 옵션 분리 2026-09-03 ADR 0012) — 아래 고정값 패널은 선택한 엔진 것을 보여준다.
+          <Panel title="5선 돌파 (고정값)">
             <View className="px-5 pb-5">
               <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                진입·물타기는 {MARTINGALE_BAR_MINUTES}분봉 5선 돌파가, 매도는 +3% 선과 마감 시각이 정해요. 아래 값은 설계 고정값이라 여기서
-                바꿀 수 없어요.
+                진입은 {MARTINGALE_BAR_MINUTES}분봉 5선 돌파가, 매도는 +3% 선과 마감 시각이 정해요. 진입 조건 추가·물타기는 위 옵션에서 골라요.
+                아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
               </Text>
 
               <View className="mb-1 flex-row items-center justify-between">
                 <Text className="text-xs text-[#8b95a1]">진입</Text>
-                <Text className="text-sm font-semibold text-[#191f28]">5선 상승 + 5선 돌파</Text>
+                <Text className="text-sm font-semibold text-[#191f28]">5선 돌파{describeFilters(engineOptions)}</Text>
               </View>
               <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                {MARTINGALE_BAR_MINUTES}분봉 5선(최근 5봉 평균)이 오르는 중이고 종가가 5선을 아래에서 위로 뚫는 봉에 사요. 봉이 닫히기를
-                기다리지 않고 진행 중 봉을 현재가로 넣어 실시간으로 판단해요(봉당 1회). 프리·정규·애프터에서만 진입하고 주간거래 시간엔
+                {MARTINGALE_BAR_MINUTES}분봉 종가가 5선(최근 5봉 평균)을 아래에서 위로 뚫는 봉에 사요{engineOptions.ordered || engineOptions.ma5Up || engineOptions.allUp ? ' — 위에서 체크한 조건이 그 봉에서 함께 맞아야 해요' : ''}. 봉이
+                닫히기를 기다리지 않고 진행 중 봉을 현재가로 넣어 실시간으로 판단해요(봉당 1회). 프리·정규·애프터에서만 진입하고 주간거래 시간엔
                 쉬어요.
               </Text>
 
               <View className="mb-1 flex-row items-center justify-between">
                 <Text className="text-xs text-[#8b95a1]">물타기</Text>
                 <Text className="text-sm font-semibold text-[#191f28]">
-                  평단 −{Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 아래 5선 돌파 → (k−1)배
+                  {engineOptions.martingale ? `평단 −${Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 아래 5선 돌파 → (k−1)배` : '없음(옵션 꺼짐)'}
                 </Text>
               </View>
               <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                보유 중 현재가가 평단보다 −{Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 이상 내려간 상태에서 같은 5선 돌파가 오면
-                추가로 사요. 낙폭 k%(내림)면 지금 보유량의 (k−1)배 — −3% 2배 · −4% 3배 · … · −
-                {Math.round(MARTINGALE_CONFIG.dropMaxPct * 100)}% {Math.round(MARTINGALE_CONFIG.dropMaxPct * 100) - 1}배가 상한이에요.
-                횟수·금액 상한은 없고, 현금이 모자라면 그 물타기만 건너뛰어요. 손절은 없어요.
+                {engineOptions.martingale
+                  ? `보유 중 현재가가 평단보다 −${Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 이상 내려간 상태에서 같은 5선 돌파가 오면 추가로 사요. 낙폭 k%(내림)면 지금 보유량의 (k−1)배 — −3% 2배 · −4% 3배 · … · −${Math.round(MARTINGALE_CONFIG.dropMaxPct * 100)}% ${Math.round(MARTINGALE_CONFIG.dropMaxPct * 100) - 1}배가 상한이에요. 횟수·금액 상한은 없고, 현금이 모자라면 그 물타기만 건너뛰어요. 손절은 없어요.`
+                  : '옵션에서 (k−1)배 물타기를 체크하면 보유 중 같은 5선 돌파에서 낙폭 배수로 추가 매수해요. 지금은 한 번 사고 한 번 팔아요. 손절은 없어요.'}
               </Text>
 
               <View className="mb-1 flex-row items-center justify-between">

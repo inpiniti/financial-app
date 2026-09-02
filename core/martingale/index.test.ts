@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  AveragingDownRule,
   MARTINGALE_CONFIG,
   MartingaleRule,
+  NO_ENTRY_FILTERS,
+  entryFiltersPass,
   evaluateMartingaleBars,
   evaluateMartingaleLive,
   isMartingaleEntryBar,
@@ -167,5 +170,86 @@ describe('MartingaleRule — 포지션 규칙(익절 +3%, 물타기)', () => {
     expect(r.adds).toBe(2);
     r.setPosition({ qty: 90, avgPrice: 96 }); // 같은 수량 — 물타기 아님
     expect(r.adds).toBe(2);
+  });
+});
+
+describe('진입 필터(엔진 옵션, ADR 0012) — 정배열·5선 상승·4선 모두 상승 AND', () => {
+  it('필터 없음이면 돌파만으로 entry, 5선 하락 중 돌파도 신호', () => {
+    const closes = Array.from({ length: 122 }, (_, i) => 200 - i * 0.5); // 완만한 하락 — 5선 하락
+    closes.push(closes[121] + 1.5); // 5선(≈140.4) 위로 — 5선 자체는 아직 하락(140.5→140.4)
+    const ev = evaluateMartingaleBars(closes, NO_ENTRY_FILTERS);
+    expect(ev.crossUp).toBe(true);
+    expect(ev.ma5Up).toBe(false);
+    expect(ev.filtersPass).toBe(true);
+    expect(ev.entry).toBe(true);
+    expect(evaluateMartingaleBars(closes).entry).toBe(false); // 기본(5선 상승)은 막는다
+  });
+
+  it('정배열·4선 상승은 상승 시드에서 true, 하락 시드에서 false — 둘 다 체크하면 AND', () => {
+    const rising = risingCloses(121);
+    rising.push(rising[120] - 3, rising[120] + 8);
+    const up = evaluateMartingaleBars(rising, { ordered: true, ma5Up: true, allUp: true });
+    expect(up.ordered).toBe(true);
+    expect(up.allUp).toBe(true);
+    expect(up.entry).toBe(true);
+    const falling = Array.from({ length: 122 }, (_, i) => 300 - i);
+    falling.push(200); // 반등 돌파
+    const dn = evaluateMartingaleBars(falling, { ordered: true, ma5Up: false, allUp: false });
+    expect(dn.crossUp).toBe(true);
+    expect(dn.ordered).toBe(false);
+    expect(dn.entry).toBe(false);
+    expect(evaluateMartingaleBars(falling, { ordered: false, ma5Up: true, allUp: false }).entry).toBe(true); // 5선은 반등으로 상승
+  });
+
+  it('entryFiltersPass — 필요한 값이 null이면 null(fail-closed), 필터 없으면 true', () => {
+    expect(entryFiltersPass({ ordered: null, ma5Up: true, allUp: null }, { ordered: true, ma5Up: false, allUp: false })).toBeNull();
+    expect(entryFiltersPass({ ordered: null, ma5Up: true, allUp: null }, { ordered: false, ma5Up: true, allUp: false })).toBe(true);
+    expect(entryFiltersPass({ ordered: null, ma5Up: null, allUp: null }, NO_ENTRY_FILTERS)).toBe(true);
+    expect(evaluateMartingaleBars(risingCloses(50), { ordered: true, ma5Up: false, allUp: false }).filtersPass).toBeNull();
+  });
+
+  it('evaluateMartingaleLive도 같은 필터를 받는다', () => {
+    const closed = Array.from({ length: 122 }, (_, i) => 300 - i);
+    expect(evaluateMartingaleLive(closed, 200, NO_ENTRY_FILTERS).entry).toBe(true);
+    expect(evaluateMartingaleLive(closed, 200, { ordered: true, ma5Up: false, allUp: false }).entry).toBe(false);
+  });
+});
+
+describe('물타기 옵션 — MartingaleRule 스위치와 AveragingDownRule 데코레이터', () => {
+  it('averagingDown=false면 BUY 신호를 무시한다', () => {
+    const r = new MartingaleRule({ qty: 10, avgPrice: 100 }, { averagingDown: false });
+    expect(r.decide('BUY', 96)).toBeNull();
+    expect(r.onPriceAt(103)).toEqual({ side: 'sell', qty: 10 }); // 익절은 그대로
+  });
+
+  it('데코레이터: 안쪽이 BUY에 null이면 낙폭 배수로 사고, 나머지는 안쪽에 위임한다', () => {
+    const calls: string[] = [];
+    const inner = {
+      qty: 10,
+      avgPrice: 100,
+      get view() {
+        return { qty: this.qty, avgPrice: this.avgPrice, entryQty: 10, sellLine: 103, buyLine: 97 };
+      },
+      decide: (signal: 'BUY' | 'SELL') => (signal === 'SELL' ? { side: 'sell' as const, qty: 10 } : null),
+      onPrice: (price: number) => (price >= 103 ? { side: 'sell' as const, qty: 10 } : null),
+      shouldAbort: () => {
+        calls.push('abort');
+        return false;
+      },
+      setPosition(p: { qty: number; avgPrice: number }) {
+        this.qty = p.qty;
+        this.avgPrice = p.avgPrice;
+      },
+    };
+    const r = new AveragingDownRule(inner);
+    expect(r.decide('BUY', 97.5)).toBeNull(); // −2.5%
+    expect(r.decide('BUY', 96)).toEqual({ side: 'buy', qty: 30 }); // −4% → ×3
+    expect(r.decide('SELL', 96)).toEqual({ side: 'sell', qty: 10 }); // 안쪽 결정 우선
+    expect(r.onPrice(103)).toEqual({ side: 'sell', qty: 10 });
+    expect(r.shouldAbort('sell', 1)).toBe(false);
+    expect(calls).toEqual(['abort']);
+    r.setPosition({ qty: 40, avgPrice: 97 });
+    expect(r.view.qty).toBe(40);
+    expect(r.decide('BUY', 94)).toEqual({ side: 'buy', qty: 80 }); // 새 평단 97 대비 −3.1% → ×2
   });
 });

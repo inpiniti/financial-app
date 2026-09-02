@@ -41,7 +41,8 @@ import type { OverseasExchangeCode } from '../../../kis/trId';
 import { INFLECTION_THRESHOLDS, MARTINGALE_POSITION_CONFIG, MODEL_CONFIG, SLOPE_POSITION_CONFIG, TREND_CONFIG } from '../autopilot';
 import { MINUTE_BAR_RING_SIZE, TREND_BAR_MINUTES, type MinuteBar } from '../../../core/trend/bars';
 import { MARTINGALE_BAR_MINUTES, MARTINGALE_MODE } from '../martingaleMode';
-import { setActiveEngineMode } from '../engineMode';
+import { setActiveEngineMode, setActiveEngineOptions } from '../engineMode';
+import { anyEntryFilter } from '../../../core/martingale';
 import {
   fetchTossDailyCloses,
   fetchTossMinuteBars,
@@ -162,6 +163,10 @@ async function buildManager(): Promise<ManagerBootstrap> {
   // 화면·도움말(getActiveEngineMode)이 전부 이 값을 따른다. 설정을 바꾸면 앱을 껐다 켜야 반영된다.
   const engineMode = appSettings.engineMode;
   setActiveEngineMode(engineMode);
+  // 엔진 옵션(2026-09-03 ADR 0012) — 진입 필터·물타기. 엔진과 같은 규약(앱 수명당 1회, 재시작 반영).
+  const engineOptions = appSettings.engineOptions;
+  setActiveEngineOptions(engineOptions);
+  const entryFilters = { ordered: engineOptions.ordered, ma5Up: engineOptions.ma5Up, allUp: engineOptions.allUp };
 
   const approvalKey = await getApprovalKey(environment, credentials);
   // 직전 실행의 구독 키 — 강제 종료로 서버에 남은 등록을 첫 열림에 해제 프레임으로 쓸어낸다(2026-08-28 MAX SUBSCRIBE OVER).
@@ -315,7 +320,8 @@ async function buildManager(): Promise<ManagerBootstrap> {
     }
     // ±3% 단타 모드는 1분봉 시드 — 활성 엔진 모드가 martingale이면 추세 봉 주기 대신 1분을 쓴다(슬롯 빌더도 1분).
     return fetchTossMinuteBars(code, MINUTE_BAR_RING_SIZE, {
-      intervalMin: MARTINGALE_MODE && engineMode === 'martingale' ? MARTINGALE_BAR_MINUTES : TREND_BAR_MINUTES,
+      // 진입 필터(엔진 옵션)도 1분봉 4선 정의라, 켜져 있으면 모델·기울기 모드에서도 1분봉 시드.
+      intervalMin: (MARTINGALE_MODE && engineMode === 'martingale') || anyEntryFilter(entryFilters) ? MARTINGALE_BAR_MINUTES : TREND_BAR_MINUTES,
     });
   };
 
@@ -409,6 +415,9 @@ async function buildManager(): Promise<ManagerBootstrap> {
     // 기울기 단타(2026-09-02 ADR 0011) — engineMode='slope'일 때만 주입한다. 주입되면 모든 모드보다 우선(SLOPE_MODE 킬스위치 AND).
     // 신호: 슬롯이 틱마다 기울기/10초 문턱(+1%) 전환으로 BUY/SELL. 청산: 기울기 < +1% 즉시 전량 매도(100ms 틱), 그 외 조건 없음.
     slope: engineMode === 'slope' ? SLOPE_POSITION_CONFIG : undefined,
+    // 엔진 옵션(ADR 0012) — 세 엔진 공통 진입 필터·(k−1)배 물타기.
+    entryFilters,
+    averagingDown: engineOptions.martingale,
     // 추세 → 그리드 → 매매(2026-08-18 도메인 문서) — 모델 롤백용 보존. 모델이 켜져 있는 동안은 쓰이지 않는다.
     // 끄려면 TREND_MODE=false(한 줄 롤백 → 변곡점 조합) 또는 이 주입 두 줄을 뺀다.
     trend: TREND_CONFIG,
