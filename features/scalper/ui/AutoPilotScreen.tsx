@@ -588,7 +588,12 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                   <View key={grid.ticker}>
                     {/* 그리드 사이 구분선 — 게이지가 연달아 붙으면 어느 종목 것인지 읽기 어렵다. */}
                     {i > 0 && <View className="mx-5 h-px bg-[#f2f4f6]" />}
-                    <GridGauge grid={grid} onDoubleTapSell={() => handleSellNow(grid)} />
+                    {/* getLive(2026-09-02) — 게이지가 250ms로 스스로 신선값을 당겨 부드럽게 움직인다(화면 전체 리렌더 없음). */}
+                    <GridGauge
+                      grid={grid}
+                      onDoubleTapSell={() => handleSellNow(grid)}
+                      getLive={() => autopilot.getGridLive(grid.ticker)}
+                    />
                   </View>
                 ))}
               </Panel>

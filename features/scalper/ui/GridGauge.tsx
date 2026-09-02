@@ -1,18 +1,20 @@
 // 매도 관리 그리드 게이지 — 진입 후 관리 중(view.grid non-null)일 때 AutoPilotScreen이 Panel로 보여준다.
-// 가로 게이지: 왼쪽 끝=매수가(평단−매수폭), 오른쪽 끝=매도가(평단+매도폭), 평단은 두 폭의 비율 위치.
-// 추세 관리(rangeKind='dayRange', 2026-08-18)는 주문선이 없어 양끝이 오늘 최저·최고가(참고 범위)이고 회색 라벨로 구분한다.
+// 2026-09-02 리디자인(사용자 요청): 축을 **오늘 최저~최고**로 넓히고, 그 위에 ±밴드(평단 −3%/+3%)·평단·
+// **실시간 5선**(진행 중 봉 포함, 1초 주기)·진입 후 고저·현재가를 함께 그린다. 현재가 화살표는 250ms
+// 라이브 폴(getLive) + Animated(translateX, native driver)로 **부드럽게 미끄러진다** — 이전에는 매니저
+// emit(초 단위)마다 순간이동해 뚝뚝 끊겨 보였다. 폴은 게이지 내부에서만 돌아 화면 전체 리렌더를 만들지 않는다.
 // 헤더에 현재가의 평단 대비 %(pnlColor)를 함께 보여준다 — 1주 실험에선 금액보다 %가 정보다.
-// (2026-08-14 매수·매도폭 분리 — 폭이 비대칭이라 평단이 정중앙이 아닐 수 있다.) 현재가는 ▼ 화살표 + 말풍선.
-// app-ui-style: 이모지 금지(Ionicons도 필요 없는 단순 도형이라 SVG 직접), 손익이 아니라 매수/매도 방향 색이라
-// pnlColor() 대신 스킬이 지정한 고정 색(매도=#f04452·매수=#3182f6·평단/현재가=#191f28)을 그대로 쓴다.
-import { useRef, useState } from 'react';
-import { Pressable, Text, View, type LayoutChangeEvent } from 'react-native';
+// app-ui-style: 이모지 금지(단순 도형은 SVG 직접), 매도=#f04452·매수=#3182f6·평단/현재가=#191f28 고정 색.
+// 5선은 손익 색이 아니라 차트 오버레이 색 계열의 주황(#f59e0b) — 밴드 빨강/파랑과 구분되는 제3색이 필요하다.
+import { memo, useEffect, useRef, useState } from 'react';
+import { Animated, Easing, Pressable, Text, View, type LayoutChangeEvent } from 'react-native';
 import Svg, { Line } from 'react-native-svg';
 import { formatKrw, formatSignedPercentFromRatio, formatUsd, pnlColor } from '../../../lib/format';
 import { useUsdKrwRate } from '../../../lib/useUsdKrwRate';
 import type { AutoPilotGridView } from '../autopilot';
+import type { GridLiveSample } from '../autopilotManager';
 import { formatPrice } from './format';
-import { normalizeGridPosition } from './gridGaugeMath';
+import { gaugeScaleOf, normalizeGridPosition } from './gridGaugeMath';
 
 const SELL_COLOR = '#f04452';
 const BUY_COLOR = '#3182f6';
@@ -20,6 +22,11 @@ const NEUTRAL_COLOR = '#191f28';
 const TRACK_COLOR = '#e5e8eb';
 const TICK_COLOR = '#c1c9d2';
 const MUTED_COLOR = '#8b95a1';
+/** 5선 마커 — 밴드(빨강/파랑)·평단(검정)과 구분되는 제3색(차트 이평선 계열 주황). */
+const MA5_COLOR = '#f59e0b';
+
+/** 라이브 폴 주기(ms) — 250ms면 초당 4샘플 + 그 사이를 애니메이션이 메워 사람 눈에 연속으로 보인다. */
+const LIVE_POLL_MS = 250;
 
 /** 매수 다리 상태 안내 문구 — full이면 없음(정상). */
 const BUY_LEG_NOTICE: Record<string, string | undefined> = {
@@ -49,9 +56,14 @@ export interface GridGaugeProps {
    * 미주입이면 게이지는 그냥 보기 전용이다(누름 없음).
    */
   onDoubleTapSell?: () => void;
+  /**
+   * 고빈도 라이브 샘플(2026-09-02) — 250ms마다 게이지가 스스로 불러 현재가·밴드·5선·고저를 갱신한다.
+   * 미주입이면 grid(emit 스냅샷) 값만으로 그린다(옛 동작 — 테스트·하위호환).
+   */
+  getLive?: () => GridLiveSample | null;
 }
 
-export function GridGauge({ grid, name, onDoubleTapSell }: GridGaugeProps) {
+export const GridGauge = memo(function GridGauge({ grid, name, onDoubleTapSell, getLive }: GridGaugeProps) {
   const [trackWidth, setTrackWidth] = useState(0);
   const onTrackLayout = (e: LayoutChangeEvent) => setTrackWidth(e.nativeEvent.layout.width);
   // 두 번 누르기 — 마지막 누름 시각만 기억한다(타이머 없음: 첫 누름은 어차피 아무 일도 하지 않는다).
@@ -67,28 +79,94 @@ export function GridGauge({ grid, name, onDoubleTapSell }: GridGaugeProps) {
     lastTapAt.current = now;
   };
 
+  // ── 라이브 폴(250ms) — getLive는 렌더마다 새 클로저일 수 있어 ref로 받아 interval은 한 번만 건다.
+  const getLiveRef = useRef(getLive);
+  getLiveRef.current = getLive;
+  const [live, setLive] = useState<GridLiveSample | null>(null);
+  useEffect(() => {
+    if (getLiveRef.current === undefined) return;
+    setLive(getLiveRef.current?.() ?? null);
+    const timer = setInterval(() => setLive(getLiveRef.current?.() ?? null), LIVE_POLL_MS);
+    return () => clearInterval(timer);
+  }, []);
+
+  // 라이브 샘플 우선, 없으면 emit 스냅샷(grid) — 밴드는 래칫으로 움직이므로 라이브가 더 신선하다.
+  const avgPrice = live?.avgPrice ?? grid.avgPrice;
+  const bandLo = live?.buyPrice ?? grid.buyPrice;
+  const bandHi = live?.sellPrice ?? grid.sellPrice;
+  const currentPrice = live?.currentPrice ?? grid.currentPrice;
+  const holdingQty = live?.holdingQty ?? grid.holdingQty;
+  const dayLow = live?.dayLow ?? null;
+  const dayHigh = live?.dayHigh ?? null;
+  const ma5 = live?.ma5 ?? null;
+  const sinceHigh = live?.sinceEntryHigh ?? grid.sinceEntryHigh ?? null;
+  const sinceLow = live?.sinceEntryLow ?? grid.sinceEntryLow ?? null;
+
   // 보유금액 = 보유수량 × 현재가(최근 틱). 틱이 아직 없으면 표시 불가(—).
   // 환율은 잔고 기준 공용 캐시(30분) — 못 구하면 원화 병기 없이 USD만 보여준다.
   const usdKrw = useUsdKrwRate();
-  const holdingValueUsd = grid.currentPrice === null ? null : grid.currentPrice * grid.holdingQty;
+  const holdingValueUsd = currentPrice === null ? null : currentPrice * holdingQty;
   const holdingValueKrw = holdingValueUsd !== null && usdKrw !== null ? holdingValueUsd * usdKrw : null;
 
   const dayRange = grid.rangeKind === 'dayRange';
   // 평단 대비 현재가 비율 — 틱이 없으면 null(—).
-  const pnlRatio =
-    grid.currentPrice === null || !(grid.avgPrice > 0) ? null : (grid.currentPrice - grid.avgPrice) / grid.avgPrice;
+  const pnlRatio = currentPrice === null || !(avgPrice > 0) ? null : (currentPrice - avgPrice) / avgPrice;
   const buyLegAbsent = grid.buyLegStatus === 'skippedCash' || grid.buyLegStatus === 'rejected';
   const buyLegNotice = BUY_LEG_NOTICE[grid.buyLegStatus];
 
-  const position = grid.currentPrice === null ? null : normalizeGridPosition(grid.currentPrice, grid.buyPrice, grid.sellPrice);
-  const rawArrowLeft = position === null ? null : position * trackWidth;
+  // ── 축: 오늘 고저 기본 + 모든 마커 포함(2026-09-02). 마커 위치는 전부 이 축 위 0~1.
+  const scale = gaugeScaleOf(
+    [dayLow, dayHigh, bandLo, bandHi, avgPrice, ma5, sinceLow, sinceHigh, currentPrice],
+    bandLo,
+    bandHi,
+  );
+  const pos = (v: number | null) => (v === null || !(v > 0) ? null : normalizeGridPosition(v, scale.lo, scale.hi));
+  const avgPos = pos(avgPrice) ?? 0.5;
+
+  // ── 현재가 화살표 — Animated(translateX)로 샘플 사이를 미끄러뜨린다(native driver, 레이아웃 대신 transform).
+  const arrowPos = pos(currentPrice);
+  const rawArrowLeft = arrowPos === null || trackWidth <= 0 ? null : arrowPos * trackWidth;
   const arrowLeft =
     rawArrowLeft === null ? null : Math.min(trackWidth - BUBBLE_HALF_WIDTH, Math.max(BUBBLE_HALF_WIDTH, rawArrowLeft));
+  const arrowX = useRef(new Animated.Value(0)).current;
+  const arrowInitialized = useRef(false);
+  useEffect(() => {
+    if (arrowLeft === null) return;
+    if (!arrowInitialized.current) {
+      arrowInitialized.current = true;
+      arrowX.setValue(arrowLeft); // 첫 표시는 점프(0에서 미끄러져 오지 않게).
+      return;
+    }
+    Animated.timing(arrowX, {
+      toValue: arrowLeft,
+      duration: LIVE_POLL_MS,
+      easing: Easing.linear,
+      useNativeDriver: true,
+    }).start();
+  }, [arrowLeft, arrowX]);
 
-  // 매수폭·매도폭이 달라(2026-08-14 분리) 평단이 정중앙이 아니다 — 트랙 위 실제 비율 위치에 그린다.
-  const avgPos = normalizeGridPosition(grid.avgPrice, grid.buyPrice, grid.sellPrice);
-  /** 눈금 5개 — 매수가·중간·평단·중간·매도가. 평단 위치(avgPos) 기준으로 중간 눈금을 이등분한다. */
-  const tickFractions = [0, avgPos / 2, avgPos, (1 + avgPos) / 2, 1];
+  // 밴드 오프셋 %(평단 대비) — 모드마다 폭이 달라 하드코딩하지 않고 실제 값에서 계산한다.
+  const bandLoPct = avgPrice > 0 ? ((bandLo - avgPrice) / avgPrice) * 100 : null;
+  const bandHiPct = avgPrice > 0 ? ((bandHi - avgPrice) / avgPrice) * 100 : null;
+  const fmtPct = (v: number | null) => (v === null ? '' : `${v > 0 ? '+' : ''}${v.toFixed(1)}%`);
+
+  /** 세로 마커 한 벌 — SVG Line. null 위치는 그리지 않는다. */
+  const marker = (v: number | null, stroke: string, half: number, width: number, dash?: string) => {
+    const p = v === null ? null : pos(v);
+    if (p === null || trackWidth <= 0) return null;
+    const x = p * trackWidth;
+    return (
+      <Line
+        x1={x}
+        y1={GAUGE_HEIGHT / 2 - half}
+        x2={x}
+        y2={GAUGE_HEIGHT / 2 + half}
+        stroke={stroke}
+        strokeWidth={width}
+        strokeDasharray={dash}
+      />
+    );
+  };
 
   return (
     <Pressable
@@ -98,8 +176,7 @@ export function GridGauge({ grid, name, onDoubleTapSell }: GridGaugeProps) {
       accessibilityRole={onDoubleTapSell ? 'button' : undefined}
       accessibilityLabel={onDoubleTapSell ? `${name ?? grid.ticker} 두 번 눌러 전량 매도` : undefined}
     >
-      {/* 헤더: 종목명(아래 종목코드·보유수량) · 보유금액(달러, 아래 원화 병기) 2열.
-          보유금액 = 보유수량 × 현재가 — 환율을 못 구했거나 틱이 없으면 원화 줄은 생략한다. */}
+      {/* 헤더: 종목명(아래 종목코드·보유수량) · 보유금액(달러, 아래 원화 병기) 2열. */}
       <View className="mb-5 flex-row items-center">
         <View className="flex-1">
           <Text className="text-base font-bold text-[#191f28]" numberOfLines={1}>
@@ -107,7 +184,7 @@ export function GridGauge({ grid, name, onDoubleTapSell }: GridGaugeProps) {
           </Text>
           <Text className="text-xs text-[#8b95a1]">
             {name !== undefined ? `${grid.ticker} · ` : ''}
-            {grid.holdingQty}주
+            {holdingQty}주
           </Text>
           <Text className="mt-0.5 text-xs font-semibold" style={{ color: pnlColor(pnlRatio) }}>
             평단 대비 {formatSignedPercentFromRatio(pnlRatio, 2)}
@@ -124,61 +201,52 @@ export function GridGauge({ grid, name, onDoubleTapSell }: GridGaugeProps) {
         </View>
       </View>
 
-      {/* 현재가 화살표 + 말풍선 — 트랙 폭을 알아야 위치를 잡을 수 있어 trackWidth가 0이면 숨긴다. */}
+      {/* 현재가 화살표 + 말풍선 — translateX 애니메이션으로 미끄러진다. 트랙 폭을 모르면 숨긴다. */}
       <View style={{ height: 34 }}>
         {arrowLeft !== null && trackWidth > 0 && (
-          <View style={{ position: 'absolute', left: arrowLeft - BUBBLE_HALF_WIDTH, width: BUBBLE_HALF_WIDTH * 2, alignItems: 'center' }}>
+          <Animated.View
+            style={{
+              position: 'absolute',
+              left: -BUBBLE_HALF_WIDTH,
+              width: BUBBLE_HALF_WIDTH * 2,
+              alignItems: 'center',
+              transform: [{ translateX: arrowX }],
+            }}
+          >
             <View className="rounded-full px-2 py-0.5" style={{ backgroundColor: NEUTRAL_COLOR }}>
               <Text className="text-[11px] font-semibold text-white" numberOfLines={1}>
-                {formatPrice(grid.currentPrice)}
+                {formatPrice(currentPrice)}
               </Text>
             </View>
             <Text style={{ color: NEUTRAL_COLOR, fontSize: 13, lineHeight: 14, marginTop: -1 }}>▼</Text>
-          </View>
+          </Animated.View>
         )}
       </View>
 
-      {/* 게이지 트랙 — 왼쪽 끝 매수가 · 오른쪽 끝 매도가 · 중앙 평단가. */}
+      {/* 게이지 트랙 — 축은 오늘 최저~최고. 마커: 양끝(회색)·진입 후 고저(연회색)·±밴드(파랑/빨강)·평단(검정)·5선(주황 점선). */}
       <View onLayout={onTrackLayout} style={{ height: GAUGE_HEIGHT, justifyContent: 'center' }}>
         {trackWidth > 0 && (
           <Svg width={trackWidth} height={GAUGE_HEIGHT}>
             <Line x1={0} y1={GAUGE_HEIGHT / 2} x2={trackWidth} y2={GAUGE_HEIGHT / 2} stroke={TRACK_COLOR} strokeWidth={3} strokeLinecap="round" />
-            {tickFractions.map((f, i) => {
-              const x = trackWidth * f;
-              const isEdgeOrMid = i === 0 || i === tickFractions.length - 1 || i === 2;
-              const edgeStroke = (orders: string) => (dayRange ? MUTED_COLOR : orders);
-              const stroke =
-                i === 0 ? edgeStroke(BUY_COLOR) : i === tickFractions.length - 1 ? edgeStroke(SELL_COLOR) : i === 2 ? NEUTRAL_COLOR : TICK_COLOR;
-              return (
-                <Line
-                  key={i}
-                  x1={x}
-                  y1={GAUGE_HEIGHT / 2 - (isEdgeOrMid ? 8 : 5)}
-                  x2={x}
-                  y2={GAUGE_HEIGHT / 2 + (isEdgeOrMid ? 8 : 5)}
-                  stroke={stroke}
-                  strokeWidth={isEdgeOrMid ? 2 : 1.5}
-                />
-              );
-            })}
+            {marker(dayLow, MUTED_COLOR, 6, 1.5)}
+            {marker(dayHigh, MUTED_COLOR, 6, 1.5)}
+            {marker(sinceLow, TICK_COLOR, 4, 1.5)}
+            {marker(sinceHigh, TICK_COLOR, 4, 1.5)}
+            {!dayRange && marker(bandLo, buyLegAbsent ? MUTED_COLOR : BUY_COLOR, 8, 2)}
+            {!dayRange && marker(bandHi, SELL_COLOR, 8, 2)}
+            {marker(avgPrice, NEUTRAL_COLOR, 9, 2)}
+            {marker(ma5, MA5_COLOR, 8, 2, '2 2')}
           </Svg>
         )}
       </View>
 
-      {/* 하단 가격 라벨 — 매수가(좌)·평단가(트랙 위 실제 위치)·매도가(우).
-          폭이 비대칭이라 평단 라벨은 avgPos에 절대 배치한다(트랙 폭을 모르면 중앙 폴백).
-          매수 다리가 없으면(생략·거절) 회색으로 죽인다. */}
+      {/* 하단 라벨 — 좌 오늘 최저 · 중(평단 위치) 평단가 · 우 오늘 최고. 고저가 아직 없으면 밴드 끝을 대신 적는다. */}
       <View className="mt-1 flex-row items-start justify-between">
         <View>
-          <Text
-            className="text-[11px] font-semibold"
-            style={{ color: dayRange || buyLegAbsent ? MUTED_COLOR : BUY_COLOR }}
-          >
-            {dayRange ? '오늘 최저' : '매수가'}
+          <Text className="text-[11px] font-semibold" style={{ color: MUTED_COLOR }}>
+            오늘 최저
           </Text>
-          <Text className="text-xs font-bold" style={{ color: buyLegAbsent ? MUTED_COLOR : NEUTRAL_COLOR }}>
-            {formatPrice(grid.buyPrice)}
-          </Text>
+          <Text className="text-xs font-bold text-[#191f28]">{formatPrice(dayLow ?? bandLo)}</Text>
         </View>
         <View
           className="items-center"
@@ -194,16 +262,34 @@ export function GridGauge({ grid, name, onDoubleTapSell }: GridGaugeProps) {
         >
           <Text className="text-[11px] font-semibold text-[#191f28]">평단가</Text>
           <Text className="text-xs font-bold text-[#191f28]" numberOfLines={1}>
-            {formatPrice(grid.avgPrice)}
+            {formatPrice(avgPrice)}
           </Text>
         </View>
         <View className="items-end">
-          <Text className="text-[11px] font-semibold" style={{ color: dayRange ? MUTED_COLOR : SELL_COLOR }}>
-            {dayRange ? '오늘 최고' : '매도가'}
+          <Text className="text-[11px] font-semibold" style={{ color: MUTED_COLOR }}>
+            오늘 최고
           </Text>
-          <Text className="text-xs font-bold text-[#191f28]">{formatPrice(grid.sellPrice)}</Text>
+          <Text className="text-xs font-bold text-[#191f28]">{formatPrice(dayHigh ?? bandHi)}</Text>
         </View>
       </View>
+
+      {/* 마커 값 줄 — 밴드(±%)·진입 후 고저·5선 위치 관계. 색이 트랙 마커와 1:1로 대응한다. */}
+      {!dayRange && (
+        <Text className="mt-2 text-[11px] text-[#8b95a1]">
+          밴드 <Text style={{ color: buyLegAbsent ? MUTED_COLOR : BUY_COLOR }}>{fmtPct(bandLoPct)} {formatPrice(bandLo)}</Text>
+          {' · '}
+          <Text style={{ color: SELL_COLOR }}>{fmtPct(bandHiPct)} {formatPrice(bandHi)}</Text>
+          {sinceLow !== null && sinceHigh !== null && (
+            <Text>{`  ·  진입 후 ${formatPrice(sinceLow)}~${formatPrice(sinceHigh)}`}</Text>
+          )}
+        </Text>
+      )}
+      {ma5 !== null && currentPrice !== null && (
+        <Text className="mt-0.5 text-[11px] text-[#8b95a1]">
+          <Text style={{ color: MA5_COLOR }}>5선 {formatPrice(ma5)}</Text>
+          {` · 현재가는 5선 ${currentPrice >= ma5 ? '위' : '아래'} · 평단은 5선 ${avgPrice >= ma5 ? '위' : '아래'}`}
+        </Text>
+      )}
 
       {/* 상태 안내 — 격리 멈춤(빨강) > 매수 다리 안내 > 주문 준비 중 순으로 하나만 보여준다. */}
       {grid.faultText !== null ? (
@@ -224,4 +310,4 @@ export function GridGauge({ grid, name, onDoubleTapSell }: GridGaugeProps) {
       )}
     </Pressable>
   );
-}
+});

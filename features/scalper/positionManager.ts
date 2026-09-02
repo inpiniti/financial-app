@@ -230,6 +230,12 @@ export interface PositionGaugeView {
   buyLegStatus: BuyLegStatus;
   /** 게이지 양끝의 의미 — 'orders'=주문선/조건선, 'dayRange'=오늘 최저/최고(추세 — 주문선이 없다, 2026-08-18). */
   rangeKind?: 'orders' | 'dayRange';
+  /**
+   * 진입(인계) 후 관측된 최고/최저 체결가(2026-09-02, 게이지 참고 마커) — 규칙형 관리자만 채운다.
+   * 시작값은 평단이고 이후 틱·게이지 조회 때 갱신된다. 관측 없으면 undefined.
+   */
+  sinceEntryHigh?: number;
+  sinceEntryLow?: number;
 }
 
 export type PositionPollResult =
@@ -555,6 +561,10 @@ export class RulePositionManager implements PositionManager {
   private manualCheckAt: number | undefined;
   private manualMisses = 0;
 
+  /** 진입(인계) 후 최고/최저 체결가(2026-09-02, 게이지 마커) — arm 때 평단으로 시작, 틱·게이지 조회 때 갱신. */
+  private sinceEntryHigh: number | null = null;
+  private sinceEntryLow: number | null = null;
+
   // ── 청산 발주 거절 재시도(2026-09-01) ──
   /** 이 시각 전에는 새 청산 매도를 시작하지 않는다(거절 백오프). */
   private exitRetryNotBefore = 0;
@@ -595,6 +605,8 @@ export class RulePositionManager implements PositionManager {
     this.rule = built.rule;
     this.circuit = built.circuit;
     this.priceExit = built.priceExit;
+    this.sinceEntryHigh = seed.avgPrice;
+    this.sinceEntryLow = seed.avgPrice;
     this.manualCheckAt =
       this.opts.manualExitCheckMs === undefined ? undefined : this.deps.clock.now() + this.opts.manualExitCheckMs;
     this.event(`${this.label} ${this.deps.adopted ? '등록' : '인계'} · ${built.armText}`);
@@ -607,9 +619,17 @@ export class RulePositionManager implements PositionManager {
     return this.ruleOrThrow().view;
   }
 
+  /** 진입 후 최고/최저 갱신 — 틱(1초)과 게이지 조회(고빈도 폴) 양쪽에서 부른다. */
+  private trackExtremes(price: number | null | undefined): void {
+    if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0) return;
+    if (this.sinceEntryHigh === null || price > this.sinceEntryHigh) this.sinceEntryHigh = price;
+    if (this.sinceEntryLow === null || price < this.sinceEntryLow) this.sinceEntryLow = price;
+  }
+
   gaugeView(): PositionGaugeView {
     const v = this.ruleOrThrow().view;
     const pv = this.deps.price();
+    this.trackExtremes(pv?.price);
     // 추세 관리는 주문선이 없다(sellLine=buyLine=평단) — 양끝을 오늘 최저·최고(틱 HIGH/LOW)로 대신 그린다.
     // 고저가 아직 없으면 평단으로 폴백(게이지가 평단 한 점으로 접힌다 — 첫 틱이 오면 펴진다).
     const dayRange = this.opts.gauge === 'dayRange';
@@ -623,6 +643,8 @@ export class RulePositionManager implements PositionManager {
       buyMultiplier: 1,
       gridActive: true,
       buyLegStatus: 'full',
+      sinceEntryHigh: this.sinceEntryHigh ?? undefined,
+      sinceEntryLow: this.sinceEntryLow ?? undefined,
     };
   }
 
@@ -704,6 +726,7 @@ export class RulePositionManager implements PositionManager {
     } else {
       price = await this.probeRestPrice(now);
     }
+    this.trackExtremes(price);
     if (this.exec !== null) {
       // 진행 중 매도 추격은 매수1호가로 — 급락 중 체결가는 호가 위라 지정가가 안 붙는다(진입의 매도1호가 크로스와 대칭).
       if (price !== null) await this.exec.onPrice(this.execSide === 'sell' ? this.exitOrderPrice(price) : price);

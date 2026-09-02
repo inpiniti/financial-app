@@ -148,6 +148,9 @@ describe('makePositionManager — 모델 어댑터(±3% 대칭)', () => {
     const g = pm.gaugeView();
     expect(g.sellPrice).toBeCloseTo(106.09, 6); // 밴드가 한 계단 올라갔다
     expect(g.buyPrice).toBeCloseTo(99.91, 6); // 하단은 본전 근처로 잠김
+    // 진입 후 고저(2026-09-02 게이지 마커) — 시작은 평단(100), 103.5 틱으로 최고가 갱신.
+    expect(g.sinceEntryHigh).toBeCloseTo(103.5, 9);
+    expect(g.sinceEntryLow).toBeCloseTo(100, 9);
 
     price = 99.5; // 되밀림 — 새 하단에서 손절(이익 잠금)
     await pm.tick({ canStart: true });

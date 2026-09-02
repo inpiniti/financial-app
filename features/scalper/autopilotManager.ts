@@ -14,6 +14,7 @@ import {
   type AutoPilotConfig,
   type AutoPilotDeps,
   type AutoPilotEvent,
+  type AutoPilotGridView,
   type AutoPilotView,
   type GridExitConfig,
   type TradingSettings,
@@ -31,6 +32,14 @@ import { TREND_MODE } from './trendMode';
 import type { TradeStrategy } from './tradeResults';
 import type { TradeRecord } from '../../core/cycle';
 import { ScalperWatchlist, type RankingSnapshot, type WatchEntry, type WatchMarket } from './watchlist';
+
+/** 게이지 라이브 샘플(2026-09-02) — 게이지 뷰 + 슬롯의 오늘 고저·실시간 5선. */
+export interface GridLiveSample extends AutoPilotGridView {
+  dayLow: number | null;
+  dayHigh: number | null;
+  /** 진행 중 봉 포함 실시간 5선(1초 주기) — 5선이 없는 모드(모델)면 null. */
+  ma5: number | null;
+}
 import type { MinuteBar } from '../../core/trend/bars';
 import { loadModel, type OhlcvBar } from '../../core/model';
 import {
@@ -411,6 +420,20 @@ export class AutoPilotManager {
   /** 오토파일럿 현재 뷰(상태·감시·활성 사이클·설정) — 화면 초기 렌더·설정 화면 동기화용. */
   getView(): AutoPilotView {
     return this.pilot.getView();
+  }
+
+  /**
+   * 게이지 고빈도(250ms) 폴링용 라이브 샘플(2026-09-02) — 신선한 gaugeView에 슬롯의 오늘 고저와
+   * **실시간 5선**(진행 중 봉 포함 판정의 ma5 — ±3% 단타 martingaleLive / 추세 trendLive, 1초 주기 갱신)을
+   * 얹는다. 관리 중이 아니면 null, 5선이 없는 모드(모델 등)면 ma5=null.
+   */
+  getGridLive(ticker: string): GridLiveSample | null {
+    const gauge = this.pilot.gridLive(ticker);
+    if (gauge === null) return null;
+    const v = this.slots.get(ticker)?.getView() ?? null;
+    const ma5 =
+      v?.martingaleLive?.ma5 ?? v?.martingale?.ma5 ?? v?.trendLive?.lines.ma5 ?? v?.trend?.lines.ma5 ?? null;
+    return { ...gauge, dayLow: v?.dayLow ?? null, dayHigh: v?.dayHigh ?? null, ma5 };
   }
 
   /** 현금 부족 등으로 PAUSED된 오토파일럿을 사용자가 재개한다. */

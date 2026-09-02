@@ -546,6 +546,20 @@ export class AutoPilot {
     return [...this.watchedTickers];
   }
 
+  /**
+   * 관리 중 종목 1개의 게이지 뷰(신선값, 2026-09-02) — 게이지의 고빈도(250ms) 폴링용.
+   * emit 스냅샷(view.grids)과 달리 부를 때마다 gaugeView를 새로 계산한다. 관리 중이 아니면 null.
+   */
+  gridLive(ticker: string): AutoPilotGridView | null {
+    const active = this.actives.get(ticker);
+    if (!active?.cond) return null;
+    return {
+      ticker,
+      ...active.cond.gaugeView(),
+      faultText: active.gridFaulted ? (active.cond.faultText ?? `${active.cond.label}가 멈췄어요`) : null,
+    };
+  }
+
   /** 관리 중 그리드 뷰 — 그리드가 인계된 사이클만(진입 직후·비그리드 경로는 빠진다). */
   private gridViews(): AutoPilotGridView[] {
     const out: AutoPilotGridView[] = [];
