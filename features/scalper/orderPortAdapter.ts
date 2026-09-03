@@ -489,6 +489,29 @@ export class OrderPortAdapter implements OrderPort {
     await this.fireAmend(p, decision.price, decision.qty, 'buy');
   }
 
+  /**
+   * 매수 리프라이스(현재가 추종, 2026-09-03 주문 전략 lastChase) — repriceBuy의 호가 대신 **마지막 체결가(limitPrice)**로 정정한다.
+   * 러너가 틱마다 setLimitPrice로 최신가를 넣어 두면, 접수가와 다를 때만 그 가격으로 바꾼다.
+   */
+  async repriceBuyToLast(): Promise<void> {
+    const p = this.findRepriceable('buy');
+    if (!p) return;
+    if (this.clock.now() < p.amendNotBefore) return;
+    if (!(this.limitPrice > 0)) return;
+    const last = roundOverseasOrderPrice(this.limitPrice, 'ceil');
+    const decision = decideBuyReprice({
+      currentPrice: p.orderPrice,
+      ask1: last,
+      quoteFresh: true, // 현재가는 늘 "신선"하다 — 러너가 틱마다 넣는다.
+      remainingQty: p.qty - p.filledQty,
+      amendInFlight: p.amendInFlight,
+      cancelInvolved: p.cancelState !== 'none' || p.cancelRequested,
+      disabled: p.repriceDisabled,
+    });
+    if (decision.action === 'hold') return;
+    await this.fireAmend(p, decision.price, decision.qty, 'buy');
+  }
+
   /** 리프라이스 대상 매도 주문 — 발주 완료(odno 확보)됐고 아직 전량 체결되지 않은 것 하나. */
   private findRepriceablSell(): PendingOrder | null {
     return this.findRepriceable('sell');

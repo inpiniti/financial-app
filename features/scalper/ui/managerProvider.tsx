@@ -431,6 +431,7 @@ async function buildManager(): Promise<ManagerBootstrap> {
     // 사다리 진입 감지(2026-08-07 plan) — 간격 %→소수, 홀 횟수 정수. feedSlot.LADDER_ENTRY가 최종 스위치다.
     entryLadder: initialSettings.entryLadder,
     buyCancelAfterMs: initialSettings.trading.buyCancelAfterMs,
+    orderStrategy: initialSettings.trading.orderStrategy,
     // 종목 상세화면(acquireFeed)이 잡고 있는 구독은 리스트 이탈 시에도 해제하지 않는다(교차 해제 방지).
     isFeedHeldExternally: (trKey, trId) => finalManager.holdsFeed(trKey, trId),
     // 구독 거절(ACK 실패)을 리스트 행에 드러낸다 — 주간거래 창에 R키가 거절된 종목은 "시세 없음"(2026-08-28).
@@ -495,6 +496,13 @@ export function managerSettingsFrom(appSettings: AppSettings): ManagerSettings {
         buyMultiplier: appSettings.gridBuyMultiplier,
       },
       buyCancelAfterMs: buyCancelAfterToMs(appSettings.buyCancelAfterSec),
+      // 주문 전략(2026-09-03 ADR 0013) — 매수·매도 각각 1호가 / 현재가 추종 / 현재가+시간 취소. 실행 중에도 즉시 반영.
+      orderStrategy: {
+        buy: appSettings.buyStrategy,
+        sell: appSettings.sellStrategy,
+        buyCancelAfterMs: buyCancelAfterToMs(appSettings.buyCancelAfterSec),
+        sellCancelAfterMs: buyCancelAfterToMs(appSettings.sellCancelAfterSec),
+      },
     },
     entryLadder: {
       interval: ladderIntervalToRatio(appSettings.entryLadderIntervalPct),

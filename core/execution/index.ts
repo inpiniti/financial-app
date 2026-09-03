@@ -326,6 +326,20 @@ export class Execution {
 
   // ---- 내부 ----
 
+  /**
+   * 외부 취소(2026-09-03 주문 전략 lastCancel) — 시간이 지나 판단 쪽이 접기로 했을 때. 취소선(shouldAbort)과 같은 경로로
+   * 잔량을 취소하고 CANCELLED로 간다(폴이 확정). 진행 중이거나 WORKING이 아니면 아무것도 하지 않는다.
+   */
+  async cancel(): Promise<void> {
+    if (this._state !== 'WORKING' || this.busy || this.leg === null) return;
+    this.busy = true;
+    try {
+      await this.cancelRemaining();
+    } finally {
+      this.busy = false;
+    }
+  }
+
   /** 취소선 도달 — 잔량 취소. 거절이면 "이미 체결 추정"으로 폴 확정 대기(재취소 발사 금지). */
   private async cancelRemaining(): Promise<void> {
     if (this.cancelAmbiguous) return;

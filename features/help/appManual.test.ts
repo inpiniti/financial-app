@@ -129,6 +129,9 @@ describe('설정 키 커버리지 — 설정을 추가하면 문서도 같이 �
       minTickRate: '**최소 속도(틱/초)**',
       watchCount: '**매수 후보 수**',
       buyCancelAfterSec: '**매수 미체결 취소(초)**',
+      buyStrategy: '**매수 전략**',
+      sellStrategy: '**매도 전략**',
+      sellCancelAfterSec: '**매도 미체결 취소(초)**',
       rankingSelection: '**순위 원천**',
     };
     for (const key of USER_FACING_SETTING_KEYS) {

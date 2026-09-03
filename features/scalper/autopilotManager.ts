@@ -33,6 +33,7 @@ import { TREND_MODE } from './trendMode';
 import type { TradeStrategy } from './tradeResults';
 import type { SlopeGridConfig } from './positionManager';
 import { anyEntryFilter, type EntryFilters } from '../../core/martingale';
+import type { OrderStrategy } from './orderStrategy';
 import type { TradeRecord } from '../../core/cycle';
 import { ScalperWatchlist, type RankingSnapshot, type WatchEntry, type WatchMarket } from './watchlist';
 
@@ -188,6 +189,8 @@ export interface AutoPilotManagerDeps {
   repriceIntervalMs?: number;
   /** 매수 미체결 자동 취소 대기(ms, 0=끔) — AutoPilot으로 그대로 흘려보낸다. */
   buyCancelAfterMs?: number;
+  /** 주문 전략 초기값(2026-09-03 ADR 0013) — AutoPilot으로 그대로. 이후는 applySettings(trading.orderStrategy). */
+  orderStrategy?: OrderStrategy;
   reselectIntervalMs?: number;
   watchlistPollIntervalMs?: number;
   /**
@@ -363,6 +366,7 @@ export class AutoPilotManager {
       pollIntervalMs: deps.pollIntervalMs,
       repriceIntervalMs: deps.repriceIntervalMs,
       buyCancelAfterMs: deps.buyCancelAfterMs,
+      orderStrategy: deps.orderStrategy,
       reselectIntervalMs: deps.reselectIntervalMs,
       onTrade: (record) => {
         // 채용 거래소를 함께 남긴다 — 거래기록 화면에서 행 탭 → 종목상세 진입 시 시장 판별용.

@@ -45,6 +45,7 @@ import { MODEL_MODE } from './modelMode';
 import { SLOPE_MODE } from './slopeMode';
 import { TREND_MODE } from './trendMode';
 import type { ScalperBroker } from './types';
+import type { OrderStrategy } from './orderStrategy';
 
 // ---------------------------------------------------------------------------
 // 모드 스위치·설정 (한 곳)
@@ -321,6 +322,12 @@ export interface PositionManagerDeps {
    * 전량 매도한다. **미주입(슬롯 없는 입양)이면 틱 판정 없음**, null이면 체결 끊김으로 보고 판다.
    */
   slopeRate?: () => number | null;
+  /**
+   * 주문 전략(2026-09-03 ADR 0013) — 틱마다 읽는다. sell: quote=매수1호가 크로스·추격 / lastChase=현재가 발주·틱마다 현재가로 정정 /
+   * lastCancel=현재가 발주·정정 없음·sellCancelAfterMs 뒤 취소(다음 틱 판정이 새 현재가로 다시 낸다). buy(물타기)도 같은 규칙.
+   * 미주입·null이면 옛 동작(매도 1호가 크로스·추격, 매수 현재가 추격).
+   */
+  orderStrategy?: () => OrderStrategy | null;
   /** 정규장 판정(서킷 heartbeat 입력). */
   regularSession: (nowMs: number) => boolean;
   /** 매수가능금액 사전 조회(물타기 매수) — null/미지정/throw면 판정 없이 진행(fail-open). */
@@ -592,6 +599,8 @@ export class RulePositionManager implements PositionManager {
 
   private exec: Execution | null = null;
   private execSide: 'buy' | 'sell' | null = null;
+  /** 진행 중 매매의 발주 시각(ms) — 주문 전략 lastCancel의 시간 취소 기준. */
+  private execStartedAt = 0;
   /** 매매 시작(비동기 발주)이 진행 중 — 같은 종목에 두 번 걸지 않기 위한 가드. */
   private starting = false;
   /** 진행 중 매도를 시작한 사유 — 정산 기록의 exitReason. 매도가 끝나거나 취소되면 null. */
@@ -771,8 +780,7 @@ export class RulePositionManager implements PositionManager {
     }
     this.trackExtremes(price);
     if (this.exec !== null) {
-      // 진행 중 매도 추격은 매수1호가로 — 급락 중 체결가는 호가 위라 지정가가 안 붙는다(진입의 매도1호가 크로스와 대칭).
-      if (price !== null) await this.exec.onPrice(this.execSide === 'sell' ? this.exitOrderPrice(price) : price);
+      await this.driveExec(price, now);
       return;
     }
     // 틱 판정 — 매매가 없을 때만. 신호 경로(onSignal)와 같은 게이트·점유 규칙.
@@ -816,9 +824,51 @@ export class RulePositionManager implements PositionManager {
 
   /** 청산 매도 발주·추격가 — 신선한 매수1호가(bid1)가 있으면 크로스, 없으면 판정가 그대로. */
   private exitOrderPrice(fallback: number): number {
+    if (this.pricingOf('sell') !== 'quote') return fallback; // 현재가 전략 — 호가 크로스 없이 마지막 체결가.
     const q = this.deps.quote?.() ?? null;
     if (q !== null && q.bid1 > 0 && this.deps.clock.now() - q.at <= EXIT_QUOTE_STALE_MS) return q.bid1;
     return fallback;
+  }
+
+  /** 매수(물타기) 발주가 — quote면 신선한 매도1호가 크로스, 아니면 현재가. */
+  private buyOrderPrice(fallback: number): number {
+    if (this.pricingOf('buy') !== 'quote') return fallback;
+    const q = this.deps.quote?.() ?? null;
+    if (q !== null && q.ask1 > 0 && this.deps.clock.now() - q.at <= EXIT_QUOTE_STALE_MS) return q.ask1;
+    return fallback;
+  }
+
+  /** 지금 주문 전략의 한쪽 — 미주입·null이면 옛 동작(매도 quote, 매수 현재가 추격 = lastChase). */
+  private pricingOf(side: 'buy' | 'sell'): OrderStrategy['buy'] {
+    const s = this.deps.orderStrategy?.() ?? null;
+    if (s === null) return side === 'sell' ? 'quote' : 'lastChase';
+    return side === 'sell' ? s.sell : s.buy;
+  }
+
+  /**
+   * 진행 중 매매 구동(빠른 틱) — 주문 전략에 따라 추격 또는 시간 취소.
+   *  · quote      : 매도는 매수1호가·매수는 매도1호가로 정정 추격(호가 없으면 현재가).
+   *  · lastChase  : 현재가로 정정 추격.
+   *  · lastCancel : 정정 없음. 취소선(shouldAbort)만 보고, cancelAfterMs가 지나면 잔량 취소 → 폴이 확정하면 다음 틱 판정이 다시 낸다.
+   */
+  private async driveExec(price: number | null, now: number): Promise<void> {
+    const exec = this.exec!;
+    const side = this.execSide ?? exec.side;
+    const pricing = this.pricingOf(side);
+    if (pricing === 'lastCancel') {
+      const s = this.deps.orderStrategy?.() ?? null;
+      const cancelAfterMs = s === null ? 0 : side === 'sell' ? s.sellCancelAfterMs : s.buyCancelAfterMs;
+      if (cancelAfterMs > 0 && now - this.execStartedAt >= cancelAfterMs) {
+        this.event(`${side === 'sell' ? '매도' : '매수'} 미체결 ${Math.round(cancelAfterMs / 1000)}초 — 주문 전략대로 취소하고 다음 판정에서 현재가로 다시 내요`);
+        await exec.cancel();
+        return;
+      }
+      // 정정은 하지 않는다 — 취소선 판정만(shouldAbort)은 접수가 그대로 두고 본다.
+      if (price !== null && exec.orderPrice !== null) await exec.onPrice(exec.orderPrice);
+      return;
+    }
+    if (price === null) return;
+    await exec.onPrice(side === 'sell' ? this.exitOrderPrice(price) : this.buyOrderPrice(price));
   }
 
   /** 주기 폴 — 진행 중 매매의 체결/취소를 확정한다. 매매가 없으면 수동청산 재확인만. */
@@ -934,8 +984,9 @@ export class RulePositionManager implements PositionManager {
         shouldAbort: (p) => rule.shouldAbort(decision.side, p),
         chaseGate: chaseAfter === null ? undefined : () => (this.deps.price()?.lastTradeAt ?? 0) > chaseAfter,
       });
-      // 매도 시작가 = 매수1호가 크로스(신선할 때) — 진입(매도1호가 크로스)과 대칭. 청산 슬리피지 실측의 구조 원인 수정(2026-09-01).
-      await exec.start(limit ?? (decision.side === 'sell' ? this.exitOrderPrice(price) : price));
+      // 발주가 = 주문 전략(2026-09-03): quote면 반대편 1호가 크로스(신선할 때), 현재가 전략이면 판정가.
+      await exec.start(limit ?? (decision.side === 'sell' ? this.exitOrderPrice(price) : this.buyOrderPrice(price)));
+      this.execStartedAt = this.deps.clock.now();
       if (exec.state === 'FAULT') {
         this.pendingExitReason = null; // 손절·서킷 매도가 발주에 실패하면 다음 틱이 다시 판정한다.
         if (decision.side === 'sell') {

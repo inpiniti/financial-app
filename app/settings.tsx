@@ -17,6 +17,74 @@ import { MARTINGALE_BAR_MINUTES } from '../features/scalper/martingaleMode';
 import { MARTINGALE_CONFIG } from '../core/martingale';
 import { SLOPE_CONFIG, SLOPE_EXIT_TICK_MS } from '../core/slope';
 import { DEFAULT_ENGINE_OPTIONS, type EngineOptions } from '../features/scalper/engineMode';
+import { ORDER_PRICING_LABEL, type OrderPricing } from '../features/scalper/orderStrategy';
+
+/** 주문 전략 카드 3장 + (시간 취소일 때) 취소 대기 슬라이더 — 매수·매도가 같은 컴포넌트를 쓴다(ADR 0013). */
+function OrderStrategyPicker(props: {
+  title: string;
+  side: 'buy' | 'sell';
+  value: OrderPricing;
+  onChange: (v: OrderPricing) => void;
+  cancelAfterSec: number;
+  onCancelAfterSecChange: (v: number) => void;
+}) {
+  const buy = props.side === 'buy';
+  const cross = buy ? '매도1호가' : '매수1호가';
+  const options: Array<{ value: OrderPricing; desc: string }> = [
+    {
+      value: 'quote',
+      desc: `${cross}에 걸어 바로 붙여요. 안 붙으면 ${cross}가 바뀔 때마다 그 가격으로 정정해 따라가요 — 가장 빠르지만 호가 한 칸만큼 불리하게 ${buy ? '사요' : '팔아요'}.`,
+    },
+    {
+      value: 'lastChase',
+      desc: `지금 체결가에 걸어요. 안 붙으면 틱이 올 때마다 현재가가 바뀌면 그 가격으로 정정해 따라가요.`,
+    },
+    {
+      value: 'lastCancel',
+      desc: `지금 체결가에 걸고 정정하지 않아요. 아래 시간 안에 안 붙으면 취소해요 — ${
+        buy ? '다음 신호를 기다려요' : '다음 판정에서 새 현재가로 다시 내요'
+      }.`,
+    },
+  ];
+  return (
+    <View className="mb-4">
+      <Text className="mb-2 text-xs font-semibold text-[#191f28]">{props.title}</Text>
+      {options.map((opt) => {
+        const selected = props.value === opt.value;
+        return (
+          <Pressable
+            key={opt.value}
+            onPress={() => props.onChange(opt.value)}
+            className={`mb-2 rounded-2xl border px-4 py-3 ${selected ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'}`}
+          >
+            <View className="flex-row items-center justify-between">
+              <Text className={`text-sm font-semibold ${selected ? 'text-[#3182f6]' : 'text-[#191f28]'}`}>{ORDER_PRICING_LABEL[opt.value]}</Text>
+              {selected && <Text className="text-xs font-semibold text-[#3182f6]">선택됨</Text>}
+            </View>
+            <Text className="mt-1 text-xs leading-5 text-[#8b95a1]">{opt.desc}</Text>
+          </Pressable>
+        );
+      })}
+      {props.value === 'lastCancel' && (
+        <SettingSlider
+          label={`${buy ? '매수' : '매도'} 미체결 취소 (초)`}
+          value={props.cancelAfterSec}
+          onChange={props.onCancelAfterSecChange}
+          min={0}
+          max={10}
+          step={1}
+          formatValue={(v) => `${v}초`}
+          helper={
+            buy
+              ? '이 시간 안에 안 붙으면 취소하고 다음 신호를 기다려요. 권장 2~3초. 일부라도 체결됐으면 취소하지 않아요. 취소가 3번 이어지면 그 종목은 1분간 쉬어요. 0이면 체결될 때까지 기다려요.'
+              : '이 시간 안에 안 붙으면 취소하고, 다음 틱 판정이 새 현재가로 다시 내요(청산 조건이 계속 맞는 동안 반복). 0이면 체결될 때까지 그대로 둬요.'
+          }
+          offAtZero
+        />
+      )}
+    </View>
+  );
+}
 
 /** 엔진 옵션의 진입 필터를 짧게 — " + 정배열 · 5선 상승" / "". 5선 돌파 패널 머리줄용. */
 function describeFilters(o: EngineOptions): string {
@@ -89,6 +157,10 @@ export default function SettingsScreen() {
   const savedOrderQtyRef = useRef(DEFAULT_APP_SETTINGS.orderQty);
   // 청크·버퍼·모멘텀 문턱·BUY 게이트·수수료율 설정은 2026-08-08 제거 — 코드 기본값 고정 동작.
   const [buyCancelAfterSec, setBuyCancelAfterSec] = useState(DEFAULT_APP_SETTINGS.buyCancelAfterSec);
+  // 주문 전략(2026-09-03 ADR 0013) — 매수·매도 각각. 저장 즉시 반영(엔진 모드와 달리 재시작 불필요).
+  const [buyStrategy, setBuyStrategy] = useState<OrderPricing>(DEFAULT_APP_SETTINGS.buyStrategy);
+  const [sellStrategy, setSellStrategy] = useState<OrderPricing>(DEFAULT_APP_SETTINGS.sellStrategy);
+  const [sellCancelAfterSec, setSellCancelAfterSec] = useState(DEFAULT_APP_SETTINGS.sellCancelAfterSec);
   // 매도 그리드(폭·배율)·사다리 진입(간격·횟수) 입력란은 변곡점+그리드 조합(2026-08-15)으로 내렸다 —
   // 조합 모드에서는 미사용이라 화면에 두면 "바꾸면 반영되는 것처럼" 보인다. 값은 롤백 스위치
   // (INFLECTION_ENTRY/INFLECTION_GRID=false)로 옛 경로에 돌아갈 때 그대로 쓰이므로 저장은 유지한다.
@@ -130,6 +202,9 @@ export default function SettingsScreen() {
       const appSettings = await loadAppSettings();
       savedOrderQtyRef.current = appSettings.orderQty;
       setBuyCancelAfterSec(appSettings.buyCancelAfterSec);
+      setBuyStrategy(appSettings.buyStrategy);
+      setSellStrategy(appSettings.sellStrategy);
+      setSellCancelAfterSec(appSettings.sellCancelAfterSec);
       savedRollbackRef.current = {
         gridBuyWidthPct: appSettings.gridBuyWidthPct,
         gridSellWidthPct: appSettings.gridSellWidthPct,
@@ -230,6 +305,9 @@ export default function SettingsScreen() {
         engineOptions,
         orderQty: savedOrderQtyRef.current,
         buyCancelAfterSec,
+        buyStrategy,
+        sellStrategy,
+        sellCancelAfterSec,
         ...savedRollbackRef.current,
         startAmountUsd: parsedStartAmountUsd,
         entryQty: parsedEntryQty,
@@ -607,16 +685,25 @@ export default function SettingsScreen() {
 
         <Panel title="주문">
           <View className="px-5 pb-5">
-            <SettingSlider
-              label="매수 미체결 취소 (초)"
-              value={buyCancelAfterSec}
-              onChange={setBuyCancelAfterSec}
-              min={0}
-              max={10}
-              step={1}
-              formatValue={(v) => `${v}초`}
-              helper="매수 주문이 이 시간 안에 안 붙으면 취소하고 다음 신호를 기다려요. 권장 2~3초. 일부라도 체결됐으면 취소하지 않고 그대로 기다려요. 취소가 3번 이어지면 그 종목은 1분간 쉬어요. 0이면 체결될 때까지 계속 기다려요."
-              offAtZero
+            <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+              어떤 가격에 걸고, 안 붙으면 어떻게 할지 매수·매도 따로 골라요. 저장하면 <Text className="font-semibold text-[#191f28]">바로 적용</Text>돼요(재시작
+              불필요) — 이미 걸린 주문도 다음 틱부터 새 전략으로 다뤄요.
+            </Text>
+            <OrderStrategyPicker
+              title="매수 전략"
+              side="buy"
+              value={buyStrategy}
+              onChange={setBuyStrategy}
+              cancelAfterSec={buyCancelAfterSec}
+              onCancelAfterSecChange={setBuyCancelAfterSec}
+            />
+            <OrderStrategyPicker
+              title="매도 전략"
+              side="sell"
+              value={sellStrategy}
+              onChange={setSellStrategy}
+              cancelAfterSec={sellCancelAfterSec}
+              onCancelAfterSecChange={setSellCancelAfterSec}
             />
           </View>
         </Panel>

@@ -27,6 +27,7 @@ import { etDateString } from '../../core/model/session';
 import type { ConditionalPosition } from '../../core/conditional';
 import type { Signal } from '../../core/detector';
 import { SLOPE_EXIT_TICK_MS } from '../../core/slope';
+import type { OrderStrategy } from './orderStrategy';
 import { isDaytimeSessionOpen } from './daySession';
 import { FeedSlot, type SlotSignalContext } from './feedSlot';
 import { OrderPortAdapter } from './orderPortAdapter';
@@ -144,6 +145,11 @@ export interface TradingSettings {
   grid?: GridExitConfig;
   /** 매수 미체결 자동 취소 대기(ms, 0=끔). */
   buyCancelAfterMs?: number;
+  /**
+   * 주문 전략(2026-09-03 ADR 0013) — 매수·매도 각각 1호가 크로스 / 현재가 추종 / 현재가+시간 취소. 실행 중에도 즉시 반영.
+   * 미주입(옛 하네스)이면 엔진별 옛 동작(물타기 모드 매수 1호가 추종, 기울기 모드 현재가+취소, 매도는 전부 1호가 크로스).
+   */
+  orderStrategy?: OrderStrategy;
 }
 
 /** 고정 진입 수량 단일 판정 — 미지정·0·손상값은 null(금액 계산), 양수는 정수 절사. */
@@ -239,6 +245,8 @@ export interface AutoPilotDeps {
   pollIntervalMs?: number;
   /** 매도 리프라이스 주기(ms, 기본 1000). 매수1호가가 바뀐 경우에만 정정을 낸다. */
   repriceIntervalMs?: number;
+  /** 주문 전략 초기값(2026-09-03) — 이후는 applySettings로 갱신. 미주입이면 엔진별 옛 동작. */
+  orderStrategy?: OrderStrategy;
   /** 매수 미체결 자동 취소 대기(ms, 0=끔). 부분체결이면 취소하지 않는다. */
   buyCancelAfterMs?: number;
   /** 그리드 매수 다리 지연(ms, 기본 GRID_BUY_LEG_DELAY_MS). 0이면 즉시(옛 동작) — 테스트 하네스용. */
@@ -400,6 +408,8 @@ export class AutoPilot {
    * 설정 탭 저장이 앱 재시작 전까지 먹지 않던 문제(gridConfig와 같은 원인)를 여기서도 막는다.
    */
   private buyCancelAfterMs: number;
+  /** 주문 전략(설정) — null이면 미주입(엔진별 옛 동작). */
+  private orderStrategy: OrderStrategy | null;
   private readonly gridBuyLegDelayMs: number;
   private readonly reselectIntervalMs: number;
   private readonly hysteresisRatio: number;
@@ -458,6 +468,7 @@ export class AutoPilot {
     this.repriceIntervalMs =
       deps.repriceIntervalMs ?? (resolvePositionMode(deps.positionManagement) === 'slope' ? SLOPE_EXIT_TICK_MS : 1000);
     this.buyCancelAfterMs = deps.buyCancelAfterMs ?? 0;
+    this.orderStrategy = deps.orderStrategy ?? null;
     this.gridBuyLegDelayMs = deps.gridBuyLegDelayMs ?? GRID_BUY_LEG_DELAY_MS;
     this.reselectIntervalMs = deps.reselectIntervalMs ?? RESELECT_INTERVAL_MS;
     this.hysteresisRatio = deps.hysteresisRatio ?? HYSTERESIS_RATIO;
@@ -590,6 +601,7 @@ export class AutoPilot {
   applySettings(settings: TradingSettings): string | null {
     if ('grid' in settings) this.applyGridConfig(settings.grid);
     if (settings.buyCancelAfterMs !== undefined) this.applyBuyCancelAfterMs(settings.buyCancelAfterMs);
+    if (settings.orderStrategy !== undefined) this.applyOrderStrategy(settings.orderStrategy);
     return settings.config ? this.setConfig(settings.config) : null;
   }
 
@@ -628,6 +640,29 @@ export class AutoPilot {
     if (next === this.buyCancelAfterMs) return;
     this.buyCancelAfterMs = next;
     this.event(next > 0 ? `매수 미체결 취소 ${Math.round(next / 1000)}초로 적용했어요` : '매수 미체결 취소를 껐어요');
+  }
+
+  /** 주문 전략 교체 — 실행 중에도 안전하다(이미 걸린 주문은 다음 틱부터 새 전략으로 다룬다). 같은 값이면 무시. */
+  private applyOrderStrategy(next: OrderStrategy): void {
+    const cur = this.orderStrategy;
+    if (
+      cur !== null &&
+      cur.buy === next.buy &&
+      cur.sell === next.sell &&
+      cur.buyCancelAfterMs === next.buyCancelAfterMs &&
+      cur.sellCancelAfterMs === next.sellCancelAfterMs
+    ) {
+      return;
+    }
+    this.orderStrategy = { ...next };
+    const label = (p: OrderStrategy['buy'], ms: number) =>
+      p === 'quote' ? '1호가' : p === 'lastChase' ? '현재가 추종' : `현재가 · ${ms > 0 ? `${Math.round(ms / 1000)}초 뒤 취소` : '취소 없음'}`;
+    this.event(`주문 전략 적용 · 매수 ${label(next.buy, next.buyCancelAfterMs)} / 매도 ${label(next.sell, next.sellCancelAfterMs)}`);
+  }
+
+  /** 지금 주문 전략(읽기 전용) — 포지션 관리자가 틱마다 읽는다. 미주입이면 null(옛 동작). */
+  get currentOrderStrategy(): OrderStrategy | null {
+    return this.orderStrategy;
   }
 
   /** 현재 그리드 설정(읽기 전용) — UI 표시용. 그리드를 쓰지 않는 하네스면 undefined. */
@@ -1189,7 +1224,9 @@ export class AutoPilot {
     const broker = this.deps.makeBroker(ctx.ticker);
     // 기울기 단타(2026-09-02 사용자 확정): 매수는 신호 시점 현재가 지정가 — 매도1호가 크로스·정정 추격 없음("호가로 거니 손해").
     // 안 붙으면 설정의 매수 미체결 취소(buyCancelAfterMs)가 정리하고 다음 신호를 기다린다.
-    const adapter = new OrderPortAdapter({ broker, clock: this.deps.clock, buyAtLastPrice: this.positionMode === 'slope' });
+    // 매수 발주가(2026-09-03 주문 전략): quote=매도1호가 크로스, 그 외=신호 시점 현재가. 미주입이면 기울기 모드만 현재가(옛 동작).
+    const buyAtLastPrice = this.orderStrategy ? this.orderStrategy.buy !== 'quote' : this.positionMode === 'slope';
+    const adapter = new OrderPortAdapter({ broker, clock: this.deps.clock, buyAtLastPrice });
     const fault = await adapter.preflightCheckFills();
     if (this.stopRequested) return giveUp();
     if (fault) {
@@ -1416,6 +1453,8 @@ export class AutoPilot {
         },
         // 기울기 단타(2026-09-02) — 슬롯의 기울기/10초. 슬롯이 없으면(입양) 미주입 → 규칙이 틱 판정을 하지 않는다.
         slopeRate: active.slot ? () => active.slot!.slopeRate(this.deps.clock.now()) : undefined,
+        // 주문 전략(2026-09-03) — 틱마다 읽는다(실행 중 설정 변경 즉시 반영). null이면 옛 동작(1호가 크로스·추격).
+        orderStrategy: () => this.orderStrategy,
         regularSession: isUsRegularSession,
         fetchBuyableUsd: this.deps.fetchBuyableUsd ? (price) => this.deps.fetchBuyableUsd!(ticker, price) : undefined,
         entry: pos ? { entryTs: pos.entryTs, entrySnapshot: pos.entrySnapshot } : null,
@@ -1743,12 +1782,17 @@ export class AutoPilot {
           if (quote) active.adapter.setQuote(quote.bid1, quote.ask1, quote.at);
           await active.adapter.repriceSell();
         } else {
-          // 물타기 시험 모드(2026-08-28): 매수도 매도처럼 호가를 따라간다 — 매도1호가가 바뀌면 그 가격으로 정정.
-          // 기울기 단타는 반대로 현재가 지정가를 그대로 둔다(정정 없음 — 미체결은 매수 미체결 취소 설정이 정리).
-          if (this.positionMode === 'martingale') {
+          // 매수 미체결 정정(2026-09-03 주문 전략) — quote: 매도1호가 추종 / lastChase: 현재가 추종 / lastCancel: 정정 없음(시간 취소).
+          // 미주입(옛 하네스)이면 물타기 모드만 매도1호가 추종(2026-08-28), 기울기 모드는 현재가 고정.
+          const buyPricing = this.orderStrategy?.buy ?? (this.positionMode === 'martingale' ? 'quote' : 'lastCancel');
+          if (buyPricing === 'quote' && (this.orderStrategy !== null || this.positionMode === 'martingale')) {
             const quote = active.slot.quote;
             if (quote) active.adapter.setQuote(quote.bid1, quote.ask1, quote.at);
             await active.adapter.repriceBuy();
+          } else if (buyPricing === 'lastChase') {
+            const last = active.slot.getView().price;
+            if (last !== null) active.adapter.setLimitPrice(last);
+            await active.adapter.repriceBuyToLast();
           }
           await this.tryAbandonBuy(active);
         }
@@ -1760,7 +1804,13 @@ export class AutoPilot {
 
   /** 매수 미체결 자동 포기 판정 1회 — 요청 게이트 3겹(odno 확보·취소 미요청·관찰 체결량 0). */
   private async tryAbandonBuy(active: ActiveCycle): Promise<void> {
-    if (this.buyCancelAfterMs <= 0) return;
+    // 주문 전략이 주입됐으면 lastCancel일 때만·그 시간으로 취소한다(quote·lastChase는 체결까지 따라간다). 미주입이면 옛 설정값.
+    const cancelAfterMs = this.orderStrategy
+      ? this.orderStrategy.buy === 'lastCancel'
+        ? this.orderStrategy.buyCancelAfterMs
+        : 0
+      : this.buyCancelAfterMs;
+    if (cancelAfterMs <= 0) return;
     const probe = active.adapter.buyProbe();
     if (!probe) return;
 
@@ -1780,7 +1830,7 @@ export class AutoPilot {
       active.buyingSince = this.deps.clock.now();
       return;
     }
-    if (this.deps.clock.now() - active.buyingSince < this.buyCancelAfterMs) return;
+    if (this.deps.clock.now() - active.buyingSince < cancelAfterMs) return;
     if (!probe.hasOdno) return;
     if (probe.cancelState !== 'none') return;
     if (probe.filledQty > 0) return; // ★ 부분체결이면 취소하지 않는다

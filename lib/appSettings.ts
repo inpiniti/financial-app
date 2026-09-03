@@ -2,6 +2,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { KisEnvironment } from '../kis/types';
 import { DEFAULT_ENGINE_OPTIONS, type EngineOptions } from '../features/scalper/engineMode';
+import { DEFAULT_ORDER_STRATEGY, isOrderPricing, type OrderPricing } from '../features/scalper/orderStrategy';
 import { DEFAULT_RANKING_SELECTION, normalizeRankingSelection, type RankingSelection } from '../core/ranking';
 
 const STORAGE_KEY = 'app:settings';
@@ -33,6 +34,14 @@ export interface AppSettings {
    * ⚠ 과거 실계좌 사고로 삭제됐던 기능의 매수 한정 재도입이라 기본값은 끔이다. (2026-08-06)
    */
   buyCancelAfterSec: number;
+  /**
+   * 주문 전략(2026-09-03 ADR 0013) — 매수·매도 각각. 'quote'=1호가 크로스·호가 추종, 'lastChase'=현재가 지정·틱마다 현재가로 정정,
+   * 'lastCancel'=현재가 지정·정정 없음·(buy/sell)CancelAfterSec 뒤 취소. 기본 quote(옛 동작). 실행 중에도 즉시 반영.
+   */
+  buyStrategy: OrderPricing;
+  sellStrategy: OrderPricing;
+  /** 매도 미체결 취소 대기 — **초 단위**, sellStrategy='lastCancel'일 때만 의미. 0이면 취소 안 함(다음 틱 판정까지 그대로). */
+  sellCancelAfterSec: number;
   /**
    * 그리드 매수폭(물타기 간격) — **% 단위**. 기본 5. 평단 −이 %에 물타기 지정가를 건다.
    * 넓을수록 올인까지의 방어선이 깊어진다. managerProvider가 /100 해서 core/grid로 넘긴다.
@@ -116,6 +125,9 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   engineOptions: DEFAULT_ENGINE_OPTIONS,
   orderQty: 1,
   buyCancelAfterSec: 0,
+  buyStrategy: DEFAULT_ORDER_STRATEGY.buy,
+  sellStrategy: DEFAULT_ORDER_STRATEGY.sell,
+  sellCancelAfterSec: 0,
   gridBuyWidthPct: 5,
   gridSellWidthPct: 2,
   gridBuyMultiplier: 1,
@@ -185,6 +197,9 @@ export async function loadAppSettings(): Promise<AppSettings> {
       },
       orderQty: parsed.orderQty ?? DEFAULT_APP_SETTINGS.orderQty,
       buyCancelAfterSec: parsed.buyCancelAfterSec ?? DEFAULT_APP_SETTINGS.buyCancelAfterSec,
+      buyStrategy: isOrderPricing(parsed.buyStrategy) ? parsed.buyStrategy : DEFAULT_APP_SETTINGS.buyStrategy,
+      sellStrategy: isOrderPricing(parsed.sellStrategy) ? parsed.sellStrategy : DEFAULT_APP_SETTINGS.sellStrategy,
+      sellCancelAfterSec: parsed.sellCancelAfterSec ?? DEFAULT_APP_SETTINGS.sellCancelAfterSec,
       gridBuyWidthPct: parsed.gridBuyWidthPct ?? parsed.gridWidthPct ?? DEFAULT_APP_SETTINGS.gridBuyWidthPct,
       gridSellWidthPct: parsed.gridSellWidthPct ?? parsed.gridWidthPct ?? DEFAULT_APP_SETTINGS.gridSellWidthPct,
       gridBuyMultiplier: parsed.gridBuyMultiplier ?? DEFAULT_APP_SETTINGS.gridBuyMultiplier,

@@ -199,7 +199,9 @@ ${
 - **동시 그리드 수** — 한 번에 관리할 종목 개수(1~${MAX_GRIDS_LIMIT}, 기본 ${DEFAULT_APP_SETTINGS.maxConcurrentGrids}).
 - **최소 속도(틱/초)** — 이보다 조용한 종목은 매수 후보에서 빼요(기본 ${DEFAULT_APP_SETTINGS.minTickRate}).
 - **매수 후보 수** — 최소 속도를 넘긴 종목 중 거래가 빠른 순으로 몇 개까지 매수 후보로 둘지(기본 ${DEFAULT_APP_SETTINGS.watchCount}). 모델은 리스트 전체를 판정하지만 매수는 이 후보 안에서만 일어나요.
-- **매수 미체결 취소(초)** — 매수가 이 시간 안에 안 붙으면 취소하고 다시 기다려요. 0이면 꺼짐(체결까지 대기), 권장 2~3초. 일부라도 체결됐으면 취소하지 않아요.
+- **매수 전략** / **매도 전략** — 어떤 가격에 걸고 안 붙으면 어떻게 할지를 매수·매도 따로 골라요(저장 즉시 반영). **1호가로 빠르게**: 반대편 1호가(매수는 매도1호가, 매도는 매수1호가)에 걸고 호가가 바뀌면 따라 정정해요 — 가장 빠르지만 한 칸 불리해요. **현재가 지정 · 틱마다 정정**: 지금 체결가에 걸고 틱마다 현재가로 정정해 따라가요. **현재가 지정 · 시간 지나면 취소**: 지금 체결가에 걸고 정정하지 않다가 아래 시간 안에 안 붙으면 취소해요.
+- **매수 미체결 취소(초)** — "현재가 지정 · 시간 지나면 취소" 매수 전략의 대기 시간. 안 붙으면 취소하고 다음 신호를 기다려요. 0이면 체결까지 대기, 권장 2~3초. 일부라도 체결됐으면 취소하지 않아요.
+- **매도 미체결 취소(초)** — 같은 매도 전략의 대기 시간. 안 붙으면 취소하고 다음 틱 판정이 새 현재가로 다시 내요. 0이면 체결까지 그대로 둬요.
 - **순위 원천** — 트레이딩 리스트를 어디서 채울지 골라요. 토스 8종·한투 7종이 있고 원천별로 켜고 개수를 정해요. 켠 개수의 합은 ${RANKING_TOTAL_MAX}개를 넘을 수 없어요. 목록에서 위에 있는 원천이 겹치는 종목을 먼저 가져가요.
 
 ⚠ **진입금액·수량·최소 속도·매수 후보 수·동시 그리드 수는 정지 상태에서만 적용돼요.** 매매 중에 저장했다면 정지한 뒤 트레이딩 화면으로 돌아올 때 반영돼요.
@@ -296,6 +298,9 @@ export const USER_FACING_SETTING_KEYS = [
   'minTickRate',
   'watchCount',
   'buyCancelAfterSec',
+  'buyStrategy',
+  'sellStrategy',
+  'sellCancelAfterSec',
   'rankingSelection',
 ] as const satisfies readonly (keyof AppSettings)[];
 
@@ -327,11 +332,10 @@ export function describeUserSettings(settings: AppSettings): string {
   lines.push(`동시 그리드 수: ${settings.maxConcurrentGrids}개`);
   lines.push(`최소 속도: ${settings.minTickRate}틱/초`);
   lines.push(`매수 후보 수: 속도 상위 ${settings.watchCount}종`);
-  lines.push(
-    `매수 미체결 취소: ${
-      settings.buyCancelAfterSec > 0 ? `${settings.buyCancelAfterSec}초` : '꺼짐(체결될 때까지 대기)'
-    }`,
-  );
+  const pricing = (p: AppSettings['buyStrategy'], sec: number) =>
+    p === 'quote' ? '1호가로 빠르게' : p === 'lastChase' ? '현재가 지정 · 틱마다 정정' : `현재가 지정 · ${sec > 0 ? `${sec}초 뒤 취소` : '취소 없음(체결까지 대기)'}`;
+  lines.push(`매수 전략: ${pricing(settings.buyStrategy, settings.buyCancelAfterSec)}`);
+  lines.push(`매도 전략: ${pricing(settings.sellStrategy, settings.sellCancelAfterSec)}`);
   const sources = Object.entries(settings.rankingSelection)
     .filter(([, sel]) => sel.enabled && sel.count > 0)
     .map(([id, sel]) => `${rankingSourceLabelOf(id)} ${sel.count}개`);
