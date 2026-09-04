@@ -190,7 +190,8 @@ ${
 그 밖의 배지 — **주간거래**: 한국시간 10~16시에는 주간거래로 주문·시세가 나가요(일부 종목은 주간거래를 지원하지 않아 주문이 거절될 수 있어요). **시세 연결 중·재연결 중·끊김**: 실시간 시세 상태예요. 끊김이 이어지면 네트워크를 확인해요.
 
 ## 7. 설정 항목
-- **엔진 모드** — 무엇으로 매매할지 골라요: **5선 물타기 단타**(1분봉 5선 상승·돌파에 사고, 평단 −3% 아래 돌파면 낙폭 배수로 물타기, +3%에 파는 규칙 — 손절 없음) · **예측 모델**(과거 데이터로 학습한 모델이 "+3%가 −3%보다 먼저 올 확률"이 높을 때만 사는 방식) · **기울기 단타**(기울기/10초가 ${SL_IN} 이상이면 사고 ${SL_OUT} 아래면 조건 없이 즉시 전량 파는 규칙). 바꾸면 **앱을 완전히 껐다가 다시 켜야** 적용돼요.
+- **진입 전략** — 어떤 신호에서 매수 진입할지 골라요: **5선 상향 돌파**(1분봉 종가가 5선을 아래→위로 뚫는 순간) · **예측 모델**(과거 데이터로 학습한 모델이 "+3%가 −3%보다 먼저 올 확률" 상위 1%를 넘을 때) · **기울기 돌파**(기울기/10초가 ${SL_IN} 이상으로 올라서는 순간). 바꾸면 **앱을 완전히 껐다가 다시 켜야** 적용돼요.
+- **청산 전략** — 보유 포지션을 어떻게 익절/손절하고 마감할지 골라요: **+3% 익절 · 마감 청산**(평단 +3% 도달 시 전량 익절, 19:55 ET 마감 전량 청산 — 손절 없음) · **±3% 대칭 밴드 · 래칫**(산 가격 대비 ±3% 밴드와 동적 래칫 방어, 120분 만기 청산) · **기울기 하락 즉시 매도**(기울기가 ${SL_OUT} 아래로 내려가면 즉시 전량 매도). 바꾸면 **앱을 완전히 껐다가 다시 켜야** 적용돼요.
 - **엔진 옵션(중복 선택)** — 어느 엔진이든 함께 걸리는 조건이에요. **정배열**(5>20>60>120) · **5선만 상승** · **5·20·60·120 모두 상승**은 ${MARTINGALE_BAR_MINUTES}분봉 이동평균 기준 **진입 조건**이라 체크한 것끼리 다 맞아야 사요(모델·기울기 엔진도 신호가 나도 이 조건이 안 맞으면 안 사요). **(k−1)배 물타기**를 체크하면 보유 중 그 엔진의 매수 신호가 다시 왔을 때 평단보다 −${MG_DN} 넘게 내려가 있으면 낙폭 k%당 보유량의 (k−1)배를 더 사요. 기본은 "5선만 상승 + 물타기"예요. 바꾸면 **앱을 완전히 껐다가 다시 켜야** 적용돼요.
 - **진입금액(USD)** — 종목 하나를 살 때 쓰는 금액(기본 $${DEFAULT_APP_SETTINGS.startAmountUsd}). 비어 있으면 자동 트레이딩이 시작되지 않아요.
 - **수량(주)** — 정하면 종목 가격과 상관없이 딱 이 수량만 사요. 비우면 진입금액 ÷ 현재가로 계산해요.
@@ -288,7 +289,8 @@ export const APP_MANUAL = buildAppManual();
  * 반드시 넣어야 하고, 사용자용이면 매뉴얼 문구까지 있어야 테스트가 통과한다. 문서가 조용히 낡는 걸 막는 장치다.
  */
 export const USER_FACING_SETTING_KEYS = [
-  'engineMode',
+  'entryStrategy',
+  'exitStrategy',
   'engineOptions',
   'startAmountUsd',
   'entryQty',
@@ -304,9 +306,10 @@ export const USER_FACING_SETTING_KEYS = [
   'rankingSelection',
 ] as const satisfies readonly (keyof AppSettings)[];
 
-/** 화면에 없는 값 — 고정(environment)이거나 롤백 경로 보존용(그리드 폭·사다리)이라 매뉴얼에 적지 않는다. */
+/** 화면에 없는 값 — 고정(environment)이거나 롤백 경로 보존용(그리드 폭·사다리) 및 하위호환 키(engineMode)라 매뉴얼에 적지 않는다. */
 export const HIDDEN_SETTING_KEYS = [
   'environment',
+  'engineMode',
   'orderQty',
   'gridBuyWidthPct',
   'gridSellWidthPct',
@@ -318,6 +321,10 @@ export const HIDDEN_SETTING_KEYS = [
 /** 사용자의 현재 설정을 대화에 붙이는 블록 — 매뉴얼에 없는 "지금 내 값"을 답할 수 있게 한다. */
 export function describeUserSettings(settings: AppSettings): string {
   const lines: string[] = [];
+  const entryLabel = settings.entryStrategy === 'model' ? '예측 모델' : settings.entryStrategy === 'slope' ? '기울기 돌파' : '5선 돌파';
+  const exitLabel = settings.exitStrategy === 'model' ? '±3% 대칭 밴드 · 래칫' : settings.exitStrategy === 'slope' ? '기울기 하락 즉시 매도' : '+3% 익절 · 마감 청산';
+  lines.push(`진입 전략: ${entryLabel}`);
+  lines.push(`청산 전략: ${exitLabel}`);
   lines.push(`엔진 옵션: ${describeEngineOptions(settings.engineOptions as EngineOptions)}`);
   lines.push(
     settings.entryQty > 0

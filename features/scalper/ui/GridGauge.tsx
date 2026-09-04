@@ -13,7 +13,7 @@ import { formatKrw, formatSignedPercentFromRatio, formatUsd, pnlColor } from '..
 import { useUsdKrwRate } from '../../../lib/useUsdKrwRate';
 import type { AutoPilotGridView } from '../autopilot';
 import type { GridLiveSample } from '../autopilotManager';
-import { formatPrice } from './format';
+import { formatPrice, formatSlopeRates, formatTickRates } from './format';
 import { gaugeScaleOf, normalizeGridPosition } from './gridGaugeMath';
 
 const SELL_COLOR = '#f04452';
@@ -61,9 +61,14 @@ export interface GridGaugeProps {
    * 미주입이면 grid(emit 스냅샷) 값만으로 그린다(옛 동작 — 테스트·하위호환).
    */
   getLive?: () => GridLiveSample | null;
+  /** 실시간 속도/기울기 (4개 지표: 틱/분, 틱/초, %/분, %/초) */
+  rates?: {
+    tickRate: number;
+    slopeRate: number | null;
+  };
 }
 
-export const GridGauge = memo(function GridGauge({ grid, name, onDoubleTapSell, getLive }: GridGaugeProps) {
+export const GridGauge = memo(function GridGauge({ grid, name, onDoubleTapSell, getLive, rates }: GridGaugeProps) {
   const [trackWidth, setTrackWidth] = useState(0);
   const onTrackLayout = (e: LayoutChangeEvent) => setTrackWidth(e.nativeEvent.layout.width);
   // 두 번 누르기 — 마지막 누름 시각만 기억한다(타이머 없음: 첫 누름은 어차피 아무 일도 하지 않는다).
@@ -189,6 +194,11 @@ export const GridGauge = memo(function GridGauge({ grid, name, onDoubleTapSell, 
           <Text className="mt-0.5 text-xs font-semibold" style={{ color: pnlColor(pnlRatio) }}>
             평단 대비 {formatSignedPercentFromRatio(pnlRatio, 2)}
           </Text>
+          {rates && (
+            <Text className="mt-0.5 text-[11px] text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }}>
+              {`${formatTickRates(rates.tickRate)} · ${formatSlopeRates(rates.slopeRate)}`}
+            </Text>
+          )}
         </View>
         <View className="items-end">
           <Text className="text-xs text-[#8b95a1]">보유금액</Text>

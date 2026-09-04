@@ -10,15 +10,22 @@ const STORAGE_KEY = 'app:settings';
 // 2026-08-08 설정 정리 — 청크·버퍼·모멘텀 문턱·BUY 게이트·수수료율은 설정에서 제거했다.
 // 코드 기본값(Resampler 3초·31칸, TrendDetector 0.0001/0.00005, 게이트·수수료 0=끔)이
 // 옛 설정 기본값과 동일해 자동단타 동작은 변하지 않는다. 저장돼 있던 옛 키는 무시된다.
+export type EntryStrategy = 'martingale' | 'model' | 'slope';
+export type ExitStrategy = 'martingale' | 'model' | 'slope';
+
 export interface AppSettings {
   /** 기본 LIVE(실전) — PRD §9-6 확정. PAPER는 전환 옵션. */
   environment: KisEnvironment;
   /**
-   * 엔진 모드(2026-09-01) — 'martingale'(5선 물타기 단타: 1분봉 5선 돌파 진입·낙폭 배수 물타기) ·
-   * 'model'(LightGBM ±3% 대칭 모델: 확률 상위 1% 진입) · 'slope'(기울기 단타: 기울기/10초 ≥ +1% 진입, < +1% 즉시 전량 매도,
-   * 2026-09-02 ADR 0011). 기본 'martingale'(현행 운용).
-   * ⚠ 슬롯 봉 주기·ModelScanner·워밍업이 매니저 생성 시점에 굳으므로 **앱을 완전히 껐다 켜야 반영**된다
-   * (features/scalper/engineMode.ts). 컴파일 킬스위치(MARTINGALE_MODE/MODEL_MODE)가 false인 모드는 선택해도 돌지 않는다.
+   * 진입 전략(2026-09-04 분리) — 'martingale'(5선 돌파) · 'model'(예측 모델 상위 1%) · 'slope'(기울기/10초 ≥ +1%). 기본 'martingale'.
+   */
+  entryStrategy: EntryStrategy;
+  /**
+   * 청산 전략(2026-09-04 분리) — 'martingale'(+3% 익절·마감 청산) · 'model'(±3% 대칭 밴드·래칫·120분) · 'slope'(기울기 < +1% 즉시 매도). 기본 'martingale'.
+   */
+  exitStrategy: ExitStrategy;
+  /**
+   * 레거시 엔진 모드(호환용) — entryStrategy와 동기화.
    */
   engineMode: 'martingale' | 'model' | 'slope';
   /**
@@ -121,6 +128,8 @@ export interface AppSettings {
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   environment: 'live',
+  entryStrategy: 'martingale',
+  exitStrategy: 'martingale',
   engineMode: 'martingale',
   engineOptions: DEFAULT_ENGINE_OPTIONS,
   orderQty: 1,
@@ -184,11 +193,19 @@ export async function loadAppSettings(): Promise<AppSettings> {
     // environment는 항상 'live'로 강제한다 (2026-07-30 사용자 확정 — 모의 전환 옵션 제거).
     // KIS 모의투자는 시세 WS·현재가·순위가 전부 미지원이라 이 앱에서 PAPER는 동작 불가이고,
     // 과거 스위치로 'paper'가 저장된 기기도 이 강제로 자연 복구된다.
-    // 키를 명시적으로 골라 담는다 — 저장소에 남은 제거된 옛 키(chunkSeconds 등)를 확실히 버린다.
+    const fallbackEngine = parsed.engineMode === 'model' || parsed.engineMode === 'slope' ? parsed.engineMode : DEFAULT_APP_SETTINGS.engineMode;
+    const entryStrategy = parsed.entryStrategy === 'martingale' || parsed.entryStrategy === 'model' || parsed.entryStrategy === 'slope'
+      ? parsed.entryStrategy
+      : fallbackEngine;
+    const exitStrategy = parsed.exitStrategy === 'martingale' || parsed.exitStrategy === 'model' || parsed.exitStrategy === 'slope'
+      ? parsed.exitStrategy
+      : fallbackEngine;
+
     return {
       environment: 'live',
-      // 모르는 값(옛 버전·손상)은 기본 'martingale'로 방어 — 엔진 모드가 비정상 문자열로 굳으면 두 모드 다 안 돈다.
-      engineMode: parsed.engineMode === 'model' || parsed.engineMode === 'slope' ? parsed.engineMode : DEFAULT_APP_SETTINGS.engineMode,
+      entryStrategy,
+      exitStrategy,
+      engineMode: entryStrategy,
       engineOptions: {
         ordered: typeof parsed.engineOptions?.ordered === 'boolean' ? parsed.engineOptions.ordered : DEFAULT_ENGINE_OPTIONS.ordered,
         ma5Up: typeof parsed.engineOptions?.ma5Up === 'boolean' ? parsed.engineOptions.ma5Up : DEFAULT_ENGINE_OPTIONS.ma5Up,

@@ -10,19 +10,39 @@
 // 컴파일 상수(MARTINGALE_MODE·MODEL_MODE·SLOPE_MODE)는 "기능 존재" 킬스위치로 남는다 — 상수가 false면 설정과 무관하게
 // 그 모드는 주입되지 않는다(autopilotManager의 "상수 AND 주입" 이중 게이트 그대로).
 
-export type EngineMode = 'martingale' | 'model' | 'slope';
+export type EntryStrategy = 'martingale' | 'model' | 'slope';
+export type ExitStrategy = 'martingale' | 'model' | 'slope';
+export type EngineMode = EntryStrategy;
 
-/** 부트 전 기본값 — 설정 기본값(DEFAULT_APP_SETTINGS.engineMode)과 같은 'martingale'. */
-let active: EngineMode = 'martingale';
+let activeEntry: EntryStrategy = 'martingale';
+let activeExit: ExitStrategy = 'martingale';
 
-/** buildManager 전용 — 매니저 생성 직전에 설정값으로 1회 확정한다. 화면이 부를 일은 없다. */
-export function setActiveEngineMode(mode: EngineMode): void {
-  active = mode;
+/** buildManager 전용 — 매니저 생성 직전에 설정값으로 1회 확정한다. */
+export function setActiveEntryStrategy(strategy: EntryStrategy): void {
+  activeEntry = strategy;
 }
 
-/** 지금 활성 엔진 모드 — 매니저가 아직 없으면(부트 전) 기본 'martingale'. */
+export function getActiveEntryStrategy(): EntryStrategy {
+  return activeEntry;
+}
+
+export function setActiveExitStrategy(strategy: ExitStrategy): void {
+  activeExit = strategy;
+}
+
+export function getActiveExitStrategy(): ExitStrategy {
+  return activeExit;
+}
+
+/** 레거시 호환용 — buildManager 전용. */
+export function setActiveEngineMode(mode: EngineMode): void {
+  activeEntry = mode;
+  activeExit = mode;
+}
+
+/** 레거시 호환용 — 화면 등에서 진입 모드를 읽을 때. */
 export function getActiveEngineMode(): EngineMode {
-  return active;
+  return activeEntry;
 }
 
 /**

@@ -97,6 +97,22 @@ export function formatSlopeRate(value: number | null): string {
   return `${sign}${value.toFixed(1)}`;
 }
 
+/** 4개 지표 중 속도(틱/분, 틱/초) 포맷: "120틱/분(2.0틱/초)". */
+export function formatTickRates(tickRate: number): string {
+  const perMin = Math.round(tickRate * 60);
+  return `${perMin}틱/분(${tickRate.toFixed(1)}틱/초)`;
+}
+
+/** 4개 지표 중 기울기(%/분, %/초) 포맷: "+1.2%/분(+0.02%/초)". */
+export function formatSlopeRates(slopeRate: number | null): string {
+  if (slopeRate === null) return '—';
+  const perMin = slopeRate * 6;
+  const perSec = slopeRate / 10;
+  const signMin = perMin > 0 ? '+' : '';
+  const signSec = perSec > 0 ? '+' : '';
+  return `${signMin}${perMin.toFixed(1)}%/분(${signSec}${perSec.toFixed(2)}%/초)`;
+}
+
 /** 속도 시계열 나열 — 입력은 정본 틱/초, 출력은 틱/10초(×10, 정수) "8 12 20 15 18". */
 export function formatTickRateSeries(series: readonly number[]): string {
   return series.map((v) => (v * RATE_DISPLAY_UNIT_SECONDS).toFixed(0)).join(' ');

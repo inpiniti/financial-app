@@ -41,7 +41,7 @@ import type { OverseasExchangeCode } from '../../../kis/trId';
 import { INFLECTION_THRESHOLDS, MARTINGALE_POSITION_CONFIG, MODEL_CONFIG, SLOPE_POSITION_CONFIG, TREND_CONFIG } from '../autopilot';
 import { MINUTE_BAR_RING_SIZE, TREND_BAR_MINUTES, type MinuteBar } from '../../../core/trend/bars';
 import { MARTINGALE_BAR_MINUTES, MARTINGALE_MODE } from '../martingaleMode';
-import { setActiveEngineMode, setActiveEngineOptions } from '../engineMode';
+import { setActiveEngineMode, setActiveEngineOptions, setActiveEntryStrategy, setActiveExitStrategy } from '../engineMode';
 import { anyEntryFilter } from '../../../core/martingale';
 import {
   fetchTossDailyCloses,
@@ -159,10 +159,12 @@ async function buildManager(): Promise<ManagerBootstrap> {
   const credentials: KisCredentials = { appKey: kisSettings.appKey, appSecret: kisSettings.appSecret };
   const account: KisAccount = { cano: kisSettings.cano, acntPrdtCd: kisSettings.acntPrdtCd };
   const environment: KisEnvironment = appSettings.environment;
-  // 엔진 모드(2026-09-01) — 설정에서 읽어 앱 수명당 1회 확정한다. 아래 martingale/model 조건부 주입과
-  // 화면·도움말(getActiveEngineMode)이 전부 이 값을 따른다. 설정을 바꾸면 앱을 껐다 켜야 반영된다.
-  const engineMode = appSettings.engineMode;
-  setActiveEngineMode(engineMode);
+  // 진입·청산 전략(2026-09-04 분리) — 설정에서 읽어 앱 수명당 1회 확정한다.
+  const entryStrategy = appSettings.entryStrategy ?? appSettings.engineMode;
+  const exitStrategy = appSettings.exitStrategy ?? appSettings.engineMode;
+  setActiveEntryStrategy(entryStrategy);
+  setActiveExitStrategy(exitStrategy);
+  setActiveEngineMode(entryStrategy);
   // 엔진 옵션(2026-09-03 ADR 0012) — 진입 필터·물타기. 엔진과 같은 규약(앱 수명당 1회, 재시작 반영).
   const engineOptions = appSettings.engineOptions;
   setActiveEngineOptions(engineOptions);
@@ -318,10 +320,10 @@ async function buildManager(): Promise<ManagerBootstrap> {
       tossCodeCache.set(ticker, resolved);
       code = resolved;
     }
-    // ±3% 단타 모드는 1분봉 시드 — 활성 엔진 모드가 martingale이면 추세 봉 주기 대신 1분을 쓴다(슬롯 빌더도 1분).
+    // ±3% 단타 모드는 1분봉 시드 — 진입 전략이 martingale이면 추세 봉 주기 대신 1분을 쓴다(슬롯 빌더도 1분).
     return fetchTossMinuteBars(code, MINUTE_BAR_RING_SIZE, {
       // 진입 필터(엔진 옵션)도 1분봉 4선 정의라, 켜져 있으면 모델·기울기 모드에서도 1분봉 시드.
-      intervalMin: (MARTINGALE_MODE && engineMode === 'martingale') || anyEntryFilter(entryFilters) ? MARTINGALE_BAR_MINUTES : TREND_BAR_MINUTES,
+      intervalMin: (MARTINGALE_MODE && entryStrategy === 'martingale') || anyEntryFilter(entryFilters) ? MARTINGALE_BAR_MINUTES : TREND_BAR_MINUTES,
     });
   };
 
@@ -402,19 +404,16 @@ async function buildManager(): Promise<ManagerBootstrap> {
     // 변곡점+그리드 조합(2026-08-15 도메인 문서) — 문턱은 문서 §5 고정값(+2%/−3%), 설정 탭 없음.
     // 끄려면 feedSlot.INFLECTION_ENTRY·autopilot.INFLECTION_GRID를 false로(한 줄 롤백) 하거나 이 주입을 뺀다.
     inflection: INFLECTION_THRESHOLDS,
-    // 모델 → 매매 → 그리드 — engineMode='model'일 때만 주입한다(2026-09-01 설정화). 추세·조합·사다리보다 우선.
-    // 신호: ModelScanner가 토스 1분봉으로 LightGBM(±3% 대칭 라벨) 확률을 내 임계값(학습 상위 1%)을 넘으면 BUY.
-    // 청산: 익절 +3% · 손절 −3% · 최장 120분(MODEL_CONFIG + MODEL_EXIT_SYMMETRIC). 봉 조회기는 항상 주입(화면 참고 판정용).
-    model: engineMode === 'model' ? MODEL_CONFIG : undefined,
+    entryStrategy,
+    exitStrategy,
+    // 모델 → 매매 → 그리드 — 진입이 모델이거나 청산이 모델일 때 주입
+    model: (entryStrategy === 'model' || exitStrategy === 'model') ? MODEL_CONFIG : undefined,
     fetchModelBars,
     fetchModelDailyCloses,
-    // ±3% 단타 모드(구 배수 물타기 시험 — ADR 0006·0007) — engineMode='martingale'일 때만 주입한다(2026-09-01 설정화).
-    // 주입되면 모델·추세보다 우선(상수 AND 주입 이중 게이트 — martingaleMode.MARTINGALE_MODE는 킬스위치로 유지).
-    // 신호: 슬롯이 1분봉 4선으로 진입(정배열·5선 돌파, 진행 중 봉 실시간)만 낸다. 청산: 익절 +3% · 손절 −3% · 19:55 ET 마감 청산.
-    martingale: engineMode === 'martingale' ? MARTINGALE_POSITION_CONFIG : undefined,
-    // 기울기 단타(2026-09-02 ADR 0011) — engineMode='slope'일 때만 주입한다. 주입되면 모든 모드보다 우선(SLOPE_MODE 킬스위치 AND).
-    // 신호: 슬롯이 틱마다 기울기/10초 문턱(+1%) 전환으로 BUY/SELL. 청산: 기울기 < +1% 즉시 전량 매도(100ms 틱), 그 외 조건 없음.
-    slope: engineMode === 'slope' ? SLOPE_POSITION_CONFIG : undefined,
+    // 5선 돌파/물타기 청산 — exitStrategy === 'martingale'일 때 주입
+    martingale: exitStrategy === 'martingale' ? MARTINGALE_POSITION_CONFIG : undefined,
+    // 기울기 단타 청산 — exitStrategy === 'slope'일 때 주입
+    slope: exitStrategy === 'slope' ? SLOPE_POSITION_CONFIG : undefined,
     // 엔진 옵션(ADR 0012) — 세 엔진 공통 진입 필터·(k−1)배 물타기.
     entryFilters,
     averagingDown: engineOptions.martingale,

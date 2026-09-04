@@ -9,8 +9,14 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { BackHeader } from '../components/BackHeader';
-import { Panel } from '../components/Panel';
-import { DEFAULT_APP_SETTINGS, loadAppSettings, saveAppSettings, snapToStep } from '../lib/appSettings';
+import {
+  DEFAULT_APP_SETTINGS,
+  loadAppSettings,
+  saveAppSettings,
+  snapToStep,
+  type EntryStrategy,
+  type ExitStrategy,
+} from '../lib/appSettings';
 import { MAX_GRIDS_LIMIT, WATCH_COUNT_LIMIT } from '../features/scalper/autopilot';
 import { MODEL_BAR_MINUTES } from '../features/scalper/modelMode';
 import { MARTINGALE_BAR_MINUTES } from '../features/scalper/martingaleMode';
@@ -188,10 +194,12 @@ export default function SettingsScreen() {
     draftFromSelection(normalizeRankingSelection(DEFAULT_APP_SETTINGS.rankingSelection)),
   );
 
-  // 엔진 모드(2026-09-01) — 5선 물타기 단타 ↔ 예측 모델. 저장 후 앱을 완전히 껐다 켜야 반영된다(engineMode.ts).
-  const [engineMode, setEngineMode] = useState<'martingale' | 'model' | 'slope'>(DEFAULT_APP_SETTINGS.engineMode);
-  const savedEngineModeRef = useRef<'martingale' | 'model' | 'slope'>(DEFAULT_APP_SETTINGS.engineMode);
-  // 엔진 옵션(2026-09-03 ADR 0012) — 엔진과 별개로 중복 선택. 반영은 엔진 모드와 같은 규약(앱 재시작).
+  // 진입 전략 & 청산 전략(2026-09-04 분리) — 저장 후 앱을 완전히 껐다 켜야 반영된다(engineMode.ts).
+  const [entryStrategy, setEntryStrategy] = useState<EntryStrategy>(DEFAULT_APP_SETTINGS.entryStrategy);
+  const savedEntryStrategyRef = useRef<EntryStrategy>(DEFAULT_APP_SETTINGS.entryStrategy);
+  const [exitStrategy, setExitStrategy] = useState<ExitStrategy>(DEFAULT_APP_SETTINGS.exitStrategy);
+  const savedExitStrategyRef = useRef<ExitStrategy>(DEFAULT_APP_SETTINGS.exitStrategy);
+  // 엔진 옵션(2026-09-03 ADR 0012) — 전략과 별개로 중복 선택. 반영은 전략과 같은 규약(앱 재시작).
   const [engineOptions, setEngineOptions] = useState<EngineOptions>(DEFAULT_ENGINE_OPTIONS);
   const savedEngineOptionsRef = useRef<EngineOptions>(DEFAULT_ENGINE_OPTIONS);
 
@@ -220,8 +228,12 @@ export default function SettingsScreen() {
       setWatchCount(appSettings.watchCount);
       setMaxConcurrentGrids(appSettings.maxConcurrentGrids);
       setRankingDraft(draftFromSelection(appSettings.rankingSelection));
-      setEngineMode(appSettings.engineMode);
-      savedEngineModeRef.current = appSettings.engineMode;
+      const initEntry = appSettings.entryStrategy ?? appSettings.engineMode ?? 'martingale';
+      const initExit = appSettings.exitStrategy ?? appSettings.engineMode ?? 'martingale';
+      setEntryStrategy(initEntry);
+      savedEntryStrategyRef.current = initEntry;
+      setExitStrategy(initExit);
+      savedExitStrategyRef.current = initExit;
       setEngineOptions(appSettings.engineOptions);
       savedEngineOptionsRef.current = appSettings.engineOptions;
     })();
@@ -301,7 +313,9 @@ export default function SettingsScreen() {
       // 그리드 폭·배율·사다리 값은 화면에서 내렸다(조합 모드 미사용) — 로드해 둔 저장값 그대로 되쓴다(롤백 보존).
       await saveAppSettings({
         environment: 'live',
-        engineMode,
+        entryStrategy,
+        exitStrategy,
+        engineMode: entryStrategy, // 하위 호환 유지
         engineOptions,
         orderQty: savedOrderQtyRef.current,
         buyCancelAfterSec,
@@ -321,13 +335,17 @@ export default function SettingsScreen() {
       const optionsChanged = (Object.keys(engineOptions) as Array<keyof EngineOptions>).some(
         (k) => engineOptions[k] !== savedEngineOptionsRef.current[k],
       );
-      const modeChanged = engineMode !== savedEngineModeRef.current || optionsChanged;
-      savedEngineModeRef.current = engineMode;
+      const strategyChanged =
+        entryStrategy !== savedEntryStrategyRef.current ||
+        exitStrategy !== savedExitStrategyRef.current ||
+        optionsChanged;
+      savedEntryStrategyRef.current = entryStrategy;
+      savedExitStrategyRef.current = exitStrategy;
       savedEngineOptionsRef.current = engineOptions;
       Alert.alert(
         '알림',
-        modeChanged
-          ? '설정을 저장했어요. 엔진 모드·옵션은 앱을 완전히 종료했다가 다시 켜면 적용돼요 — 보유·미체결이 없는 상태에서 바꾸는 걸 권해요.'
+        strategyChanged
+          ? '설정을 저장했어요. 진입/청산 전략·옵션은 앱을 완전히 종료했다가 다시 켜면 적용돼요 — 보유·미체결이 없는 상태에서 바꾸는 걸 권해요.'
           : '설정을 저장했어요.',
       );
     } finally {
@@ -463,10 +481,11 @@ export default function SettingsScreen() {
 
         <RankingSelectionPanel draft={rankingDraft} onChange={setRankingDraft} />
 
-        <Panel title="엔진 모드">
+        {/* 진입 전략 패널(2026-09-04 분리) */}
+        <Panel title="진입 전략">
           <View className="px-5 pb-5">
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              무엇으로 매매할지 골라요. 저장한 뒤 <Text className="font-semibold text-[#191f28]">앱을 완전히 종료했다가 다시 켜면</Text>{' '}
+              어떤 신호에서 매수 진입할지 골라요. 저장한 뒤 <Text className="font-semibold text-[#191f28]">앱을 완전히 종료했다가 다시 켜면</Text>{' '}
               적용돼요 — 보유·미체결이 없는 상태에서 바꾸는 걸 권해요.
             </Text>
             {(
@@ -474,25 +493,25 @@ export default function SettingsScreen() {
                 {
                   value: 'martingale' as const,
                   title: '5선 돌파',
-                  desc: `${MARTINGALE_BAR_MINUTES}분봉 종가가 5선을 아래→위로 뚫으면 사고, 익절 +${Math.round(MARTINGALE_CONFIG.tpPct * 100)}% · ${Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:${String(MARTINGALE_CONFIG.closeAtMin % 60).padStart(2, '0')} ET 마감 청산 · 손절 없음 — 진입 조건·물타기는 아래 옵션으로`,
+                  desc: `${MARTINGALE_BAR_MINUTES}분봉 종가가 5선(최근 5봉 평균)을 아래→위로 뚫는 순간 매수 진입 (진입 필터는 아래 옵션으로)`,
                 },
                 {
                   value: 'model' as const,
                   title: '예측 모델',
-                  desc: `${MODEL_BAR_MINUTES}분봉 지표 33개로 "+3%가 −3%보다 먼저 올 확률"을 계산해 상위 1% 기준값을 넘으면 매수`,
+                  desc: `${MODEL_BAR_MINUTES}분봉 지표 33개로 "+3%가 −3%보다 먼저 올 확률"을 계산해 상위 1% 기준값을 넘으면 매수 진입`,
                 },
                 {
                   value: 'slope' as const,
-                  title: '기울기 단타',
-                  desc: `리스트의 기울기/10초가 +${SLOPE_CONFIG.entryPct}% 이상이면 사고, +${SLOPE_CONFIG.exitPct}% 아래로 내려오면 조건 없이 즉시 전량 매도 — 익절·손절 없음`,
+                  title: '기울기 돌파',
+                  desc: `리스트의 10초 가격 변화율(기울기)이 +${SLOPE_CONFIG.entryPct}% 이상으로 올라서는 순간 즉시 매수 진입`,
                 },
               ]
             ).map((opt) => {
-              const selected = engineMode === opt.value;
+              const selected = entryStrategy === opt.value;
               return (
                 <Pressable
                   key={opt.value}
-                  onPress={() => setEngineMode(opt.value)}
+                  onPress={() => setEntryStrategy(opt.value)}
                   className={`mb-2 rounded-2xl border px-4 py-3 ${selected ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'}`}
                 >
                   <View className="flex-row items-center justify-between">
@@ -504,19 +523,16 @@ export default function SettingsScreen() {
               );
             })}
 
-            {/* 엔진 옵션(2026-09-03 ADR 0012) — 엔진과 별개로 중복 선택. 세 엔진 공통. */}
-            <Text className="mb-1 mt-4 text-xs font-semibold text-[#191f28]">옵션 (중복 선택)</Text>
+            {/* 진입 필터 옵션(중복 선택) */}
+            <Text className="mb-1 mt-4 text-xs font-semibold text-[#191f28]">진입 필터 옵션 (중복 선택)</Text>
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              어느 엔진을 골랐든 함께 걸려요. 위 셋은 {MARTINGALE_BAR_MINUTES}분봉 이동평균(5·20·60·120) 기준 <Text className="font-semibold text-[#191f28]">진입 조건</Text>
-              이고 체크한 것끼리 모두 맞아야 사요. 물타기는 <Text className="font-semibold text-[#191f28]">보유 중</Text> 그 엔진의 매수 신호가 다시 왔을 때
-              평단보다 −{Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 넘게 내려가 있으면 낙폭 k%당 보유량의 (k−1)배를 더 사요.
+              어느 진입 전략을 골랐든 함께 걸려요. {MARTINGALE_BAR_MINUTES}분봉 이동평균(5·20·60·120) 기준 진입 조건이며 체크한 조건이 전부 맞아야 사요.
             </Text>
             {(
               [
                 { key: 'ordered' as const, title: '정배열', desc: '5선 > 20선 > 60선 > 120선일 때만' },
                 { key: 'ma5Up' as const, title: '5선만 상승', desc: '5선이 직전 봉보다 오르는 중일 때만' },
                 { key: 'allUp' as const, title: '5·20·60·120 모두 상승', desc: '네 선이 전부 직전 봉보다 오르는 중일 때만' },
-                { key: 'martingale' as const, title: '(k−1)배 물타기', desc: `보유 중 평단 −k%(k≥${Math.round(MARTINGALE_CONFIG.dropStartPct * 100)})에서 매수 신호면 보유량 ×(k−1) 추가 매수 · 상한 −${Math.round(MARTINGALE_CONFIG.dropMaxPct * 100)}%` },
               ]
             ).map((opt) => {
               const on = engineOptions[opt.key];
@@ -541,147 +557,186 @@ export default function SettingsScreen() {
           </View>
         </Panel>
 
-        {engineMode === 'martingale' ? (
-          // 5선 돌파 엔진(2026-09-02 ADR 0010 · 옵션 분리 2026-09-03 ADR 0012) — 아래 고정값 패널은 선택한 엔진 것을 보여준다.
-          <Panel title="5선 돌파 (고정값)">
-            <View className="px-5 pb-5">
-              <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                진입은 {MARTINGALE_BAR_MINUTES}분봉 5선 돌파가, 매도는 +3% 선과 마감 시각이 정해요. 진입 조건 추가·물타기는 위 옵션에서 골라요.
-                아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
-              </Text>
-
-              <View className="mb-1 flex-row items-center justify-between">
-                <Text className="text-xs text-[#8b95a1]">진입</Text>
-                <Text className="text-sm font-semibold text-[#191f28]">5선 돌파{describeFilters(engineOptions)}</Text>
-              </View>
-              <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                {MARTINGALE_BAR_MINUTES}분봉 종가가 5선(최근 5봉 평균)을 아래에서 위로 뚫는 봉에 사요{engineOptions.ordered || engineOptions.ma5Up || engineOptions.allUp ? ' — 위에서 체크한 조건이 그 봉에서 함께 맞아야 해요' : ''}. 봉이
-                닫히기를 기다리지 않고 진행 중 봉을 현재가로 넣어 실시간으로 판단해요(봉당 1회). 프리·정규·애프터에서만 진입하고 주간거래 시간엔
-                쉬어요.
-              </Text>
-
-              <View className="mb-1 flex-row items-center justify-between">
-                <Text className="text-xs text-[#8b95a1]">물타기</Text>
-                <Text className="text-sm font-semibold text-[#191f28]">
-                  {engineOptions.martingale ? `평단 −${Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 아래 5선 돌파 → (k−1)배` : '없음(옵션 꺼짐)'}
-                </Text>
-              </View>
-              <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                {engineOptions.martingale
-                  ? `보유 중 현재가가 평단보다 −${Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 이상 내려간 상태에서 같은 5선 돌파가 오면 추가로 사요. 낙폭 k%(내림)면 지금 보유량의 (k−1)배 — −3% 2배 · −4% 3배 · … · −${Math.round(MARTINGALE_CONFIG.dropMaxPct * 100)}% ${Math.round(MARTINGALE_CONFIG.dropMaxPct * 100) - 1}배가 상한이에요. 횟수·금액 상한은 없고, 현금이 모자라면 그 물타기만 건너뛰어요. 손절은 없어요.`
-                  : '옵션에서 (k−1)배 물타기를 체크하면 보유 중 같은 5선 돌파에서 낙폭 배수로 추가 매수해요. 지금은 한 번 사고 한 번 팔아요. 손절은 없어요.'}
-              </Text>
-
-              <View className="mb-1 flex-row items-center justify-between">
-                <Text className="text-xs text-[#8b95a1]">매도</Text>
-                <Text className="text-sm font-semibold text-[#191f28]">익절 +{Math.round(MARTINGALE_CONFIG.tpPct * 100)}%</Text>
-              </View>
-              <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                평단보다 +{Math.round(MARTINGALE_CONFIG.tpPct * 100)}% 오르면 전량 익절해요(물타기로 평단이 내려가면 목표가도 따라 내려와요).
-                안 닿으면 {Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:{String(MARTINGALE_CONFIG.closeAtMin % 60).padStart(2, '0')} ET에
-                전량 청산해요 — 다음 날로 들고 가지 않아요. 봉 마감을 기다리지 않고 체결가가 닿는 순간 판단해요.
-              </Text>
-
-              <View className="rounded-2xl bg-[#f2f4f6] px-4 py-3">
-                <Text className="text-xs leading-5 text-[#4e5968]">
-                  이 규칙은 시험 운용 중이에요(2026-09-02 물타기 복원·손절 제거). 손절이 없어서 한 종목에 돈이 크게 몰릴 수 있어요 —
-                  낙폭이 깊을수록 배수가 커져요. 잃어도 되는 금액으로만 하세요.
-                </Text>
-              </View>
-            </View>
-          </Panel>
-        ) : engineMode === 'slope' ? (
-          // 기울기 단타 모드(2026-09-02, ADR 0011) — 조건이 둘뿐이라 패널도 짧다.
-          <Panel title="기울기 단타 (고정값)">
-            <View className="px-5 pb-5">
-              <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                살 때도 팔 때도 트레이딩 리스트에 보이는 <Text className="font-semibold text-[#191f28]">기울기/10초</Text> 하나만 봐요 —
-                직전 10초 평균가 대비 지금 10초 평균가가 몇 % 움직였는지예요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
-              </Text>
-
-              <View className="mb-1 flex-row items-center justify-between">
-                <Text className="text-xs text-[#8b95a1]">진입</Text>
-                <Text className="text-sm font-semibold text-[#191f28]">기울기 ≥ +{SLOPE_CONFIG.entryPct}%</Text>
-              </View>
-              <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                체결 틱이 올 때마다 다시 재서, 기울기가 +{SLOPE_CONFIG.entryPct}% 아래에서 이상으로 올라서는 순간 사요. 봉·이동평균·확률·
-                시간대 조건은 없어요(매수 후보 안·최소 속도·현금·자리 같은 공통 게이트만). 매수는 신호 순간의 현재가로 한 번 걸고 호가를 따라 정정하지 않아요 —
-                안 붙으면 아래 "주문"의 매수 미체결 취소(초)가 취소해요(0이면 체결까지 대기 — 이 모드에선 2~3초를 권해요).
-              </Text>
-
-              <View className="mb-1 flex-row items-center justify-between">
-                <Text className="text-xs text-[#8b95a1]">매도</Text>
-                <Text className="text-sm font-semibold text-[#191f28]">기울기 &lt; +{SLOPE_CONFIG.exitPct}% → 즉시 전량</Text>
-              </View>
-              <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                보유 중 기울기가 +{SLOPE_CONFIG.exitPct}% 아래로 내려오면 수익이든 손실이든 보지 않고 그 자리에서 전량 매도해요. 체결 틱마다,
-                그리고 틱이 없어도 {SLOPE_EXIT_TICK_MS}ms마다 다시 재요(기울기는 시간이 흐르면 저절로 내려가요). 10초 넘게 체결이 끊겨
-                기울기를 잴 수 없어도 팔아요. 매도 주문은 접지 않고 체결될 때까지 매수1호가를 따라가요.
-              </Text>
-
-              <View className="rounded-2xl bg-[#f2f4f6] px-4 py-3">
-                <Text className="text-xs leading-5 text-[#4e5968]">
-                  익절·손절·물타기·마감 청산이 전부 없어요. 기울기 +{SLOPE_CONFIG.exitPct}%는 오래 유지되기 어려워 보유 시간이 매우 짧고 거래가
-                  잦아요 — 슬리피지가 성과를 정해요. 잃어도 되는 금액으로만 하세요.
-                </Text>
-              </View>
-            </View>
-          </Panel>
-        ) : (
-        <Panel title="모델 (고정값)">
+        {/* 청산 전략 패널(2026-09-04 분리) */}
+        <Panel title="청산 전략">
           <View className="px-5 pb-5">
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              진입은 예측 모델이, 매도는 ±3% 선이 정해요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
+              보유 포지션을 어떻게 익절/손절하고 마감할지 골라요. 저장한 뒤 <Text className="font-semibold text-[#191f28]">앱을 완전히 종료했다가 다시 켜면</Text>{' '}
+              적용돼요.
             </Text>
+            {(
+              [
+                {
+                  value: 'martingale' as const,
+                  title: '+3% 익절 · 마감 청산',
+                  desc: `평단보다 +${Math.round(MARTINGALE_CONFIG.tpPct * 100)}% 오르면 전량 익절, 안 닿으면 ${Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:${String(MARTINGALE_CONFIG.closeAtMin % 60).padStart(2, '0')} ET 마감 전량 청산 (손절 없음)`,
+                },
+                {
+                  value: 'model' as const,
+                  title: '±3% 대칭 밴드 · 래칫',
+                  desc: `+${Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.tpPct * 100)}% 익절 / −${Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.stopLossPct * 100)}% 손절(동적 래칫 방어) · 최장 ${MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분 만기 청산`,
+                },
+                {
+                  value: 'slope' as const,
+                  title: '기울기 하락 즉시 매도',
+                  desc: `리스트의 10초 기울기가 +${SLOPE_CONFIG.exitPct}% 아래로 내려오거나 끊기면 조건 없이 즉시 전량 매도 (익절·손절·마감청산 없음)`,
+                },
+              ]
+            ).map((opt) => {
+              const selected = exitStrategy === opt.value;
+              return (
+                <Pressable
+                  key={opt.value}
+                  onPress={() => setExitStrategy(opt.value)}
+                  className={`mb-2 rounded-2xl border px-4 py-3 ${selected ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'}`}
+                >
+                  <View className="flex-row items-center justify-between">
+                    <Text className={`text-sm font-semibold ${selected ? 'text-[#3182f6]' : 'text-[#191f28]'}`}>{opt.title}</Text>
+                    {selected && <Text className="text-xs font-semibold text-[#3182f6]">선택됨</Text>}
+                  </View>
+                  <Text className="mt-1 text-xs leading-5 text-[#8b95a1]">{opt.desc}</Text>
+                </Pressable>
+              );
+            })}
 
-            <View className="mb-1 flex-row items-center justify-between">
-              <Text className="text-xs text-[#8b95a1]">진입</Text>
-              <Text className="text-sm font-semibold text-[#191f28]">모델 확률 ≥ 상위 1% 기준값</Text>
-            </View>
+            {/* 청산/포지션 옵션: 물타기 */}
+            <Text className="mb-1 mt-4 text-xs font-semibold text-[#191f28]">포지션 옵션</Text>
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              {MODEL_BAR_MINUTES}분봉이 닫힐 때마다 리스트 전 종목에 대해 "+{Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.tpPct * 100)}%가 −
-              {Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.stopLossPct * 100)}%보다 먼저 올 확률"을 지표 33개로 계산해요. 3년 반치 과거에서
-              상위 1%에 해당하는 값을 넘어야 사요 — 신호가 드문 게 정상이에요. 정규장·그날 거래대금 $2M 이상·주가 $1 초과만 봐요.
-              물타기는 하지 않아요.
+              보유 중 선택한 진입 신호가 다시 왔을 때, 평단보다 −{Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 넘게 내려가 있으면 추가 매수해요.
             </Text>
-
-            <View className="mb-1 flex-row items-center justify-between">
-              <Text className="text-xs text-[#8b95a1]">매도</Text>
-              <Text className="text-sm font-semibold text-[#191f28]">
-                익절 +{Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.tpPct * 100)}% / 손절 −{Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.stopLossPct * 100)}% ·
-                최장 {MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분
-              </Text>
-            </View>
-            <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              산 가격보다 +{Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.tpPct * 100)}% 오르면 익절, −
-              {Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.stopLossPct * 100)}% 내리면 손절해요 — 모델이 예측한 사건과 똑같은 기하예요.
-              단, 익절선에 닿는 순간 모델을 다시 물어 <Text className="font-semibold text-[#191f28]">아직 오를 가능성이 높으면(상위
-              10%) 팔지 않고 밴드를 그 자리 기준 ±{Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.tpPct * 100)}%로 올려 달아요(래칫)</Text> —
-              한 계단만 올라도 아래끝이 본전 근처로 잠겨 "+3% 벌었다가 −3% 반납"이 없어요. 산 지{' '}
-              {MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분이 지나면 전량 매도해요(시간 청산). 봉 마감을 기다리지 않고 체결가가 닿는
-              순간 판단해요.
-            </Text>
-
-            <View className="mb-1 flex-row items-center justify-between">
-              <Text className="text-xs text-[#8b95a1]">봉</Text>
-              <Text className="text-sm font-semibold text-[#191f28]">{MODEL_BAR_MINUTES}분봉 · 토스 차트</Text>
-            </View>
-            <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              모델을 학습시킬 때 쓴 것과 같은 원천(토스 {MODEL_BAR_MINUTES}분봉)에서 그대로 받아와요. 봉이 닫히고 몇 초 뒤에 한 번씩
-              읽어 판정해요.
-            </Text>
-
-            <View className="rounded-2xl bg-[#f2f4f6] px-4 py-3">
-              <Text className="text-xs leading-5 text-[#4e5968]">
-                검증: 과거 4구간(2024-07~2026-04) 19,610거래 · 승률 58% ·{' '}
-                <Text className="font-semibold text-[#191f28]">거래당 평균 +0.2% 언저리</Text>(비용 포함) · 4구간 전부 플러스
-                (2026-09-01 ±3% 대칭·1분봉 재학습). 건당 이익이 얇아 체결이 조금만 불리해도 우위가 줄어요 — 잃어도 되는 금액으로만
-                하세요.
-              </Text>
-            </View>
+            {(() => {
+              const on = engineOptions.martingale;
+              return (
+                <Pressable
+                  onPress={() => setEngineOptions({ ...engineOptions, martingale: !on })}
+                  className={`mb-2 flex-row items-center rounded-2xl border px-4 py-3 ${on ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'}`}
+                >
+                  <View
+                    className={`mr-3 h-5 w-5 items-center justify-center rounded-md border ${on ? 'border-[#3182f6] bg-[#3182f6]' : 'border-[#d1d6db] bg-white'}`}
+                  >
+                    {on && <Text className="text-xs font-bold text-white">✓</Text>}
+                  </View>
+                  <View className="flex-1">
+                    <Text className={`text-sm font-semibold ${on ? 'text-[#3182f6]' : 'text-[#191f28]'}`}>(k−1)배 물타기</Text>
+                    <Text className="mt-0.5 text-xs leading-5 text-[#8b95a1]">
+                      평단 −k%(k≥{Math.round(MARTINGALE_CONFIG.dropStartPct * 100)})에서 진입 신호면 보유량 ×(k−1) 추가 매수 · 상한 −{Math.round(MARTINGALE_CONFIG.dropMaxPct * 100)}%
+                    </Text>
+                  </View>
+                </Pressable>
+              );
+            })()}
           </View>
         </Panel>
-        )}
+
+        {/* 진입 전략 고정값 안내 패널 */}
+        <Panel title={`진입 전략: ${entryStrategy === 'martingale' ? '5선 돌파' : entryStrategy === 'model' ? '예측 모델' : '기울기 돌파'} (고정값)`}>
+          <View className="px-5 pb-5">
+            {entryStrategy === 'martingale' ? (
+              <>
+                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                  진입은 {MARTINGALE_BAR_MINUTES}분봉 5선 돌파가 정해요. 진입 조건 필터는 위 옵션에서 골라요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
+                </Text>
+                <View className="mb-1 flex-row items-center justify-between">
+                  <Text className="text-xs text-[#8b95a1]">진입 규칙</Text>
+                  <Text className="text-sm font-semibold text-[#191f28]">5선 돌파{describeFilters(engineOptions)}</Text>
+                </View>
+                <Text className="text-xs leading-5 text-[#8b95a1]">
+                  {MARTINGALE_BAR_MINUTES}분봉 종가가 5선(최근 5봉 평균)을 아래에서 위로 뚫는 봉에 사요{engineOptions.ordered || engineOptions.ma5Up || engineOptions.allUp ? ' — 위에서 체크한 조건이 그 봉에서 함께 맞아야 해요' : ''}. 봉이 닫히기를 기다리지 않고 진행 중 봉을 현재가로 넣어 실시간으로 판단해요(봉당 1회). 프리·정규·애프터에서만 진입하고 주간거래 시간엔 쉬어요.
+                </Text>
+              </>
+            ) : entryStrategy === 'model' ? (
+              <>
+                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                  진입은 LightGBM 예측 모델이 결정해요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
+                </Text>
+                <View className="mb-1 flex-row items-center justify-between">
+                  <Text className="text-xs text-[#8b95a1]">진입 규칙</Text>
+                  <Text className="text-sm font-semibold text-[#191f28]">모델 확률 ≥ 상위 1% 기준값</Text>
+                </View>
+                <Text className="text-xs leading-5 text-[#8b95a1]">
+                  {MODEL_BAR_MINUTES}분봉이 닫힐 때마다 리스트 전 종목에 대해 "+3%가 −3%보다 먼저 올 확률"을 지표 33개로 계산해요. 3년 반치 과거에서 상위 1%에 해당하는 값을 넘어야 사요. 정규장·그날 거래대금 $2M 이상·주가 $1 초과 종목만 봐요.
+                </Text>
+              </>
+            ) : (
+              <>
+                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                  진입은 10초간 가격 변화율(기울기)이 결정해요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
+                </Text>
+                <View className="mb-1 flex-row items-center justify-between">
+                  <Text className="text-xs text-[#8b95a1]">진입 규칙</Text>
+                  <Text className="text-sm font-semibold text-[#191f28]">기울기 ≥ +{SLOPE_CONFIG.entryPct}%</Text>
+                </View>
+                <Text className="text-xs leading-5 text-[#8b95a1]">
+                  체결 틱이 올 때마다 다시 재서, 10초 기울기가 +{SLOPE_CONFIG.entryPct}% 아래에서 이상으로 올라서는 순간 즉시 사요. 봉·이동평균 조건은 없으며 매수는 신호 순간 현재가로 내요.
+                </Text>
+              </>
+            )}
+          </View>
+        </Panel>
+
+        {/* 청산 전략 고정값 안내 패널 */}
+        <Panel title={`청산 전략: ${exitStrategy === 'martingale' ? '+3% 익절 · 마감 청산' : exitStrategy === 'model' ? '±3% 대칭 밴드 · 래칫' : '기울기 하락 즉시 매도'} (고정값)`}>
+          <View className="px-5 pb-5">
+            {exitStrategy === 'martingale' ? (
+              <>
+                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                  매도는 +3% 익절선과 마감 시각이 정해요. 물타기 여부는 위 옵션에서 골라요.
+                </Text>
+                <View className="mb-1 flex-row items-center justify-between">
+                  <Text className="text-xs text-[#8b95a1]">익절 및 마감</Text>
+                  <Text className="text-sm font-semibold text-[#191f28]">+{Math.round(MARTINGALE_CONFIG.tpPct * 100)}% 익절 · {Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:{String(MARTINGALE_CONFIG.closeAtMin % 60).padStart(2, '0')} ET 마감</Text>
+                </View>
+                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                  평단보다 +{Math.round(MARTINGALE_CONFIG.tpPct * 100)}% 오르면 전량 익절해요. 안 닿으면 {Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:{String(MARTINGALE_CONFIG.closeAtMin % 60).padStart(2, '0')} ET에 전량 청산해요 — 손절은 없으며 다음 날로 들고 가지 않아요.
+                </Text>
+                <View className="mb-1 flex-row items-center justify-between">
+                  <Text className="text-xs text-[#8b95a1]">물타기 동작</Text>
+                  <Text className="text-sm font-semibold text-[#191f28]">
+                    {engineOptions.martingale ? `평단 −${Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 아래 진입 신호 → (k−1)배` : '없음(옵션 꺼짐)'}
+                  </Text>
+                </View>
+                <Text className="text-xs leading-5 text-[#8b95a1]">
+                  {engineOptions.martingale
+                    ? `보유 중 현재가가 평단보다 −${Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 이상 내려간 상태에서 진입 신호가 오면 추가로 사요. 낙폭 k%(내림)면 지금 보유량의 (k−1)배가 추가 매수됩니다.`
+                    : '옵션에서 (k−1)배 물타기를 체크하면 보유 중 진입 신호에서 낙폭 배수로 추가 매수해요. 지금은 단일 포지션만 유지해요.'}
+                </Text>
+              </>
+            ) : exitStrategy === 'model' ? (
+              <>
+                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                  매도는 ±3% 대칭 밴드와 동적 래칫, 그리고 120분 만기 청산이 정해요.
+                </Text>
+                <View className="mb-1 flex-row items-center justify-between">
+                  <Text className="text-xs text-[#8b95a1]">밴드 & 래칫</Text>
+                  <Text className="text-sm font-semibold text-[#191f28]">익절 +{Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.tpPct * 100)}% / 손절 −{Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.stopLossPct * 100)}%</Text>
+                </View>
+                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                  산 가격보다 +3% 오르면 익절, −3% 내리면 손절해요. 익절선에 닿는 순간 모델이 여전히 상승 우위면 밴드를 그 자리 기준 ±3%로 올려 달아(래칫) 수익을 극대화해요.
+                </Text>
+                <View className="mb-1 flex-row items-center justify-between">
+                  <Text className="text-xs text-[#8b95a1]">시간 청산</Text>
+                  <Text className="text-sm font-semibold text-[#191f28]">최장 {MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분 만기</Text>
+                </View>
+                <Text className="text-xs leading-5 text-[#8b95a1]">
+                  산 지 {MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분이 지나도 밴드에 닿지 않으면 전량 매도해요. 봉 마감을 기다리지 않고 체결가가 닿는 즉시 판단해요.
+                </Text>
+              </>
+            ) : (
+              <>
+                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                  매도는 10초간 가격 변화율(기울기) 하락이 결정해요.
+                </Text>
+                <View className="mb-1 flex-row items-center justify-between">
+                  <Text className="text-xs text-[#8b95a1]">청산 조건</Text>
+                  <Text className="text-sm font-semibold text-[#191f28]">기울기 &lt; +{SLOPE_CONFIG.exitPct}% → 즉시 전량</Text>
+                </View>
+                <Text className="text-xs leading-5 text-[#8b95a1]">
+                  보유 중 기울기가 +{SLOPE_CONFIG.exitPct}% 아래로 내려오면 수익이든 손실이든 보지 않고 그 자리에서 즉시 전량 매도해요. 체결 틱마다 및 {SLOPE_EXIT_TICK_MS}ms마다 다시 재며, 10초 넘게 체결이 끊겨도 팔아요. 익절·손절·마감 청산은 없어요.
+                </Text>
+              </>
+            )}
+          </View>
+        </Panel>
 
         <Panel title="주문">
           <View className="px-5 pb-5">

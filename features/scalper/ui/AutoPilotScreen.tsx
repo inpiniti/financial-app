@@ -34,7 +34,7 @@ import { TREND_MODE } from '../trendMode';
 import type { TrendEval } from '../../../core/trend/signal';
 import { AdoptSheet } from './AdoptSheet';
 import { refreshLiveSettings } from './managerProvider';
-import { formatHHMM, formatPrice, formatSlopeRate } from './format';
+import { formatHHMM, formatPrice, formatSlopeRate, formatSlopeRates, formatTickRates } from './format';
 import { GridGauge } from './GridGauge';
 
 const STATE_BADGE: Record<AutoPilotState, { label: string; bg: string; fg: string }> = {
@@ -313,7 +313,7 @@ function SlotRow({
         subtitle={
           <View className="mt-0.5">
             <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
-              {`분속 ${perMinute}틱 · 기울기 ${formatSlopeRate(item.view.slopeRate)}%`}
+              {`${formatTickRates(item.view.tickRate)} · ${formatSlopeRates(item.view.slopeRate)}`}
             </Text>
             {item.feedRejected ? (
               // 체결가 구독이 KIS에 거절됨(2026-08-28) — 틱이 안 오니 판정도 진입도 없다. 옛 봉 판정 줄 대신 이유를 보인다.
@@ -615,11 +615,19 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                     {/* 그리드 사이 구분선 — 게이지가 연달아 붙으면 어느 종목 것인지 읽기 어렵다. */}
                     {i > 0 && <View className="mx-5 h-px bg-[#f2f4f6]" />}
                     {/* getLive(2026-09-02) — 게이지가 250ms로 스스로 신선값을 당겨 부드럽게 움직인다(화면 전체 리렌더 없음). */}
-                    <GridGauge
-                      grid={grid}
-                      onDoubleTapSell={() => handleSellNow(grid)}
-                      getLive={() => autopilot.getGridLive(grid.ticker)}
-                    />
+                    {(() => {
+                      const matchedRow = rows.find((r) => r.entry.ticker === grid.ticker);
+                      const rates = matchedRow ? { tickRate: matchedRow.view.tickRate, slopeRate: matchedRow.view.slopeRate } : undefined;
+                      return (
+                        <GridGauge
+                          grid={grid}
+                          name={matchedRow?.entry.name}
+                          rates={rates}
+                          onDoubleTapSell={() => handleSellNow(grid)}
+                          getLive={() => autopilot.getGridLive(grid.ticker)}
+                        />
+                      );
+                    })()}
                   </View>
                 ))}
               </Panel>
