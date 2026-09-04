@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { BackHeader } from '../components/BackHeader';
+import { Panel } from '../components/Panel';
 import {
   DEFAULT_APP_SETTINGS,
   loadAppSettings,
@@ -24,6 +25,14 @@ import { MARTINGALE_CONFIG } from '../core/martingale';
 import { SLOPE_CONFIG, SLOPE_EXIT_TICK_MS } from '../core/slope';
 import { DEFAULT_ENGINE_OPTIONS, type EngineOptions } from '../features/scalper/engineMode';
 import { ORDER_PRICING_LABEL, type OrderPricing } from '../features/scalper/orderStrategy';
+import { MODEL_SYMMETRIC_EXIT_CONFIG } from '../core/model/exitRule';
+import {
+  RankingSelectionPanel,
+  draftFromSelection,
+  selectionFromDraft,
+  type RankingSelectionDraft,
+} from '../features/scalper/ui/RankingSelectionPanel';
+import { normalizeRankingSelection, validateRankingSelection } from '../core/ranking';
 
 /** 주문 전략 카드 3장 + (시간 취소일 때) 취소 대기 슬라이더 — 매수·매도가 같은 컴포넌트를 쓴다(ADR 0013). */
 function OrderStrategyPicker(props: {
@@ -100,14 +109,6 @@ function describeFilters(o: EngineOptions): string {
   if (o.allUp) parts.push('4선 모두 상승');
   return parts.length ? ` + ${parts.join(' · ')}` : '';
 }
-import { MODEL_SYMMETRIC_EXIT_CONFIG } from '../core/model/exitRule';
-import {
-  RankingSelectionPanel,
-  draftFromSelection,
-  selectionFromDraft,
-  type RankingSelectionDraft,
-} from '../features/scalper/ui/RankingSelectionPanel';
-import { normalizeRankingSelection, validateRankingSelection } from '../core/ranking';
 
 /** 종목당 진입금액 상한(USD) — 오타 하나(100 → 10000)가 그대로 발주 금액이 된다. */
 const START_AMOUNT_MAX_USD = 100_000;

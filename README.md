@@ -132,6 +132,10 @@ eas init
 eas update --branch production
 ```
 
+```bash
+npx eas-cli update --branch production --message "진입/청산 전략 분리 및 4대 지표 반영"
+```
+
 Expo Go에서 자동으로 최신 버전을 다운로드받습니다 (앱 재시작 시).
 
 ## 문서
