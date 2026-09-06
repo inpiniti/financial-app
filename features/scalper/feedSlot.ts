@@ -40,6 +40,8 @@ import {
 import { MARTINGALE_BAR_MINUTES, MARTINGALE_MODE } from './martingaleMode';
 import { SLOPE_MODE } from './slopeMode';
 import { evaluateSlopeTransition, SLOPE_CONFIG, type SlopeState } from '../../core/slope';
+import { BBDIP_MODE } from './bbDipMode';
+import { BollingerBandMeter, evaluateBbDipEntry, DEFAULT_BBDIP_CONFIG, type BbDipConfig } from '../../core/bbDip';
 import { TREND_MODE } from './trendMode';
 import { TickRateMeter } from './tickRate';
 import { SlopeMeter } from './slopeRate';
@@ -135,6 +137,12 @@ export interface FeedSlotOptions {
    * 모델·기울기 모드는 하나라도 켜져 있으면 1분봉을 같이 쌓아 BUY를 낼 때 AND(미주입이면 필터 없음 — 회귀 안전).
    */
   entryFilters?: EntryFilters;
+  /**
+   * 볼린저 하단 투매 반등 모드(BB Dip Snapback) — true고 BBDIP_MODE=true면
+   * 틱마다 20틱 볼린저 밴드와 s10 기울기, 틱속도, 체결강도를 재서 바닥 반등에서 BUY를 낸다.
+   */
+  bbDip?: boolean;
+  bbDipConfig?: BbDipConfig;
 }
 
 /** 변곡점 신호 콜백 — attach 시 등록. */
@@ -292,6 +300,10 @@ export class FeedSlot {
   private readonly trendMode: boolean;
   /** 기울기 단타 모드인가 — 생성 시 확정(SLOPE_MODE AND slope 주입). 모든 모드보다 우선. */
   private readonly slopeMode: boolean;
+  /** 볼린저 투매 반등 모드인가 — 생성 시 확정(BBDIP_MODE AND bbDip 주입). */
+  private readonly bbDipMode: boolean;
+  private readonly bbMeter = new BollingerBandMeter(20, 2.0);
+  private readonly bbDipConfig: BbDipConfig;
   /** 진입 필터(엔진 옵션) — 5선 돌파 모드는 돌파 판정에, 모델·기울기 모드는 BUY 게이트에 쓴다. */
   private readonly entryFilters: EntryFilters;
   /** 모델·기울기 모드에서 필터가 켜져 1분봉을 같이 쌓는가. */
@@ -328,9 +340,11 @@ export class FeedSlot {
     this.ticker = options.ticker;
     this.clock = options.clock;
     this.slopeMode = SLOPE_MODE && options.slope === true;
-    this.martingaleMode = !this.slopeMode && MARTINGALE_MODE && options.martingale === true;
-    this.modelMode = !this.slopeMode && !this.martingaleMode && MODEL_MODE && options.model === true;
-    this.trendMode = !this.slopeMode && !this.martingaleMode && !this.modelMode && TREND_MODE && options.trend === true;
+    this.bbDipMode = !this.slopeMode && BBDIP_MODE && options.bbDip === true;
+    this.bbDipConfig = options.bbDipConfig ?? DEFAULT_BBDIP_CONFIG;
+    this.martingaleMode = !this.slopeMode && !this.bbDipMode && MARTINGALE_MODE && options.martingale === true;
+    this.modelMode = !this.slopeMode && !this.bbDipMode && !this.martingaleMode && MODEL_MODE && options.model === true;
+    this.trendMode = !this.slopeMode && !this.bbDipMode && !this.martingaleMode && !this.modelMode && TREND_MODE && options.trend === true;
     this.entryFilters = options.entryFilters ?? (this.martingaleMode ? DEFAULT_ENTRY_FILTERS : NO_ENTRY_FILTERS);
     this.filterBars = (this.slopeMode || this.modelMode) && anyEntryFilter(this.entryFilters);
     // 물타기 모드·진입 필터는 봉 주기가 1분(4선 정의) — 주입값보다 우선한다.
@@ -366,11 +380,18 @@ export class FeedSlot {
     if (extras?.dayLow !== undefined) this.dayLow = extras.dayLow;
     this.meter.record(this.lastTickAt);
     this.slopeMeter.record(this.lastTickAt, price);
+    this.bbMeter.record(price);
 
     if (this.slopeMode) {
       // 기울기 단타(ADR 0011) — 틱마다 기울기/10초를 재서 문턱 전환에서만 신호. 스로틀·봉·세션 게이트 없음.
       if (this.filterBars) this.bars.pushTick(price, tsMs); // 진입 필터(엔진 옵션)용 1분봉만 쌓는다.
       this.evaluateSlopeTick(price);
+      return null;
+    }
+
+    if (this.bbDipMode) {
+      // 볼린저 하단 투매 반등(BB Dip Snapback) — 틱마다 20틱 BB와 s10 기울기로 바닥 반등 판정.
+      this.evaluateBbDipTick(price, extras);
       return null;
     }
 
@@ -472,8 +493,8 @@ export class FeedSlot {
    * 버퍼는 이미 차 있으므로 다음 청크 마감부터 바로 판정한다(워밍업 공백 없음 — plan §2-1).
    */
   attachDetector(onSignal: SlotSignalListener): void {
-    if (this.modelMode || this.martingaleMode || this.slopeMode) {
-      // 모델 모드 — 감지기 객체가 없다. 리스너만 등록하고 신호는 ModelScanner가 emitSignal로 민다.
+    if (this.modelMode || this.martingaleMode || this.slopeMode || this.bbDipMode) {
+      // 모델·물타기·기울기·볼린저반등 모드 — 감지기 객체가 없다. 리스너만 등록한다.
       this.trendListener = onSignal;
       this.detector = null;
       this.ladder = null;
@@ -712,6 +733,42 @@ export class FeedSlot {
     if (t.signal === 'BUY' && !this.passesEntryFilterNow()) return;
     this.lastSignal = t.signal;
     this.trendListener(t.signal, { ticker: this.ticker, price, slope: 0, accel: 0, at: now });
+  }
+
+  /**
+   * 볼린저 하단 투매 반등 틱 판정 (BB Dip Snapback)
+   * 20틱 볼린저 밴드 하단 대비 -0.4% 이하 투매 + s10 > +0.05% 반등 + 틱속도 >= 50 + 체결강도 >= 10%
+   */
+  private evaluateBbDipTick(price: number, extras?: TickExtras): void {
+    if (this.trendListener === null) return;
+    const now = this.lastTickAt ?? this.clock.now();
+    const rm = this.meter.rate(now) * 60;
+    const s10 = this.slopeMeter.rate(now);
+
+    let flowRatio = 0.15; // fail-open
+    const strn = extras?.strength;
+    if (strn !== null && strn !== undefined && Number.isFinite(strn)) {
+      flowRatio = strn > 50 ? (strn - 100) / 100 : strn / 100;
+    }
+
+    const shouldBuy = evaluateBbDipEntry(
+      price,
+      this.bbMeter.lowerBb,
+      s10,
+      rm,
+      flowRatio,
+      this.bbDipConfig
+    );
+
+    if (shouldBuy) {
+      this.lastSignal = 'BUY';
+      this.trendListener('BUY', { ticker: this.ticker, price, slope: s10 ?? 0, accel: 0, at: now });
+    }
+  }
+
+  /** 포지션 관리자(청산 규칙)에서 20틱 볼린저 중심선(MA20) 조회용 */
+  getMa20(): number | null {
+    return this.bbMeter.ma20;
   }
 
   /**

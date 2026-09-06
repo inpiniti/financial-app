@@ -38,7 +38,8 @@ import {
 import { planFromSelection, rankingPlanKey, type KisMetric, type KisWindow, type RankingPlan } from '../../../core/ranking';
 import { buildRankingSnapshot } from '../rankingSnapshot';
 import type { OverseasExchangeCode } from '../../../kis/trId';
-import { INFLECTION_THRESHOLDS, MARTINGALE_POSITION_CONFIG, MODEL_CONFIG, SLOPE_POSITION_CONFIG, TREND_CONFIG } from '../autopilot';
+import { BBDIP_POSITION_CONFIG, INFLECTION_THRESHOLDS, MARTINGALE_POSITION_CONFIG, MODEL_CONFIG, SLOPE_POSITION_CONFIG, TREND_CONFIG } from '../autopilot';
+import { DEFAULT_BBDIP_CONFIG } from '../../../core/bbDip';
 import { MINUTE_BAR_RING_SIZE, TREND_BAR_MINUTES, type MinuteBar } from '../../../core/trend/bars';
 import { MARTINGALE_BAR_MINUTES, MARTINGALE_MODE } from '../martingaleMode';
 import { setActiveEngineMode, setActiveEngineOptions, setActiveEntryStrategy, setActiveExitStrategy } from '../engineMode';
@@ -414,6 +415,9 @@ async function buildManager(): Promise<ManagerBootstrap> {
     martingale: exitStrategy === 'martingale' ? MARTINGALE_POSITION_CONFIG : undefined,
     // 기울기 단타 청산 — exitStrategy === 'slope'일 때 주입
     slope: exitStrategy === 'slope' ? SLOPE_POSITION_CONFIG : undefined,
+    // 볼린저 투매 반등 청산 — exitStrategy === 'bbDip'일 때 주입
+    bbDip: (exitStrategy === 'bbDip' || !exitStrategy) ? BBDIP_POSITION_CONFIG : undefined,
+    bbDipConfig: DEFAULT_BBDIP_CONFIG,
     // 엔진 옵션(ADR 0012) — 세 엔진 공통 진입 필터·(k−1)배 물타기.
     entryFilters,
     averagingDown: engineOptions.martingale,

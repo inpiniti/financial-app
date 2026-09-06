@@ -25,13 +25,15 @@ import {
 } from './autopilot';
 import { isDaytimeSessionOpen } from './daySession';
 import { FeedSlot, INFLECTION_ENTRY, LADDER_ENTRY, type FeedSlotView, type LadderEntryOptions } from './feedSlot';
+import { BBDIP_MODE } from './bbDipMode';
 import { MARTINGALE_MODE } from './martingaleMode';
 import { SLOPE_MODE } from './slopeMode';
 import { MODEL_BAR_MINUTES, MODEL_MODE } from './modelMode';
 import { ModelScanner } from './modelScanner';
 import { TREND_MODE } from './trendMode';
 import type { TradeStrategy } from './tradeResults';
-import type { SlopeGridConfig } from './positionManager';
+import { BBDIP_POSITION_CONFIG, type BbDipGridConfig, type SlopeGridConfig } from './positionManager';
+import type { BbDipConfig } from '../../core/bbDip';
 import type { EntryStrategy, ExitStrategy } from './engineMode';
 import { anyEntryFilter, type EntryFilters } from '../../core/martingale';
 import type { OrderStrategy } from './orderStrategy';
@@ -145,9 +147,12 @@ export interface AutoPilotManagerDeps {
    * 워밍업·모델 스캐너는 돌지 않는다. 미주입이면 기존 동작 — 회귀 안전.
    */
   slope?: SlopeGridConfig;
-  /** 진입 전략(2026-09-04 분리) — 'martingale' | 'model' | 'slope'. 미주입 시 slope/martingale/model에서 자동 판별(하위호환). */
+  /** 볼린저 투매 반등 청산 설정 */
+  bbDip?: BbDipGridConfig;
+  bbDipConfig?: BbDipConfig;
+  /** 진입 전략(2026-09-04 분리) — 'bbDip' | 'martingale' | 'model' | 'slope'. 미주입 시 자동 판별(하위호환). */
   entryStrategy?: EntryStrategy;
-  /** 청산 전략(2026-09-04 분리) — 'martingale' | 'model' | 'slope'. 미주입 시 slope/martingale/model에서 자동 판별(하위호환). */
+  /** 청산 전략(2026-09-04 분리) — 'bbDip' | 'martingale' | 'model' | 'slope'. 미주입 시 자동 판별(하위호환). */
   exitStrategy?: ExitStrategy;
   /**
    * 엔진 옵션(2026-09-03 ADR 0012) — 진입 필터(정배열·5선 상승·4선 모두 상승, AND)는 슬롯에, (k−1)배 물타기는 포지션 관리자에.
@@ -356,6 +361,7 @@ export class AutoPilotManager {
         : undefined,
       fetchRestPrice: deps.fetchRestPrice ? (t) => deps.fetchRestPrice!(t, this.marketOf(t)) : undefined,
       positionManagement: {
+        bbDip: (deps.exitStrategy ? deps.exitStrategy === 'bbDip' : this.bbDipActive) ? (deps.bbDip ?? BBDIP_POSITION_CONFIG) : undefined,
         grid: deps.gridConfig,
         inflection: deps.inflection,
         trend: deps.trend,
@@ -504,6 +510,7 @@ export class AutoPilotManager {
   /** 진입 전략 결정(설정 정본 우선, 미주입 시 레거시 fallback) */
   get resolvedEntryStrategy(): EntryStrategy {
     if (this.deps.entryStrategy) return this.deps.entryStrategy;
+    if (BBDIP_MODE && (this.deps.bbDip !== undefined || this.deps.bbDipConfig !== undefined)) return 'bbDip';
     if (SLOPE_MODE && this.deps.slope !== undefined) return 'slope';
     if (MARTINGALE_MODE && this.deps.martingale !== undefined) return 'martingale';
     if (MODEL_MODE && this.deps.model !== undefined) return 'model';
@@ -513,10 +520,19 @@ export class AutoPilotManager {
   /** 청산 전략 결정(설정 정본 우선, 미주입 시 레거시 fallback) */
   get resolvedExitStrategy(): ExitStrategy {
     if (this.deps.exitStrategy) return this.deps.exitStrategy;
+    if (BBDIP_MODE && (this.deps.bbDip !== undefined || this.deps.bbDipConfig !== undefined)) return 'bbDip';
     if (SLOPE_MODE && this.deps.slope !== undefined) return 'slope';
     if (MARTINGALE_MODE && this.deps.martingale !== undefined) return 'martingale';
     if (MODEL_MODE && this.deps.model !== undefined) return 'model';
     return 'martingale';
+  }
+
+  /** 볼린저 투매 반등 진입이 실제로 도는가 — 스위치 AND 설정 주입. */
+  private get bbDipActive(): boolean {
+    if (this.deps.entryStrategy) {
+      return BBDIP_MODE && this.deps.entryStrategy === 'bbDip';
+    }
+    return BBDIP_MODE && (this.deps.bbDip !== undefined || this.deps.bbDipConfig !== undefined);
   }
 
   /** 모델 진입 스캐너가 도는가 — 스위치 AND 설정 주입. 워밍업·전략 태그가 이 하나를 읽는다. */
@@ -722,6 +738,7 @@ export class AutoPilotManager {
 
   /** 현재 배선의 진입·청산 규칙 태그(거래 결과 기록용) — 스위치·주입 조합을 그대로 읽는다. */
   strategyTag(): TradeStrategy {
+    if (this.bbDipActive) return 'bbDip';
     if (this.slopeActive) return 'slope';
     if (this.martingaleActive) return 'martingale';
     if (this.modelActive) return 'model';
@@ -795,6 +812,8 @@ export class AutoPilotManager {
       model: this.deps.entryStrategy ? entry === 'model' : this.deps.model !== undefined,
       martingale: this.deps.entryStrategy ? entry === 'martingale' : this.deps.martingale !== undefined,
       slope: this.deps.entryStrategy ? entry === 'slope' : this.deps.slope !== undefined,
+      bbDip: this.deps.entryStrategy ? entry === 'bbDip' : this.bbDipActive,
+      bbDipConfig: this.deps.bbDipConfig,
       entryFilters: this.deps.entryFilters,
     });
     this.slots.set(ticker, slot);
@@ -804,10 +823,10 @@ export class AutoPilotManager {
     this.persistTickKeys();
     // 모델 모드는 봉을 스캐너가 토스에서 직접 읽는다 — 추세 워밍업(분봉 시드)은 돌리지 않는다.
     // 물타기/5선 모드는 1분봉 시드가 필요하다(fetchMinuteBars가 1분봉을 준다 — managerProvider).
-    // 모델·기울기 모드는 봉을 쓰지 않는다 — 워밍업도 없다. 단 진입 필터(엔진 옵션)가 켜져 있으면 4선용 1분봉 시드가 필요하다.
+    // 모델·기울기·볼린저반등 모드는 봉을 쓰지 않는다 — 워밍업도 없다. 단 진입 필터(엔진 옵션)가 켜져 있으면 4선용 1분봉 시드가 필요하다.
     const needTrendWarmup = this.deps.entryStrategy
       ? entry === 'martingale' || this.entryFiltersOn
-      : (!this.modelActive && !this.slopeActive) || this.entryFiltersOn;
+      : (!this.modelActive && !this.slopeActive && !this.bbDipActive) || this.entryFiltersOn;
     if (needTrendWarmup) this.enqueueTrendWarmup(ticker);
   }
 

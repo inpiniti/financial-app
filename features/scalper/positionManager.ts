@@ -36,7 +36,9 @@ import {
 import { loadModel } from '../../core/model';
 import { AveragingDownRule, MARTINGALE_CONFIG, MartingaleRule, type MartingaleConfig } from '../../core/martingale';
 import { SLOPE_CONFIG, SlopeRule, type SlopeConfig } from '../../core/slope';
+import { BbDipExitRule, DEFAULT_BBDIP_CONFIG, type BbDipConfig } from '../../core/bbDip';
 import { TrendExitRule } from '../../core/trend/exitRule';
+import { BBDIP_MODE } from './bbDipMode';
 import { CIRCUIT_MODE } from './circuitMode';
 import { createExecutionPort } from './executionPort';
 import { createGridOrderPort } from './gridOrderPort';
@@ -145,6 +147,13 @@ export interface SlopeGridConfig extends SlopeConfig {
 
 export const SLOPE_POSITION_CONFIG: SlopeGridConfig = { kind: 'slope', ...SLOPE_CONFIG };
 
+/** 볼린저 투매 반등 모드 설정 */
+export interface BbDipGridConfig extends BbDipConfig {
+  readonly kind?: 'bbDip';
+}
+
+export const BBDIP_POSITION_CONFIG: BbDipGridConfig = { kind: 'bbDip', ...DEFAULT_BBDIP_CONFIG };
+
 /** 조건부 그리드 문턱 — 문서 §5 고정값(+2%/−3%)을 managerProvider가 주입한다. */
 export interface InflectionGridConfig {
   /** 매도 수익 문턱(소수, 0.02=+2%). */
@@ -171,6 +180,8 @@ export interface GridExitConfig {
 
 /** 진입 후 관리 설정 묶음 — 어느 모드가 켜지는지는 resolvePositionMode가 정한다. 주입 자체가 활성화 신호. */
 export interface PositionManagementConfig {
+  /** 볼린저 투매 반등 청산 규칙(현행). */
+  bbDip?: BbDipGridConfig;
   /** OCO 매도그리드(롤백 보존). 설정 탭에서 바뀌면 다음 인계부터 새 값. */
   grid?: GridExitConfig;
   /** 변곡점 조건부 그리드 문턱(롤백 보존). */
@@ -190,14 +201,15 @@ export interface PositionManagementConfig {
   averagingDown?: boolean;
 }
 
-export type PositionMode = 'slope' | 'martingale' | 'model' | 'trend' | 'inflection' | 'oco';
+export type PositionMode = 'bbDip' | 'slope' | 'martingale' | 'model' | 'trend' | 'inflection' | 'oco';
 
 /**
- * 모드 판정 — **유일한** 자리. 우선순위 물타기 시험 > 모델 > 추세 > 변곡점 조합 > OCO 그리드, 각각 스위치 상수 AND 설정 주입.
+ * 모드 판정 — **유일한** 자리. 우선순위 볼린저 반등 > 기울기 > 물타기 시험 > 모델 > 추세 > 변곡점 조합 > OCO 그리드, 각각 스위치 상수 AND 설정 주입.
  * null이면 진입 후 관리자가 없다(RunCycle의 옛 SELL 신호 청산 경로 — 하네스 하위호환).
  */
 export function resolvePositionMode(cfg: PositionManagementConfig | undefined): PositionMode | null {
   if (!cfg) return null;
+  if (BBDIP_MODE && cfg.bbDip !== undefined) return 'bbDip';
   if (SLOPE_MODE && cfg.slope !== undefined) return 'slope';
   if (MARTINGALE_MODE && cfg.martingale !== undefined) return 'martingale';
   if (MODEL_MODE && cfg.model !== undefined) return 'model';
@@ -323,6 +335,11 @@ export interface PositionManagerDeps {
    */
   slopeRate?: () => number | null;
   /**
+   * 이 종목의 최근 20틱 이동평균(MA20, 볼린저 중심선) — 슬롯 BollingerBandMeter.
+   * 볼린저 투매 반등 모드(bbDip)의 청산 규칙이 매 틱 읽어 MA20 중심선 도달 시 익절한다.
+   */
+  ma20?: () => number | null;
+  /**
    * 주문 전략(2026-09-03 ADR 0013) — 틱마다 읽는다. sell: quote=매수1호가 크로스·추격 / lastChase=현재가 발주·틱마다 현재가로 정정 /
    * lastCancel=현재가 발주·정정 없음·sellCancelAfterMs 뒤 취소(다음 틱 판정이 새 현재가로 다시 낸다). buy(물타기)도 같은 규칙.
    * 미주입·null이면 옛 동작(매도 1호가 크로스·추격, 매수 현재가 추격).
@@ -356,6 +373,58 @@ export function makePositionManager(
   deps: PositionManagerDeps,
 ): PositionManager {
   switch (mode) {
+    case 'bbDip': {
+      const bb = cfg.bbDip!;
+      return new RulePositionManager(deps, {
+        label: '볼린저 투매 반등 관리',
+        gauge: 'orders',
+        manualExitCheckMs: MANUAL_EXIT_CHECK_MS,
+        build: (seed) => {
+          const rule = new BbDipExitRule(seed, { config: bb, ma20: deps.ma20 });
+          return {
+            rule: cfg.averagingDown === true ? new AveragingDownRule(rule) : rule,
+            priceExit: (price) => {
+              const kind = rule.exitKind;
+              const pnlPct = seed.avgPrice > 0 ? ((price - seed.avgPrice) / seed.avgPrice) * 100 : 0;
+              const pnlStr = `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`;
+              if (kind === 'TP_MA20') {
+                return {
+                  reason: 'TAKE_PROFIT' as ExitReason,
+                  text: `MA20 중심선 도달 청산 · 현재가 ${price.toFixed(2)}(수익률 ${pnlStr}) — 전량 매도해요`,
+                  line: rule.lastMa20 ?? undefined,
+                };
+              }
+              if (kind === 'TAKE_PROFIT') {
+                return {
+                  reason: 'TAKE_PROFIT' as ExitReason,
+                  text: `목표 익절 · 현재가 ${price.toFixed(2)}(수익률 ${pnlStr}) ≥ +${(bb.takeProfitPct * 100).toFixed(1)}% — 전량 매도해요`,
+                  line: seed.avgPrice * (1 + bb.takeProfitPct),
+                };
+              }
+              if (kind === 'TRAILING_STOP') {
+                return {
+                  reason: 'TAKE_PROFIT' as ExitReason,
+                  text: `트레일링 익절 · 현재가 ${price.toFixed(2)}(수익률 ${pnlStr}) — 최고가 대비 -${(bb.trailingDropPct * 100).toFixed(1)}% 반납 전량 매도해요`,
+                };
+              }
+              if (kind === 'BREAKEVEN') {
+                return {
+                  reason: 'TAKE_PROFIT' as ExitReason,
+                  text: `본절 방어 청산 · 현재가 ${price.toFixed(2)}(수익률 ${pnlStr}) — 진입가 부근 전량 매도해요`,
+                  line: seed.avgPrice,
+                };
+              }
+              return {
+                reason: 'STOP_LOSS' as ExitReason,
+                text: `조기 손절 · 현재가 ${price.toFixed(2)}(수익률 ${pnlStr}) ≤ -${(bb.stopLossPct * 100).toFixed(1)}% — 전량 매도해요`,
+                line: seed.avgPrice * (1 - bb.stopLossPct),
+              };
+            },
+            armText: `${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} · MA20 중심선 회귀 또는 +${(bb.takeProfitPct * 100).toFixed(1)}% 목표 익절 · 손절 −${(bb.stopLossPct * 100).toFixed(1)}% · 트레일링 +${(bb.trailingTriggerPct * 100).toFixed(1)}% 추종`,
+          };
+        },
+      });
+    }
     case 'slope': {
       const sl = cfg.slope!;
       const fmt = (r: number | null) => (r === null ? '— (체결 끊김)' : `${r > 0 ? '+' : ''}${r.toFixed(1)}%`);

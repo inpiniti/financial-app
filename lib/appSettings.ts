@@ -10,24 +10,24 @@ const STORAGE_KEY = 'app:settings';
 // 2026-08-08 설정 정리 — 청크·버퍼·모멘텀 문턱·BUY 게이트·수수료율은 설정에서 제거했다.
 // 코드 기본값(Resampler 3초·31칸, TrendDetector 0.0001/0.00005, 게이트·수수료 0=끔)이
 // 옛 설정 기본값과 동일해 자동단타 동작은 변하지 않는다. 저장돼 있던 옛 키는 무시된다.
-export type EntryStrategy = 'martingale' | 'model' | 'slope';
-export type ExitStrategy = 'martingale' | 'model' | 'slope';
+export type EntryStrategy = 'martingale' | 'model' | 'slope' | 'bbDip';
+export type ExitStrategy = 'martingale' | 'model' | 'slope' | 'bbDip';
 
 export interface AppSettings {
   /** 기본 LIVE(실전) — PRD §9-6 확정. PAPER는 전환 옵션. */
   environment: KisEnvironment;
   /**
-   * 진입 전략(2026-09-04 분리) — 'martingale'(5선 돌파) · 'model'(예측 모델 상위 1%) · 'slope'(기울기/10초 ≥ +1%). 기본 'martingale'.
+   * 진입 전략 — 'bbDip'(볼린저 하단 투매 반등, 기본) · 'martingale'(5선 돌파) · 'model'(예측 모델 상위 1%) · 'slope'(기울기/10초 ≥ +1%).
    */
   entryStrategy: EntryStrategy;
   /**
-   * 청산 전략(2026-09-04 분리) — 'martingale'(+3% 익절·마감 청산) · 'model'(±3% 대칭 밴드·래칫·120분) · 'slope'(기울기 < +1% 즉시 매도). 기본 'martingale'.
+   * 청산 전략 — 'bbDip'(MA20 중심선 회귀·+1.2% 익절·트레일링·-0.8% 칼손절, 기본) · 'martingale'(+3% 익절) · 'model'(±3% 대칭 밴드) · 'slope'(기울기 < +1%).
    */
   exitStrategy: ExitStrategy;
   /**
    * 레거시 엔진 모드(호환용) — entryStrategy와 동기화.
    */
-  engineMode: 'martingale' | 'model' | 'slope';
+  engineMode: 'martingale' | 'model' | 'slope' | 'bbDip';
   /**
    * 엔진 옵션(2026-09-03 ADR 0012) — 엔진과 별개로 중복 선택. 진입 필터(정배열·5선 상승·4선 모두 상승, AND)와 (k−1)배 물타기.
    * 세 엔진 공통. 기본값은 옛 5선 돌파 규칙 그대로(5선 상승 + 물타기). 반영은 엔진 모드처럼 앱 재시작.
@@ -128,9 +128,9 @@ export interface AppSettings {
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   environment: 'live',
-  entryStrategy: 'martingale',
-  exitStrategy: 'martingale',
-  engineMode: 'martingale',
+  entryStrategy: 'bbDip',
+  exitStrategy: 'bbDip',
+  engineMode: 'bbDip',
   engineOptions: DEFAULT_ENGINE_OPTIONS,
   orderQty: 1,
   buyCancelAfterSec: 0,
@@ -193,11 +193,11 @@ export async function loadAppSettings(): Promise<AppSettings> {
     // environment는 항상 'live'로 강제한다 (2026-07-30 사용자 확정 — 모의 전환 옵션 제거).
     // KIS 모의투자는 시세 WS·현재가·순위가 전부 미지원이라 이 앱에서 PAPER는 동작 불가이고,
     // 과거 스위치로 'paper'가 저장된 기기도 이 강제로 자연 복구된다.
-    const fallbackEngine = parsed.engineMode === 'model' || parsed.engineMode === 'slope' ? parsed.engineMode : DEFAULT_APP_SETTINGS.engineMode;
-    const entryStrategy = parsed.entryStrategy === 'martingale' || parsed.entryStrategy === 'model' || parsed.entryStrategy === 'slope'
+    const fallbackEngine = parsed.engineMode === 'model' || parsed.engineMode === 'slope' || parsed.engineMode === 'bbDip' ? parsed.engineMode : DEFAULT_APP_SETTINGS.engineMode;
+    const entryStrategy = parsed.entryStrategy === 'martingale' || parsed.entryStrategy === 'model' || parsed.entryStrategy === 'slope' || parsed.entryStrategy === 'bbDip'
       ? parsed.entryStrategy
       : fallbackEngine;
-    const exitStrategy = parsed.exitStrategy === 'martingale' || parsed.exitStrategy === 'model' || parsed.exitStrategy === 'slope'
+    const exitStrategy = parsed.exitStrategy === 'martingale' || parsed.exitStrategy === 'model' || parsed.exitStrategy === 'slope' || parsed.exitStrategy === 'bbDip'
       ? parsed.exitStrategy
       : fallbackEngine;
 

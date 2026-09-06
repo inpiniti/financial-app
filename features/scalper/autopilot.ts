@@ -43,6 +43,7 @@ import {
 
 // 진입 후 관리(포지션 관리자) 쪽 정의 — 정본은 positionManager.ts. 기존 import 경로 호환을 위해 다시 내보낸다.
 export {
+  BBDIP_POSITION_CONFIG,
   GRID_EXIT,
   INFLECTION_GRID,
   INFLECTION_THRESHOLDS,
@@ -51,6 +52,7 @@ export {
   SLOPE_POSITION_CONFIG,
   MODEL_CONFIG,
   TREND_CONFIG,
+  type BbDipGridConfig,
   type GridExitConfig,
   type InflectionGridConfig,
   type MartingaleGridConfig,
@@ -1453,6 +1455,8 @@ export class AutoPilot {
         },
         // 기울기 단타(2026-09-02) — 슬롯의 기울기/10초. 슬롯이 없으면(입양) 미주입 → 규칙이 틱 판정을 하지 않는다.
         slopeRate: active.slot ? () => active.slot!.slopeRate(this.deps.clock.now()) : undefined,
+        // 볼린저 투매 반등(bbDip) — 슬롯의 최근 20틱 이동평균(MA20). 슬롯 없으면 미주입.
+        ma20: active.slot ? () => active.slot!.getMa20() : undefined,
         // 주문 전략(2026-09-03) — 틱마다 읽는다(실행 중 설정 변경 즉시 반영). null이면 옛 동작(1호가 크로스·추격).
         orderStrategy: () => this.orderStrategy,
         regularSession: isUsRegularSession,
