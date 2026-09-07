@@ -379,6 +379,7 @@ async function buildManager(): Promise<ManagerBootstrap> {
 
   const finalManager = manager;
   const initialSettings = managerSettingsFrom(appSettings);
+  const resolvedBbDipConfig = appSettings.bbDipConfig ?? DEFAULT_BBDIP_CONFIG;
 
   const autopilot = new AutoPilotManager({
     realtime,
@@ -416,8 +417,8 @@ async function buildManager(): Promise<ManagerBootstrap> {
     // 기울기 단타 청산 — exitStrategy === 'slope'일 때 주입
     slope: exitStrategy === 'slope' ? SLOPE_POSITION_CONFIG : undefined,
     // 볼린저 투매 반등 청산 — exitStrategy === 'bbDip'일 때 주입
-    bbDip: (exitStrategy === 'bbDip' || !exitStrategy) ? BBDIP_POSITION_CONFIG : undefined,
-    bbDipConfig: DEFAULT_BBDIP_CONFIG,
+    bbDip: (exitStrategy === 'bbDip' || !exitStrategy) ? { kind: 'bbDip', ...resolvedBbDipConfig } : undefined,
+    bbDipConfig: resolvedBbDipConfig,
     // 엔진 옵션(ADR 0012) — 세 엔진 공통 진입 필터·(k−1)배 물타기.
     entryFilters,
     averagingDown: engineOptions.martingale,

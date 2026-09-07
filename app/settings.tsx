@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import Slider from '@react-native-community/slider';
+import { Ionicons } from '@expo/vector-icons';
 import { BackHeader } from '../components/BackHeader';
 import { Panel } from '../components/Panel';
 import {
@@ -23,7 +24,7 @@ import { MODEL_BAR_MINUTES } from '../features/scalper/modelMode';
 import { MARTINGALE_BAR_MINUTES } from '../features/scalper/martingaleMode';
 import { MARTINGALE_CONFIG } from '../core/martingale';
 import { SLOPE_CONFIG, SLOPE_EXIT_TICK_MS } from '../core/slope';
-import { DEFAULT_BBDIP_CONFIG } from '../core/bbDip';
+import { DEFAULT_BBDIP_CONFIG, type BbDipConfig } from '../core/bbDip';
 import { DEFAULT_ENGINE_OPTIONS, type EngineOptions } from '../features/scalper/engineMode';
 import { ORDER_PRICING_LABEL, type OrderPricing } from '../features/scalper/orderStrategy';
 import { MODEL_SYMMETRIC_EXIT_CONFIG } from '../core/model/exitRule';
@@ -126,28 +127,35 @@ function SettingSlider(props: {
   max: number;
   step: number;
   formatValue: (v: number) => string;
-  helper: string;
+  helper?: string;
   offAtZero?: boolean;
+  color?: string;
 }) {
+  const tint = props.color ?? '#3182f6';
   const off = (props.offAtZero ?? false) && props.value <= 0;
   return (
-    <View className="mb-4">
-      <View className="mb-1 flex-row items-center justify-between">
-        <Text className="text-xs text-[#8b95a1]">{props.label}</Text>
-        <Text className={off ? 'text-sm font-semibold text-[#8b95a1]' : 'text-sm font-semibold text-[#3182f6]'}>
-          {off ? '꺼짐' : props.formatValue(props.value)}
-        </Text>
-      </View>
+    <View className="mb-3">
+      {props.label !== '' && (
+        <View className="mb-1 flex-row items-center justify-between">
+          <Text className="text-xs text-[#8b95a1]">{props.label}</Text>
+          <Text
+            className="text-sm font-semibold"
+            style={{ color: off ? '#8b95a1' : tint }}
+          >
+            {off ? '꺼짐' : props.formatValue(props.value)}
+          </Text>
+        </View>
+      )}
       <Slider
         value={props.value}
         onValueChange={(v) => props.onChange(snapToStep(v, props.min, props.max, props.step))}
         minimumValue={props.min}
         maximumValue={props.max}
         step={props.step}
-        minimumTrackTintColor="#3182f6"
+        minimumTrackTintColor={tint}
         maximumTrackTintColor="#e5e8eb"
-        thumbTintColor="#3182f6"
-        style={{ height: 40 }}
+        thumbTintColor={tint}
+        style={{ height: 36 }}
       />
       <View className="flex-row items-center justify-between">
         <Text className="text-[11px] text-[#8b95a1]">
@@ -155,8 +163,256 @@ function SettingSlider(props: {
         </Text>
         <Text className="text-[11px] text-[#8b95a1]">{props.formatValue(props.max)}</Text>
       </View>
-      <Text className="mt-1 text-xs text-[#8b95a1]">{props.helper}</Text>
+      {props.helper ? <Text className="mt-1 text-xs leading-4 text-[#8b95a1]">{props.helper}</Text> : null}
     </View>
+  );
+}
+
+/** 볼린저 하단 투매 반등 & 맞춤 대칭 청산 엔진 세부 조절 패널 (financial-lab 최적 파라미터 기반) */
+function BbDipDetailPanel(props: {
+  config: BbDipConfig;
+  onChange: (next: BbDipConfig) => void;
+}) {
+  const { config, onChange } = props;
+
+  return (
+    <Panel title="볼린저 반등 세부 설정 (BB Dip)">
+      <View className="px-5 pb-5">
+        <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
+          백테스트 시뮬레이션(Lab)에서 검증된 최적 파라미터를 실전 매매에 맞추어 세세하게 조절해요. 저장 후{' '}
+          <Text className="font-semibold text-[#191f28]">앱을 완전히 종료했다가 다시 켜면</Text> 적용돼요.
+        </Text>
+
+        {/* 1. 진입 조건 (BUY) */}
+        <View className="mb-4 rounded-2xl border border-[#e5e8eb] bg-[#f9fafb] p-4">
+          <View className="mb-3 flex-row items-center justify-between border-b border-[#e5e8eb] pb-2">
+            <View className="flex-row items-center">
+              <View className="mr-1.5 h-2.5 w-2.5 rounded-full bg-[#10b981]" />
+              <Text className="text-sm font-bold text-[#191f28]">진입 조건 (BUY)</Text>
+            </View>
+            <View className="rounded-md bg-[#e6fcf5] px-2 py-0.5">
+              <Text className="text-[11px] font-semibold text-[#0ca678]">4대 필터 동시만족</Text>
+            </View>
+          </View>
+
+          {/* 1) 최소 체결강도 */}
+          <SettingSlider
+            label="최소 체결강도 (FlowRatio)"
+            value={Math.round(config.minFr * 100)}
+            onChange={(v) => onChange({ ...config, minFr: Number((v / 100).toFixed(2)) })}
+            min={-10}
+            max={30}
+            step={1}
+            formatValue={(v) => `+${v}% (${100 + v}%)`}
+            helper={`매수세가 매도세보다 ${Math.round(config.minFr * 100)}% 이상 우위일 때만 진입`}
+            color="#10b981"
+          />
+
+          {/* 2) 최소 틱속도 */}
+          <SettingSlider
+            label="최소 틱속도 (RPM)"
+            value={config.minRm}
+            onChange={(v) => onChange({ ...config, minRm: v })}
+            min={10}
+            max={100}
+            step={5}
+            formatValue={(v) => `${v}건/분 (${(v / 60).toFixed(2)}건/초)`}
+            helper={`호가 거래가 분당 ${config.minRm}건 이상 활발하게 체결되는 종목만`}
+            color="#10b981"
+          />
+
+          {/* 3) 볼린저 하단 이탈률 */}
+          <SettingSlider
+            label="볼린저 하단 이탈률 (BB Dip)"
+            value={Number((config.dipThreshold * 100).toFixed(1))}
+            onChange={(v) => onChange({ ...config, dipThreshold: Number((v / 100).toFixed(4)) })}
+            min={-1.5}
+            max={-0.1}
+            step={0.1}
+            formatValue={(v) => `${v.toFixed(1)}% 이하 급락`}
+            helper={`현재가 ≤ BB하단 × ${(1 + config.dipThreshold).toFixed(4)} (극단 투매 과매도)`}
+            color="#0284c7"
+          />
+
+          {/* 4) 10초 가격 기울기 반등 */}
+          <SettingSlider
+            label="10초 가격 기울기 반등 (s10)"
+            value={Number(config.s10Min.toFixed(2))}
+            onChange={(v) => onChange({ ...config, s10Min: Number(v.toFixed(2)) })}
+            min={0.01}
+            max={0.20}
+            step={0.01}
+            formatValue={(v) => `s10 > +${v.toFixed(2)}%`}
+            helper="바닥을 터치한 후 직전 10초간 양의 기울기로 첫 반등 확인"
+            color="#0284c7"
+          />
+        </View>
+
+        {/* 2. 청산 엔진 (SELL) */}
+        <View className="rounded-2xl border border-[#e5e8eb] bg-[#f9fafb] p-4">
+          <View className="mb-3 flex-row items-center justify-between border-b border-[#e5e8eb] pb-2">
+            <View className="flex-row items-center">
+              <Ionicons name="shield-checkmark" size={16} color="#f43f5e" style={{ marginRight: 4 }} />
+              <Text className="text-sm font-bold text-[#191f28]">청산 엔진 (SELL)</Text>
+            </View>
+            <View className="rounded-md bg-[#fff1f2] px-2 py-0.5">
+              <Text className="text-[11px] font-semibold text-[#f43f5e]">스마트 청산</Text>
+            </View>
+          </View>
+
+          {/* 1순위: MA20 중심선 회귀 익절 */}
+          <Pressable
+            onPress={() => onChange({ ...config, exitOnMa20: config.exitOnMa20 === false })}
+            className="mb-3 rounded-xl border border-[#fef3c7] bg-[#fffbeb] p-3 active:opacity-80"
+          >
+            <View className="flex-row items-center justify-between">
+              <View className="flex-1 flex-row items-center">
+                <View className="mr-2 h-5 w-5 items-center justify-center rounded-full bg-[#f59e0b]">
+                  <Text className="text-xs font-bold text-white">1</Text>
+                </View>
+                <Text className="text-xs font-bold text-[#b45309]">핵심 대칭: MA20 중심선 회귀</Text>
+              </View>
+              <Ionicons
+                name={config.exitOnMa20 !== false ? 'checkbox' : 'square-outline'}
+                size={22}
+                color={config.exitOnMa20 !== false ? '#f59e0b' : '#b0b8c1'}
+              />
+            </View>
+            <Text className="mt-1 text-[11px] leading-4 text-[#92400e]">
+              20틱 이동평균선(MA20) 도달 즉시 평균회귀 전량 익절 (price ≥ ma20)
+            </Text>
+          </Pressable>
+
+          {/* 2순위: 목표 익절률 */}
+          <View className="mb-3 rounded-xl border border-[#e5e8eb] bg-white p-3">
+            <View className="mb-1 flex-row items-center justify-between">
+              <View className="flex-row items-center">
+                <View className="mr-2 h-5 w-5 items-center justify-center rounded-full bg-[#3b82f6]">
+                  <Text className="text-xs font-bold text-white">2</Text>
+                </View>
+                <Text className="text-xs font-bold text-[#191f28]">목표 익절률</Text>
+              </View>
+              <Text className="text-sm font-bold text-[#3b82f6]">
+                +{(config.takeProfitPct * 100).toFixed(1)}%
+              </Text>
+            </View>
+            <SettingSlider
+              label=""
+              value={Number((config.takeProfitPct * 100).toFixed(1))}
+              onChange={(v) => onChange({ ...config, takeProfitPct: Number((v / 100).toFixed(3)) })}
+              min={0.5}
+              max={3.0}
+              step={0.1}
+              formatValue={(v) => `+${v.toFixed(1)}%`}
+              helper={`진입 평단가 대비 +${(config.takeProfitPct * 100).toFixed(1)}% 도달 시 즉시 전량 매도`}
+              color="#3b82f6"
+            />
+          </View>
+
+          {/* 3순위: 홈런 트레일링 */}
+          <View className="mb-3 rounded-xl border border-[#e5e8eb] bg-white p-3">
+            <View className="mb-1 flex-row items-center justify-between">
+              <View className="flex-row items-center">
+                <View className="mr-2 h-5 w-5 items-center justify-center rounded-full bg-[#10b981]">
+                  <Text className="text-xs font-bold text-white">3</Text>
+                </View>
+                <Text className="text-xs font-bold text-[#191f28]">홈런 트레일링</Text>
+              </View>
+              <Text className="text-xs font-bold text-[#10b981]">
+                +{(config.trailingTriggerPct * 100).toFixed(1)}% 발동 / -{(config.trailingDropPct * 100).toFixed(1)}% 반납
+              </Text>
+            </View>
+            <View className="mt-2">
+              <SettingSlider
+                label="발동 상승률"
+                value={Number((config.trailingTriggerPct * 100).toFixed(1))}
+                onChange={(v) => onChange({ ...config, trailingTriggerPct: Number((v / 100).toFixed(3)) })}
+                min={0.5}
+                max={2.5}
+                step={0.1}
+                formatValue={(v) => `+${v.toFixed(1)}%`}
+                color="#10b981"
+              />
+              <SettingSlider
+                label="고점 반납폭"
+                value={Number((config.trailingDropPct * 100).toFixed(1))}
+                onChange={(v) => onChange({ ...config, trailingDropPct: Number((v / 100).toFixed(3)) })}
+                min={0.1}
+                max={1.0}
+                step={0.1}
+                formatValue={(v) => `${v.toFixed(1)}%`}
+                color="#10b981"
+                helper={`+${(config.trailingTriggerPct * 100).toFixed(1)}% 이상 폭등 후 최고점 대비 ${(config.trailingDropPct * 100).toFixed(1)}% 하락 시 익절`}
+              />
+            </View>
+          </View>
+
+          {/* 4순위: 본절 방어 */}
+          <View className="mb-3 rounded-xl border border-[#e5e8eb] bg-white p-3">
+            <View className="mb-1 flex-row items-center justify-between">
+              <View className="flex-row items-center">
+                <View className="mr-2 h-5 w-5 items-center justify-center rounded-full bg-[#8b5cf6]">
+                  <Text className="text-xs font-bold text-white">4</Text>
+                </View>
+                <Text className="text-xs font-bold text-[#191f28]">본절 방어 (Breakeven)</Text>
+              </View>
+              <Text className="text-xs font-bold text-[#8b5cf6]">
+                +{(config.breakevenTriggerPct * 100).toFixed(1)}% 터치 → +{((config.breakevenBufferPct ?? 0.0005) * 100).toFixed(2)}%
+              </Text>
+            </View>
+            <View className="mt-2">
+              <SettingSlider
+                label="터치 기준"
+                value={Number((config.breakevenTriggerPct * 100).toFixed(1))}
+                onChange={(v) => onChange({ ...config, breakevenTriggerPct: Number((v / 100).toFixed(3)) })}
+                min={0.3}
+                max={1.5}
+                step={0.1}
+                formatValue={(v) => `+${v.toFixed(1)}%`}
+                color="#8b5cf6"
+              />
+              <SettingSlider
+                label="원금 보존선"
+                value={Number(((config.breakevenBufferPct ?? 0.0005) * 100).toFixed(2))}
+                onChange={(v) => onChange({ ...config, breakevenBufferPct: Number((v / 100).toFixed(4)) })}
+                min={0.00}
+                max={0.20}
+                step={0.01}
+                formatValue={(v) => `+${v.toFixed(2)}%`}
+                color="#8b5cf6"
+                helper={`+${(config.breakevenTriggerPct * 100).toFixed(1)}% 이상 터치 후 진입가 부근(+${((config.breakevenBufferPct ?? 0.0005) * 100).toFixed(2)}%)으로 밀리면 수수료 보존 매도`}
+              />
+            </View>
+          </View>
+
+          {/* 5순위: 조기 칼손절 */}
+          <View className="rounded-xl border border-[#fee2e2] bg-[#fef2f2] p-3">
+            <View className="mb-1 flex-row items-center justify-between">
+              <View className="flex-row items-center">
+                <View className="mr-2 h-5 w-5 items-center justify-center rounded-full bg-[#ef4444]">
+                  <Text className="text-xs font-bold text-white">5</Text>
+                </View>
+                <Text className="text-xs font-bold text-[#991b1b]">조기 칼손절 (비상 탈출)</Text>
+              </View>
+              <Text className="text-sm font-bold text-[#ef4444]">
+                -{(config.stopLossPct * 100).toFixed(1)}%
+              </Text>
+            </View>
+            <SettingSlider
+              label=""
+              value={Number((config.stopLossPct * 100).toFixed(1))}
+              onChange={(v) => onChange({ ...config, stopLossPct: Number((v / 100).toFixed(3)) })}
+              min={0.3}
+              max={2.0}
+              step={0.1}
+              formatValue={(v) => `-${v.toFixed(1)}%`}
+              helper={`평단가 대비 -${(config.stopLossPct * 100).toFixed(1)}% 도달 시 어떤 조건보다 우선하여 즉시 전량 손절`}
+              color="#ef4444"
+            />
+          </View>
+        </View>
+      </View>
+    </Panel>
   );
 }
 
@@ -201,6 +457,9 @@ export default function SettingsScreen() {
   const savedEntryStrategyRef = useRef<EntryStrategy>(DEFAULT_APP_SETTINGS.entryStrategy);
   const [exitStrategy, setExitStrategy] = useState<ExitStrategy>(DEFAULT_APP_SETTINGS.exitStrategy);
   const savedExitStrategyRef = useRef<ExitStrategy>(DEFAULT_APP_SETTINGS.exitStrategy);
+  // 볼린저 투매 반등(BB Dip) 세부 설정
+  const [bbDipConfig, setBbDipConfig] = useState<BbDipConfig>(DEFAULT_APP_SETTINGS.bbDipConfig);
+  const savedBbDipConfigRef = useRef<BbDipConfig>(DEFAULT_APP_SETTINGS.bbDipConfig);
   // 엔진 옵션(2026-09-03 ADR 0012) — 전략과 별개로 중복 선택. 반영은 전략과 같은 규약(앱 재시작).
   const [engineOptions, setEngineOptions] = useState<EngineOptions>(DEFAULT_ENGINE_OPTIONS);
   const savedEngineOptionsRef = useRef<EngineOptions>(DEFAULT_ENGINE_OPTIONS);
@@ -238,6 +497,8 @@ export default function SettingsScreen() {
       savedExitStrategyRef.current = initExit;
       setEngineOptions(appSettings.engineOptions);
       savedEngineOptionsRef.current = appSettings.engineOptions;
+      setBbDipConfig(appSettings.bbDipConfig ?? DEFAULT_BBDIP_CONFIG);
+      savedBbDipConfigRef.current = appSettings.bbDipConfig ?? DEFAULT_BBDIP_CONFIG;
     })();
   }, []);
 
@@ -319,6 +580,7 @@ export default function SettingsScreen() {
         exitStrategy,
         engineMode: entryStrategy, // 하위 호환 유지
         engineOptions,
+        bbDipConfig,
         orderQty: savedOrderQtyRef.current,
         buyCancelAfterSec,
         buyStrategy,
@@ -337,13 +599,16 @@ export default function SettingsScreen() {
       const optionsChanged = (Object.keys(engineOptions) as Array<keyof EngineOptions>).some(
         (k) => engineOptions[k] !== savedEngineOptionsRef.current[k],
       );
+      const bbDipChanged = JSON.stringify(bbDipConfig) !== JSON.stringify(savedBbDipConfigRef.current);
       const strategyChanged =
         entryStrategy !== savedEntryStrategyRef.current ||
         exitStrategy !== savedExitStrategyRef.current ||
-        optionsChanged;
+        optionsChanged ||
+        bbDipChanged;
       savedEntryStrategyRef.current = entryStrategy;
       savedExitStrategyRef.current = exitStrategy;
       savedEngineOptionsRef.current = engineOptions;
+      savedBbDipConfigRef.current = bbDipConfig;
       Alert.alert(
         '알림',
         strategyChanged
@@ -639,200 +904,140 @@ export default function SettingsScreen() {
           </View>
         </Panel>
 
-        {/* 진입 전략 고정값 안내 패널 */}
-        <Panel
-          title={`진입 전략: ${
-            entryStrategy === 'bbDip'
-              ? '볼린저 하단 투매 반등'
-              : entryStrategy === 'martingale'
+        {/* 볼린저 반등 세부 설정 (BB Dip) 패널 — 진입 또는 청산 전략이 bbDip일 때 활성화 */}
+        {(entryStrategy === 'bbDip' || exitStrategy === 'bbDip') && (
+          <BbDipDetailPanel config={bbDipConfig} onChange={setBbDipConfig} />
+        )}
+
+        {/* 진입 전략 고정값 안내 패널 (bbDip 외 고정값 전략일 때) */}
+        {entryStrategy !== 'bbDip' && (
+          <Panel
+            title={`진입 전략: ${
+              entryStrategy === 'martingale'
                 ? '5선 돌파'
                 : entryStrategy === 'model'
                   ? '예측 모델'
                   : '기울기 돌파'
-          } (고정값)`}
-        >
-          <View className="px-5 pb-5">
-            {entryStrategy === 'bbDip' ? (
-              <>
-                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                  진입은 20틱 볼린저 밴드 하단 투매 이탈 및 10초 반등이 결정해요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
-                </Text>
-                <View className="mb-1 flex-row items-center justify-between">
-                  <Text className="text-xs text-[#8b95a1]">진입 규칙</Text>
-                  <Text className="text-sm font-semibold text-[#191f28]">하단 이탈 후 반등{describeFilters(engineOptions)}</Text>
-                </View>
-                <Text className="text-xs leading-5 text-[#8b95a1]">
-                  체결 틱을 실시간 집계해 20틱 볼린저 밴드(2.0σ) 하단 대비 {(DEFAULT_BBDIP_CONFIG.dipThreshold * 100).toFixed(1)}% 이하로 일시 투매된 종목 중, 10초 기울기가 +{DEFAULT_BBDIP_CONFIG.s10Min}% 이상으로 돌아서며 틱속도 {DEFAULT_BBDIP_CONFIG.minRm}건/분, 체결강도 +{(DEFAULT_BBDIP_CONFIG.minFr * 100).toFixed(0)}% 이상 충족 시 즉시 현재가로 매수해요{engineOptions.ordered || engineOptions.ma5Up || engineOptions.allUp ? ' — 위에서 체크한 이동평균 필터 조건이 함께 맞아야 해요' : ''}.
-                </Text>
-              </>
-            ) : entryStrategy === 'martingale' ? (
-              <>
-                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                  진입은 {MARTINGALE_BAR_MINUTES}분봉 5선 돌파가 정해요. 진입 조건 필터는 위 옵션에서 골라요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
-                </Text>
-                <View className="mb-1 flex-row items-center justify-between">
-                  <Text className="text-xs text-[#8b95a1]">진입 규칙</Text>
-                  <Text className="text-sm font-semibold text-[#191f28]">5선 돌파{describeFilters(engineOptions)}</Text>
-                </View>
-                <Text className="text-xs leading-5 text-[#8b95a1]">
-                  {MARTINGALE_BAR_MINUTES}분봉 종가가 5선(최근 5봉 평균)을 아래에서 위로 뚫는 봉에 사요{engineOptions.ordered || engineOptions.ma5Up || engineOptions.allUp ? ' — 위에서 체크한 조건이 그 봉에서 함께 맞아야 해요' : ''}. 봉이 닫히기를 기다리지 않고 진행 중 봉을 현재가로 넣어 실시간으로 판단해요(봉당 1회). 프리·정규·애프터에서만 진입하고 주간거래 시간엔 쉬어요.
-                </Text>
-              </>
-            ) : entryStrategy === 'model' ? (
-              <>
-                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                  진입은 LightGBM 예측 모델이 결정해요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
-                </Text>
-                <View className="mb-1 flex-row items-center justify-between">
-                  <Text className="text-xs text-[#8b95a1]">진입 규칙</Text>
-                  <Text className="text-sm font-semibold text-[#191f28]">모델 확률 ≥ 상위 1% 기준값</Text>
-                </View>
-                <Text className="text-xs leading-5 text-[#8b95a1]">
-                  {MODEL_BAR_MINUTES}분봉이 닫힐 때마다 리스트 전 종목에 대해 "+3%가 −3%보다 먼저 올 확률"을 지표 33개로 계산해요. 3년 반치 과거에서 상위 1%에 해당하는 값을 넘어야 사요. 정규장·그날 거래대금 $2M 이상·주가 $1 초과 종목만 봐요.
-                </Text>
-              </>
-            ) : (
-              <>
-                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                  진입은 10초간 가격 변화율(기울기)이 결정해요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
-                </Text>
-                <View className="mb-1 flex-row items-center justify-between">
-                  <Text className="text-xs text-[#8b95a1]">진입 규칙</Text>
-                  <Text className="text-sm font-semibold text-[#191f28]">기울기 ≥ +{SLOPE_CONFIG.entryPct}%</Text>
-                </View>
-                <Text className="text-xs leading-5 text-[#8b95a1]">
-                  체결 틱이 올 때마다 다시 재서, 10초 기울기가 +{SLOPE_CONFIG.entryPct}% 아래에서 이상으로 올라서는 순간 즉시 사요. 봉·이동평균 조건은 없으며 매수는 신호 순간 현재가로 내요.
-                </Text>
-              </>
-            )}
-          </View>
-        </Panel>
+            } (고정값)`}
+          >
+            <View className="px-5 pb-5">
+              {entryStrategy === 'martingale' ? (
+                <>
+                  <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                    진입은 {MARTINGALE_BAR_MINUTES}분봉 5선 돌파가 정해요. 진입 조건 필터는 위 옵션에서 골라요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
+                  </Text>
+                  <View className="mb-1 flex-row items-center justify-between">
+                    <Text className="text-xs text-[#8b95a1]">진입 규칙</Text>
+                    <Text className="text-sm font-semibold text-[#191f28]">5선 돌파{describeFilters(engineOptions)}</Text>
+                  </View>
+                  <Text className="text-xs leading-5 text-[#8b95a1]">
+                    {MARTINGALE_BAR_MINUTES}분봉 종가가 5선(최근 5봉 평균)을 아래에서 위로 뚫는 봉에 사요{engineOptions.ordered || engineOptions.ma5Up || engineOptions.allUp ? ' — 위에서 체크한 조건이 그 봉에서 함께 맞아야 해요' : ''}. 봉이 닫히기를 기다리지 않고 진행 중 봉을 현재가로 넣어 실시간으로 판단해요(봉당 1회). 프리·정규·애프터에서만 진입하고 주간거래 시간엔 쉬어요.
+                  </Text>
+                </>
+              ) : entryStrategy === 'model' ? (
+                <>
+                  <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                    진입은 LightGBM 예측 모델이 결정해요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
+                  </Text>
+                  <View className="mb-1 flex-row items-center justify-between">
+                    <Text className="text-xs text-[#8b95a1]">진입 규칙</Text>
+                    <Text className="text-sm font-semibold text-[#191f28]">모델 확률 ≥ 상위 1% 기준값</Text>
+                  </View>
+                  <Text className="text-xs leading-5 text-[#8b95a1]">
+                    {MODEL_BAR_MINUTES}분봉이 닫힐 때마다 리스트 전 종목에 대해 "+3%가 −3%보다 먼저 올 확률"을 지표 33개로 계산해요. 3년 반치 과거에서 상위 1%에 해당하는 값을 넘어야 사요. 정규장·그날 거래대금 $2M 이상·주가 $1 초과 종목만 봐요.
+                  </Text>
+                </>
+              ) : (
+                <>
+                  <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                    진입은 10초간 가격 변화율(기울기)이 결정해요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
+                  </Text>
+                  <View className="mb-1 flex-row items-center justify-between">
+                    <Text className="text-xs text-[#8b95a1]">진입 규칙</Text>
+                    <Text className="text-sm font-semibold text-[#191f28]">기울기 ≥ +{SLOPE_CONFIG.entryPct}%</Text>
+                  </View>
+                  <Text className="text-xs leading-5 text-[#8b95a1]">
+                    체결 틱이 올 때마다 다시 재서, 10초 기울기가 +{SLOPE_CONFIG.entryPct}% 아래에서 이상으로 올라서는 순간 즉시 사요. 봉·이동평균 조건은 없으며 매수는 신호 순간 현재가로 내요.
+                  </Text>
+                </>
+              )}
+            </View>
+          </Panel>
+        )}
 
-        {/* 청산 전략 고정값 안내 패널 */}
-        <Panel
-          title={`청산 전략: ${
-            exitStrategy === 'bbDip'
-              ? 'MA20 중심선 회귀 및 맞춤 대칭 청산'
-              : exitStrategy === 'martingale'
+        {/* 청산 전략 고정값 안내 패널 (bbDip 외 고정값 전략일 때) */}
+        {exitStrategy !== 'bbDip' && (
+          <Panel
+            title={`청산 전략: ${
+              exitStrategy === 'martingale'
                 ? '+3% 익절 · 마감 청산'
                 : exitStrategy === 'model'
                   ? '±3% 대칭 밴드 · 래칫'
                   : '기울기 하락 즉시 매도'
-          } (고정값)`}
-        >
-          <View className="px-5 pb-5">
-            {exitStrategy === 'bbDip' ? (
-              <>
-                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                  매도는 20틱 이동평균 중심선(MA20) 회귀 및 수익/손실 대칭 밴드가 결정해요.
-                </Text>
-                <View className="mb-1 flex-row items-center justify-between">
-                  <Text className="text-xs text-[#8b95a1]">1순위: 중심선 회귀</Text>
-                  <Text className="text-sm font-semibold text-[#191f28]">20틱 MA 중심선 도달 즉시 전량</Text>
-                </View>
-                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                  투매 후 20틱 이동평균선(MA20)까지 되돌림이 나오면 추가 욕심 없이 그 자리에서 즉시 전량 익절해요.
-                </Text>
-                <View className="mb-1 flex-row items-center justify-between">
-                  <Text className="text-xs text-[#8b95a1]">2순위: 목표 익절</Text>
-                  <Text className="text-sm font-semibold text-[#191f28]">+{((DEFAULT_BBDIP_CONFIG.takeProfitPct) * 100).toFixed(1)}% 도달 시 전량 익절</Text>
-                </View>
-                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                  중심선에 닿지 않더라도 목표 수익률(+1.2%)에 도달하면 즉시 전량 익절해요.
-                </Text>
-                <View className="mb-1 flex-row items-center justify-between">
-                  <Text className="text-xs text-[#8b95a1]">3순위: 트레일링 익절</Text>
-                  <Text className="text-sm font-semibold text-[#191f28]">+{((DEFAULT_BBDIP_CONFIG.trailingTriggerPct) * 100).toFixed(1)}% 후 고점 대비 {((DEFAULT_BBDIP_CONFIG.trailingDropPct) * 100).toFixed(1)}% 반납 시 매도</Text>
-                </View>
-                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                  +1.0% 이상 상승하며 폭등 시, 최고점 대비 0.5% 밀릴 때 이익을 실현해요.
-                </Text>
-                <View className="mb-1 flex-row items-center justify-between">
-                  <Text className="text-xs text-[#8b95a1]">4순위: 본절 보호</Text>
-                  <Text className="text-sm font-semibold text-[#191f28]">+{((DEFAULT_BBDIP_CONFIG.breakevenTriggerPct) * 100).toFixed(1)}% 터치 후 +0.05%로 밀리면 매도</Text>
-                </View>
-                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                  수익권 진입 후 반락 시 원금을 보존해요.
-                </Text>
-                <View className="mb-1 flex-row items-center justify-between">
-                  <Text className="text-xs text-[#8b95a1]">5순위: 조기 칼손절</Text>
-                  <Text className="text-sm font-semibold text-[#191f28]">-{((DEFAULT_BBDIP_CONFIG.stopLossPct) * 100).toFixed(1)}% 도달 즉시 탈출</Text>
-                </View>
-                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                  반등에 실패하고 추가 투매가 지속되면 -0.8%에서 칼같이 손절하여 계좌를 방어해요.
-                </Text>
-                <View className="mb-1 flex-row items-center justify-between">
-                  <Text className="text-xs text-[#8b95a1]">물타기 동작</Text>
-                  <Text className="text-sm font-semibold text-[#191f28]">
-                    {engineOptions.martingale ? `평단 −${Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 아래 진입 신호 → (k−1)배` : '없음(옵션 꺼짐)'}
+            } (고정값)`}
+          >
+            <View className="px-5 pb-5">
+              {exitStrategy === 'martingale' ? (
+                <>
+                  <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                    매도는 +3% 익절선과 마감 시각이 정해요. 물타기 여부는 위 옵션에서 골라요.
                   </Text>
-                </View>
-                <Text className="text-xs leading-5 text-[#8b95a1]">
-                  {engineOptions.martingale
-                    ? `보유 중 현재가가 평단보다 −${Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 이상 내려간 상태에서 볼린저 하단 반등 신호가 다시 오면 추가로 사요. 낙폭 k%(내림)면 지금 보유량의 (k−1)배가 추가 매수됩니다.`
-                    : '옵션에서 (k−1)배 물타기를 체크하면 보유 중 진입 신호에서 낙폭 배수로 추가 매수해요. 지금은 단일 포지션만 유지해요.'}
-                </Text>
-              </>
-            ) : exitStrategy === 'martingale' ? (
-              <>
-                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                  매도는 +3% 익절선과 마감 시각이 정해요. 물타기 여부는 위 옵션에서 골라요.
-                </Text>
-                <View className="mb-1 flex-row items-center justify-between">
-                  <Text className="text-xs text-[#8b95a1]">익절 및 마감</Text>
-                  <Text className="text-sm font-semibold text-[#191f28]">+{Math.round(MARTINGALE_CONFIG.tpPct * 100)}% 익절 · {Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:{String(MARTINGALE_CONFIG.closeAtMin % 60).padStart(2, '0')} ET 마감</Text>
-                </View>
-                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                  평단보다 +{Math.round(MARTINGALE_CONFIG.tpPct * 100)}% 오르면 전량 익절해요. 안 닿으면 {Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:{String(MARTINGALE_CONFIG.closeAtMin % 60).padStart(2, '0')} ET에 전량 청산해요 — 손절은 없으며 다음 날로 들고 가지 않아요.
-                </Text>
-                <View className="mb-1 flex-row items-center justify-between">
-                  <Text className="text-xs text-[#8b95a1]">물타기 동작</Text>
-                  <Text className="text-sm font-semibold text-[#191f28]">
-                    {engineOptions.martingale ? `평단 −${Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 아래 진입 신호 → (k−1)배` : '없음(옵션 꺼짐)'}
+                  <View className="mb-1 flex-row items-center justify-between">
+                    <Text className="text-xs text-[#8b95a1]">익절 및 마감</Text>
+                    <Text className="text-sm font-semibold text-[#191f28]">+{Math.round(MARTINGALE_CONFIG.tpPct * 100)}% 익절 · {Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:{String(MARTINGALE_CONFIG.closeAtMin % 60).padStart(2, '0')} ET 마감</Text>
+                  </View>
+                  <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                    평단보다 +{Math.round(MARTINGALE_CONFIG.tpPct * 100)}% 오르면 전량 익절해요. 안 닿으면 {Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:{String(MARTINGALE_CONFIG.closeAtMin % 60).padStart(2, '0')} ET에 전량 청산해요 — 손절은 없으며 다음 날로 들고 가지 않아요.
                   </Text>
-                </View>
-                <Text className="text-xs leading-5 text-[#8b95a1]">
-                  {engineOptions.martingale
-                    ? `보유 중 현재가가 평단보다 −${Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 이상 내려간 상태에서 진입 신호가 오면 추가로 사요. 낙폭 k%(내림)면 지금 보유량의 (k−1)배가 추가 매수됩니다.`
-                    : '옵션에서 (k−1)배 물타기를 체크하면 보유 중 진입 신호에서 낙폭 배수로 추가 매수해요. 지금은 단일 포지션만 유지해요.'}
-                </Text>
-              </>
-            ) : exitStrategy === 'model' ? (
-              <>
-                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                  매도는 ±3% 대칭 밴드와 동적 래칫, 그리고 120분 만기 청산이 정해요.
-                </Text>
-                <View className="mb-1 flex-row items-center justify-between">
-                  <Text className="text-xs text-[#8b95a1]">밴드 & 래칫</Text>
-                  <Text className="text-sm font-semibold text-[#191f28]">익절 +{Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.tpPct * 100)}% / 손절 −{Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.stopLossPct * 100)}%</Text>
-                </View>
-                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                  산 가격보다 +3% 오르면 익절, −3% 내리면 손절해요. 익절선에 닿는 순간 모델이 여전히 상승 우위면 밴드를 그 자리 기준 ±3%로 올려 달아(래칫) 수익을 극대화해요.
-                </Text>
-                <View className="mb-1 flex-row items-center justify-between">
-                  <Text className="text-xs text-[#8b95a1]">시간 청산</Text>
-                  <Text className="text-sm font-semibold text-[#191f28]">최장 {MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분 만기</Text>
-                </View>
-                <Text className="text-xs leading-5 text-[#8b95a1]">
-                  산 지 {MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분이 지나도 밴드에 닿지 않으면 전량 매도해요. 봉 마감을 기다리지 않고 체결가가 닿는 즉시 판단해요.
-                </Text>
-              </>
-            ) : (
-              <>
-                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                  매도는 10초간 가격 변화율(기울기) 하락이 결정해요.
-                </Text>
-                <View className="mb-1 flex-row items-center justify-between">
-                  <Text className="text-xs text-[#8b95a1]">청산 조건</Text>
-                  <Text className="text-sm font-semibold text-[#191f28]">기울기 &lt; +{SLOPE_CONFIG.exitPct}% → 즉시 전량</Text>
-                </View>
-                <Text className="text-xs leading-5 text-[#8b95a1]">
-                  보유 중 기울기가 +{SLOPE_CONFIG.exitPct}% 아래로 내려오면 수익이든 손실이든 보지 않고 그 자리에서 즉시 전량 매도해요. 체결 틱마다 및 {SLOPE_EXIT_TICK_MS}ms마다 다시 재며, 10초 넘게 체결이 끊겨도 팔아요. 익절·손절·마감 청산은 없어요.
-                </Text>
-              </>
-            )}
-          </View>
-        </Panel>
+                  <View className="mb-1 flex-row items-center justify-between">
+                    <Text className="text-xs text-[#8b95a1]">물타기 동작</Text>
+                    <Text className="text-sm font-semibold text-[#191f28]">
+                      {engineOptions.martingale ? `평단 −${Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 아래 진입 신호 → (k−1)배` : '없음(옵션 꺼짐)'}
+                    </Text>
+                  </View>
+                  <Text className="text-xs leading-5 text-[#8b95a1]">
+                    {engineOptions.martingale
+                      ? `보유 중 현재가가 평단보다 −${Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 이상 내려간 상태에서 진입 신호가 오면 추가로 사요. 낙폭 k%(내림)면 지금 보유량의 (k−1)배가 추가 매수됩니다.`
+                      : '옵션에서 (k−1)배 물타기를 체크하면 보유 중 진입 신호에서 낙폭 배수로 추가 매수해요. 지금은 단일 포지션만 유지해요.'}
+                  </Text>
+                </>
+              ) : exitStrategy === 'model' ? (
+                <>
+                  <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                    매도는 ±3% 대칭 밴드와 동적 래칫, 그리고 120분 만기 청산이 정해요.
+                  </Text>
+                  <View className="mb-1 flex-row items-center justify-between">
+                    <Text className="text-xs text-[#8b95a1]">밴드 & 래칫</Text>
+                    <Text className="text-sm font-semibold text-[#191f28]">익절 +{Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.tpPct * 100)}% / 손절 −{Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.stopLossPct * 100)}%</Text>
+                  </View>
+                  <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                    산 가격보다 +3% 오르면 익절, −3% 내리면 손절해요. 익절선에 닿는 순간 모델이 여전히 상승 우위면 밴드를 그 자리 기준 ±3%로 올려 달아(래칫) 수익을 극대화해요.
+                  </Text>
+                  <View className="mb-1 flex-row items-center justify-between">
+                    <Text className="text-xs text-[#8b95a1]">시간 청산</Text>
+                    <Text className="text-sm font-semibold text-[#191f28]">최장 {MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분 만기</Text>
+                  </View>
+                  <Text className="text-xs leading-5 text-[#8b95a1]">
+                    산 지 {MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분이 지나도 밴드에 닿지 않으면 전량 매도해요. 봉 마감을 기다리지 않고 체결가가 닿는 즉시 판단해요.
+                  </Text>
+                </>
+              ) : (
+                <>
+                  <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                    매도는 10초간 가격 변화율(기울기) 하락이 결정해요.
+                  </Text>
+                  <View className="mb-1 flex-row items-center justify-between">
+                    <Text className="text-xs text-[#8b95a1]">청산 조건</Text>
+                    <Text className="text-sm font-semibold text-[#191f28]">기울기 &lt; +{SLOPE_CONFIG.exitPct}% → 즉시 전량</Text>
+                  </View>
+                  <Text className="text-xs leading-5 text-[#8b95a1]">
+                    보유 중 기울기가 +{SLOPE_CONFIG.exitPct}% 아래로 내려오면 수익이든 손실이든 보지 않고 그 자리에서 즉시 전량 매도해요. 체결 틱마다 및 {SLOPE_EXIT_TICK_MS}ms마다 다시 재며, 10초 넘게 체결이 끊겨도 팔아요. 익절·손절·마감 청산은 없어요.
+                  </Text>
+                </>
+              )}
+            </View>
+          </Panel>
+        )}
 
         <Panel title="주문">
           <View className="px-5 pb-5">

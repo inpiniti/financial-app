@@ -121,17 +121,33 @@ describe('core/bbDip — BbDipExitRule', () => {
     expect(rule.lastExitReason).toContain('트레일링 익절');
   });
 
-  it('4순위: 조기 칼손절 (-0.8%) 도달 시 즉시 매도', () => {
+  it('exitOnMa20=false이면 MA20에 도달해도 익절하지 않는다', () => {
     const rule = new BbDipExitRule(
       { qty: 10, avgPrice: 100 },
       {
-        config: DEFAULT_BBDIP_CONFIG,
-        getMa20: () => 105,
+        config: { ...DEFAULT_BBDIP_CONFIG, exitOnMa20: false },
+        getMa20: () => 100.5,
       }
     );
 
-    const decision = rule.onPrice(99.2); // -0.8%
+    const decision = rule.onPrice(100.6); // MA20 돌파지만 exitOnMa20=false
+    expect(decision).toBeNull();
+  });
+
+  it('본절 보호: breakevenTriggerPct(+0.6%) 터치 후 breakevenBufferPct(+0.05%)로 밀리면 매도', () => {
+    const rule = new BbDipExitRule(
+      { qty: 10, avgPrice: 100 },
+      {
+        config: { ...DEFAULT_BBDIP_CONFIG, breakevenTriggerPct: 0.006, breakevenBufferPct: 0.0005 },
+        getMa20: () => 105, // MA20은 저 멀리
+      }
+    );
+
+    // +0.7% 터치
+    rule.onPrice(100.7);
+    // +0.04%로 밀림
+    const decision = rule.onPrice(100.04);
     expect(decision).toEqual({ side: 'sell', qty: 10 });
-    expect(rule.lastExitReason).toContain('조기 칼손절');
+    expect(rule.lastExitReason).toContain('본절 보호');
   });
 });

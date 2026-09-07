@@ -119,6 +119,7 @@ describe('설정 키 커버리지 — 설정을 추가하면 문서도 같이 �
 
   it('사용자에게 보이는 설정은 매뉴얼 §7에 설명이 있다', () => {
     const LABEL: Record<(typeof USER_FACING_SETTING_KEYS)[number], string> = {
+      bbDipConfig: '**볼린저 하단 반등 상세 설정**',
       entryStrategy: '**진입 전략**',
       exitStrategy: '**청산 전략**',
       engineOptions: '**엔진 옵션(중복 선택)**',

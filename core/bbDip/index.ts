@@ -23,12 +23,16 @@ export interface BbDipConfig {
   bbDev: number;
   /** 하단 밴드 이탈 문턱 (기본 -0.004 = -0.4%) */
   dipThreshold: number;
-  /** 10초 가격 기울기 반등 문턱 (기본 +0.05%) */
+  /** 10초 가격 기울기 반등 문턱 (기본 +0.03%) */
   s10Min: number;
-  /** 최소 틱속도 (건/분, 기본 50) */
+  /** 최소 틱속도 (건/분, 기본 30) */
   minRm: number;
-  /** 최소 체결강도 FlowRatio (기본 0.10 = +10%) */
+  /** 최소 체결강도 FlowRatio (기본 0.05 = +5%) */
   minFr: number;
+  /** 스마트 청산 활성화 여부 (기본 true) */
+  useSmartExit?: boolean;
+  /** MA20 중심선 회귀 청산 활성화 여부 (기본 true) */
+  exitOnMa20?: boolean;
   /** 목표 익절률 (기본 0.012 = +1.2%) */
   takeProfitPct: number;
   /** 조기 칼손절률 (기본 0.008 = -0.8%) */
@@ -39,20 +43,25 @@ export interface BbDipConfig {
   trailingDropPct: number;
   /** 본절 보호 발동 수익률 (기본 0.006 = +0.6%) */
   breakevenTriggerPct: number;
+  /** 본절 보호 원금 보존선 (기본 0.0005 = +0.05%) */
+  breakevenBufferPct?: number;
 }
 
 export const DEFAULT_BBDIP_CONFIG: BbDipConfig = {
   bbPeriod: 20,
   bbDev: 2.0,
   dipThreshold: -0.004,
-  s10Min: 0.05,
-  minRm: 50,
-  minFr: 0.10,
+  s10Min: 0.03,
+  minRm: 30,
+  minFr: 0.05,
+  useSmartExit: true,
+  exitOnMa20: true,
   takeProfitPct: 0.012,
   stopLossPct: 0.008,
   trailingTriggerPct: 0.010,
   trailingDropPct: 0.005,
   breakevenTriggerPct: 0.006,
+  breakevenBufferPct: 0.0005,
 };
 
 /** 20틱 볼린저 밴드 실시간 계산기 */
@@ -214,7 +223,7 @@ export class BbDipExitRule {
     }
 
     // 3. 핵심 대칭 익절: 20틱 이동평균 중심선(MA20) 도달
-    if (this.getMa20) {
+    if (this.cfg.exitOnMa20 !== false && this.getMa20) {
       const ma20 = this.getMa20();
       this._lastMa20 = ma20;
       if (ma20 !== null && Number.isFinite(ma20) && price >= ma20) {
@@ -232,7 +241,8 @@ export class BbDipExitRule {
     }
 
     // 5. 본절 보호 (+0.6% 이상 터치 후 원금 +0.05%로 밀릴 때)
-    if (maxRet >= this.cfg.breakevenTriggerPct && curRet <= 0.0005) {
+    const buffer = this.cfg.breakevenBufferPct ?? 0.0005;
+    if (maxRet >= this.cfg.breakevenTriggerPct && curRet <= buffer) {
       this._exitKind = 'BREAKEVEN';
       this._lastExitReason = `본절 보호 (+${(curRet * 100).toFixed(2)}%)`;
       return { side: 'sell', qty: this.qty };
