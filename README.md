@@ -146,7 +146,7 @@ eas update --branch production
 ```
 
 ```bash
-npx eas-cli update --branch production --message "진입/청산 전략 분리 및 4대 지표 반영"
+npx eas-cli update --branch production --message "feat: (전략 A) 볼린저 하단 투매 반등 (BB Dip Snapback) 및 맞춤 대칭 청산 엔진을 매매 엔진으로 탑재"
 ```
 
 Expo Go에서 자동으로 최신 버전을 다운로드받습니다 (앱 재시작 시).

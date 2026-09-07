@@ -23,6 +23,7 @@ import { MODEL_BAR_MINUTES } from '../features/scalper/modelMode';
 import { MARTINGALE_BAR_MINUTES } from '../features/scalper/martingaleMode';
 import { MARTINGALE_CONFIG } from '../core/martingale';
 import { SLOPE_CONFIG, SLOPE_EXIT_TICK_MS } from '../core/slope';
+import { DEFAULT_BBDIP_CONFIG } from '../core/bbDip';
 import { DEFAULT_ENGINE_OPTIONS, type EngineOptions } from '../features/scalper/engineMode';
 import { ORDER_PRICING_LABEL, type OrderPricing } from '../features/scalper/orderStrategy';
 import { MODEL_SYMMETRIC_EXIT_CONFIG } from '../core/model/exitRule';
@@ -371,9 +372,8 @@ export default function SettingsScreen() {
         <Panel title="트레이딩 설정">
           <View className="px-5 pb-5">
             <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
-              상승 변곡점이 잡힐 때마다 한 종목씩 진입하고, 진입한 종목은 변곡점 그리드가 이어받아 관리해요(주문을
-              미리 걸지 않고 변곡점 신호 때만 사고팔아요). 이미 보유 중인 종목은 다시 진입하지 않고, 매도가 끝나면
-              그 자리에 새 종목이 들어와요.
+              선택한 진입 전략 신호가 잡힐 때마다 종목에 진입하고, 진입한 종목은 청산 전략이 이어받아 관리해요.
+              이미 보유 중인 종목은 다시 진입하지 않고(물타기 옵션 제외), 매도가 끝나면 그 자리에 새 종목이 들어와요.
             </Text>
 
             <Text className="mb-1 text-xs text-[#8b95a1]">진입금액 (USD) — 종목 하나를 살 때 쓰는 금액</Text>
@@ -492,6 +492,11 @@ export default function SettingsScreen() {
             {(
               [
                 {
+                  value: 'bbDip' as const,
+                  title: '볼린저 하단 투매 반등 (기본)',
+                  desc: `20틱 볼린저 밴드 하단 -${Math.abs(DEFAULT_BBDIP_CONFIG.dipThreshold * 100).toFixed(1)}% 이하 투매 이탈 + 10초 가격 기울기 +${DEFAULT_BBDIP_CONFIG.s10Min}% 반등 + 틱속도 ${DEFAULT_BBDIP_CONFIG.minRm}건/분 + 체결강도 +${(DEFAULT_BBDIP_CONFIG.minFr * 100).toFixed(0)}% 충족 시 매수 진입`,
+                },
+                {
                   value: 'martingale' as const,
                   title: '5선 돌파',
                   desc: `${MARTINGALE_BAR_MINUTES}분봉 종가가 5선(최근 5봉 평균)을 아래→위로 뚫는 순간 매수 진입 (진입 필터는 아래 옵션으로)`,
@@ -568,6 +573,11 @@ export default function SettingsScreen() {
             {(
               [
                 {
+                  value: 'bbDip' as const,
+                  title: 'MA20 중심선 회귀 · 맞춤 대칭 청산 (기본)',
+                  desc: `20틱 중심선(MA20) 도달 즉시 전량 익절 · +${(DEFAULT_BBDIP_CONFIG.takeProfitPct * 100).toFixed(1)}% 목표 익절 · +${(DEFAULT_BBDIP_CONFIG.trailingTriggerPct * 100).toFixed(1)}% 트레일링 · -${(DEFAULT_BBDIP_CONFIG.stopLossPct * 100).toFixed(1)}% 칼손절`,
+                },
+                {
                   value: 'martingale' as const,
                   title: '+3% 익절 · 마감 청산',
                   desc: `평단보다 +${Math.round(MARTINGALE_CONFIG.tpPct * 100)}% 오르면 전량 익절, 안 닿으면 ${Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:${String(MARTINGALE_CONFIG.closeAtMin % 60).padStart(2, '0')} ET 마감 전량 청산 (손절 없음)`,
@@ -630,9 +640,32 @@ export default function SettingsScreen() {
         </Panel>
 
         {/* 진입 전략 고정값 안내 패널 */}
-        <Panel title={`진입 전략: ${entryStrategy === 'martingale' ? '5선 돌파' : entryStrategy === 'model' ? '예측 모델' : '기울기 돌파'} (고정값)`}>
+        <Panel
+          title={`진입 전략: ${
+            entryStrategy === 'bbDip'
+              ? '볼린저 하단 투매 반등'
+              : entryStrategy === 'martingale'
+                ? '5선 돌파'
+                : entryStrategy === 'model'
+                  ? '예측 모델'
+                  : '기울기 돌파'
+          } (고정값)`}
+        >
           <View className="px-5 pb-5">
-            {entryStrategy === 'martingale' ? (
+            {entryStrategy === 'bbDip' ? (
+              <>
+                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                  진입은 20틱 볼린저 밴드 하단 투매 이탈 및 10초 반등이 결정해요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
+                </Text>
+                <View className="mb-1 flex-row items-center justify-between">
+                  <Text className="text-xs text-[#8b95a1]">진입 규칙</Text>
+                  <Text className="text-sm font-semibold text-[#191f28]">하단 이탈 후 반등{describeFilters(engineOptions)}</Text>
+                </View>
+                <Text className="text-xs leading-5 text-[#8b95a1]">
+                  체결 틱을 실시간 집계해 20틱 볼린저 밴드(2.0σ) 하단 대비 {(DEFAULT_BBDIP_CONFIG.dipThreshold * 100).toFixed(1)}% 이하로 일시 투매된 종목 중, 10초 기울기가 +{DEFAULT_BBDIP_CONFIG.s10Min}% 이상으로 돌아서며 틱속도 {DEFAULT_BBDIP_CONFIG.minRm}건/분, 체결강도 +{(DEFAULT_BBDIP_CONFIG.minFr * 100).toFixed(0)}% 이상 충족 시 즉시 현재가로 매수해요{engineOptions.ordered || engineOptions.ma5Up || engineOptions.allUp ? ' — 위에서 체크한 이동평균 필터 조건이 함께 맞아야 해요' : ''}.
+                </Text>
+              </>
+            ) : entryStrategy === 'martingale' ? (
               <>
                 <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
                   진입은 {MARTINGALE_BAR_MINUTES}분봉 5선 돌파가 정해요. 진입 조건 필터는 위 옵션에서 골라요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
@@ -676,9 +709,71 @@ export default function SettingsScreen() {
         </Panel>
 
         {/* 청산 전략 고정값 안내 패널 */}
-        <Panel title={`청산 전략: ${exitStrategy === 'martingale' ? '+3% 익절 · 마감 청산' : exitStrategy === 'model' ? '±3% 대칭 밴드 · 래칫' : '기울기 하락 즉시 매도'} (고정값)`}>
+        <Panel
+          title={`청산 전략: ${
+            exitStrategy === 'bbDip'
+              ? 'MA20 중심선 회귀 및 맞춤 대칭 청산'
+              : exitStrategy === 'martingale'
+                ? '+3% 익절 · 마감 청산'
+                : exitStrategy === 'model'
+                  ? '±3% 대칭 밴드 · 래칫'
+                  : '기울기 하락 즉시 매도'
+          } (고정값)`}
+        >
           <View className="px-5 pb-5">
-            {exitStrategy === 'martingale' ? (
+            {exitStrategy === 'bbDip' ? (
+              <>
+                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                  매도는 20틱 이동평균 중심선(MA20) 회귀 및 수익/손실 대칭 밴드가 결정해요.
+                </Text>
+                <View className="mb-1 flex-row items-center justify-between">
+                  <Text className="text-xs text-[#8b95a1]">1순위: 중심선 회귀</Text>
+                  <Text className="text-sm font-semibold text-[#191f28]">20틱 MA 중심선 도달 즉시 전량</Text>
+                </View>
+                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                  투매 후 20틱 이동평균선(MA20)까지 되돌림이 나오면 추가 욕심 없이 그 자리에서 즉시 전량 익절해요.
+                </Text>
+                <View className="mb-1 flex-row items-center justify-between">
+                  <Text className="text-xs text-[#8b95a1]">2순위: 목표 익절</Text>
+                  <Text className="text-sm font-semibold text-[#191f28]">+{((DEFAULT_BBDIP_CONFIG.takeProfitPct) * 100).toFixed(1)}% 도달 시 전량 익절</Text>
+                </View>
+                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                  중심선에 닿지 않더라도 목표 수익률(+1.2%)에 도달하면 즉시 전량 익절해요.
+                </Text>
+                <View className="mb-1 flex-row items-center justify-between">
+                  <Text className="text-xs text-[#8b95a1]">3순위: 트레일링 익절</Text>
+                  <Text className="text-sm font-semibold text-[#191f28]">+{((DEFAULT_BBDIP_CONFIG.trailingTriggerPct) * 100).toFixed(1)}% 후 고점 대비 {((DEFAULT_BBDIP_CONFIG.trailingDropPct) * 100).toFixed(1)}% 반납 시 매도</Text>
+                </View>
+                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                  +1.0% 이상 상승하며 폭등 시, 최고점 대비 0.5% 밀릴 때 이익을 실현해요.
+                </Text>
+                <View className="mb-1 flex-row items-center justify-between">
+                  <Text className="text-xs text-[#8b95a1]">4순위: 본절 보호</Text>
+                  <Text className="text-sm font-semibold text-[#191f28]">+{((DEFAULT_BBDIP_CONFIG.breakevenTriggerPct) * 100).toFixed(1)}% 터치 후 +0.05%로 밀리면 매도</Text>
+                </View>
+                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                  수익권 진입 후 반락 시 원금을 보존해요.
+                </Text>
+                <View className="mb-1 flex-row items-center justify-between">
+                  <Text className="text-xs text-[#8b95a1]">5순위: 조기 칼손절</Text>
+                  <Text className="text-sm font-semibold text-[#191f28]">-{((DEFAULT_BBDIP_CONFIG.stopLossPct) * 100).toFixed(1)}% 도달 즉시 탈출</Text>
+                </View>
+                <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                  반등에 실패하고 추가 투매가 지속되면 -0.8%에서 칼같이 손절하여 계좌를 방어해요.
+                </Text>
+                <View className="mb-1 flex-row items-center justify-between">
+                  <Text className="text-xs text-[#8b95a1]">물타기 동작</Text>
+                  <Text className="text-sm font-semibold text-[#191f28]">
+                    {engineOptions.martingale ? `평단 −${Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 아래 진입 신호 → (k−1)배` : '없음(옵션 꺼짐)'}
+                  </Text>
+                </View>
+                <Text className="text-xs leading-5 text-[#8b95a1]">
+                  {engineOptions.martingale
+                    ? `보유 중 현재가가 평단보다 −${Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 이상 내려간 상태에서 볼린저 하단 반등 신호가 다시 오면 추가로 사요. 낙폭 k%(내림)면 지금 보유량의 (k−1)배가 추가 매수됩니다.`
+                    : '옵션에서 (k−1)배 물타기를 체크하면 보유 중 진입 신호에서 낙폭 배수로 추가 매수해요. 지금은 단일 포지션만 유지해요.'}
+                </Text>
+              </>
+            ) : exitStrategy === 'martingale' ? (
               <>
                 <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
                   매도는 +3% 익절선과 마감 시각이 정해요. 물타기 여부는 위 옵션에서 골라요.
