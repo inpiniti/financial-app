@@ -959,27 +959,19 @@ export default function SettingsScreen() {
               ]
             ).map((opt) => {
               const selected = exitStrategy === opt.value;
-              const disabled = realtimeMa5Dedicated && opt.value !== 'realtimeMa5';
               return (
                 <Pressable
                   key={opt.value}
-                  onPress={() => {
-                    if (disabled) return;
-                    setExitStrategy(opt.value);
-                  }}
-                  className={`mb-2 rounded-2xl border px-4 py-3 ${selected ? 'border-[#3182f6] bg-[#f2f7ff]' : disabled ? 'border-[#dfe5ea] bg-[#f5f7fa]' : 'border-[#e5e8eb] bg-white'} ${disabled ? 'opacity-50' : ''}`}
+                  onPress={() => setExitStrategy(opt.value)}
+                  className={`mb-2 rounded-2xl border px-4 py-3 ${selected ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'}`}
                 >
                   <View className="flex-row items-center justify-between">
-                    <Text className={`text-sm font-semibold ${selected ? 'text-[#3182f6]' : disabled ? 'text-[#8b95a1]' : 'text-[#191f28]'}`}>
+                    <Text className={`text-sm font-semibold ${selected ? 'text-[#3182f6]' : 'text-[#191f28]'}`}>
                       {opt.title}
                     </Text>
-                    {selected ? (
-                      <Text className="text-xs font-semibold text-[#3182f6]">선택됨</Text>
-                    ) : disabled ? (
-                      <Text className="text-[11px] font-semibold text-[#8b95a1]">비활성</Text>
-                    ) : null}
+                    {selected && <Text className="text-xs font-semibold text-[#3182f6]">선택됨</Text>}
                   </View>
-                  <Text className={`mt-1 text-xs leading-5 ${disabled ? 'text-[#96a2ae]' : 'text-[#8b95a1]'}`}>{opt.desc}</Text>
+                  <Text className="mt-1 text-xs leading-5 text-[#8b95a1]">{opt.desc}</Text>
                 </Pressable>
               );
             })}
