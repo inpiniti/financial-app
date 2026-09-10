@@ -12,7 +12,7 @@ import { ListRow } from '../../../components/ListRow';
 import { Panel } from '../../../components/Panel';
 import { TickerAvatar } from '../../../components/TickerAvatar';
 import { EmptyState } from '../../inquiry/components';
-import { formatSignedKrw, formatSignedUsd, formatUsd, pnlColor } from '../../../lib/format';
+import { formatKrw, formatSignedKrw, formatSignedPercentFromRatio, formatSignedUsd, formatUsd, pnlColor } from '../../../lib/format';
 import { useUsdKrwRate } from '../../../lib/useUsdKrwRate';
 import type { AutoPilotEvent, AutoPilotGridView, AutoPilotState, AutoPilotView } from '../autopilot';
 import type { AutoPilotManager, AutoPilotSlotRow, FeedRejection } from '../autopilotManager';
@@ -35,7 +35,7 @@ import type { TrendEval } from '../../../core/trend/signal';
 import { AdoptSheet } from './AdoptSheet';
 import { refreshLiveSettings } from './managerProvider';
 import { formatHHMM, formatPrice, formatSlopeRate, formatSlopeRates, formatTickRates } from './format';
-import { GridGauge } from './GridGauge';
+import { gaugeScaleOf, normalizeGridPosition } from './gridGaugeMath';
 
 const STATE_BADGE: Record<AutoPilotState, { label: string; bg: string; fg: string }> = {
   IDLE: { label: '대기 중', bg: '#f2f4f6', fg: '#8b95a1' },
@@ -269,15 +269,124 @@ function SlotBadge({
   return null;
 }
 
+function markerPosition(value: number | null, lo: number, hi: number): number | null {
+  if (value === null || !Number.isFinite(value) || value <= 0) return null;
+  return normalizeGridPosition(value, lo, hi);
+}
+
+function ma5Of(row: AutoPilotSlotRow): number | null {
+  if (row.view.realtimeMa5?.ma5 && Number.isFinite(row.view.realtimeMa5.ma5)) return row.view.realtimeMa5.ma5;
+  if (row.view.martingaleLive?.ma5 && Number.isFinite(row.view.martingaleLive.ma5)) return row.view.martingaleLive.ma5;
+  if (row.view.martingale?.ma5 && Number.isFinite(row.view.martingale.ma5)) return row.view.martingale.ma5;
+  return null;
+}
+
+function InlineGrid({
+  min,
+  ma5,
+  current,
+  avg,
+  max,
+  showAverage,
+}: {
+  min: number | null;
+  ma5: number | null;
+  current: number | null;
+  avg: number | null;
+  max: number | null;
+  showAverage: boolean;
+}) {
+  const fallbackLo = min ?? current ?? ma5 ?? avg ?? 1;
+  const fallbackHi = max ?? current ?? ma5 ?? avg ?? fallbackLo * 1.001;
+  const scale = gaugeScaleOf([min, ma5, current, avg, max], fallbackLo, fallbackHi);
+
+  const minPos = markerPosition(min, scale.lo, scale.hi);
+  const ma5Pos = markerPosition(ma5, scale.lo, scale.hi);
+  const currentPos = markerPosition(current, scale.lo, scale.hi);
+  const avgPos = showAverage ? markerPosition(avg, scale.lo, scale.hi) : null;
+  const maxPos = markerPosition(max, scale.lo, scale.hi);
+
+  const Marker = ({ pos, color, height, width = 2 }: { pos: number | null; color: string; height: number; width?: number }) => {
+    if (pos === null) return null;
+    const left = `${(pos * 100).toFixed(2)}%` as `${number}%`;
+    return (
+      <View
+        style={{
+          position: 'absolute',
+          left,
+          top: (16 - height) / 2,
+          width,
+          height,
+          backgroundColor: color,
+          borderRadius: 1,
+          transform: [{ translateX: -width / 2 }],
+        }}
+      />
+    );
+  };
+
+  return (
+    <View className="mt-3">
+      <View className="relative" style={{ height: 16 }}>
+        <View className="absolute left-0 right-0" style={{ top: 7, height: 2, backgroundColor: '#e5e8eb', borderRadius: 999 }} />
+        <Marker pos={minPos} color="#8b95a1" height={10} width={1.5} />
+        <Marker pos={ma5Pos} color="#f59e0b" height={12} />
+        <Marker pos={currentPos} color="#191f28" height={13} />
+        {showAverage && <Marker pos={avgPos} color="#3182f6" height={13} />}
+        <Marker pos={maxPos} color="#8b95a1" height={10} width={1.5} />
+      </View>
+
+      <View className="mt-2 flex-row items-start justify-between" style={{ columnGap: 6 }}>
+        <View className="items-start">
+          <Text className="text-[10px] font-semibold text-[#8b95a1]">최소</Text>
+          <Text className="text-[11px] font-bold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
+            {formatPrice(min)}
+          </Text>
+        </View>
+        <View className="items-center">
+          <Text className="text-[10px] font-semibold text-[#f59e0b]">5선</Text>
+          <Text className="text-[11px] font-bold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
+            {formatPrice(ma5)}
+          </Text>
+        </View>
+        <View className="items-center">
+          <Text className="text-[10px] font-semibold text-[#8b95a1]">현재</Text>
+          <Text className="text-[11px] font-bold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
+            {formatPrice(current)}
+          </Text>
+        </View>
+        {showAverage && (
+          <View className="items-center">
+            <Text className="text-[10px] font-semibold text-[#8b95a1]">평단</Text>
+            <Text className="text-[11px] font-bold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
+              {formatPrice(avg)}
+            </Text>
+          </View>
+        )}
+        <View className="items-end">
+          <Text className="text-[10px] font-semibold text-[#8b95a1]">최대</Text>
+          <Text className="text-[11px] font-bold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
+            {formatPrice(max)}
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
 /** 리스트 행 — "트레이딩 리스트" 패널의 연속이므로(FlatList 아이템) 직접 흰 배경을 입힌다.
  * 탭하면 부모가 액션시트(댓글/차트/호가)를 띄운다 — onPress는 표시용 UI 상태만 바꾼다(매매 로직 무관). */
 function SlotRow({
   item,
+  grid,
+  usdKrw,
   activeTickers,
   candidates,
   onPress,
 }: {
   item: AutoPilotSlotRow;
+  grid: AutoPilotGridView | null;
+  usdKrw: number | null;
   activeTickers: readonly string[];
   /** 지금 매수가 허용되는 종목들(속도 상위 N) — 배지 표시용. */
   candidates: readonly string[];
@@ -288,74 +397,114 @@ function SlotRow({
   const { ticker, name } = item.entry;
   // 분속 = 틱/초 × 60(최근 10초 창의 순간값을 분당으로) — 사용자가 읽기 쉬운 단위(2026-08-29 데스크탑에서 이식).
   const perMinute = Math.round(item.view.tickRate * 60);
+  const statusLine = item.feedRejected
+    ? formatFeedRejectedLine(item.feedRejected)
+    : SLOPE_MODE && getActiveEngineMode() === 'slope'
+      ? formatSlopeModeLine(item.view.slopeRate) + (item.view.entryFilterPass === false ? ' · 옵션 조건 미충족' : '')
+      : MARTINGALE_MODE && getActiveEngineMode() === 'martingale'
+        ? formatMartingaleLine(item.view.martingaleLive ?? item.view.martingale)
+        : MODEL_MODE && getActiveEngineMode() === 'model'
+          ? formatModelLine(item.view.modelVerdict) + (item.view.entryFilterPass === false ? ' · 옵션 조건 미충족' : '')
+          : TREND_MODE
+            ? formatTrendLine(item.view.trend, item.view.trendLive)
+            : null;
+
+  const currentPrice = grid?.currentPrice ?? item.view.price;
+  const ma5 = ma5Of(item);
+  const min = item.view.dayLow ?? grid?.sinceEntryLow ?? grid?.buyPrice ?? null;
+  const max = item.view.dayHigh ?? grid?.sinceEntryHigh ?? grid?.sellPrice ?? null;
+  const currentKrw = currentPrice !== null && usdKrw !== null ? formatKrw(currentPrice * usdKrw) : null;
+
+  const holdingValueUsd = grid && currentPrice !== null ? currentPrice * grid.holdingQty : null;
+  const holdingValueKrw = holdingValueUsd !== null && usdKrw !== null ? holdingValueUsd * usdKrw : null;
+  const pnlRatio = grid && currentPrice !== null && grid.avgPrice > 0 ? (currentPrice - grid.avgPrice) / grid.avgPrice : null;
+  const pnlUsd = grid && currentPrice !== null ? (currentPrice - grid.avgPrice) * grid.holdingQty : null;
+  const pnlAmountText =
+    pnlUsd === null ? '—' : holdingValueKrw !== null ? formatSignedKrw(pnlUsd * usdKrw!) : formatSignedUsd(pnlUsd);
+
   return (
     <Pressable
       className="bg-white"
       onPress={() => onPress(ticker, item.entry.market, name)}
       android_ripple={{ color: '#f2f4f6' }}
     >
-      <ListRow
-        leading={<TickerAvatar ticker={ticker} />}
-        title={
-          <Text className="text-base font-bold text-[#191f28]" numberOfLines={1}>
-            {name ? (
-              <>
-                <Text className="text-[#8b95a1]">{ticker}</Text>
-                {` ${name}`}
-              </>
-            ) : (
-              ticker
-            )}
-          </Text>
-        }
-        // 속도·기울기는 최근 10초 창의 순간값 한 줄(분속·기울기, 2026-08-29 행 정리 — 시계열 2줄은 소음).
-        // 라벨 단독 "기울기" 금지 규칙은 %단위 병기로 지킨다(도메인 문서 §2).
-        subtitle={
-          <View className="mt-0.5">
-            <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
-              {`${formatTickRates(item.view.tickRate)} · ${formatSlopeRates(item.view.slopeRate)}`}
-            </Text>
-            {item.feedRejected ? (
-              // 체결가 구독이 KIS에 거절됨(2026-08-28) — 틱이 안 오니 판정도 진입도 없다. 옛 봉 판정 줄 대신 이유를 보인다.
-              // 주간 키(R+BAQ…) 거절은 대개 주간거래 미지원 종목 — 16:00 KST 뒤 D키로 회전하면 다시 받는다.
-              <Text className="text-xs text-[#f04452]" numberOfLines={1}>
-                {formatFeedRejectedLine(item.feedRejected)}
-              </Text>
-            ) : SLOPE_MODE && getActiveEngineMode() === 'slope' ? (
-              // 기울기 단타(2026-09-02) — 지표는 위 줄의 기울기 그대로. 문턱 대비 상태만 말한다.
-              <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
-                {formatSlopeModeLine(item.view.slopeRate) + (item.view.entryFilterPass === false ? ' · 옵션 조건 미충족' : '')}
-              </Text>
-            ) : MARTINGALE_MODE && getActiveEngineMode() === 'martingale' ? (
-              // ±3% 단타 모드 — 엔진 모드 설정(2026-09-01)이 martingale일 때. 1분봉 정배열·5선 돌파 상태.
-              // 진행 중 봉 포함 실시간 판정을 우선한다(2026-09-01 실시간 진입) — 엔진이 사는 기준을 그대로 보인다.
-              <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
-                {formatMartingaleLine(item.view.martingaleLive ?? item.view.martingale)}
-              </Text>
-            ) : MODEL_MODE && getActiveEngineMode() === 'model' ? (
-              // 모델 모드(2026-08-22) — 마지막 봉의 판정 확률과 임계값. 왜 안 사는지 한눈에.
-              <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
-                {formatModelLine(item.view.modelVerdict) + (item.view.entryFilterPass === false ? ' · 옵션 조건 미충족' : '')}
-              </Text>
-            ) : TREND_MODE ? (
-              // 추세 모드(2026-08-18, 롤백 보존) — 4선 방향·위치·봉 수.
-              // "지금"은 진행 중 봉까지 넣은 판정(2026-08-22) — 매도는 이 기준으로 나간다.
-              <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
-                {formatTrendLine(item.view.trend, item.view.trendLive)}
-              </Text>
-            ) : null}
+      <View className="px-5 py-[13px]">
+        <View className="flex-row">
+          <View className="mr-3 pt-0.5">
+            <TickerAvatar ticker={ticker} />
           </View>
-        }
-        trailing={
-          <View className="items-end">
-            <View className="mb-1 rounded-full bg-[#f2f4f6] px-2 py-0.5">
-              <Text className="text-[10px] font-semibold text-[#6b7684]">{rankingSourceLabelOf(item.entry.source)}</Text>
+          <View className="flex-1">
+            <View className="flex-row items-start justify-between" style={{ columnGap: 10 }}>
+              <View className="flex-1">
+                <Text className="text-base font-bold text-[#191f28]" numberOfLines={1}>
+                  {name ? (
+                    <>
+                      <Text className="text-[#8b95a1]">{ticker}</Text>
+                      {` ${name}`}
+                    </>
+                  ) : (
+                    ticker
+                  )}
+                </Text>
+                <View className="mt-0.5 flex-row items-center" style={{ columnGap: 8 }}>
+                  <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }}>
+                    {`${perMinute}틱/분`}
+                  </Text>
+                  <View className="mb-0.5 rounded-full bg-[#f2f4f6] px-2 py-0.5">
+                    <Text className="text-[10px] font-semibold text-[#6b7684]">{rankingSourceLabelOf(item.entry.source)}</Text>
+                  </View>
+                </View>
+              </View>
+
+              <View className="items-end">
+                <Text className="text-base font-bold text-[#191f28]">{formatPrice(currentPrice)}</Text>
+                {currentKrw !== null && <Text className="text-xs text-[#8b95a1]">{currentKrw}</Text>}
+              </View>
             </View>
-            <Text className="text-base font-bold text-[#191f28]">{formatPrice(item.view.price)}</Text>
-            <SlotBadge row={item} activeTickers={activeTickers} candidates={candidates} />
+
+            <View className="mt-1 flex-row items-start justify-between" style={{ columnGap: 8 }}>
+              <View className="flex-1">
+                <SlotBadge row={item} activeTickers={activeTickers} candidates={candidates} />
+                {statusLine !== null && (
+                  <Text
+                    className="mt-0.5 text-xs"
+                    style={{ color: item.feedRejected ? '#f04452' : '#8b95a1', fontVariant: ['tabular-nums'] }}
+                    numberOfLines={1}
+                  >
+                    {statusLine}
+                  </Text>
+                )}
+                {!item.feedRejected && statusLine === null && (
+                  <Text className="mt-0.5 text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
+                    {`${formatTickRates(item.view.tickRate)} · ${formatSlopeRates(item.view.slopeRate)}`}
+                  </Text>
+                )}
+              </View>
+
+              {grid !== null && (
+                <View className="items-end">
+                  <Text className="text-xs text-[#4e5968]">
+                    {holdingValueUsd === null ? `${grid.holdingQty}주` : `${grid.holdingQty}주 ${formatUsd(holdingValueUsd, 2)}`}
+                    {holdingValueKrw !== null ? ` ${formatKrw(holdingValueKrw)}` : ''}
+                  </Text>
+                  <Text className="text-xs font-semibold" style={{ color: pnlColor(pnlRatio) }}>
+                    {`${formatSignedPercentFromRatio(pnlRatio, 2)} ${pnlAmountText}`}
+                  </Text>
+                </View>
+              )}
+            </View>
+
+            <InlineGrid
+              min={min}
+              ma5={ma5}
+              current={currentPrice}
+              avg={grid?.avgPrice ?? null}
+              max={max}
+              showAverage={grid !== null}
+            />
           </View>
-        }
-      />
+        </View>
+      </View>
     </Pressable>
   );
 }
@@ -416,34 +565,6 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
     }
   }, [autopilot]);
 
-  /**
-   * 게이지 두 번 누르기 → 확인 → 전량 매도(2026-08-22 사용자 요청).
-   * 앱이 판단하는 게 아니라 사용자가 판단한 매도다 — 그래서 확인 창에 종목·수량·현재가를 그대로 적고,
-   * "예"를 누른 뒤에는 자동 매도와 똑같이 **체결될 때까지 현재가를 따라가는 매매**로 넘어간다.
-   */
-  const handleSellNow = useCallback(
-    (grid: AutoPilotGridView) => {
-      const priceText = grid.currentPrice === null ? '현재가 확인 중' : `현재가 ${formatUsd(grid.currentPrice, 2)}`;
-      Alert.alert(
-        `${grid.ticker} 전량 매도할까요?`,
-        `${grid.holdingQty}주 · ${priceText}
-체결될 때까지 현재가로 따라가며 팔아요. 취소는 계좌 화면의 미체결에서 해요.`,
-        [
-          { text: '아니요', style: 'cancel' },
-          {
-            text: '매도하기',
-            style: 'destructive',
-            onPress: () => {
-              const reason = autopilot.sellNow(grid.ticker);
-              if (reason !== null) Alert.alert('알림', reason);
-            },
-          },
-        ],
-      );
-    },
-    [autopilot],
-  );
-
   const handleStop = useCallback(() => autopilot.stop(), [autopilot]);
   const handleResume = useCallback(() => autopilot.resume(), [autopilot]);
 
@@ -455,14 +576,18 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
 
   const renderRow = useCallback(
     ({ item }: { item: AutoPilotSlotRow }) => (
+      // 보유 중인 종목만 AutoPilot 그리드 스냅샷이 있다. 미보유 종목은 평단/보유손익 없이 축(최소·5선·현재·최대)만 그린다.
+      // 리스트 내부에서 모두 보여 주되, 보유 정보는 보유 종목에서만 조건부 노출.
       <SlotRow
         item={item}
+        grid={view.grids.find((g) => g.ticker === item.entry.ticker) ?? null}
+        usdKrw={usdKrw}
         activeTickers={view.activeTickers}
         candidates={view.watched}
         onPress={handleRowPress}
       />
     ),
-    [view.activeTickers, view.watched, handleRowPress],
+    [view.activeTickers, view.grids, view.watched, handleRowPress, usdKrw],
   );
 
   const config = view.config;
@@ -605,33 +730,6 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                 )}
               </View>
             </Panel>
-            {view.grids.length > 0 && (
-              <Panel
-                title="그리드 관리"
-                headerRight={`${view.grids.length}/${view.maxGrids}개`}
-              >
-                {view.grids.map((grid, i) => (
-                  <View key={grid.ticker}>
-                    {/* 그리드 사이 구분선 — 게이지가 연달아 붙으면 어느 종목 것인지 읽기 어렵다. */}
-                    {i > 0 && <View className="mx-5 h-px bg-[#f2f4f6]" />}
-                    {/* getLive(2026-09-02) — 게이지가 250ms로 스스로 신선값을 당겨 부드럽게 움직인다(화면 전체 리렌더 없음). */}
-                    {(() => {
-                      const matchedRow = rows.find((r) => r.entry.ticker === grid.ticker);
-                      const rates = matchedRow ? { tickRate: matchedRow.view.tickRate, slopeRate: matchedRow.view.slopeRate } : undefined;
-                      return (
-                        <GridGauge
-                          grid={grid}
-                          name={matchedRow?.entry.name}
-                          rates={rates}
-                          onDoubleTapSell={() => handleSellNow(grid)}
-                          getLive={() => autopilot.getGridLive(grid.ticker)}
-                        />
-                      );
-                    })()}
-                  </View>
-                ))}
-              </Panel>
-            )}
             {/* "트레이딩 리스트" 패널 헤더 — 행들은 FlatList 아이템으로 이어진다. */}
             <View className="bg-white">
               <View className="flex-row items-center justify-between px-5 pb-2 pt-4">
