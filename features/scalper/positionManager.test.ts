@@ -88,8 +88,8 @@ describe('resolvePositionMode', () => {
       resolvePositionMode({
         bbDip: { kind: 'bbDip', ...DEFAULT_BBDIP_CONFIG },
         slope: { kind: 'slope', entryPct: 0.01, exitPct: 0.005 },
-        martingale: { kind: 'martingale', dropStartPct: 0.03, dropMaxPct: 0.2, entryPct: 0.01, tpPct: 0.03 },
-        model: { kind: 'model', tpPct: 0.03, stopLossPct: 0.02, trailPct: 0.05 },
+        martingale: { kind: 'martingale', dropStartPct: 0.03, dropMaxPct: 0.2, tpPct: 0.03, closeAtMin: 1195 },
+        model: { kind: 'model', tpPct: 0.03, stopLossPct: 0.02, trailPct: 0.05, maxHoldMin: 120 },
         realtimeMa5: { kind: 'realtimeMa5', ...DEFAULT_REALTIME_MA5_CONFIG },
       }),
     ).toBe('realtimeMa5');

@@ -10,7 +10,12 @@ describe('buildTradeMarkers', () => {
     ];
 
     const markers = buildTradeMarkers(candles, [
-      { ticker: 'AAPL', qty: 2, entryPrice: 101, entryTs: new Date('2026-09-10T09:00:30Z').getTime(), exitPrice: 107, exitTs: new Date('2026-09-10T09:02:05Z').getTime(), pnl: 12, entrySnapshot: { price: 101, slope: 0, accel: 0, ts: new Date('2026-09-10T09:00:30Z').getTime() }, exitSnapshot: { price: 107, slope: 0, accel: 0, ts: new Date('2026-09-10T09:02:05Z').getTime() }, exitReason: 'SELL_SIGNAL' },
+      {
+        entryPrice: 101,
+        entryTs: new Date('2026-09-10T09:00:30Z').getTime(),
+        exitPrice: 107,
+        exitTs: new Date('2026-09-10T09:02:05Z').getTime(),
+      },
     ]);
 
     expect(markers).toHaveLength(2);

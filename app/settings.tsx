@@ -477,6 +477,8 @@ export default function SettingsScreen() {
   // 볼린저 투매 반등(BB Dip) 세부 설정
   const [bbDipConfig, setBbDipConfig] = useState<BbDipConfig>(DEFAULT_APP_SETTINGS.bbDipConfig);
   const savedBbDipConfigRef = useRef<BbDipConfig>(DEFAULT_APP_SETTINGS.bbDipConfig);
+  // 실시간 MA5 설정은 현재 화면에서 수정하지 않는다 — 저장 스키마 필수 키를 유지하기 위해 로드값을 보존한다.
+  const savedRealtimeMa5ConfigRef = useRef(DEFAULT_APP_SETTINGS.realtimeMa5Config);
   // 엔진 옵션(2026-09-03 ADR 0012) — 전략과 별개로 중복 선택. 반영은 전략과 같은 규약(앱 재시작).
   const [engineOptions, setEngineOptions] = useState<EngineOptions>(DEFAULT_ENGINE_OPTIONS);
   const savedEngineOptionsRef = useRef<EngineOptions>(DEFAULT_ENGINE_OPTIONS);
@@ -520,6 +522,7 @@ export default function SettingsScreen() {
       savedEngineOptionsRef.current = appSettings.engineOptions;
       setBbDipConfig(appSettings.bbDipConfig ?? DEFAULT_BBDIP_CONFIG);
       savedBbDipConfigRef.current = appSettings.bbDipConfig ?? DEFAULT_BBDIP_CONFIG;
+      savedRealtimeMa5ConfigRef.current = appSettings.realtimeMa5Config ?? DEFAULT_APP_SETTINGS.realtimeMa5Config;
     })();
   }, []);
 
@@ -615,6 +618,7 @@ export default function SettingsScreen() {
         engineMode: normalized.engineMode, // 하위 호환 유지
         engineOptions,
         bbDipConfig,
+        realtimeMa5Config: savedRealtimeMa5ConfigRef.current,
         orderQty: savedOrderQtyRef.current,
         buyCancelAfterSec,
         buyStrategy,
