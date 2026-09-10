@@ -45,6 +45,7 @@ function OrderStrategyPicker(props: {
   onChange: (v: OrderPricing) => void;
   cancelAfterSec: number;
   onCancelAfterSecChange: (v: number) => void;
+  disabled?: boolean;
 }) {
   const buy = props.side === 'buy';
   const cross = buy ? '매도1호가' : '매수1호가';
@@ -69,17 +70,27 @@ function OrderStrategyPicker(props: {
       <Text className="mb-2 text-xs font-semibold text-[#191f28]">{props.title}</Text>
       {options.map((opt) => {
         const selected = props.value === opt.value;
+        const disabled = !!props.disabled;
         return (
           <Pressable
             key={opt.value}
-            onPress={() => props.onChange(opt.value)}
-            className={`mb-2 rounded-2xl border px-4 py-3 ${selected ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'}`}
+            onPress={() => {
+              if (disabled) return;
+              props.onChange(opt.value);
+            }}
+            className={`mb-2 rounded-2xl border px-4 py-3 ${selected ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'} ${disabled ? 'opacity-50' : ''}`}
           >
             <View className="flex-row items-center justify-between">
-              <Text className={`text-sm font-semibold ${selected ? 'text-[#3182f6]' : 'text-[#191f28]'}`}>{ORDER_PRICING_LABEL[opt.value]}</Text>
-              {selected && <Text className="text-xs font-semibold text-[#3182f6]">선택됨</Text>}
+              <Text className={`text-sm font-semibold ${selected ? 'text-[#3182f6]' : disabled ? 'text-[#8b95a1]' : 'text-[#191f28]'}`}>
+                {ORDER_PRICING_LABEL[opt.value]}
+              </Text>
+              {selected ? (
+                <Text className="text-xs font-semibold text-[#3182f6]">선택됨</Text>
+              ) : disabled ? (
+                <Text className="text-[11px] font-semibold text-[#8b95a1]">고정됨</Text>
+              ) : null}
             </View>
-            <Text className="mt-1 text-xs leading-5 text-[#8b95a1]">{opt.desc}</Text>
+            <Text className={`mt-1 text-xs leading-5 ${disabled ? 'text-[#96a2ae]' : 'text-[#8b95a1]'}`}>{opt.desc}</Text>
           </Pressable>
         );
       })}
@@ -655,6 +666,7 @@ export default function SettingsScreen() {
   })();
 
   const realtimeMa5Dedicated = entryStrategy === 'realtimeMa5';
+  const realtimeMa5SellLocked = exitStrategy === 'realtimeMa5';
 
   return (
     <View className="flex-1 bg-[#f2f4f6]">
@@ -815,7 +827,7 @@ export default function SettingsScreen() {
             {realtimeMa5Dedicated && (
               <View className="mb-3 rounded-2xl border border-[#bfdbfe] bg-[#eff6ff] px-4 py-3">
                 <Text className="text-xs leading-5 text-[#1d4ed8]">
-                  실시간 MA5 단타는 전용 모드예요. 다른 진입 전략은 선택할 수 없고, 현재 전략이 고정돼 있습니다.
+                  실시간 MA5 단타는 현재 선택된 진입 전략입니다. 진입 전략 자체는 이 화면에서 고정 표시만 하고, 매도 전략은 독립적으로 잠금 여부를 판단합니다.
                 </Text>
               </View>
             )}
@@ -849,28 +861,22 @@ export default function SettingsScreen() {
               ]
             ).map((opt) => {
               const selected = entryStrategy === opt.value;
-              const disabled = realtimeMa5Dedicated && opt.value !== 'realtimeMa5';
               return (
                 <Pressable
                   key={opt.value}
                   onPress={() => {
-                    if (disabled) return;
                     setEntryStrategy(opt.value);
                     if (opt.value === 'realtimeMa5') setExitStrategy('realtimeMa5');
                   }}
-                  className={`mb-2 rounded-2xl border px-4 py-3 ${selected ? 'border-[#3182f6] bg-[#f2f7ff]' : disabled ? 'border-[#dfe5ea] bg-[#f5f7fa]' : 'border-[#e5e8eb] bg-white'} ${disabled ? 'opacity-50' : ''}`}
+                  className={`mb-2 rounded-2xl border px-4 py-3 ${selected ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'}`}
                 >
                   <View className="flex-row items-center justify-between">
-                    <Text className={`text-sm font-semibold ${selected ? 'text-[#3182f6]' : disabled ? 'text-[#8b95a1]' : 'text-[#191f28]'}`}>
+                    <Text className={`text-sm font-semibold ${selected ? 'text-[#3182f6]' : 'text-[#191f28]'}`}>
                       {opt.title}
                     </Text>
-                    {selected ? (
-                      <Text className="text-xs font-semibold text-[#3182f6]">선택됨</Text>
-                    ) : disabled ? (
-                      <Text className="text-[11px] font-semibold text-[#8b95a1]">비활성</Text>
-                    ) : null}
+                    {selected && <Text className="text-xs font-semibold text-[#3182f6]">선택됨</Text>}
                   </View>
-                  <Text className={`mt-1 text-xs leading-5 ${disabled ? 'text-[#96a2ae]' : 'text-[#8b95a1]'}`}>{opt.desc}</Text>
+                  <Text className="mt-1 text-xs leading-5 text-[#8b95a1]">{opt.desc}</Text>
                 </Pressable>
               );
             })}
@@ -916,10 +922,10 @@ export default function SettingsScreen() {
               보유 포지션을 어떻게 익절/손절하고 마감할지 골라요. 저장한 뒤 <Text className="font-semibold text-[#191f28]">앱을 완전히 종료했다가 다시 켜면</Text>{' '}
               적용돼요.
             </Text>
-            {realtimeMa5Dedicated && (
+            {realtimeMa5SellLocked && (
               <View className="mb-3 rounded-2xl border border-[#bfdbfe] bg-[#eff6ff] px-4 py-3">
                 <Text className="text-xs leading-5 text-[#1d4ed8]">
-                  실시간 MA5 단타는 전용 모드예요. 매수 직후 매도 선주문·물타기 후 목표가 정정을 전략 내부에서 처리하므로, 아래 범용 청산 전략은 비활성화돼요.
+                  실시간 MA5 익절·물타기 모드에서는 매도 주문 전략은 고정돼 있고, 매수 전략은 별도로 선택할 수 있어요.
                 </Text>
               </View>
             )}
@@ -1020,7 +1026,9 @@ export default function SettingsScreen() {
                 ? '5선 돌파'
                 : entryStrategy === 'model'
                   ? '예측 모델'
-                  : '기울기 돌파'
+                  : entryStrategy === 'realtimeMa5'
+                    ? '실시간 MA5 단타'
+                    : '기울기 돌파'
             } (고정값)`}
           >
             <View className="px-5 pb-5">
@@ -1050,6 +1058,19 @@ export default function SettingsScreen() {
                     {MODEL_BAR_MINUTES}분봉이 닫힐 때마다 리스트 전 종목에 대해 "+3%가 −3%보다 먼저 올 확률"을 지표 33개로 계산해요. 3년 반치 과거에서 상위 1%에 해당하는 값을 넘어야 사요. 정규장·그날 거래대금 $2M 이상·주가 $1 초과 종목만 봐요.
                   </Text>
                 </>
+              ) : entryStrategy === 'realtimeMa5' ? (
+                <>
+                  <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                    진입은 실시간 MA5 단타 규칙이 결정해요. 현재 선택된 진입 전략은 이 값으로 고정 표시됩니다.
+                  </Text>
+                  <View className="mb-1 flex-row items-center justify-between">
+                    <Text className="text-xs text-[#8b95a1]">진입 규칙</Text>
+                    <Text className="text-sm font-semibold text-[#191f28]">현재 틱이 직전 MA5를 상향 돌파 + 기울기 상승</Text>
+                  </View>
+                  <Text className="text-xs leading-5 text-[#8b95a1]">
+                    현재가가 직전 5틱 평균을 상향 돌파하면서 동시에 기울기가 상승 중일 때 사요. 실시간 MA5는 매도 타이밍과 물타기 규칙이 함께 내부에서 관리돼요.
+                  </Text>
+                </>
               ) : (
                 <>
                   <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
@@ -1076,7 +1097,9 @@ export default function SettingsScreen() {
                 ? '+3% 익절 · 마감 청산'
                 : exitStrategy === 'model'
                   ? '±3% 대칭 밴드 · 래칫'
-                  : '기울기 하락 즉시 매도'
+                  : exitStrategy === 'realtimeMa5'
+                    ? '실시간 MA5 익절·물타기'
+                    : '기울기 하락 즉시 매도'
             } (고정값)`}
           >
             <View className="px-5 pb-5">
@@ -1124,6 +1147,19 @@ export default function SettingsScreen() {
                     산 지 {MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분이 지나도 밴드에 닿지 않으면 전량 매도해요. 봉 마감을 기다리지 않고 체결가가 닿는 즉시 판단해요.
                   </Text>
                 </>
+              ) : exitStrategy === 'realtimeMa5' ? (
+                <>
+                  <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+                    매도는 실시간 MA5 익절·물타기 규칙이 결정해요. 이 모드에서는 매도 전략이 내부 규칙으로 고정됩니다.
+                  </Text>
+                  <View className="mb-1 flex-row items-center justify-between">
+                    <Text className="text-xs text-[#8b95a1]">청산 조건</Text>
+                    <Text className="text-sm font-semibold text-[#191f28]">평단 × {DEFAULT_REALTIME_MA5_CONFIG.sellTargetMultiplier} 목표가 + 낙폭 재진입</Text>
+                  </View>
+                  <Text className="text-xs leading-5 text-[#8b95a1]">
+                    평단 대비 {DEFAULT_REALTIME_MA5_CONFIG.sellTargetMultiplier}배 목표가에 닿으면 익절하고, 낙폭 {DEFAULT_REALTIME_MA5_CONFIG.averagingDownThresholdPct}% 이하에서 상승 기울기와 돌파가 맞으면 추가 매수해요. 이 규칙은 별도 주문 전략과는 독립적으로 동작합니다.
+                  </Text>
+                </>
               ) : (
                 <>
                   <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
@@ -1163,6 +1199,7 @@ export default function SettingsScreen() {
               onChange={setSellStrategy}
               cancelAfterSec={sellCancelAfterSec}
               onCancelAfterSecChange={setSellCancelAfterSec}
+              disabled={exitStrategy === 'realtimeMa5'}
             />
           </View>
         </Panel>
