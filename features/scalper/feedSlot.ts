@@ -184,7 +184,7 @@ export interface SlotSignalContext {
    * 물타기 단타 모드의 BUY 종류 — 'entry'=5선 상승·상향 돌파 봉(2026-09-02). 오토파일럿이 미보유면 진입,
    * 보유 중이면 물타기 후보로 포지션 규칙에 넘긴다(낙폭 −3% 미만이면 규칙이 거른다). 다른 모드는 undefined.
    */
-  readonly kind?: 'entry';
+  readonly kind?: 'entry' | 'realtimeMa5';
   /** 물타기 단타 모드 신호의 근거 — 지금은 'cross'(5선 상향 돌파) 하나. */
   readonly entryEvent?: MartingaleEntryEvent;
 }
@@ -406,6 +406,12 @@ export class FeedSlot {
     this.slopeMeter.record(this.lastTickAt, price);
     this.bbMeter.record(price);
 
+    // 실시간 1분봉/MA5는 화면 공통 지표라 모드와 무관하게 매 틱 갱신한다.
+    // 규칙: 마지막(미완성) 분봉 OHLC는 틱마다 갱신, MA5 = 직전 확정 4봉 종가 + 현재틱 / 5.
+    const rtClosed = this.realtimeCandleBuilder.pushTick(price, tsMs);
+    this.realtimeMa5State = this.realtimeMa5Calc.evaluate(this.realtimeCandleBuilder.closes, price);
+    if (rtClosed !== null) this.realtimeMa5LastBuyBarKey = null;
+
     if (this.slopeMode) {
       // 기울기 단타(ADR 0011) — 틱마다 기울기/10초를 재서 문턱 전환에서만 신호. 스로틀·봉·세션 게이트 없음.
       if (this.filterBars) this.bars.pushTick(price, tsMs); // 진입 필터(엔진 옵션)용 1분봉만 쌓는다.
@@ -420,16 +426,8 @@ export class FeedSlot {
     }
 
     if (this.realtimeMa5Mode) {
-      // 실시간 MA5 단타 — 틱마다 1분봉 OHLC 갱신 + MA5·기울기·돌파 판정.
+      // 실시간 MA5 단타 — 위 공통 갱신된 MA5·기울기·돌파 스냅샷으로 진입 판정만 한다.
       this.bars.pushTick(price, tsMs); // 기존 1분봉 빌더도 유지 (시드·뷰 호환)
-      const closed = this.realtimeCandleBuilder.pushTick(price, tsMs);
-      const closes = this.realtimeCandleBuilder.closes;
-      const state = this.realtimeMa5Calc.evaluate(closes, price);
-      this.realtimeMa5State = state;
-      // 봉당 1회 발화 방지 — 새 봉이 확정되면 리셋
-      if (closed !== null) {
-        this.realtimeMa5LastBuyBarKey = null;
-      }
       this.evaluateRealtimeMa5Tick(price, tsMs);
       return null;
     }
@@ -658,24 +656,36 @@ export class FeedSlot {
     };
   }
 
+  /** 분봉 시드 반영 시 실시간 MA5 계산기 상태도 함께 동기화한다. */
+  private reseedRealtimeMa5(bars: readonly MinuteBar[]): void {
+    this.realtimeCandleBuilder.seed(bars);
+    this.realtimeMa5Calc.reset();
+    const probe = this.price ?? this.realtimeCandleBuilder.inProgress?.close ?? this.realtimeCandleBuilder.closes.at(-1) ?? null;
+    this.realtimeMa5State =
+      probe !== null && Number.isFinite(probe) && probe > 0
+        ? this.realtimeMa5Calc.evaluate(this.realtimeCandleBuilder.closes, probe)
+        : { ma5: null, slope: null, breakout: false, refClose5: null };
+  }
+
   seedTrend(bars: readonly MinuteBar[]): number {
     if (this.filterBars) {
       // 모델·기울기 모드 + 진입 필터 — 1분봉 시드(필터 계산용). 신호는 내지 않는다.
       const n = this.bars.seed(bars);
+      if (n > 0) this.reseedRealtimeMa5(bars);
       if (n > 0) this.entryFilterPass = entryFiltersPass(evaluateMartingaleBars(this.bars.closes, this.entryFilters), this.entryFilters);
       return n;
     }
     if (this.realtimeMa5Mode) {
       // 실시간 MA5 모드 — 1분봉 시드 + 실시간 빌더 시드. 판정 스냅샷만 갱신.
       const n = this.bars.seed(bars);
-      this.realtimeCandleBuilder.seed(bars);
-      this.realtimeMa5Calc.reset(); // 시드 후重新计算
+      if (n > 0) this.reseedRealtimeMa5(bars);
       return n;
     }
     if (this.martingaleMode) {
       // 물타기 모드 — 1분봉 시드. 판정 스냅샷만 갱신하고 신호는 내지 않는다(과거 봉으로 진입하지 않는다).
       const n = this.bars.seed(bars);
       if (n > 0) {
+        this.reseedRealtimeMa5(bars);
         this.martingaleEval = evaluateMartingaleBars(this.bars.closes, this.entryFilters);
         // 시드가 봉 링을 통째로 갈아끼웠다 — 진행 중 판정도 버리고 다음 틱에서 새로 만든다(추세 시드와 동일).
         this.martingaleLiveEval = null;
@@ -687,6 +697,7 @@ export class FeedSlot {
     if (!this.trendMode) return 0;
     const n = this.bars.seed(bars);
     if (n > 0) {
+      this.reseedRealtimeMa5(bars);
       this.trendEval = evaluateTrend(this.bars.closes);
       // 시드가 봉 링을 통째로 갈아끼웠다 — 진행 중 판정도 버리고 다음 틱에서 새로 만든다.
       this.trendLiveEval = null;
@@ -948,7 +959,7 @@ export class FeedSlot {
       martingale: this.martingaleMode ? this.martingaleEval : null,
       entryFilterPass: this.filterBars ? this.entryFilterPass : null,
       martingaleLive: this.martingaleMode ? this.martingaleLiveEval : null,
-      realtimeMa5: this.realtimeMa5Mode ? this.realtimeMa5State : null,
+      realtimeMa5: this.realtimeMa5State,
     };
   }
 }

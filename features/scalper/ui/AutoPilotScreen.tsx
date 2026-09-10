@@ -106,18 +106,19 @@ const trendArrows = (up: TrendEval['up']): string =>
 const arrowOf = (up: boolean | null) => (up === null ? '·' : up ? '↑' : '↓');
 
 /**
- * 추세 스냅샷 한 줄 — "추세 5↑ 20↑ 60↑ 120↓ · 종가>60선 · 봉 87/122". 봉이 없으면 "추세 봉 0/122".
+ * 추세 스냅샷 한 줄 — "추세 5↑ 20↑ 60↑ 120↓ · 종가>60선".
+ * 봉이 없으면 null을 돌려 행에 표시하지 않는다.
  *
  * 2026-08-22: 진행 중(미완성) 봉 판정이 마감 판정과 다르면 **그 차이를 같이 적는다** — 매도는 진행 중 봉
  * 기준으로 나가므로(차트에 그려진 4선과 같은 것), 화면이 마감 기준만 보여 주면 또 어긋나 보인다.
  */
-function formatTrendLine(trend: TrendEval | null, live: TrendEval | null): string {
-  if (trend === null) return '추세 봉 0/122';
+function formatTrendLine(trend: TrendEval | null, live: TrendEval | null): string | null {
+  if (trend === null) return null;
   const closedArrows = trendArrows(trend.up);
   const liveArrows = live === null ? null : trendArrows(live.up);
   const now = liveArrows !== null && liveArrows !== closedArrows ? ` · 지금 ${liveArrows}` : '';
   const above = trend.aboveMa60 === null ? '' : trend.aboveMa60 ? ' · 종가>60선' : ' · 종가≤60선';
-  return `추세 ${closedArrows}${now}${above} · 봉 ${Math.min(trend.bars, 122)}/122`;
+  return `추세 ${closedArrows}${now}${above}`;
 }
 
 /**
@@ -157,7 +158,7 @@ function formatSlopeModeLine(rate: number | null): string {
  */
 function formatMartingaleLine(ev: MartingaleBarEval | null, nowMs: number = Date.now()): string {
   if (ev === null) return '5선 계산 중';
-  if (ev.ma5Up === null) return `5선 계산 중 · 봉 ${Math.min(ev.bars, MARTINGALE_MIN_BARS)}/${MARTINGALE_MIN_BARS}`;
+  if (ev.ma5Up === null) return '5선 계산 중';
   // 세션 게이트를 화면에도 반영(2026-09-01) — 예전엔 주간거래 시간대(한국 낮)에 전 종목 "진입 가능"이
   // 떴는데 엔진은 절대 사지 않아 화면-엔진이 어긋났다. 진입 창은 04:00~19:55 ET(엔진 isMartingaleEntryBar와 동일).
   const m = etMinuteOfDay(Math.floor(nowMs / 60_000));
@@ -275,9 +276,12 @@ function markerPosition(value: number | null, lo: number, hi: number): number | 
 }
 
 function ma5Of(row: AutoPilotSlotRow): number | null {
-  if (row.view.realtimeMa5?.ma5 && Number.isFinite(row.view.realtimeMa5.ma5)) return row.view.realtimeMa5.ma5;
-  if (row.view.martingaleLive?.ma5 && Number.isFinite(row.view.martingaleLive.ma5)) return row.view.martingaleLive.ma5;
-  if (row.view.martingale?.ma5 && Number.isFinite(row.view.martingale.ma5)) return row.view.martingale.ma5;
+  const realtimeMa5 = row.view.realtimeMa5?.ma5;
+  if (realtimeMa5 !== null && realtimeMa5 !== undefined && Number.isFinite(realtimeMa5)) return realtimeMa5;
+  const martingaleLiveMa5 = row.view.martingaleLive?.ma5;
+  if (martingaleLiveMa5 !== null && martingaleLiveMa5 !== undefined && Number.isFinite(martingaleLiveMa5)) return martingaleLiveMa5;
+  const martingaleMa5 = row.view.martingale?.ma5;
+  if (martingaleMa5 !== null && martingaleMa5 !== undefined && Number.isFinite(martingaleMa5)) return martingaleMa5;
   return null;
 }
 
@@ -300,15 +304,22 @@ function InlineGrid({
   const fallbackHi = max ?? current ?? ma5 ?? avg ?? fallbackLo * 1.001;
   const scale = gaugeScaleOf([min, ma5, current, avg, max], fallbackLo, fallbackHi);
 
-  const minPos = markerPosition(min, scale.lo, scale.hi);
+  // 최소/최대는 사용자가 기대한 대로 양끝 고정으로 그린다.
+  const minPos = min !== null ? 0 : markerPosition(min, scale.lo, scale.hi);
+  const maxPos = max !== null ? 1 : markerPosition(max, scale.lo, scale.hi);
   const ma5Pos = markerPosition(ma5, scale.lo, scale.hi);
   const currentPos = markerPosition(current, scale.lo, scale.hi);
   const avgPos = showAverage ? markerPosition(avg, scale.lo, scale.hi) : null;
-  const maxPos = markerPosition(max, scale.lo, scale.hi);
+
+  const POINT_WIDTH = 68;
+  const CURRENT_BUBBLE_WIDTH = 80;
+  const [trackWidth, setTrackWidth] = useState(0);
+
+  const pctLeft = (pos: number) => `${(pos * 100).toFixed(2)}%` as `${number}%`;
 
   const Marker = ({ pos, color, height, width = 2 }: { pos: number | null; color: string; height: number; width?: number }) => {
     if (pos === null) return null;
-    const left = `${(pos * 100).toFixed(2)}%` as `${number}%`;
+    const left = pctLeft(pos);
     return (
       <View
         style={{
@@ -325,9 +336,70 @@ function InlineGrid({
     );
   };
 
+  const Point = ({
+    pos,
+    align,
+    label,
+    value,
+    labelColor,
+  }: {
+    pos: number | null;
+    align: 'left' | 'center' | 'right';
+    label: string;
+    value: string;
+    labelColor?: string;
+  }) => {
+    if (pos === null) return null;
+    return (
+      <View
+        style={{
+          position: 'absolute',
+          left: pctLeft(pos),
+          width: POINT_WIDTH,
+          transform: [{ translateX: align === 'center' ? -POINT_WIDTH / 2 : align === 'right' ? -POINT_WIDTH : 0 }],
+          alignItems: align === 'left' ? 'flex-start' : align === 'right' ? 'flex-end' : 'center',
+        }}
+      >
+        <Text className="text-[10px] font-semibold" style={{ color: labelColor ?? '#8b95a1' }}>
+          {label}
+        </Text>
+        <Text className="text-[11px] font-bold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
+          {value}
+        </Text>
+      </View>
+    );
+  };
+
+  const currentBubbleLeft = (() => {
+    if (currentPos === null || trackWidth <= 0) return null;
+    const half = CURRENT_BUBBLE_WIDTH / 2;
+    const x = currentPos * trackWidth;
+    return Math.min(trackWidth - half, Math.max(half, x)) - half;
+  })();
+
   return (
     <View className="mt-3">
-      <View className="relative" style={{ height: 16 }}>
+      <View className="relative" style={{ height: 38 }}>
+        {currentBubbleLeft !== null && (
+          <View
+            style={{
+              position: 'absolute',
+              left: currentBubbleLeft,
+              top: 0,
+              width: CURRENT_BUBBLE_WIDTH,
+              alignItems: 'center',
+            }}
+          >
+            <Text className="text-[10px] font-semibold text-[#8b95a1]">현재</Text>
+            <Text className="text-[11px] font-bold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
+              {formatPrice(current)}
+            </Text>
+            <Text style={{ color: '#191f28', fontSize: 11, lineHeight: 12, marginTop: 1 }}>▼</Text>
+          </View>
+        )}
+      </View>
+
+      <View className="relative" style={{ height: 16 }} onLayout={(e) => setTrackWidth(e.nativeEvent.layout.width)}>
         <View className="absolute left-0 right-0" style={{ top: 7, height: 2, backgroundColor: '#e5e8eb', borderRadius: 999 }} />
         <Marker pos={minPos} color="#8b95a1" height={10} width={1.5} />
         <Marker pos={ma5Pos} color="#f59e0b" height={12} />
@@ -336,39 +408,11 @@ function InlineGrid({
         <Marker pos={maxPos} color="#8b95a1" height={10} width={1.5} />
       </View>
 
-      <View className="mt-2 flex-row items-start justify-between" style={{ columnGap: 6 }}>
-        <View className="items-start">
-          <Text className="text-[10px] font-semibold text-[#8b95a1]">최소</Text>
-          <Text className="text-[11px] font-bold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
-            {formatPrice(min)}
-          </Text>
-        </View>
-        <View className="items-center">
-          <Text className="text-[10px] font-semibold text-[#f59e0b]">5선</Text>
-          <Text className="text-[11px] font-bold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
-            {formatPrice(ma5)}
-          </Text>
-        </View>
-        <View className="items-center">
-          <Text className="text-[10px] font-semibold text-[#8b95a1]">현재</Text>
-          <Text className="text-[11px] font-bold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
-            {formatPrice(current)}
-          </Text>
-        </View>
-        {showAverage && (
-          <View className="items-center">
-            <Text className="text-[10px] font-semibold text-[#8b95a1]">평단</Text>
-            <Text className="text-[11px] font-bold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
-              {formatPrice(avg)}
-            </Text>
-          </View>
-        )}
-        <View className="items-end">
-          <Text className="text-[10px] font-semibold text-[#8b95a1]">최대</Text>
-          <Text className="text-[11px] font-bold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
-            {formatPrice(max)}
-          </Text>
-        </View>
+      <View className="relative mt-2" style={{ height: 30 }}>
+        <Point pos={minPos} align="left" label="최소" value={formatPrice(min)} />
+        <Point pos={ma5Pos} align="center" label="5선" value={formatPrice(ma5)} labelColor="#f59e0b" />
+        {showAverage && <Point pos={avgPos} align="center" label="평단" value={formatPrice(avg)} />}
+        <Point pos={maxPos} align="right" label="최대" value={formatPrice(max)} />
       </View>
     </View>
   );

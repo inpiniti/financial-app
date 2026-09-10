@@ -568,6 +568,14 @@ export class AutoPilotManager {
     return SLOPE_MODE && this.deps.slope !== undefined;
   }
 
+  /** 실시간 MA5 진입이 실제로 도는가 — 스위치와 설정 정본(entryStrategy) 기준. */
+  private get realtimeMa5Active(): boolean {
+    if (this.deps.entryStrategy) {
+      return this.deps.entryStrategy === 'realtimeMa5' && this.deps.realtimeMa5 !== undefined;
+    }
+    return false;
+  }
+
   /** 앱 재시작 복원 — 금액 상태 로드(+보유 감지는 start 시점에 다시 한다). */
   async restore(): Promise<void> {
     await this.pilot.restore();
@@ -821,6 +829,7 @@ export class AutoPilotManager {
       model: this.deps.entryStrategy ? entry === 'model' : this.deps.model !== undefined,
       martingale: this.deps.entryStrategy ? entry === 'martingale' : this.deps.martingale !== undefined,
       slope: this.deps.entryStrategy ? entry === 'slope' : this.deps.slope !== undefined,
+      realtimeMa5: this.deps.entryStrategy ? entry === 'realtimeMa5' : false,
       bbDip: this.deps.entryStrategy ? entry === 'bbDip' : this.bbDipActive,
       bbDipConfig: this.deps.bbDipConfig,
       entryFilters: this.deps.entryFilters,
@@ -834,7 +843,7 @@ export class AutoPilotManager {
     // 물타기/5선 모드는 1분봉 시드가 필요하다(fetchMinuteBars가 1분봉을 준다 — managerProvider).
     // 모델·기울기·볼린저반등 모드는 봉을 쓰지 않는다 — 워밍업도 없다. 단 진입 필터(엔진 옵션)가 켜져 있으면 4선용 1분봉 시드가 필요하다.
     const needTrendWarmup = this.deps.entryStrategy
-      ? entry === 'martingale' || this.entryFiltersOn
+      ? entry === 'martingale' || entry === 'realtimeMa5' || this.entryFiltersOn
       : (!this.modelActive && !this.slopeActive && !this.bbDipActive) || this.entryFiltersOn;
     if (needTrendWarmup) this.enqueueTrendWarmup(ticker);
   }
@@ -851,7 +860,7 @@ export class AutoPilotManager {
   private readonly trendWarmupAttempts = new Map<string, number>();
 
   private enqueueTrendWarmup(ticker: string): void {
-    if ((this.deps.trend === undefined && !this.martingaleActive && !this.entryFiltersOn) || !this.deps.fetchMinuteBars) return;
+    if ((this.deps.trend === undefined && !this.martingaleActive && !this.realtimeMa5Active && !this.entryFiltersOn) || !this.deps.fetchMinuteBars) return;
     if (this.trendWarmupQueue.includes(ticker)) return;
     this.trendWarmupQueue.push(ticker);
     void this.drainTrendWarmup();
