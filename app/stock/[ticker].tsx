@@ -126,7 +126,7 @@ export default function StockDetailScreen() {
       <DetailTabs value={tab} onChange={setTab} />
       <View className="flex-1">
         {tab === 'chart' ? (
-          <ChartPanel ticker={ticker} excd={market} />
+          <ChartPanel ticker={ticker} excd={market} livePrice={quoteState.price} liveTickAt={quoteState.lastTickAt} />
         ) : tab === 'comments' ? (
           <CommentsPanel ticker={ticker} />
         ) : (

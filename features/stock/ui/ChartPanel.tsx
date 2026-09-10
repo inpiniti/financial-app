@@ -26,6 +26,10 @@ export interface ChartPanelProps {
   ticker: string;
   /** EXCD — 상세화면 라우트 파라미터(market)에서 정규화된 미국 3거래소 코드. */
   excd: MinuteChartExchangeCode;
+  /** 상세화면 WS 체결가(USD) — 마지막 진행 봉 실시간 갱신용. */
+  livePrice: number | null;
+  /** 마지막 체결 틱 시각(epoch ms) — 없으면 Date.now()로 현재 봉 키를 계산한다. */
+  liveTickAt: number | null;
 }
 
 type ChartMode = 'minute' | 'daily' | 'weekly' | 'monthly';
@@ -398,10 +402,14 @@ function EngineVerdict({
   verdict,
   interval,
   closedBars,
+  ma5Closed,
+  ma5Live,
 }: {
   verdict: ModelInspection | null;
   interval: MinuteInterval;
   closedBars: number;
+  ma5Closed: number | null;
+  ma5Live: number | null;
 }) {
   if (interval !== ENGINE_INTERVAL || verdict === null) {
     return (
@@ -437,6 +445,12 @@ function EngineVerdict({
           {verdict.dayBars}개 · 거래대금 ${Math.round(verdict.cumDollarVolume / 10_000) / 100}M
         </Text>
       </View>
+      <View className="flex-row items-center justify-between px-5 py-[13px]">
+        <Text className="text-sm text-[#4e5968]">5선(실시간 / 확정)</Text>
+        <Text className="text-sm font-semibold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
+          {ma5Live === null ? '—' : formatUsd(ma5Live)} / {ma5Closed === null ? '—' : formatUsd(ma5Closed)}
+        </Text>
+      </View>
       <Text className="px-5 pb-3 pt-1 text-xs leading-5 text-[#8b95a1]">
         {why ?? '지금 봉 마감 기준으로는 매수 조건을 만족해요.'} 점선 왼쪽까지가 확정된 봉이고, 아직 안 끝난 봉은
         판정에 넣지 않아요(엔진도 같아요). 전체 {closedBars}봉 중 오늘(04:00 ET 이후) 봉만 판정에 써요.
@@ -447,7 +461,23 @@ function EngineVerdict({
 
 // memo — 부모(종목 상세화면)가 실시간 체결가로 1초마다 리렌더돼도, props(ticker·excd 문자열)가
 // 같으면 차트 탭 전체가 다시 그려지지 않게 한다(2026-09-01 렌더 격리).
-export const ChartPanel = memo(function ChartPanel({ ticker, excd }: ChartPanelProps) {
+function formatEtClockFromMs(tsMs: number): string {
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      timeZone: 'America/New_York',
+    }).format(new Date(tsMs));
+  } catch {
+    const d = new Date(tsMs);
+    const hh = String(d.getUTCHours()).padStart(2, '0');
+    const mm = String(d.getUTCMinutes()).padStart(2, '0');
+    return `${hh}:${mm}`;
+  }
+}
+
+export const ChartPanel = memo(function ChartPanel({ ticker, excd, livePrice, liveTickAt }: ChartPanelProps) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const [mode, setMode] = useState<ChartMode>('minute');
   const [minuteInterval, setMinuteInterval] = useState<MinuteInterval>(ENGINE_INTERVAL);
@@ -630,6 +660,61 @@ export const ChartPanel = memo(function ChartPanel({ ticker, excd }: ChartPanelP
     return viewOffset > 0 ? readyCandles.slice(0, readyCandles.length - viewOffset) : readyCandles;
   }, [readyCandles, viewOffset]);
 
+  // 상세화면 WS 체결가를 마지막 봉에 덧입힌다.
+  // - 같은 봉이면 고가/저가/종가를 갱신
+  // - 새 봉이면 직전 봉을 확정하고 새 진행 봉을 생성
+  // 이 파생은 화면 렌더 전용이라 원본 state.candles는 건드리지 않는다.
+  const liveCandles = useMemo(() => {
+    if (visibleCandles === null || mode !== 'minute') return visibleCandles;
+    if (!Number.isFinite(livePrice as number) || (livePrice as number) <= 0) return visibleCandles;
+    if (visibleCandles.length === 0) return visibleCandles;
+
+    const price = livePrice as number;
+    const tickAt = liveTickAt ?? Date.now();
+    const liveKey = barKeyOf(tickAt, minuteInterval);
+    const next = visibleCandles.map((c) => ({ ...c, inProgress: Number(c.key) === liveKey }));
+    const last = next[next.length - 1];
+    const lastKey = Number(last.key);
+
+    if (!Number.isFinite(lastKey)) return visibleCandles;
+    if (liveKey < lastKey) return next;
+
+    if (liveKey === lastKey) {
+      last.high = Math.max(last.high, price);
+      last.low = Math.min(last.low, price);
+      last.close = price;
+      last.inProgress = true;
+      return next;
+    }
+
+    last.inProgress = false;
+    next.push({
+      key: String(liveKey),
+      label: formatEtClockFromMs(tickAt),
+      open: price,
+      high: price,
+      low: price,
+      close: price,
+      volume: 0,
+      inProgress: true,
+    });
+    return next;
+  }, [visibleCandles, mode, livePrice, liveTickAt, minuteInterval]);
+
+  const ma5Snapshot = useMemo(() => {
+    if (liveCandles === null || mode !== 'minute' || liveCandles.length < 5) {
+      return { ma5Closed: null as number | null, ma5Live: null as number | null };
+    }
+    const closesLive = liveCandles.map((c) => c.close);
+    const closeOnly = liveCandles.filter((c) => c.inProgress !== true).map((c) => c.close);
+    const liveSeries = computeTrendSeries(closesLive).ma5;
+    const closedSeries = closeOnly.length > 0 ? computeTrendSeries(closeOnly).ma5 : [];
+    return {
+      ma5Live: liveSeries.length > 0 ? liveSeries[liveSeries.length - 1] : null,
+      ma5Closed: closedSeries.length > 0 ? closedSeries[closedSeries.length - 1] : null,
+    };
+  }, [liveCandles, mode]);
+
   return (
     <View className="flex-1 bg-white">
       <View className="flex-row items-center justify-between px-4 pt-4">
@@ -675,7 +760,7 @@ export const ChartPanel = memo(function ChartPanel({ ticker, excd }: ChartPanelP
             {(() => {
               totalRef.current = state.candles.length;
               slotRef.current = Math.max(1, (svgWidth - RIGHT_AXIS_WIDTH) / MAX_CANDLES);
-              const visible = visibleCandles ?? state.candles;
+              const visible = liveCandles ?? state.candles;
               return (
                 <View className="px-4" {...pan.panHandlers}>
                   <CandleChart candles={visible} width={svgWidth} height={chartHeight} trendOverlay={mode === 'minute'} />
@@ -694,7 +779,9 @@ export const ChartPanel = memo(function ChartPanel({ ticker, excd }: ChartPanelP
               <EngineVerdict
                 verdict={state.verdict}
                 interval={minuteInterval}
-                closedBars={state.candles.filter((c) => c.inProgress !== true).length}
+                closedBars={(liveCandles ?? state.candles).filter((c) => c.inProgress !== true).length}
+                ma5Closed={ma5Snapshot.ma5Closed}
+                ma5Live={ma5Snapshot.ma5Live}
               />
             )}
           </View>

@@ -250,6 +250,42 @@ export const GridGauge = memo(function GridGauge({ grid, name, onDoubleTapSell, 
         )}
       </View>
 
+      {/* 값 요약(2026-09-10) — 최소 | 5선 | 현재 | 평단 | 최대를 숫자로 명시해 "5선이 어디인지"를 텍스트로도 바로 읽게 한다. */}
+      <View className="mt-2 flex-row items-start justify-between" style={{ columnGap: 8 }}>
+        <View className="items-start">
+          <Text className="text-[10px] font-semibold text-[#8b95a1]">최소</Text>
+          <Text className="text-[11px] font-bold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
+            {formatPrice(dayLow ?? sinceLow ?? bandLo)}
+          </Text>
+        </View>
+        <View className="items-center">
+          <Text className="text-[10px] font-semibold" style={{ color: MA5_COLOR }}>
+            5선
+          </Text>
+          <Text className="text-[11px] font-bold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
+            {formatPrice(ma5)}
+          </Text>
+        </View>
+        <View className="items-center">
+          <Text className="text-[10px] font-semibold text-[#8b95a1]">현재</Text>
+          <Text className="text-[11px] font-bold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
+            {formatPrice(currentPrice)}
+          </Text>
+        </View>
+        <View className="items-center">
+          <Text className="text-[10px] font-semibold text-[#8b95a1]">평단</Text>
+          <Text className="text-[11px] font-bold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
+            {formatPrice(avgPrice)}
+          </Text>
+        </View>
+        <View className="items-end">
+          <Text className="text-[10px] font-semibold text-[#8b95a1]">최대</Text>
+          <Text className="text-[11px] font-bold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
+            {formatPrice(dayHigh ?? sinceHigh ?? bandHi)}
+          </Text>
+        </View>
+      </View>
+
       {/* 하단 라벨 — 좌 오늘 최저 · 중(평단 위치) 평단가 · 우 오늘 최고. 고저가 아직 없으면 밴드 끝을 대신 적는다. */}
       <View className="mt-1 flex-row items-start justify-between">
         <View>
