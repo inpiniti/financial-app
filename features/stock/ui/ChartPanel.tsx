@@ -10,6 +10,7 @@ import { Ionicons } from '@expo/vector-icons';
 import Svg, { G, Line, Polyline, Rect, Text as SvgText } from 'react-native-svg';
 import { computeTrendSeries } from '../../../core/trend';
 import { barKeyOf } from '../../../core/trend/bars';
+import { applyLivePriceOverlay, buildHistoricalWindow } from './chartView';
 import { describeReject, inspectModel, loadModel, type ModelInspection } from '../../../core/model';
 import { MODEL_BAR_MINUTES } from '../../../features/scalper/modelMode';
 import { MARTINGALE_BAR_MINUTES, MARTINGALE_MODE } from '../../../features/scalper/martingaleMode';
@@ -712,49 +713,25 @@ export const ChartPanel = memo(function ChartPanel({ ticker, excd, livePrice, li
   const readyCandles = state.kind === 'ready' ? state.candles : null;
   const visibleCandles = useMemo(() => {
     if (readyCandles === null) return null;
-    return viewOffset > 0 ? readyCandles.slice(0, readyCandles.length - viewOffset) : readyCandles;
+    return buildHistoricalWindow(readyCandles, viewOffset, MAX_CANDLES);
   }, [readyCandles, viewOffset]);
 
   // 상세화면 WS 체결가를 마지막 봉에 덧입힌다.
   // - 같은 봉이면 고가/저가/종가를 갱신
   // - 새 봉이면 직전 봉을 확정하고 새 진행 봉을 생성
   // 이 파생은 화면 렌더 전용이라 원본 state.candles는 건드리지 않는다.
-  const liveCandles = useMemo(() => {
-    if (visibleCandles === null || mode !== 'minute') return visibleCandles;
-    if (!Number.isFinite(livePrice as number) || (livePrice as number) <= 0) return visibleCandles;
-    if (visibleCandles.length === 0) return visibleCandles;
-
-    const price = livePrice as number;
-    const tickAt = liveTickAt ?? Date.now();
-    const liveKey = barKeyOf(tickAt, minuteInterval);
-    const next = visibleCandles.map((c) => ({ ...c, inProgress: Number(c.key) === liveKey }));
-    const last = next[next.length - 1];
-    const lastKey = Number(last.key);
-
-    if (!Number.isFinite(lastKey)) return visibleCandles;
-    if (liveKey < lastKey) return next;
-
-    if (liveKey === lastKey) {
-      last.high = Math.max(last.high, price);
-      last.low = Math.min(last.low, price);
-      last.close = price;
-      last.inProgress = true;
-      return next;
-    }
-
-    last.inProgress = false;
-    next.push({
-      key: String(liveKey),
-      label: formatEtClockFromMs(tickAt),
-      open: price,
-      high: price,
-      low: price,
-      close: price,
-      volume: 0,
-      inProgress: true,
-    });
-    return next;
-  }, [visibleCandles, mode, livePrice, liveTickAt, minuteInterval]);
+  const liveCandles = useMemo(
+    () =>
+      applyLivePriceOverlay({
+        candles: visibleCandles,
+        livePrice,
+        liveTickAt,
+        minuteInterval,
+        mode,
+        isHistoricalView: viewOffset > 0,
+      }),
+    [visibleCandles, viewOffset, livePrice, liveTickAt, minuteInterval, mode],
+  );
 
   const ma5Snapshot = useMemo(() => {
     if (liveCandles === null || mode !== 'minute' || liveCandles.length < 5) {
