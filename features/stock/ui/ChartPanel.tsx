@@ -4,6 +4,7 @@
 // 4선 오버레이가 꼬였다. 일/주/월봉은 그대로 한투 기간별시세.
 // 캔들 렌더는 react-native-svg(기설치)로 직접 그린다 — 차트 라이브러리 추가 설치 없음.
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { PanResponder, Pressable, Text, View, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { G, Line, Polyline, Rect, Text as SvgText } from 'react-native-svg';
@@ -20,7 +21,8 @@ import { loadAppSettings } from '../../../lib/appSettings';
 import { fetchTossDailyCloses, fetchTossMinuteCandles, resolveTossProductCode } from '../../../lib/tossMinuteChart';
 import { loadKisSettings } from '../../../lib/kisSettings';
 import { secureTokenStorage } from '../../../lib/secureTokenStorage';
-import { formatUsd } from '../../../lib/format';
+import { formatKrw, formatUsd } from '../../../lib/format';
+import { useUsdKrwRate } from '../../../lib/useUsdKrwRate';
 
 export interface ChartPanelProps {
   ticker: string;
@@ -34,6 +36,9 @@ export interface ChartPanelProps {
 
 type ChartMode = 'minute' | 'daily' | 'weekly' | 'monthly';
 type MinuteInterval = 1 | 3 | 5;
+type CurrencyUnit = 'usd' | 'krw';
+
+const CHART_CURRENCY_STORAGE_KEY = 'stock:chartCurrencyUnit';
 
 /**
  * 자동매매 엔진이 실제로 쓰는 봉 주기 — 차트 기본값을 여기에 맞춘다(2026-08-22).
@@ -47,6 +52,11 @@ const MODE_OPTIONS: Array<{ value: ChartMode; label: string }> = [
   { value: 'daily', label: '일봉' },
   { value: 'weekly', label: '주봉' },
   { value: 'monthly', label: '월봉' },
+];
+
+const CURRENCY_OPTIONS: Array<{ value: CurrencyUnit; label: string }> = [
+  { value: 'usd', label: '달러' },
+  { value: 'krw', label: '원' },
 ];
 
 const MINUTE_INTERVAL_OPTIONS: Array<{ value: MinuteInterval; label: string }> = [
@@ -71,7 +81,8 @@ const UP_COLOR = '#f04452'; // 종가 > 시가 (한국 관례 — 상승 빨강)
 const DOWN_COLOR = '#3182f6'; // 종가 < 시가
 const DOJI_COLOR = '#8b95a1'; // 종가 == 시가
 
-const RIGHT_AXIS_WIDTH = 52; // 우측 가격축 라벨 예약 폭
+const RIGHT_AXIS_WIDTH_USD = 52; // 우측 가격축 라벨 예약 폭(USD)
+const RIGHT_AXIS_WIDTH_KRW = 72; // 우측 가격축 라벨 예약 폭(KRW)
 
 /** 렌더러가 필요로 하는 최소 형태 — 분봉(MinuteCandle)·기간봉(PeriodCandle)을 조회 직후 이 모양으로 맞춘다. */
 interface ChartCandle {
@@ -108,8 +119,15 @@ interface Session {
 /** "093000"(HHMMSS) → "09:30". 형식이 다르면 원본을 그대로 돌려준다. */
 /** 토스 dt("2026-08-18T01:33:00-04:00") → 현지(ET) "HH:MM" — 오프셋 뒤 시각을 문자열에서 그대로 자른다(옛 한투 xhms 라벨과 같은 기준). */
 function formatTossClock(dt: string): string {
-  const m = /T(d{2}):(d{2})/.exec(dt);
+  const m = /T(\d{2}):(\d{2})/.exec(dt);
   return m ? `${m[1]}:${m[2]}` : dt;
+}
+
+function formatChartPrice(priceUsd: number, currencyUnit: CurrencyUnit, usdKrwRate: number | null): string {
+  if (currencyUnit === 'krw' && usdKrwRate !== null && Number.isFinite(usdKrwRate) && usdKrwRate > 0) {
+    return formatKrw(priceUsd * usdKrwRate);
+  }
+  return formatUsd(priceUsd);
 }
 
 /** "20260729"(YYYYMMDD) → 일봉은 "07/29", 주/월봉은 "26/07". 형식이 다르면 원본을 그대로 돌려준다. */
@@ -176,11 +194,17 @@ const CandleChart = memo(function CandleChart({
   candles,
   width,
   height,
+  axisWidth,
+  currencyUnit,
+  usdKrwRate,
   trendOverlay = false,
 }: {
   candles: ChartCandle[];
   width: number;
   height: number;
+  axisWidth: number;
+  currencyUnit: CurrencyUnit;
+  usdKrwRate: number | null;
   /** 분봉 모드 — 추세 4선(core/trend) 오버레이. 전체 봉으로 계산해 표시 구간만 그린다. */
   trendOverlay?: boolean;
 }) {
@@ -206,7 +230,7 @@ const CandleChart = memo(function CandleChart({
     const priceHeight = height - volumeHeight - 8; // 8 = 가격/거래량 영역 사이 여백
 
     const shown = candles.slice(-MAX_CANDLES);
-    const chartWidth = Math.max(0, width - RIGHT_AXIS_WIDTH);
+    const chartWidth = Math.max(0, width - axisWidth);
     const slotWidth = shown.length > 0 ? chartWidth / shown.length : chartWidth;
     const bodyWidth = Math.max(2, slotWidth * 0.6);
 
@@ -262,7 +286,7 @@ const CandleChart = memo(function CandleChart({
       priceLabels,
       timeLabels,
     };
-  }, [candles, width, height, trendOverlay]);
+  }, [candles, width, height, axisWidth, trendOverlay]);
 
   return (
     <View>
@@ -332,9 +356,9 @@ const CandleChart = memo(function CandleChart({
           strokeWidth={1}
           strokeDasharray="4,4"
         />
-        <Rect x={chartWidth + 2} y={lastY - 8} width={RIGHT_AXIS_WIDTH - 2} height={16} rx={4} fill="#191f28" />
+        <Rect x={chartWidth + 2} y={lastY - 8} width={axisWidth - 2} height={16} rx={4} fill="#191f28" />
         <SvgText x={chartWidth + 6} y={lastY + 4} fontSize={10} fill="#ffffff">
-          {formatUsd(last.close)}
+          {formatChartPrice(last.close, currencyUnit, usdKrwRate)}
         </SvgText>
 
         {/* 우측 가격축 라벨 3개 */}
@@ -346,7 +370,7 @@ const CandleChart = memo(function CandleChart({
             fontSize={10}
             fill="#8b95a1"
           >
-            {formatUsd(price)}
+            {formatChartPrice(price, currencyUnit, usdKrwRate)}
           </SvgText>
         ))}
 
@@ -404,12 +428,16 @@ function EngineVerdict({
   closedBars,
   ma5Closed,
   ma5Live,
+  currencyUnit,
+  usdKrwRate,
 }: {
   verdict: ModelInspection | null;
   interval: MinuteInterval;
   closedBars: number;
   ma5Closed: number | null;
   ma5Live: number | null;
+  currencyUnit: CurrencyUnit;
+  usdKrwRate: number | null;
 }) {
   if (interval !== ENGINE_INTERVAL || verdict === null) {
     return (
@@ -448,7 +476,8 @@ function EngineVerdict({
       <View className="flex-row items-center justify-between px-5 py-[13px]">
         <Text className="text-sm text-[#4e5968]">5선(실시간 / 확정)</Text>
         <Text className="text-sm font-semibold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
-          {ma5Live === null ? '—' : formatUsd(ma5Live)} / {ma5Closed === null ? '—' : formatUsd(ma5Closed)}
+          {ma5Live === null ? '—' : formatChartPrice(ma5Live, currencyUnit, usdKrwRate)} /{' '}
+          {ma5Closed === null ? '—' : formatChartPrice(ma5Closed, currencyUnit, usdKrwRate)}
         </Text>
       </View>
       <Text className="px-5 pb-3 pt-1 text-xs leading-5 text-[#8b95a1]">
@@ -481,10 +510,12 @@ export const ChartPanel = memo(function ChartPanel({ ticker, excd, livePrice, li
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const [mode, setMode] = useState<ChartMode>('minute');
   const [minuteInterval, setMinuteInterval] = useState<MinuteInterval>(ENGINE_INTERVAL);
+  const [currencyUnit, setCurrencyUnit] = useState<CurrencyUnit>('usd');
   const [session, setSession] = useState<Session | null>(null);
   const [state, setState] = useState<LoadState>({ kind: 'sessionLoading' });
   const [sessionReloadKey, setSessionReloadKey] = useState(0);
   const [chartReloadKey, setChartReloadKey] = useState(0);
+  const usdKrwRate = useUsdKrwRate(sessionReloadKey + chartReloadKey);
   /** 티커→토스 productCode 캐시(불변) — 분봉 조회마다 검색을 다시 하지 않는다. */
   const tossCodeRef = useRef<{ ticker: string; code: string } | null>(null);
   // 좌우 드래그로 과거 보기(2026-08-29 데스크탑에서 이식) — 오른쪽 끝에서 숨긴 봉 수. 0 = 최신.
@@ -515,6 +546,29 @@ export const ChartPanel = memo(function ChartPanel({ ticker, excd, livePrice, li
       }),
     [],
   );
+
+  // 통화 토글 저장값 복원 — 값이 없거나 깨졌으면 기본값(usd) 유지.
+  useEffect(() => {
+    let cancelled = false;
+    void AsyncStorage.getItem(CHART_CURRENCY_STORAGE_KEY)
+      .then((saved) => {
+        if (cancelled) return;
+        if (saved === 'usd' || saved === 'krw') setCurrencyUnit(saved);
+      })
+      .catch(() => {
+        // 표시 옵션 저장 실패는 화면 동작을 막지 않는다.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 토글 변경 시 즉시 저장 — 실패해도 현재 화면 상태는 그대로 둔다.
+  useEffect(() => {
+    void AsyncStorage.setItem(CHART_CURRENCY_STORAGE_KEY, currencyUnit).catch(() => {
+      // 저장 실패 무시(표시 옵션).
+    });
+  }, [currencyUnit]);
 
   // 진입 시 한 번 세션(설정 탭 KIS 키 → accessToken) 로드.
   useEffect(() => {
@@ -649,6 +703,7 @@ export const ChartPanel = memo(function ChartPanel({ ticker, excd, livePrice, li
   };
 
   const svgWidth = windowWidth - 32; // px-4 좌우 여백 상당
+  const axisWidth = currencyUnit === 'krw' ? RIGHT_AXIS_WIDTH_KRW : RIGHT_AXIS_WIDTH_USD;
   // 세로 공간이 넉넉한 상세화면 — 창 높이의 42%(최소 260, 최대 420)로 그린다.
   const chartHeight = Math.min(420, Math.max(260, Math.round(windowHeight * 0.42)));
 
@@ -728,6 +783,17 @@ export const ChartPanel = memo(function ChartPanel({ ticker, excd, livePrice, li
           <SegmentedToggle options={MINUTE_INTERVAL_OPTIONS} value={minuteInterval} onChange={setMinuteInterval} />
         </View>
       )}
+      <View className="mt-2 px-4">
+        <View className="flex-row items-center justify-between">
+          <SegmentedToggle options={CURRENCY_OPTIONS} value={currencyUnit} onChange={setCurrencyUnit} />
+          {currencyUnit === 'krw' && usdKrwRate !== null && (
+            <Text className="text-xs text-[#8b95a1]">$1 = {Math.round(usdKrwRate).toLocaleString('en-US')}원</Text>
+          )}
+        </View>
+        {currencyUnit === 'krw' && usdKrwRate === null && (
+          <Text className="mt-1 text-xs text-[#8b95a1]">환율을 못 받아서 지금은 달러로 보여줘요</Text>
+        )}
+      </View>
 
       <View className="flex-1 pt-3">
         {state.kind === 'sessionLoading' || state.kind === 'loading' ? (
@@ -759,11 +825,19 @@ export const ChartPanel = memo(function ChartPanel({ ticker, excd, livePrice, li
           <View>
             {(() => {
               totalRef.current = state.candles.length;
-              slotRef.current = Math.max(1, (svgWidth - RIGHT_AXIS_WIDTH) / MAX_CANDLES);
+              slotRef.current = Math.max(1, (svgWidth - axisWidth) / MAX_CANDLES);
               const visible = liveCandles ?? state.candles;
               return (
                 <View className="px-4" {...pan.panHandlers}>
-                  <CandleChart candles={visible} width={svgWidth} height={chartHeight} trendOverlay={mode === 'minute'} />
+                  <CandleChart
+                    candles={visible}
+                    width={svgWidth}
+                    height={chartHeight}
+                    axisWidth={axisWidth}
+                    currencyUnit={currencyUnit}
+                    usdKrwRate={usdKrwRate}
+                    trendOverlay={mode === 'minute'}
+                  />
                   {viewOffset > 0 && (
                     <Pressable
                       onPress={() => applyOffset(0)}
@@ -782,6 +856,8 @@ export const ChartPanel = memo(function ChartPanel({ ticker, excd, livePrice, li
                 closedBars={(liveCandles ?? state.candles).filter((c) => c.inProgress !== true).length}
                 ma5Closed={ma5Snapshot.ma5Closed}
                 ma5Live={ma5Snapshot.ma5Live}
+                currencyUnit={currencyUnit}
+                usdKrwRate={usdKrwRate}
               />
             )}
           </View>
