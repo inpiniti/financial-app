@@ -32,7 +32,13 @@ import { MODEL_BAR_MINUTES, MODEL_MODE } from './modelMode';
 import { ModelScanner } from './modelScanner';
 import { TREND_MODE } from './trendMode';
 import type { TradeStrategy } from './tradeResults';
-import { BBDIP_POSITION_CONFIG, type BbDipGridConfig, type SlopeGridConfig } from './positionManager';
+import {
+  BBDIP_POSITION_CONFIG,
+  REALTIME_MA5_POSITION_CONFIG,
+  type BbDipGridConfig,
+  type RealtimeMa5GridConfig,
+  type SlopeGridConfig,
+} from './positionManager';
 import type { BbDipConfig } from '../../core/bbDip';
 import type { EntryStrategy, ExitStrategy } from './engineMode';
 import { anyEntryFilter, type EntryFilters } from '../../core/martingale';
@@ -150,9 +156,11 @@ export interface AutoPilotManagerDeps {
   /** 볼린저 투매 반등 청산 설정 */
   bbDip?: BbDipGridConfig;
   bbDipConfig?: BbDipConfig;
-  /** 진입 전략(2026-09-04 분리) — 'bbDip' | 'martingale' | 'model' | 'slope'. 미주입 시 자동 판별(하위호환). */
+  /** 실시간 MA5 단타 모드 — 주입되고 해당 엔진이 활성화되면 범용 청산 전략은 비활성화한다. */
+  realtimeMa5?: RealtimeMa5GridConfig;
+  /** 진입 전략(2026-09-04 분리) — 'bbDip' | 'martingale' | 'model' | 'slope' | 'realtimeMa5'. 미주입 시 자동 판별(하위호환). */
   entryStrategy?: EntryStrategy;
-  /** 청산 전략(2026-09-04 분리) — 'bbDip' | 'martingale' | 'model' | 'slope'. 미주입 시 자동 판별(하위호환). */
+  /** 청산 전략(2026-09-04 분리) — 'bbDip' | 'martingale' | 'model' | 'slope' | 'realtimeMa5'. 미주입 시 자동 판별(하위호환). */
   exitStrategy?: ExitStrategy;
   /**
    * 엔진 옵션(2026-09-03 ADR 0012) — 진입 필터(정배열·5선 상승·4선 모두 상승, AND)는 슬롯에, (k−1)배 물타기는 포지션 관리자에.
@@ -368,6 +376,7 @@ export class AutoPilotManager {
         model: (deps.exitStrategy ? deps.exitStrategy === 'model' : true) ? deps.model : undefined,
         martingale: (deps.exitStrategy ? deps.exitStrategy === 'martingale' : true) ? deps.martingale : undefined,
         slope: (deps.exitStrategy ? deps.exitStrategy === 'slope' : true) ? deps.slope : undefined,
+        realtimeMa5: (deps.exitStrategy ? deps.exitStrategy === 'realtimeMa5' : true) ? (deps.realtimeMa5 ?? REALTIME_MA5_POSITION_CONFIG) : undefined,
         averagingDown: deps.averagingDown,
       },
       clock: deps.clock,

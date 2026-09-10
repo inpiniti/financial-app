@@ -490,8 +490,11 @@ export default function SettingsScreen() {
       setWatchCount(appSettings.watchCount);
       setMaxConcurrentGrids(appSettings.maxConcurrentGrids);
       setRankingDraft(draftFromSelection(appSettings.rankingSelection));
-      const initEntry = appSettings.entryStrategy ?? appSettings.engineMode ?? 'martingale';
-      const initExit = appSettings.exitStrategy ?? appSettings.engineMode ?? 'martingale';
+      const loadedEntry = appSettings.entryStrategy ?? appSettings.engineMode ?? 'martingale';
+      const loadedExit = appSettings.exitStrategy ?? appSettings.engineMode ?? 'martingale';
+      const forceRealtimeMa5 = loadedEntry === 'realtimeMa5' || loadedExit === 'realtimeMa5';
+      const initEntry = forceRealtimeMa5 ? 'realtimeMa5' : loadedEntry;
+      const initExit = forceRealtimeMa5 ? 'realtimeMa5' : loadedExit;
       setEntryStrategy(initEntry);
       savedEntryStrategyRef.current = initEntry;
       setExitStrategy(initExit);
@@ -575,11 +578,15 @@ export default function SettingsScreen() {
     try {
       // 미체결 취소는 슬라이더가 범위·스텝 격자를 보장하므로 별도 검증이 없다.
       // 그리드 폭·배율·사다리 값은 화면에서 내렸다(조합 모드 미사용) — 로드해 둔 저장값 그대로 되쓴다(롤백 보존).
+      const normalizedEntryStrategy: EntryStrategy =
+        entryStrategy === 'realtimeMa5' || exitStrategy === 'realtimeMa5' ? 'realtimeMa5' : entryStrategy;
+      const normalizedExitStrategy: ExitStrategy = normalizedEntryStrategy === 'realtimeMa5' ? 'realtimeMa5' : exitStrategy;
+
       await saveAppSettings({
         environment: 'live',
-        entryStrategy,
-        exitStrategy,
-        engineMode: entryStrategy, // 하위 호환 유지
+        entryStrategy: normalizedEntryStrategy,
+        exitStrategy: normalizedExitStrategy,
+        engineMode: normalizedEntryStrategy, // 하위 호환 유지
         engineOptions,
         bbDipConfig,
         orderQty: savedOrderQtyRef.current,
@@ -602,12 +609,14 @@ export default function SettingsScreen() {
       );
       const bbDipChanged = JSON.stringify(bbDipConfig) !== JSON.stringify(savedBbDipConfigRef.current);
       const strategyChanged =
-        entryStrategy !== savedEntryStrategyRef.current ||
-        exitStrategy !== savedExitStrategyRef.current ||
+        normalizedEntryStrategy !== savedEntryStrategyRef.current ||
+        normalizedExitStrategy !== savedExitStrategyRef.current ||
         optionsChanged ||
         bbDipChanged;
-      savedEntryStrategyRef.current = entryStrategy;
-      savedExitStrategyRef.current = exitStrategy;
+      savedEntryStrategyRef.current = normalizedEntryStrategy;
+      savedExitStrategyRef.current = normalizedExitStrategy;
+      if (entryStrategy !== normalizedEntryStrategy) setEntryStrategy(normalizedEntryStrategy);
+      if (exitStrategy !== normalizedExitStrategy) setExitStrategy(normalizedExitStrategy);
       savedEngineOptionsRef.current = engineOptions;
       savedBbDipConfigRef.current = bbDipConfig;
       Alert.alert(
@@ -630,6 +639,8 @@ export default function SettingsScreen() {
     if (!Number.isFinite(grids) || grids < 1) return null;
     return (amount * Math.min(Math.floor(grids), MAX_GRIDS_LIMIT)).toFixed(2);
   })();
+
+  const realtimeMa5Dedicated = entryStrategy === 'realtimeMa5';
 
   return (
     <View className="flex-1 bg-[#f2f4f6]">
@@ -788,7 +799,10 @@ export default function SettingsScreen() {
               return (
                 <Pressable
                   key={opt.value}
-                  onPress={() => setEntryStrategy(opt.value)}
+                  onPress={() => {
+                    setEntryStrategy(opt.value);
+                    if (opt.value === 'realtimeMa5') setExitStrategy('realtimeMa5');
+                  }}
                   className={`mb-2 rounded-2xl border px-4 py-3 ${selected ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'}`}
                 >
                   <View className="flex-row items-center justify-between">
@@ -841,6 +855,13 @@ export default function SettingsScreen() {
               보유 포지션을 어떻게 익절/손절하고 마감할지 골라요. 저장한 뒤 <Text className="font-semibold text-[#191f28]">앱을 완전히 종료했다가 다시 켜면</Text>{' '}
               적용돼요.
             </Text>
+            {realtimeMa5Dedicated && (
+              <View className="mb-3 rounded-2xl border border-[#bfdbfe] bg-[#eff6ff] px-4 py-3">
+                <Text className="text-xs leading-5 text-[#1d4ed8]">
+                  실시간 MA5 단타는 전용 모드예요. 매수 직후 매도 선주문·물타기 후 목표가 정정을 전략 내부에서 처리하므로, 아래 범용 청산 전략은 비활성화돼요.
+                </Text>
+              </View>
+            )}
             {(
               [
                 {
@@ -871,11 +892,15 @@ export default function SettingsScreen() {
               ]
             ).map((opt) => {
               const selected = exitStrategy === opt.value;
+              const disabled = realtimeMa5Dedicated && opt.value !== 'realtimeMa5';
               return (
                 <Pressable
                   key={opt.value}
-                  onPress={() => setExitStrategy(opt.value)}
-                  className={`mb-2 rounded-2xl border px-4 py-3 ${selected ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'}`}
+                  onPress={() => {
+                    if (disabled) return;
+                    setExitStrategy(opt.value);
+                  }}
+                  className={`mb-2 rounded-2xl border px-4 py-3 ${selected ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'} ${disabled ? 'opacity-45' : ''}`}
                 >
                   <View className="flex-row items-center justify-between">
                     <Text className={`text-sm font-semibold ${selected ? 'text-[#3182f6]' : 'text-[#191f28]'}`}>{opt.title}</Text>

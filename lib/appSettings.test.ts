@@ -44,6 +44,22 @@ describe('DEFAULT_APP_SETTINGS', () => {
     expect(loaded.realtimeMa5Config.orderQty).toBe(3);
     expect(loaded.realtimeMa5Config.sellTargetMultiplier).toBe(1.05);
   });
+
+  it('realtimeMa5가 한쪽 전략에만 저장돼도 로드 시 전용 모드로 정규화된다', async () => {
+    const saved: any = {
+      ...DEFAULT_APP_SETTINGS,
+      entryStrategy: 'model',
+      exitStrategy: 'realtimeMa5',
+      engineMode: 'model',
+    };
+
+    storage.set('app:settings', JSON.stringify(saved));
+    const loaded = await loadAppSettings();
+
+    expect(loaded.entryStrategy).toBe('realtimeMa5');
+    expect(loaded.exitStrategy).toBe('realtimeMa5');
+    expect(loaded.engineMode).toBe('realtimeMa5');
+  });
 });
 
 describe('snapToStep — 슬라이더 격자 스냅', () => {

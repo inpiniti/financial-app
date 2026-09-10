@@ -222,9 +222,9 @@ export type PositionMode = 'bbDip' | 'slope' | 'martingale' | 'model' | 'trend' 
  */
 export function resolvePositionMode(cfg: PositionManagementConfig | undefined): PositionMode | null {
   if (!cfg) return null;
+  if (cfg.realtimeMa5 !== undefined) return 'realtimeMa5';
   if (BBDIP_MODE && cfg.bbDip !== undefined) return 'bbDip';
   if (SLOPE_MODE && cfg.slope !== undefined) return 'slope';
-  if (cfg.realtimeMa5 !== undefined) return 'realtimeMa5';
   if (MARTINGALE_MODE && cfg.martingale !== undefined) return 'martingale';
   if (MODEL_MODE && cfg.model !== undefined) return 'model';
   if (TREND_MODE && cfg.trend !== undefined) return 'trend';

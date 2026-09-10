@@ -2,8 +2,10 @@
 // 배선(매매·부분체결·수동청산·정산·격리)만 검증한다. 추세/서킷 규칙 자체는 core/trend·core/circuit 테스트 몫.
 import { describe, expect, it } from 'vitest';
 
+import { DEFAULT_BBDIP_CONFIG } from '../../core/bbDip';
 import type { CircuitExitRule, CircuitHeartbeatResult } from '../../core/circuit';
 import type { ConditionalDecision, ConditionalGridView, ConditionalPosition } from '../../core/conditional';
+import { DEFAULT_REALTIME_MA5_CONFIG } from '../../core/realtime-ma5';
 import { FakeBroker, fakeClock, flush } from './fakes';
 import {
   RulePositionManager,
@@ -79,6 +81,20 @@ function harness(opts: HarnessOpts = {}) {
   );
   return { pm, rule, broker, clock, events, setPrice: (p: number | null) => (priceView = p === null ? null : { price: p, lastTradeAt: clock.now() }) };
 }
+
+describe('resolvePositionMode', () => {
+  it('realtimeMa5가 켜지면 범용 청산 전략은 비활성화되고 MA5가 우선한다', () => {
+    expect(
+      resolvePositionMode({
+        bbDip: { kind: 'bbDip', ...DEFAULT_BBDIP_CONFIG },
+        slope: { kind: 'slope', entryPct: 0.01, exitPct: 0.005 },
+        martingale: { kind: 'martingale', dropStartPct: 0.03, dropMaxPct: 0.2, entryPct: 0.01, tpPct: 0.03 },
+        model: { kind: 'model', tpPct: 0.03, stopLossPct: 0.02, trailPct: 0.05 },
+        realtimeMa5: { kind: 'realtimeMa5', ...DEFAULT_REALTIME_MA5_CONFIG },
+      }),
+    ).toBe('realtimeMa5');
+  });
+});
 
 const sell = (qty = 10): ConditionalDecision => ({ side: 'sell', qty });
 

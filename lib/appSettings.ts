@@ -213,12 +213,15 @@ export async function loadAppSettings(): Promise<AppSettings> {
     const exitStrategy = parsed.exitStrategy === 'martingale' || parsed.exitStrategy === 'model' || parsed.exitStrategy === 'slope' || parsed.exitStrategy === 'bbDip' || parsed.exitStrategy === 'realtimeMa5'
       ? parsed.exitStrategy
       : fallbackEngine;
+    const realtimeMa5Mode = entryStrategy === 'realtimeMa5' || exitStrategy === 'realtimeMa5';
+    const normalizedEntryStrategy = realtimeMa5Mode ? 'realtimeMa5' : entryStrategy;
+    const normalizedExitStrategy = realtimeMa5Mode ? 'realtimeMa5' : exitStrategy;
 
     return {
       environment: 'live',
-      entryStrategy,
-      exitStrategy,
-      engineMode: entryStrategy,
+      entryStrategy: normalizedEntryStrategy,
+      exitStrategy: normalizedExitStrategy,
+      engineMode: normalizedEntryStrategy,
       engineOptions: {
         ordered: typeof parsed.engineOptions?.ordered === 'boolean' ? parsed.engineOptions.ordered : DEFAULT_ENGINE_OPTIONS.ordered,
         ma5Up: typeof parsed.engineOptions?.ma5Up === 'boolean' ? parsed.engineOptions.ma5Up : DEFAULT_ENGINE_OPTIONS.ma5Up,

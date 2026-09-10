@@ -39,6 +39,7 @@ import { planFromSelection, rankingPlanKey, type KisMetric, type KisWindow, type
 import { buildRankingSnapshot } from '../rankingSnapshot';
 import type { OverseasExchangeCode } from '../../../kis/trId';
 import { BBDIP_POSITION_CONFIG, INFLECTION_THRESHOLDS, MARTINGALE_POSITION_CONFIG, MODEL_CONFIG, SLOPE_POSITION_CONFIG, TREND_CONFIG } from '../autopilot';
+import { REALTIME_MA5_POSITION_CONFIG } from '../positionManager';
 import { DEFAULT_BBDIP_CONFIG } from '../../../core/bbDip';
 import { MINUTE_BAR_RING_SIZE, TREND_BAR_MINUTES, type MinuteBar } from '../../../core/trend/bars';
 import { MARTINGALE_BAR_MINUTES, MARTINGALE_MODE } from '../martingaleMode';
@@ -412,6 +413,7 @@ async function buildManager(): Promise<ManagerBootstrap> {
     model: (entryStrategy === 'model' || exitStrategy === 'model') ? MODEL_CONFIG : undefined,
     fetchModelBars,
     fetchModelDailyCloses,
+    realtimeMa5: entryStrategy === 'realtimeMa5' || exitStrategy === 'realtimeMa5' ? REALTIME_MA5_POSITION_CONFIG : undefined,
     // 5선 돌파/물타기 청산 — exitStrategy === 'martingale'일 때 주입
     martingale: exitStrategy === 'martingale' ? MARTINGALE_POSITION_CONFIG : undefined,
     // 기울기 단타 청산 — exitStrategy === 'slope'일 때 주입
