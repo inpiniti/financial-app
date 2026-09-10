@@ -52,7 +52,7 @@ describe('APP_MANUAL — 코드 상수와 어긋나지 않는다', () => {
   it('설정 기본값은 하드코딩이 아니라 DEFAULT_APP_SETTINGS에서 온다', () => {
     expect(MG_MANUAL).toContain(`기본 $${DEFAULT_APP_SETTINGS.startAmountUsd}`);
     expect(MG_MANUAL).toContain(`기본 $${DEFAULT_APP_SETTINGS.maxPriceUsd}`);
-    expect(MG_MANUAL).toContain(`기본 ${DEFAULT_APP_SETTINGS.minTickRate}`);
+    expect(MG_MANUAL).toContain(`기본 ${Math.round(DEFAULT_APP_SETTINGS.minTickRate * 60)}`);
   });
 
   it('5선 물타기 단타: 익절·물타기 선·마감 청산이 MARTINGALE_CONFIG 값을 그대로 따라간다', () => {
@@ -128,7 +128,7 @@ describe('설정 키 커버리지 — 설정을 추가하면 문서도 같이 �
       maxPriceUsd: '**가격 상한(USD)**',
       minPriceUsd: '**가격 하한(USD)**',
       maxConcurrentGrids: '**동시 그리드 수**',
-      minTickRate: '**최소 속도(틱/초)**',
+      minTickRate: '**최소 속도(틱/분)**',
       watchCount: '**매수 후보 수**',
       buyCancelAfterSec: '**매수 미체결 취소(초)**',
       buyStrategy: '**매수 전략**',

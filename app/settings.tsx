@@ -115,6 +115,9 @@ function describeFilters(o: EngineOptions): string {
 
 /** 종목당 진입금액 상한(USD) — 오타 하나(100 → 10000)가 그대로 발주 금액이 된다. */
 const START_AMOUNT_MAX_USD = 100_000;
+const DEFAULT_MIN_TICK_RATE_PER_MIN = DEFAULT_APP_SETTINGS.minTickRate * 60;
+
+type EntrySizingMode = 'amount' | 'qty';
 
 /**
  * 값 조절 슬라이더 한 벌 — 라벨 + 현재 값 + 슬라이더 + 양끝 범위 + 안내 문구.
@@ -437,6 +440,7 @@ export default function SettingsScreen() {
     entryLadderCount: DEFAULT_APP_SETTINGS.entryLadderCount,
   });
   // 트레이딩 운용 설정 — 옛 자동 단타 설정 시트에서 옮겨 왔다(2026-08-12). 진입금액 0 = 미설정(빈 칸).
+  const [entrySizingMode, setEntrySizingMode] = useState<EntrySizingMode>('amount');
   const [startAmountUsd, setStartAmountUsd] = useState(String(DEFAULT_APP_SETTINGS.startAmountUsd));
   // 진입 수량(2026-08-18) — 0/빈 칸 = 미설정(진입금액으로 계산). 지정하면 가격과 무관하게 이 수량만 산다.
   const [entryQty, setEntryQty] = useState('');
@@ -444,7 +448,7 @@ export default function SettingsScreen() {
   const [maxPriceUsd, setMaxPriceUsd] = useState(String(DEFAULT_APP_SETTINGS.maxPriceUsd));
   // 가격 하한(2026-08-29 데스크탑에서 이식) — 빈 칸/0 = 없음. 초저가 급등주 편중 방어.
   const [minPriceUsd, setMinPriceUsd] = useState('');
-  const [minTickRate, setMinTickRate] = useState(String(DEFAULT_APP_SETTINGS.minTickRate));
+  const [minTickRatePerMin, setMinTickRatePerMin] = useState(String(DEFAULT_MIN_TICK_RATE_PER_MIN));
   // 동시 그리드 수·매수 후보 수는 슬라이더(2026-08-30 데스크탑에서 이식) — 정수 범위가 좁아 입력창보다 슬라이더가 맞다.
   const [watchCount, setWatchCount] = useState<number>(DEFAULT_APP_SETTINGS.watchCount);
   const [maxConcurrentGrids, setMaxConcurrentGrids] = useState<number>(DEFAULT_APP_SETTINGS.maxConcurrentGrids);
@@ -484,9 +488,10 @@ export default function SettingsScreen() {
       };
       setStartAmountUsd(appSettings.startAmountUsd > 0 ? String(appSettings.startAmountUsd) : '');
       setEntryQty(appSettings.entryQty > 0 ? String(appSettings.entryQty) : '');
+      setEntrySizingMode(appSettings.entryQty > 0 ? 'qty' : 'amount');
       setMaxPriceUsd(appSettings.maxPriceUsd > 0 ? String(appSettings.maxPriceUsd) : '');
       setMinPriceUsd(appSettings.minPriceUsd > 0 ? String(appSettings.minPriceUsd) : '');
-      setMinTickRate(String(appSettings.minTickRate));
+      setMinTickRatePerMin(String((appSettings.minTickRate * 60).toFixed(1)));
       setWatchCount(appSettings.watchCount);
       setMaxConcurrentGrids(appSettings.maxConcurrentGrids);
       setRankingDraft(draftFromSelection(appSettings.rankingSelection));
@@ -508,21 +513,29 @@ export default function SettingsScreen() {
 
   const handleSave = async () => {
     // 상한을 둔다 — 오타 하나(10 → 100)가 그대로 발주가에 들어가면 되돌릴 수 없다.
-    const parsedStartAmountUsd = Number(startAmountUsd);
-    if (
-      !Number.isFinite(parsedStartAmountUsd) ||
-      parsedStartAmountUsd <= 0 ||
-      parsedStartAmountUsd > START_AMOUNT_MAX_USD
-    ) {
-      Alert.alert('알림', `진입금액은 0보다 크고 ${START_AMOUNT_MAX_USD.toLocaleString('en-US')} 이하인 달러 금액으로 입력해 주세요.`);
-      return;
-    }
+    const rawStartAmountUsd = Number(startAmountUsd);
 
-    // 진입 수량 — 빈 칸/0은 미설정(0 저장). 지정하면 1 이상 정수.
-    const parsedEntryQty = entryQty.trim() === '' ? 0 : Number(entryQty);
-    if (!Number.isFinite(parsedEntryQty) || !Number.isInteger(parsedEntryQty) || parsedEntryQty < 0) {
-      Alert.alert('알림', '진입 수량은 1 이상의 정수로 입력하거나, 비워 두면 진입금액으로 계산해요.');
-      return;
+    let parsedStartAmountUsd = rawStartAmountUsd;
+    let parsedEntryQty = 0;
+    if (entrySizingMode === 'amount') {
+      if (!Number.isFinite(rawStartAmountUsd) || rawStartAmountUsd <= 0 || rawStartAmountUsd > START_AMOUNT_MAX_USD) {
+        Alert.alert('알림', `진입금액은 0보다 크고 ${START_AMOUNT_MAX_USD.toLocaleString('en-US')} 이하인 달러 금액으로 입력해 주세요.`);
+        return;
+      }
+      parsedEntryQty = 0;
+    } else {
+      // 수량 모드에서는 진입 수량이 필수다.
+      const qty = Number(entryQty);
+      if (!Number.isFinite(qty) || !Number.isInteger(qty) || qty < 1) {
+        Alert.alert('알림', '수량 모드에서는 진입 수량을 1 이상의 정수로 입력해 주세요.');
+        return;
+      }
+      parsedEntryQty = qty;
+      // 내부 엔진은 startAmountUsd > 0 검증을 공유하므로 수량 모드에서도 기준 금액은 유지한다.
+      parsedStartAmountUsd =
+        Number.isFinite(rawStartAmountUsd) && rawStartAmountUsd > 0 && rawStartAmountUsd <= START_AMOUNT_MAX_USD
+          ? rawStartAmountUsd
+          : DEFAULT_APP_SETTINGS.startAmountUsd;
     }
 
     // 가격 상한 — 빈 칸/0은 옛 동작(진입금액이 상한). 지정하면 0보다 큰 금액, 진입금액과 같은 상한 캡.
@@ -539,11 +552,12 @@ export default function SettingsScreen() {
       return;
     }
 
-    const parsedMinTickRate = Number(minTickRate);
-    if (!Number.isFinite(parsedMinTickRate) || parsedMinTickRate <= 0) {
-      Alert.alert('알림', `최소 속도는 0보다 크게 입력해 주세요. (기본 ${DEFAULT_APP_SETTINGS.minTickRate}틱/초)`);
+    const parsedMinTickRatePerMin = Number(minTickRatePerMin);
+    if (!Number.isFinite(parsedMinTickRatePerMin) || parsedMinTickRatePerMin <= 0) {
+      Alert.alert('알림', `최소 속도는 0보다 크게 입력해 주세요. (기본 ${DEFAULT_MIN_TICK_RATE_PER_MIN}틱/분)`);
       return;
     }
+    const parsedMinTickRate = parsedMinTickRatePerMin / 60;
 
     const parsedWatchCount = watchCount;
     if (
@@ -631,10 +645,10 @@ export default function SettingsScreen() {
   };
 
   /** 첫 진입에 한 번에 들어갈 수 있는 최대 금액 — 진입금액 × 동시 그리드 수. */
-  const exposure = (() => {
+    const exposure = (() => {
     const amount = Number(startAmountUsd);
     const grids = maxConcurrentGrids;
-    if (entryQty.trim() !== '' && Number(entryQty) > 0) return null; // 고정 수량이면 금액 노출은 종목 가격에 달렸다.
+    if (entrySizingMode === 'qty') return null; // 고정 수량이면 금액 노출은 종목 가격에 달렸다.
     if (!Number.isFinite(amount) || amount <= 0) return null;
     if (!Number.isFinite(grids) || grids < 1) return null;
     return (amount * Math.min(Math.floor(grids), MAX_GRIDS_LIMIT)).toFixed(2);
@@ -653,28 +667,60 @@ export default function SettingsScreen() {
               이미 보유 중인 종목은 다시 진입하지 않고(물타기 옵션 제외), 매도가 끝나면 그 자리에 새 종목이 들어와요.
             </Text>
 
-            <Text className="mb-1 text-xs text-[#8b95a1]">진입금액 (USD) — 종목 하나를 살 때 쓰는 금액</Text>
+            <Text className="mb-1 text-xs font-semibold text-[#191f28]">진입 크기 기준 (양자선택)</Text>
+            <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
+              진입금액과 수량 중 하나만 선택해 써요. 선택하지 않은 값은 저장만 유지되고, 실제 진입 계산에는 쓰지 않아요.
+            </Text>
+            <View className="mb-3 rounded-2xl border border-[#e5e8eb] bg-white p-2">
+              <Pressable
+                onPress={() => setEntrySizingMode('amount')}
+                className={`mb-2 flex-row items-center rounded-xl border px-3 py-3 ${entrySizingMode === 'amount' ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'}`}
+              >
+                <View className={`mr-3 h-5 w-5 items-center justify-center rounded-full border ${entrySizingMode === 'amount' ? 'border-[#3182f6]' : 'border-[#d1d6db]'}`}>
+                  {entrySizingMode === 'amount' ? <View className="h-2.5 w-2.5 rounded-full bg-[#3182f6]" /> : null}
+                </View>
+                <View className="flex-1">
+                  <Text className={`text-sm font-semibold ${entrySizingMode === 'amount' ? 'text-[#3182f6]' : 'text-[#191f28]'}`}>진입금액 기준</Text>
+                  <Text className="mt-0.5 text-xs text-[#8b95a1]">진입 수량 = floor(진입금액 ÷ 현재가)</Text>
+                </View>
+              </Pressable>
+              <Pressable
+                onPress={() => setEntrySizingMode('qty')}
+                className={`flex-row items-center rounded-xl border px-3 py-3 ${entrySizingMode === 'qty' ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'}`}
+              >
+                <View className={`mr-3 h-5 w-5 items-center justify-center rounded-full border ${entrySizingMode === 'qty' ? 'border-[#3182f6]' : 'border-[#d1d6db]'}`}>
+                  {entrySizingMode === 'qty' ? <View className="h-2.5 w-2.5 rounded-full bg-[#3182f6]" /> : null}
+                </View>
+                <View className="flex-1">
+                  <Text className={`text-sm font-semibold ${entrySizingMode === 'qty' ? 'text-[#3182f6]' : 'text-[#191f28]'}`}>수량 기준</Text>
+                  <Text className="mt-0.5 text-xs text-[#8b95a1]">종목 가격과 무관하게 고정 수량으로 진입</Text>
+                </View>
+              </Pressable>
+            </View>
+
+            <Text className={`mb-1 text-xs ${entrySizingMode === 'amount' ? 'text-[#8b95a1]' : 'text-[#b0b8c1]'}`}>진입금액 (USD) — 종목 하나를 살 때 쓰는 금액</Text>
             <TextInput
               value={startAmountUsd}
               onChangeText={setStartAmountUsd}
               keyboardType="decimal-pad"
+              editable={entrySizingMode === 'amount'}
               placeholder={`기본 ${DEFAULT_APP_SETTINGS.startAmountUsd}`}
               placeholderTextColor="#8b95a1"
-              className="mb-4 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
+              className={`mb-4 rounded-2xl border px-4 py-3 text-base ${entrySizingMode === 'amount' ? 'border-[#e5e8eb] text-[#191f28] bg-white' : 'border-[#eceff2] text-[#8b95a1] bg-[#f8fafc]'}`}
             />
 
-            <Text className="mb-1 text-xs text-[#8b95a1]">수량 (주) — 비우면 진입금액으로 계산해요</Text>
+            <Text className={`mb-1 text-xs ${entrySizingMode === 'qty' ? 'text-[#8b95a1]' : 'text-[#b0b8c1]'}`}>수량 (주) — 수량 기준에서만 사용해요</Text>
             <TextInput
               value={entryQty}
               onChangeText={setEntryQty}
               keyboardType="number-pad"
-              placeholder="미설정 (진입금액 ÷ 현재가)"
+              editable={entrySizingMode === 'qty'}
+              placeholder="예: 1"
               placeholderTextColor="#8b95a1"
-              className="mb-1 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
+              className={`mb-1 rounded-2xl border px-4 py-3 text-base ${entrySizingMode === 'qty' ? 'border-[#e5e8eb] text-[#191f28] bg-white' : 'border-[#eceff2] text-[#8b95a1] bg-[#f8fafc]'}`}
             />
             <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
-              수량을 정하면 종목 가격과 상관없이 딱 이 수량만 사요($0.01짜리도 $9짜리도 같은 수량). 물타기도 이
-              수량씩 해요.
+              수량 기준을 고르면 종목 가격과 상관없이 딱 이 수량만 사요($0.01짜리도 $9짜리도 같은 수량). 물타기도 이 수량씩 해요.
             </Text>
 
             <Text className="mb-1 text-xs text-[#8b95a1]">
@@ -726,13 +772,13 @@ export default function SettingsScreen() {
             />
 
             <Text className="mb-1 text-xs text-[#8b95a1]">
-              최소 속도 (틱/초) — 이보다 조용한 종목은 매수 후보에서 빼요
+              최소 속도 (틱/분) — 이보다 조용한 종목은 매수 후보에서 빼요
             </Text>
             <TextInput
-              value={minTickRate}
-              onChangeText={setMinTickRate}
+              value={minTickRatePerMin}
+              onChangeText={setMinTickRatePerMin}
               keyboardType="decimal-pad"
-              placeholder={`기본 ${DEFAULT_APP_SETTINGS.minTickRate}`}
+              placeholder={`기본 ${DEFAULT_MIN_TICK_RATE_PER_MIN}`}
               placeholderTextColor="#8b95a1"
               className="mb-4 rounded-2xl border border-[#e5e8eb] px-4 py-3 text-base text-[#191f28]"
             />
