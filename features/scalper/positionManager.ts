@@ -38,6 +38,7 @@ import { AveragingDownRule, MARTINGALE_CONFIG, MartingaleRule, type MartingaleCo
 import { SLOPE_CONFIG, SlopeRule, type SlopeConfig } from '../../core/slope';
 import { BbDipExitRule, DEFAULT_BBDIP_CONFIG, type BbDipConfig } from '../../core/bbDip';
 import { TrendExitRule } from '../../core/trend/exitRule';
+import { DEFAULT_REALTIME_MA5_CONFIG, sellTargetPrice, shouldAverageDown, averagingDownQty, type RealtimeMa5Config } from '../../core/realtime-ma5';
 import { BBDIP_MODE } from './bbDipMode';
 import { CIRCUIT_MODE } from './circuitMode';
 import { createExecutionPort } from './executionPort';
@@ -154,6 +155,16 @@ export interface BbDipGridConfig extends BbDipConfig {
 
 export const BBDIP_POSITION_CONFIG: BbDipGridConfig = { kind: 'bbDip', ...DEFAULT_BBDIP_CONFIG };
 
+/**
+ * 실시간 MA5 단타 모드 설정(2026-09-10) — **주입 자체가 활성화 신호**다.
+ * 매수 즉시 매도 주문 선등록, 물타기 시 매도 주문 수정.
+ */
+export interface RealtimeMa5GridConfig extends RealtimeMa5Config {
+  readonly kind?: 'realtimeMa5';
+}
+
+export const REALTIME_MA5_POSITION_CONFIG: RealtimeMa5GridConfig = { kind: 'realtimeMa5', ...DEFAULT_REALTIME_MA5_CONFIG };
+
 /** 조건부 그리드 문턱 — 문서 §5 고정값(+2%/−3%)을 managerProvider가 주입한다. */
 export interface InflectionGridConfig {
   /** 매도 수익 문턱(소수, 0.02=+2%). */
@@ -194,6 +205,8 @@ export interface PositionManagementConfig {
   martingale?: MartingaleGridConfig;
   /** 기울기 단타 모드(2026-09-02 ADR 0011) — 켜면 물타기·모델보다 우선한다. */
   slope?: SlopeGridConfig;
+  /** 실시간 MA5 단타 모드(2026-09-10) — 매수 즉시 매도 주문 선등록. */
+  realtimeMa5?: RealtimeMa5GridConfig;
   /**
    * (k−1)배 물타기(2026-09-03 ADR 0012, 설정 "엔진 옵션") — 세 엔진 공통. 5선 돌파 엔진은 MartingaleRule의 스위치,
    * 모델·기울기 엔진은 AveragingDownRule 데코레이터. 미주입이면 5선 돌파 엔진만 기존대로 켬(회귀 안전).
@@ -201,7 +214,7 @@ export interface PositionManagementConfig {
   averagingDown?: boolean;
 }
 
-export type PositionMode = 'bbDip' | 'slope' | 'martingale' | 'model' | 'trend' | 'inflection' | 'oco';
+export type PositionMode = 'bbDip' | 'slope' | 'martingale' | 'model' | 'trend' | 'inflection' | 'oco' | 'realtimeMa5';
 
 /**
  * 모드 판정 — **유일한** 자리. 우선순위 볼린저 반등 > 기울기 > 물타기 시험 > 모델 > 추세 > 변곡점 조합 > OCO 그리드, 각각 스위치 상수 AND 설정 주입.
@@ -211,6 +224,7 @@ export function resolvePositionMode(cfg: PositionManagementConfig | undefined): 
   if (!cfg) return null;
   if (BBDIP_MODE && cfg.bbDip !== undefined) return 'bbDip';
   if (SLOPE_MODE && cfg.slope !== undefined) return 'slope';
+  if (cfg.realtimeMa5 !== undefined) return 'realtimeMa5';
   if (MARTINGALE_MODE && cfg.martingale !== undefined) return 'martingale';
   if (MODEL_MODE && cfg.model !== undefined) return 'model';
   if (TREND_MODE && cfg.trend !== undefined) return 'trend';
@@ -625,6 +639,8 @@ export function makePositionManager(
     }
     case 'oco':
       return new OcoGridPositionManager(deps, cfg.grid!);
+    case 'realtimeMa5':
+      return new RealtimeMa5PositionManager(deps, cfg.realtimeMa5 ?? REALTIME_MA5_POSITION_CONFIG);
     default:
       throw new Error(`unknown position mode: ${String(mode satisfies never)}`);
   }
@@ -1240,6 +1256,252 @@ export class RulePositionManager implements PositionManager {
   private isolate(reason: string): PositionPollResult {
     this._isolated = reason;
     return { kind: 'isolated', reason };
+  }
+
+  private event(text: string): void {
+    this.deps.onEvent?.(`${this.ticker} ${text}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 어댑터 3 — 실시간 MA5 단타 (2026-09-10)
+// ---------------------------------------------------------------------------
+
+/**
+ * 실시간 MA5 포지션 관리자 — 매수 즉시 매도 주문 선등록, 물타기 시 매도 주문 수정.
+ *  · BUY 신호 → 매수 발주 → 체결 후 매도 지정가(평단×1.03) 즉시 선등록.
+ *  · 물타기 BUY → 추가 매수 → 체결 후 새 평단 기준 매도 지정가로 정정.
+ *  · 매도 지정가는 lastChase 전략(틱마다 현재가로 정정)으로 추격.
+ *  · 마감 청산: 19:55 ET부터 전량 매도.
+ */
+export class RealtimeMa5PositionManager implements PositionManager {
+  readonly ticker: string;
+  readonly label = '실시간 MA5 관리';
+  readonly restingOrders = false;
+  private readonly deps: PositionManagerDeps;
+  private readonly cfg: RealtimeMa5Config;
+
+  private _isolated: string | null = null;
+  private released = false;
+  private armed = false;
+
+  /** 포지션 상태 */
+  private qty = 0;
+  private avgPrice = 0;
+  private entryQty = 0;
+
+  /** 매수 Execution — 진입·물타기 매수를 추격. */
+  private buyExec: Execution | null = null;
+  /** 매도 Execution — 매수 체결 직후 선등록된 지정가. */
+  private sellExec: Execution | null = null;
+  /** 매도 주문의 목표가(평단×1.03) — 물타기 시 갱신. */
+  private sellTargetPrice = 0;
+
+  constructor(deps: PositionManagerDeps, cfg: RealtimeMa5Config) {
+    this.deps = deps;
+    this.ticker = deps.ticker;
+    this.cfg = cfg;
+  }
+
+  async arm(seed: ConditionalPosition | null): Promise<ArmResult> {
+    if (!seed || seed.qty <= 0 || !(seed.avgPrice > 0)) {
+      return { ok: false, reason: '포지션을 확인할 수 없어 실시간 MA5 관리를 시작하지 못했어요' };
+    }
+    this.qty = seed.qty;
+    this.avgPrice = seed.avgPrice;
+    this.entryQty = seed.qty;
+    this.armed = true;
+    // 매도 주문 즉시 선등록
+    this.placeSellOrder(seed.avgPrice);
+    this.event(`실시간 MA5 관리 ${this.deps.adopted ? '등록' : '인계'} · ${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} · 매도 목표 ${this.sellTargetPrice.toFixed(2)}(+${((this.cfg.sellTargetMultiplier - 1) * 100).toFixed(1)}%)`);
+    return { ok: true };
+  }
+
+  gaugeView(): PositionGaugeView {
+    const pv = this.deps.price();
+    return {
+      avgPrice: this.avgPrice,
+      buyPrice: this.avgPrice,
+      sellPrice: this.sellTargetPrice,
+      currentPrice: pv?.price ?? null,
+      holdingQty: this.qty,
+      buyMultiplier: 1,
+      gridActive: this.armed,
+      buyLegStatus: 'full',
+    };
+  }
+
+  get busy(): boolean {
+    return this.buyExec !== null || this.sellExec !== null;
+  }
+
+  get isolated(): boolean {
+    return this._isolated !== null;
+  }
+
+  get faultText(): string | null {
+    return this._isolated;
+  }
+
+  onSignal(signal: Signal, price: number): void {
+    if (!this.armed || this.isolated || this.released || this.busy) return;
+    if (signal !== 'BUY') return;
+    // 물타기 조건 확인
+    if (!shouldAverageDown(price, this.avgPrice, { ma5: null, slope: 'up', breakout: true, refClose5: null }, this.cfg.averagingDownThresholdPct)) return;
+    const addQty = averagingDownQty(price, this.avgPrice, this.qty, /* availableCash */ Infinity);
+    if (addQty < 1) return;
+    this.startBuy(addQty, price);
+  }
+
+  async tick(opts: { canStart: boolean }): Promise<void> {
+    if (!this.armed || this.isolated || this.released) return;
+    const view = this.deps.price();
+    if (!view || view.price === null) return;
+    const price = view.price;
+    const now = this.deps.clock.now();
+
+    // 마감 청산 — 19:55 ET
+    const etMin = Math.floor(((now % 86_400_000) + 86_400_000 - 14_400_000) / 60_000) % 1440;
+    if (etMin >= 1195 && this.qty > 0 && !this.busy) {
+      this.event('마감 청산 · 확장세션 마감 전이라 남은 수량을 전량 매도해요');
+      this.startSell(this.qty, price);
+      return;
+    }
+
+    // 매도 추격 — lastChase
+    if (this.sellExec !== null) {
+      const remaining = this.qty;
+      if (remaining > 0 && Number.isFinite(price) && price > 0) {
+        await this.sellExec.onPrice(price);
+      }
+    }
+
+    // 매수 추격
+    if (this.buyExec !== null) {
+      await this.buyExec.onPrice(price);
+    }
+  }
+
+  async poll(): Promise<PositionPollResult> {
+    if (this.isolated) return { kind: 'isolated', reason: this._isolated! };
+    if (!this.armed) return { kind: 'holding' };
+
+    // 매도 체결 확인
+    if (this.sellExec !== null) {
+      const r = await this.sellExec.poll();
+      if (r.kind === 'done') {
+        const record = makeTradeRecord({
+          ticker: this.ticker,
+          qty: r.result.filledQty,
+          entryPrice: this.avgPrice,
+          exitPrice: r.result.fillPrice ?? this.sellTargetPrice,
+          entry: this.deps.entry,
+          exitReason: 'TAKE_PROFIT',
+          feeRate: this.deps.feeRate,
+          now: this.deps.clock.now(),
+        });
+        this.qty = 0;
+        this.sellExec = null;
+        this.armed = false;
+        this.event(`익절 체결 · ${r.result.filledQty}주 · 평단 ${this.avgPrice.toFixed(2)} → 체결가 ${(r.result.fillPrice ?? this.sellTargetPrice).toFixed(2)}`);
+        return { kind: 'sold', record };
+      }
+      if (r.kind === 'cancelled') {
+        this.sellExec = null;
+        // 매도 취소 — 매수 체결 후 다시 선등록
+        if (this.qty > 0) this.placeSellOrder(this.avgPrice);
+      }
+      if (r.kind === 'fault') {
+        this.sellExec = null;
+        if (this.qty > 0) this.placeSellOrder(this.avgPrice);
+      }
+    }
+
+    // 매수 체결 확인
+    if (this.buyExec !== null) {
+      const r = await this.buyExec.poll();
+      if (r.kind === 'done') {
+        const fillPrice = r.result.fillPrice ?? this.avgPrice;
+        const prevQty = this.qty;
+        const prevAvg = this.avgPrice;
+        this.qty += r.result.filledQty;
+        this.avgPrice = (prevQty * prevAvg + r.result.filledQty * fillPrice) / this.qty;
+        this.buyExec = null;
+        this.event(`매수 체결 · ${r.result.filledQty}주 @ ${fillPrice.toFixed(2)} · 총 ${this.qty}주 · 새 평단 ${this.avgPrice.toFixed(2)}`);
+        // 매도 주문 수정 — 새 평단 기준
+        this.placeSellOrder(this.avgPrice);
+        return { kind: 'holding' };
+      }
+      if (r.kind === 'cancelled' || r.kind === 'fault') {
+        this.buyExec = null;
+      }
+    }
+
+    return { kind: 'holding' };
+  }
+
+  sellNow(price: number): boolean {
+    if (!this.armed || this.isolated || this.released || this.busy) return false;
+    if (this.qty <= 0) return false;
+    this.startSell(this.qty, price);
+    return true;
+  }
+
+  release(): void {
+    this.released = true;
+    void this.buyExec?.release();
+    void this.sellExec?.release();
+  }
+
+  // ---- 내부 ----
+
+  private placeSellOrder(avgPrice: number): void {
+    // 기존 매도 주문 취소
+    if (this.sellExec !== null) {
+      void this.sellExec.release();
+      this.sellExec = null;
+    }
+    const target = sellTargetPrice(avgPrice, this.cfg.sellTargetMultiplier);
+    this.sellTargetPrice = target;
+    if (this.qty <= 0) return;
+    const exec = new Execution({
+      port: createExecutionPort(this.deps.broker, this.ticker),
+      clock: this.deps.clock,
+      side: 'sell',
+      qty: this.qty,
+      shouldAbort: (p) => p < target, // 목표가 아래로 내려가면 취소(재시도)
+    });
+    void exec.start(target);
+    this.sellExec = exec;
+    this.event(`매도 지정가 선등록 · ${this.qty}주 @ ${target.toFixed(2)}(+${((this.cfg.sellTargetMultiplier - 1) * 100).toFixed(1)}%)`);
+  }
+
+  private startBuy(qty: number, price: number): void {
+    if (this.buyExec !== null) return;
+    const exec = new Execution({
+      port: createExecutionPort(this.deps.broker, this.ticker),
+      clock: this.deps.clock,
+      side: 'buy',
+      qty,
+      shouldAbort: () => false,
+    });
+    void exec.start(price);
+    this.buyExec = exec;
+    this.event(`물타기 매수 시작 · ${qty}주 @ ${price.toFixed(2)}`);
+  }
+
+  private startSell(qty: number, price: number): void {
+    if (this.sellExec !== null) return;
+    const exec = new Execution({
+      port: createExecutionPort(this.deps.broker, this.ticker),
+      clock: this.deps.clock,
+      side: 'sell',
+      qty,
+      shouldAbort: () => false,
+    });
+    void exec.start(price);
+    this.sellExec = exec;
+    this.event(`매도 시작 · ${qty}주 @ ${price.toFixed(2)}`);
   }
 
   private event(text: string): void {

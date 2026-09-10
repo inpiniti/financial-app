@@ -46,6 +46,7 @@ import { TREND_MODE } from './trendMode';
 import { TickRateMeter } from './tickRate';
 import { SlopeMeter } from './slopeRate';
 import type { ClockLike, TickExtras } from './types';
+import { RealtimeCandleBuilder, RealtimeMa5Calculator, shouldEnter, shouldAverageDown, type RealtimeMa5State } from '../../core/realtime-ma5';
 
 /**
  * 진입 감지기 선택 스위치 — true면 **사다리 옵션이 주입된** 슬롯이 SG 기울기(TrendDetector) 대신
@@ -143,6 +144,14 @@ export interface FeedSlotOptions {
    */
   bbDip?: boolean;
   bbDipConfig?: BbDipConfig;
+  /**
+   * 실시간 MA5 단타 모드(2026-09-10) — true고 SLOPE_MODE/MARTINGALE_MODE/BBDIP_MODE/MODEL_MODE/TREND_MODE가 꺼져 있으면
+   * 실시간 1분봉 OHLC + MA5(4확정종가+현재틱) + 기울기/돌파로 진입·물타기 신호를 낸다.
+   * 다른 모드보다 우선한다. 미주입이면 기존 동작 그대로 — 회귀 안전.
+   */
+  realtimeMa5?: boolean;
+  /** 실시간 MA5 설정 — 진입 수량, 익절 배율, 물타기 문턱. 미주입이면 기본값. */
+  realtimeMa5Config?: import('../../core/realtime-ma5').RealtimeMa5Config;
 }
 
 /** 변곡점 신호 콜백 — attach 시 등록. */
@@ -242,6 +251,10 @@ export interface FeedSlotView {
    * 5선 돌파 모드는 martingale/martingaleLive의 filtersPass가 같은 역할이다.
    */
   readonly entryFilterPass: boolean | null;
+  /**
+   * 실시간 MA5 스냅샷 — MA5 값, 기울기(up/down), 돌파 여부. 다른 모드면 null.
+   */
+  readonly realtimeMa5: RealtimeMa5State | null;
 }
 
 /** 화면용 모델 판정 스냅샷 — ModelEval에서 화면이 쓰는 것만 + 판정 시각. */
@@ -302,8 +315,18 @@ export class FeedSlot {
   private readonly slopeMode: boolean;
   /** 볼린저 투매 반등 모드인가 — 생성 시 확정(BBDIP_MODE AND bbDip 주입). */
   private readonly bbDipMode: boolean;
+  /** 실시간 MA5 단타 모드인가 — 생성 시 확정. 다른 모드보다 우선. */
+  private readonly realtimeMa5Mode: boolean;
   private readonly bbMeter = new BollingerBandMeter(20, 2.0);
   private readonly bbDipConfig: BbDipConfig;
+  /** 실시간 MA5 분봉 빌더 — 1분봉 OHLC 실시간 관리. */
+  private readonly realtimeCandleBuilder = new RealtimeCandleBuilder();
+  /** 실시간 MA5 계산기 — 확정봉+현재틱으로 MA5·기울기·돌파 판정. */
+  private readonly realtimeMa5Calc = new RealtimeMa5Calculator();
+  /** 실시간 MA5 마지막 판정(뷰·진입 판정용). */
+  private realtimeMa5State: RealtimeMa5State = { ma5: null, slope: null, breakout: false, refClose5: null };
+  /** 실시간 MA5 모드의 마지막 BUY를 낸 봉 키 — 봉당 1회 발화 방지. */
+  private realtimeMa5LastBuyBarKey: number | null = null;
   /** 진입 필터(엔진 옵션) — 5선 돌파 모드는 돌파 판정에, 모델·기울기 모드는 BUY 게이트에 쓴다. */
   private readonly entryFilters: EntryFilters;
   /** 모델·기울기 모드에서 필터가 켜져 1분봉을 같이 쌓는가. */
@@ -341,10 +364,11 @@ export class FeedSlot {
     this.clock = options.clock;
     this.slopeMode = SLOPE_MODE && options.slope === true;
     this.bbDipMode = !this.slopeMode && BBDIP_MODE && options.bbDip === true;
+    this.realtimeMa5Mode = !this.slopeMode && !this.bbDipMode && options.realtimeMa5 === true;
     this.bbDipConfig = options.bbDipConfig ?? DEFAULT_BBDIP_CONFIG;
-    this.martingaleMode = !this.slopeMode && !this.bbDipMode && MARTINGALE_MODE && options.martingale === true;
-    this.modelMode = !this.slopeMode && !this.bbDipMode && !this.martingaleMode && MODEL_MODE && options.model === true;
-    this.trendMode = !this.slopeMode && !this.bbDipMode && !this.martingaleMode && !this.modelMode && TREND_MODE && options.trend === true;
+    this.martingaleMode = !this.slopeMode && !this.bbDipMode && !this.realtimeMa5Mode && MARTINGALE_MODE && options.martingale === true;
+    this.modelMode = !this.slopeMode && !this.bbDipMode && !this.realtimeMa5Mode && !this.martingaleMode && MODEL_MODE && options.model === true;
+    this.trendMode = !this.slopeMode && !this.bbDipMode && !this.realtimeMa5Mode && !this.martingaleMode && !this.modelMode && TREND_MODE && options.trend === true;
     this.entryFilters = options.entryFilters ?? (this.martingaleMode ? DEFAULT_ENTRY_FILTERS : NO_ENTRY_FILTERS);
     this.filterBars = (this.slopeMode || this.modelMode) && anyEntryFilter(this.entryFilters);
     // 물타기 모드·진입 필터는 봉 주기가 1분(4선 정의) — 주입값보다 우선한다.
@@ -353,7 +377,7 @@ export class FeedSlot {
       this.martingaleMode || this.filterBars ? MARTINGALE_BAR_MINUTES : (options.trendBarMinutes ?? TREND_BAR_MINUTES),
     );
     this.inflectionMode =
-      !this.slopeMode && !this.martingaleMode && !this.modelMode && !this.trendMode && INFLECTION_ENTRY && options.inflection === true;
+      !this.slopeMode && !this.bbDipMode && !this.realtimeMa5Mode && !this.martingaleMode && !this.modelMode && !this.trendMode && INFLECTION_ENTRY && options.inflection === true;
     // 이력 보존 0 — 시계열 조회(series)를 뷰에서 제거해(2026-09-01) 과거 칸 되계산용 40초 이력이 필요 없다.
     this.meter = new TickRateMeter(options.tickRateWindowMs ?? FEED_RATE_WINDOW_MS, 0);
     this.slopeMeter = new SlopeMeter(options.slopeWindowMs ?? FEED_RATE_WINDOW_MS, 0);
@@ -392,6 +416,21 @@ export class FeedSlot {
     if (this.bbDipMode) {
       // 볼린저 하단 투매 반등(BB Dip Snapback) — 틱마다 20틱 BB와 s10 기울기로 바닥 반등 판정.
       this.evaluateBbDipTick(price, extras);
+      return null;
+    }
+
+    if (this.realtimeMa5Mode) {
+      // 실시간 MA5 단타 — 틱마다 1분봉 OHLC 갱신 + MA5·기울기·돌파 판정.
+      this.bars.pushTick(price, tsMs); // 기존 1분봉 빌더도 유지 (시드·뷰 호환)
+      const closed = this.realtimeCandleBuilder.pushTick(price, tsMs);
+      const closes = this.realtimeCandleBuilder.closes;
+      const state = this.realtimeMa5Calc.evaluate(closes, price);
+      this.realtimeMa5State = state;
+      // 봉당 1회 발화 방지 — 새 봉이 확정되면 리셋
+      if (closed !== null) {
+        this.realtimeMa5LastBuyBarKey = null;
+      }
+      this.evaluateRealtimeMa5Tick(price, tsMs);
       return null;
     }
 
@@ -493,8 +532,8 @@ export class FeedSlot {
    * 버퍼는 이미 차 있으므로 다음 청크 마감부터 바로 판정한다(워밍업 공백 없음 — plan §2-1).
    */
   attachDetector(onSignal: SlotSignalListener): void {
-    if (this.modelMode || this.martingaleMode || this.slopeMode || this.bbDipMode) {
-      // 모델·물타기·기울기·볼린저반등 모드 — 감지기 객체가 없다. 리스너만 등록한다.
+    if (this.modelMode || this.martingaleMode || this.slopeMode || this.bbDipMode || this.realtimeMa5Mode) {
+      // 모델·물타기·기울기·볼린저반등·실시간MA5 모드 — 감지기 객체가 없다. 리스너만 등록한다.
       this.trendListener = onSignal;
       this.detector = null;
       this.ladder = null;
@@ -624,6 +663,13 @@ export class FeedSlot {
       // 모델·기울기 모드 + 진입 필터 — 1분봉 시드(필터 계산용). 신호는 내지 않는다.
       const n = this.bars.seed(bars);
       if (n > 0) this.entryFilterPass = entryFiltersPass(evaluateMartingaleBars(this.bars.closes, this.entryFilters), this.entryFilters);
+      return n;
+    }
+    if (this.realtimeMa5Mode) {
+      // 실시간 MA5 모드 — 1분봉 시드 + 실시간 빌더 시드. 판정 스냅샷만 갱신.
+      const n = this.bars.seed(bars);
+      this.realtimeCandleBuilder.seed(bars);
+      this.realtimeMa5Calc.reset(); // 시드 후重新计算
       return n;
     }
     if (this.martingaleMode) {
@@ -772,6 +818,32 @@ export class FeedSlot {
   }
 
   /**
+   * 실시간 MA5 틱 판정 — 매 틱마다 MA5·기울기·돌파를 재고 진입 신호를 낸다.
+   * 기울기 상승 AND 돌파면 BUY(kind='realtimeMa5'). 봉당 1회 발화.
+   */
+  private evaluateRealtimeMa5Tick(price: number, _tsMs: number): void {
+    if (this.trendListener === null) return;
+    const state = this.realtimeMa5State;
+    if (!shouldEnter(state)) return;
+    // 봉당 1회 방지 — 같은 확정 봉에서 이미 냈으면 건너뜀
+    const barKey = this.realtimeCandleBuilder.lastClosedKey;
+    if (barKey !== null && this.realtimeMa5LastBuyBarKey === barKey) return;
+    // 진행 중 봉 키로도 방지 (진입은 확정봉 다음 봉에서)
+    const inProgressKey = this.realtimeCandleBuilder.inProgress?.minuteKey;
+    if (inProgressKey !== null && inProgressKey !== undefined && this.realtimeMa5LastBuyBarKey === inProgressKey) return;
+    this.realtimeMa5LastBuyBarKey = inProgressKey ?? barKey;
+    this.lastSignal = 'BUY';
+    this.trendListener('BUY', {
+      ticker: this.ticker,
+      price,
+      slope: 0,
+      accel: 0,
+      at: this.lastTickAt ?? this.clock.now(),
+      kind: 'realtimeMa5',
+    });
+  }
+
+  /**
    * 모델·기울기 모드의 진입 필터 판정(엔진 옵션) — 진행 중 1분봉을 현재가로 넣은 4선 상태로 정배열·5선 상승·4선 상승을 본다.
    * 필터가 없으면 항상 true. 봉 부족(판정 불가)은 false(fail-closed). 결과는 뷰(entryFilterPass)에도 남긴다.
    */
@@ -876,6 +948,7 @@ export class FeedSlot {
       martingale: this.martingaleMode ? this.martingaleEval : null,
       entryFilterPass: this.filterBars ? this.entryFilterPass : null,
       martingaleLive: this.martingaleMode ? this.martingaleLiveEval : null,
+      realtimeMa5: this.realtimeMa5Mode ? this.realtimeMa5State : null,
     };
   }
 }

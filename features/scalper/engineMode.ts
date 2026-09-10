@@ -10,8 +10,8 @@
 // 컴파일 상수(MARTINGALE_MODE·MODEL_MODE·SLOPE_MODE)는 "기능 존재" 킬스위치로 남는다 — 상수가 false면 설정과 무관하게
 // 그 모드는 주입되지 않는다(autopilotManager의 "상수 AND 주입" 이중 게이트 그대로).
 
-export type EntryStrategy = 'martingale' | 'model' | 'slope' | 'bbDip';
-export type ExitStrategy = 'martingale' | 'model' | 'slope' | 'bbDip';
+export type EntryStrategy = 'martingale' | 'model' | 'slope' | 'bbDip' | 'realtimeMa5';
+export type ExitStrategy = 'martingale' | 'model' | 'slope' | 'bbDip' | 'realtimeMa5';
 export type EngineMode = EntryStrategy;
 
 let activeEntry: EntryStrategy = 'martingale';

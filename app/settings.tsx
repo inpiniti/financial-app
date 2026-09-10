@@ -25,6 +25,7 @@ import { MARTINGALE_BAR_MINUTES } from '../features/scalper/martingaleMode';
 import { MARTINGALE_CONFIG } from '../core/martingale';
 import { SLOPE_CONFIG, SLOPE_EXIT_TICK_MS } from '../core/slope';
 import { DEFAULT_BBDIP_CONFIG, type BbDipConfig } from '../core/bbDip';
+import { DEFAULT_REALTIME_MA5_CONFIG } from '../core/realtime-ma5';
 import { DEFAULT_ENGINE_OPTIONS, type EngineOptions } from '../features/scalper/engineMode';
 import { ORDER_PRICING_LABEL, type OrderPricing } from '../features/scalper/orderStrategy';
 import { MODEL_SYMMETRIC_EXIT_CONFIG } from '../core/model/exitRule';
@@ -537,7 +538,7 @@ export default function SettingsScreen() {
 
     const parsedMinTickRate = Number(minTickRate);
     if (!Number.isFinite(parsedMinTickRate) || parsedMinTickRate <= 0) {
-      Alert.alert('알림', '최소 속도는 0보다 크게 입력해 주세요. (기본 1틱/초)');
+      Alert.alert('알림', `최소 속도는 0보다 크게 입력해 주세요. (기본 ${DEFAULT_APP_SETTINGS.minTickRate}틱/초)`);
       return;
     }
 
@@ -776,6 +777,11 @@ export default function SettingsScreen() {
                   title: '기울기 돌파',
                   desc: `리스트의 10초 가격 변화율(기울기)이 +${SLOPE_CONFIG.entryPct}% 이상으로 올라서는 순간 즉시 매수 진입`,
                 },
+                {
+                  value: 'realtimeMa5' as const,
+                  title: '실시간 MA5 단타',
+                  desc: `현재틱이 직전 MA5를 상향 돌파하면서 기울기가 상승하면 매수. 기본값은 ${DEFAULT_REALTIME_MA5_CONFIG.orderQty}주·익절 +${(DEFAULT_REALTIME_MA5_CONFIG.sellTargetMultiplier - 1) * 100}%·물타기 낙폭 ${DEFAULT_REALTIME_MA5_CONFIG.averagingDownThresholdPct}% 이하`,
+                },
               ]
             ).map((opt) => {
               const selected = entryStrategy === opt.value;
@@ -856,6 +862,11 @@ export default function SettingsScreen() {
                   value: 'slope' as const,
                   title: '기울기 하락 즉시 매도',
                   desc: `리스트의 10초 기울기가 +${SLOPE_CONFIG.exitPct}% 아래로 내려오거나 끊기면 조건 없이 즉시 전량 매도 (익절·손절·마감청산 없음)`,
+                },
+                {
+                  value: 'realtimeMa5' as const,
+                  title: '실시간 MA5 익절·물타기',
+                  desc: `평단 × ${DEFAULT_REALTIME_MA5_CONFIG.sellTargetMultiplier} 목표가를 걸고, 낙폭 ${DEFAULT_REALTIME_MA5_CONFIG.averagingDownThresholdPct}% 이하에서 상승 기울기와 돌파가 맞으면 추가 매수`,
                 },
               ]
             ).map((opt) => {
