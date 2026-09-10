@@ -15,6 +15,20 @@ const STORAGE_KEY = 'app:settings';
 export type EntryStrategy = 'martingale' | 'model' | 'slope' | 'bbDip' | 'realtimeMa5';
 export type ExitStrategy = 'martingale' | 'model' | 'slope' | 'bbDip' | 'realtimeMa5';
 
+export function normalizeStrategyPair(entryStrategy: EntryStrategy, exitStrategy: ExitStrategy): {
+  entryStrategy: EntryStrategy;
+  exitStrategy: ExitStrategy;
+  engineMode: AppSettings['engineMode'];
+} {
+  const normalizedEntryStrategy = entryStrategy;
+  const normalizedExitStrategy = entryStrategy === 'realtimeMa5' ? 'realtimeMa5' : exitStrategy;
+  return {
+    entryStrategy: normalizedEntryStrategy,
+    exitStrategy: normalizedExitStrategy,
+    engineMode: normalizedEntryStrategy,
+  };
+}
+
 export interface AppSettings {
   /** 기본 LIVE(실전) — PRD §9-6 확정. PAPER는 전환 옵션. */
   environment: KisEnvironment;
@@ -213,15 +227,13 @@ export async function loadAppSettings(): Promise<AppSettings> {
     const exitStrategy = parsed.exitStrategy === 'martingale' || parsed.exitStrategy === 'model' || parsed.exitStrategy === 'slope' || parsed.exitStrategy === 'bbDip' || parsed.exitStrategy === 'realtimeMa5'
       ? parsed.exitStrategy
       : fallbackEngine;
-    const realtimeMa5Mode = entryStrategy === 'realtimeMa5' || exitStrategy === 'realtimeMa5';
-    const normalizedEntryStrategy = realtimeMa5Mode ? 'realtimeMa5' : entryStrategy;
-    const normalizedExitStrategy = realtimeMa5Mode ? 'realtimeMa5' : exitStrategy;
+    const normalized = normalizeStrategyPair(entryStrategy, exitStrategy);
 
     return {
       environment: 'live',
-      entryStrategy: normalizedEntryStrategy,
-      exitStrategy: normalizedExitStrategy,
-      engineMode: normalizedEntryStrategy,
+      entryStrategy: normalized.entryStrategy,
+      exitStrategy: normalized.exitStrategy,
+      engineMode: normalized.engineMode,
       engineOptions: {
         ordered: typeof parsed.engineOptions?.ordered === 'boolean' ? parsed.engineOptions.ordered : DEFAULT_ENGINE_OPTIONS.ordered,
         ma5Up: typeof parsed.engineOptions?.ma5Up === 'boolean' ? parsed.engineOptions.ma5Up : DEFAULT_ENGINE_OPTIONS.ma5Up,

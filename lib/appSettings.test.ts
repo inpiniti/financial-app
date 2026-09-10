@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { snapToStep, DEFAULT_APP_SETTINGS, loadAppSettings } from './appSettings';
+import { snapToStep, DEFAULT_APP_SETTINGS, loadAppSettings, normalizeStrategyPair } from './appSettings';
 
 const storage = new Map<string, string>();
 vi.mock('@react-native-async-storage/async-storage', () => ({
@@ -45,7 +45,7 @@ describe('DEFAULT_APP_SETTINGS', () => {
     expect(loaded.realtimeMa5Config.sellTargetMultiplier).toBe(1.05);
   });
 
-  it('realtimeMa5가 한쪽 전략에만 저장돼도 로드 시 전용 모드로 정규화된다', async () => {
+  it('realtimeMa5가 청산 전략에만 저장되면 진입 전략은 유지한다', async () => {
     const saved: any = {
       ...DEFAULT_APP_SETTINGS,
       entryStrategy: 'model',
@@ -56,9 +56,17 @@ describe('DEFAULT_APP_SETTINGS', () => {
     storage.set('app:settings', JSON.stringify(saved));
     const loaded = await loadAppSettings();
 
-    expect(loaded.entryStrategy).toBe('realtimeMa5');
+    expect(loaded.entryStrategy).toBe('model');
     expect(loaded.exitStrategy).toBe('realtimeMa5');
-    expect(loaded.engineMode).toBe('realtimeMa5');
+    expect(loaded.engineMode).toBe('model');
+  });
+
+  it('진입 전략이 realtimeMa5면 청산 전략도 같이 고정한다', () => {
+    expect(normalizeStrategyPair('realtimeMa5', 'martingale')).toEqual({
+      entryStrategy: 'realtimeMa5',
+      exitStrategy: 'realtimeMa5',
+      engineMode: 'realtimeMa5',
+    });
   });
 });
 

@@ -14,6 +14,7 @@ import { Panel } from '../components/Panel';
 import {
   DEFAULT_APP_SETTINGS,
   loadAppSettings,
+  normalizeStrategyPair,
   saveAppSettings,
   snapToStep,
   type EntryStrategy,
@@ -508,9 +509,9 @@ export default function SettingsScreen() {
       setRankingDraft(draftFromSelection(appSettings.rankingSelection));
       const loadedEntry = appSettings.entryStrategy ?? appSettings.engineMode ?? 'martingale';
       const loadedExit = appSettings.exitStrategy ?? appSettings.engineMode ?? 'martingale';
-      const forceRealtimeMa5 = loadedEntry === 'realtimeMa5' || loadedExit === 'realtimeMa5';
-      const initEntry = forceRealtimeMa5 ? 'realtimeMa5' : loadedEntry;
-      const initExit = forceRealtimeMa5 ? 'realtimeMa5' : loadedExit;
+      const normalized = normalizeStrategyPair(loadedEntry, loadedExit);
+      const initEntry = normalized.entryStrategy;
+      const initExit = normalized.exitStrategy;
       setEntryStrategy(initEntry);
       savedEntryStrategyRef.current = initEntry;
       setExitStrategy(initExit);
@@ -603,15 +604,15 @@ export default function SettingsScreen() {
     try {
       // 미체결 취소는 슬라이더가 범위·스텝 격자를 보장하므로 별도 검증이 없다.
       // 그리드 폭·배율·사다리 값은 화면에서 내렸다(조합 모드 미사용) — 로드해 둔 저장값 그대로 되쓴다(롤백 보존).
-      const normalizedEntryStrategy: EntryStrategy =
-        entryStrategy === 'realtimeMa5' || exitStrategy === 'realtimeMa5' ? 'realtimeMa5' : entryStrategy;
-      const normalizedExitStrategy: ExitStrategy = normalizedEntryStrategy === 'realtimeMa5' ? 'realtimeMa5' : exitStrategy;
+      const normalized = normalizeStrategyPair(entryStrategy, exitStrategy);
+      const normalizedEntryStrategy: EntryStrategy = normalized.entryStrategy;
+      const normalizedExitStrategy: ExitStrategy = normalized.exitStrategy;
 
       await saveAppSettings({
         environment: 'live',
         entryStrategy: normalizedEntryStrategy,
         exitStrategy: normalizedExitStrategy,
-        engineMode: normalizedEntryStrategy, // 하위 호환 유지
+        engineMode: normalized.engineMode, // 하위 호환 유지
         engineOptions,
         bbDipConfig,
         orderQty: savedOrderQtyRef.current,
