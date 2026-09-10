@@ -812,6 +812,13 @@ export default function SettingsScreen() {
               어떤 신호에서 매수 진입할지 골라요. 저장한 뒤 <Text className="font-semibold text-[#191f28]">앱을 완전히 종료했다가 다시 켜면</Text>{' '}
               적용돼요 — 보유·미체결이 없는 상태에서 바꾸는 걸 권해요.
             </Text>
+            {realtimeMa5Dedicated && (
+              <View className="mb-3 rounded-2xl border border-[#bfdbfe] bg-[#eff6ff] px-4 py-3">
+                <Text className="text-xs leading-5 text-[#1d4ed8]">
+                  실시간 MA5 단타는 전용 모드예요. 다른 진입 전략은 선택할 수 없고, 현재 전략이 고정돼 있습니다.
+                </Text>
+              </View>
+            )}
             {(
               [
                 {
@@ -842,20 +849,28 @@ export default function SettingsScreen() {
               ]
             ).map((opt) => {
               const selected = entryStrategy === opt.value;
+              const disabled = realtimeMa5Dedicated && opt.value !== 'realtimeMa5';
               return (
                 <Pressable
                   key={opt.value}
                   onPress={() => {
+                    if (disabled) return;
                     setEntryStrategy(opt.value);
                     if (opt.value === 'realtimeMa5') setExitStrategy('realtimeMa5');
                   }}
-                  className={`mb-2 rounded-2xl border px-4 py-3 ${selected ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'}`}
+                  className={`mb-2 rounded-2xl border px-4 py-3 ${selected ? 'border-[#3182f6] bg-[#f2f7ff]' : disabled ? 'border-[#dfe5ea] bg-[#f5f7fa]' : 'border-[#e5e8eb] bg-white'} ${disabled ? 'opacity-50' : ''}`}
                 >
                   <View className="flex-row items-center justify-between">
-                    <Text className={`text-sm font-semibold ${selected ? 'text-[#3182f6]' : 'text-[#191f28]'}`}>{opt.title}</Text>
-                    {selected && <Text className="text-xs font-semibold text-[#3182f6]">선택됨</Text>}
+                    <Text className={`text-sm font-semibold ${selected ? 'text-[#3182f6]' : disabled ? 'text-[#8b95a1]' : 'text-[#191f28]'}`}>
+                      {opt.title}
+                    </Text>
+                    {selected ? (
+                      <Text className="text-xs font-semibold text-[#3182f6]">선택됨</Text>
+                    ) : disabled ? (
+                      <Text className="text-[11px] font-semibold text-[#8b95a1]">비활성</Text>
+                    ) : null}
                   </View>
-                  <Text className="mt-1 text-xs leading-5 text-[#8b95a1]">{opt.desc}</Text>
+                  <Text className={`mt-1 text-xs leading-5 ${disabled ? 'text-[#96a2ae]' : 'text-[#8b95a1]'}`}>{opt.desc}</Text>
                 </Pressable>
               );
             })}
@@ -946,13 +961,19 @@ export default function SettingsScreen() {
                     if (disabled) return;
                     setExitStrategy(opt.value);
                   }}
-                  className={`mb-2 rounded-2xl border px-4 py-3 ${selected ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'} ${disabled ? 'opacity-45' : ''}`}
+                  className={`mb-2 rounded-2xl border px-4 py-3 ${selected ? 'border-[#3182f6] bg-[#f2f7ff]' : disabled ? 'border-[#dfe5ea] bg-[#f5f7fa]' : 'border-[#e5e8eb] bg-white'} ${disabled ? 'opacity-50' : ''}`}
                 >
                   <View className="flex-row items-center justify-between">
-                    <Text className={`text-sm font-semibold ${selected ? 'text-[#3182f6]' : 'text-[#191f28]'}`}>{opt.title}</Text>
-                    {selected && <Text className="text-xs font-semibold text-[#3182f6]">선택됨</Text>}
+                    <Text className={`text-sm font-semibold ${selected ? 'text-[#3182f6]' : disabled ? 'text-[#8b95a1]' : 'text-[#191f28]'}`}>
+                      {opt.title}
+                    </Text>
+                    {selected ? (
+                      <Text className="text-xs font-semibold text-[#3182f6]">선택됨</Text>
+                    ) : disabled ? (
+                      <Text className="text-[11px] font-semibold text-[#8b95a1]">비활성</Text>
+                    ) : null}
                   </View>
-                  <Text className="mt-1 text-xs leading-5 text-[#8b95a1]">{opt.desc}</Text>
+                  <Text className={`mt-1 text-xs leading-5 ${disabled ? 'text-[#96a2ae]' : 'text-[#8b95a1]'}`}>{opt.desc}</Text>
                 </Pressable>
               );
             })}
