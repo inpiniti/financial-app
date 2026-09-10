@@ -257,6 +257,7 @@ export interface ManagerSettings {
 }
 
 const EVENT_LIMIT = 50;
+const HOLDING_ROW_SOURCE = '보유 종목';
 
 export class AutoPilotManager {
   /**
@@ -710,9 +711,29 @@ export class AutoPilotManager {
     return [...this.events];
   }
 
-  /** 리스트 카드용 행 — watchlist 엔트리 + 해당 슬롯의 실시간 뷰 + 구독 거절 상태. 틱/초 빠른 순으로 정렬. */
+  /**
+   * 리스트 카드용 행 — watchlist 엔트리 + (리스트 밖) 보유/관리 중 종목까지 합쳐 슬롯 뷰를 만든다.
+   * 정렬: 보유(관리 중) 우선 → 같은 그룹 내 틱/초 빠른 순.
+   */
   getRows(): AutoPilotSlotRow[] {
-    return this.watchlist.list
+    const activeTickers = new Set(this.pilot.getView().activeTickers);
+    const entries = new Map<string, WatchEntry>();
+
+    for (const entry of this.watchlist.list) entries.set(entry.ticker, entry);
+    for (const ticker of activeTickers) {
+      // 입양/복구 보유분은 watchlist에 없을 수 있다. 화면에서 놓치지 않게 합집합으로 올린다.
+      if (entries.has(ticker)) continue;
+      entries.set(ticker, {
+        ticker,
+        source: HOLDING_ROW_SOURCE,
+        rate: 0,
+        market: this.marketOf(ticker),
+        name: this.tickerNames.get(ticker),
+        pinned: true,
+      });
+    }
+
+    return [...entries.values()]
       .map((entry) => {
         const slot = this.slots.get(entry.ticker);
         if (!slot) return null;
@@ -720,7 +741,14 @@ export class AutoPilotManager {
         return { entry, view: slot.getView(), feedRejected: ack.rejected, feedAck: ack.state };
       })
       .filter((r): r is AutoPilotSlotRow => r !== null)
-      .sort((a, b) => b.view.tickRate - a.view.tickRate);
+      .sort((a, b) => {
+        const aActive = activeTickers.has(a.entry.ticker) ? 1 : 0;
+        const bActive = activeTickers.has(b.entry.ticker) ? 1 : 0;
+        if (aActive !== bActive) return bActive - aActive;
+        const tickRateGap = b.view.tickRate - a.view.tickRate;
+        if (tickRateGap !== 0) return tickRateGap;
+        return a.entry.ticker.localeCompare(b.entry.ticker);
+      });
   }
 
   /** 티커의 체결가 구독 ACK — 실제 구독에 쓴 키(tickTrKeys)의 마지막 응답. 거절이면 사유까지. */

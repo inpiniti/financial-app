@@ -778,7 +778,7 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
             <View className="bg-white">
               <View className="flex-row items-center justify-between px-5 pb-2 pt-4">
                 <Text className="text-[15px] font-bold text-[#191f28]">트레이딩 리스트</Text>
-                <Text className="text-xs text-[#8b95a1]">순위 상위 {rows.length}종목 · 원천은 설정에서</Text>
+                <Text className="text-xs text-[#8b95a1]">순위 + 보유 {rows.length}종목 · 원천은 설정에서</Text>
               </View>
               {feedAckSummary !== null && (
                 // 시세 구독 ACK 집계(2026-08-28) — 장이 닫혀 가격으로 셀 수 없을 때도 "요청·수락·거절"을 숫자로. 거절이 있을 때만.

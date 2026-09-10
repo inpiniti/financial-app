@@ -65,6 +65,8 @@ function makeManager(
     entryLadder?: { interval: number; triggerCount: number };
     /** 추세 모드 — 주입하면 trend 활성 + 워밍업 큐가 이 함수를 부른다. */
     fetchMinuteBars?: AutoPilotManagerDeps['fetchMinuteBars'];
+    /** 입양 테스트용 잔고 시드(티커별 수량·평단). */
+    positionByTicker?: Record<string, { qty: number; avgPrice: number }>;
   } = {},
 ) {
   const feed = new PairFeed();
@@ -78,7 +80,12 @@ function makeManager(
     storage: store,
     clock,
     scheduler,
-    makeBroker: () => new FakeBroker({ autoFill: true }),
+    makeBroker: (ticker) => {
+      const broker = new FakeBroker({ autoFill: true });
+      const seeded = opts.positionByTicker?.[ticker];
+      if (seeded) broker.position = seeded;
+      return broker;
+    },
     fetchSnapshot,
     fetchHoldings: opts.holdings ? async () => opts.holdings! : undefined,
     keepAwake,
@@ -333,6 +340,23 @@ describe('AutoPilotManager — 배선(구독·라우팅·상호 배타)', () => 
       ),
     );
     expect(manager.getView().state).toBe('SCANNING'); // 차단하지 않는다.
+  });
+
+  it('보유(관리 중) 종목은 트레이딩 리스트 밖이어도 감지돼 rows에 뜨고, 리스트 최상단으로 올라온다', async () => {
+    const { manager } = makeManager({
+      fetchMinuteBars: async () => [],
+      positionByTicker: { OUT: { qty: 2, avgPrice: 10 } },
+    });
+    manager.start();
+    await vi.waitFor(() => expect(manager.watchlist.size).toBe(12));
+    await flush();
+
+    expect(await manager.adoptHolding('OUT')).toBeNull();
+    await vi.waitFor(() => expect(manager.getRows().some((r) => r.entry.ticker === 'OUT')).toBe(true));
+
+    const rows = manager.getRows();
+    expect(rows[0]?.entry.ticker).toBe('OUT');
+    expect(rows.find((r) => r.entry.ticker === 'OUT')?.entry.source).toBe('보유 종목');
   });
 
   it('keep-awake — 시작하면 켜지고 정지하면 꺼진다', async () => {
