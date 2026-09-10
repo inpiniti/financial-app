@@ -5,14 +5,15 @@ import { DEFAULT_ENGINE_OPTIONS, type EngineOptions } from '../features/scalper/
 import { DEFAULT_ORDER_STRATEGY, isOrderPricing, type OrderPricing } from '../features/scalper/orderStrategy';
 import { DEFAULT_RANKING_SELECTION, normalizeRankingSelection, type RankingSelection } from '../core/ranking';
 import { DEFAULT_BBDIP_CONFIG, type BbDipConfig } from '../core/bbDip';
+import { DEFAULT_REALTIME_MA5_CONFIG, type RealtimeMa5Config } from '../core/realtime-ma5';
 
 const STORAGE_KEY = 'app:settings';
 
 // 2026-08-08 설정 정리 — 청크·버퍼·모멘텀 문턱·BUY 게이트·수수료율은 설정에서 제거했다.
 // 코드 기본값(Resampler 3초·31칸, TrendDetector 0.0001/0.00005, 게이트·수수료 0=끔)이
 // 옛 설정 기본값과 동일해 자동단타 동작은 변하지 않는다. 저장돼 있던 옛 키는 무시된다.
-export type EntryStrategy = 'martingale' | 'model' | 'slope' | 'bbDip';
-export type ExitStrategy = 'martingale' | 'model' | 'slope' | 'bbDip';
+export type EntryStrategy = 'martingale' | 'model' | 'slope' | 'bbDip' | 'realtimeMa5';
+export type ExitStrategy = 'martingale' | 'model' | 'slope' | 'bbDip' | 'realtimeMa5';
 
 export interface AppSettings {
   /** 기본 LIVE(실전) — PRD §9-6 확정. PAPER는 전환 옵션. */
@@ -27,8 +28,9 @@ export interface AppSettings {
   exitStrategy: ExitStrategy;
   /**
    * 레거시 엔진 모드(호환용) — entryStrategy와 동기화.
+   * realtimeMa5가 추가된 시점부터 이 값도 동일 전략 집합을 포함한다.
    */
-  engineMode: 'martingale' | 'model' | 'slope' | 'bbDip';
+  engineMode: 'martingale' | 'model' | 'slope' | 'bbDip' | 'realtimeMa5';
   /**
    * 엔진 옵션(2026-09-03 ADR 0012) — 엔진과 별개로 중복 선택. 진입 필터(정배열·5선 상승·4선 모두 상승, AND)와 (k−1)배 물타기.
    * 세 엔진 공통. 기본값은 옛 5선 돌파 규칙 그대로(5선 상승 + 물타기). 반영은 엔진 모드처럼 앱 재시작.
@@ -123,6 +125,10 @@ export interface AppSettings {
    */
   bbDipConfig: BbDipConfig;
   /**
+   * 실시간 MA5 단타 전략 설정 (2026-09-10) — 매수 수량, 익절 배율, 물타기 문턱.
+   */
+  realtimeMa5Config: RealtimeMa5Config;
+  /**
    * 순위 선택(2026-08-18 순위 도메인, core/ranking) — 트레이딩 리스트를 어느 순위에서 몇 개씩 뽑을지.
    * 원천 id → {enabled, count, window}. 기본은 옛 고정 구성(토스 거래대금·거래량 실시간, 관리종목 제외, 각 15).
    * 켜진 원천의 개수 합은 RANKING_TOTAL_MAX(30)를 넘지 못한다(설정 화면이 저장 전 검증).
@@ -155,6 +161,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   watchCount: 5,
   maxConcurrentGrids: 1,
   bbDipConfig: DEFAULT_BBDIP_CONFIG,
+  realtimeMa5Config: DEFAULT_REALTIME_MA5_CONFIG,
   rankingSelection: DEFAULT_RANKING_SELECTION,
 };
 
@@ -199,11 +206,11 @@ export async function loadAppSettings(): Promise<AppSettings> {
     // environment는 항상 'live'로 강제한다 (2026-07-30 사용자 확정 — 모의 전환 옵션 제거).
     // KIS 모의투자는 시세 WS·현재가·순위가 전부 미지원이라 이 앱에서 PAPER는 동작 불가이고,
     // 과거 스위치로 'paper'가 저장된 기기도 이 강제로 자연 복구된다.
-    const fallbackEngine = parsed.engineMode === 'model' || parsed.engineMode === 'slope' || parsed.engineMode === 'bbDip' ? parsed.engineMode : DEFAULT_APP_SETTINGS.engineMode;
-    const entryStrategy = parsed.entryStrategy === 'martingale' || parsed.entryStrategy === 'model' || parsed.entryStrategy === 'slope' || parsed.entryStrategy === 'bbDip'
+    const fallbackEngine = parsed.engineMode === 'model' || parsed.engineMode === 'slope' || parsed.engineMode === 'bbDip' || parsed.engineMode === 'realtimeMa5' ? parsed.engineMode : DEFAULT_APP_SETTINGS.engineMode;
+    const entryStrategy = parsed.entryStrategy === 'martingale' || parsed.entryStrategy === 'model' || parsed.entryStrategy === 'slope' || parsed.entryStrategy === 'bbDip' || parsed.entryStrategy === 'realtimeMa5'
       ? parsed.entryStrategy
       : fallbackEngine;
-    const exitStrategy = parsed.exitStrategy === 'martingale' || parsed.exitStrategy === 'model' || parsed.exitStrategy === 'slope' || parsed.exitStrategy === 'bbDip'
+    const exitStrategy = parsed.exitStrategy === 'martingale' || parsed.exitStrategy === 'model' || parsed.exitStrategy === 'slope' || parsed.exitStrategy === 'bbDip' || parsed.exitStrategy === 'realtimeMa5'
       ? parsed.exitStrategy
       : fallbackEngine;
 
@@ -238,6 +245,10 @@ export async function loadAppSettings(): Promise<AppSettings> {
       bbDipConfig: {
         ...DEFAULT_BBDIP_CONFIG,
         ...(parsed.bbDipConfig ?? {}),
+      },
+      realtimeMa5Config: {
+        ...DEFAULT_REALTIME_MA5_CONFIG,
+        ...(parsed.realtimeMa5Config ?? {}),
       },
       // 순위 선택은 저장값이 없으면 기본 구성, 있으면 카탈로그 기준으로 정리(모르는 id 폐기·누락 원천 채움).
       rankingSelection: normalizeRankingSelection(parsed.rankingSelection ?? DEFAULT_APP_SETTINGS.rankingSelection),

@@ -1,7 +1,19 @@
-import { describe, expect, it } from 'vitest';
-import { snapToStep, DEFAULT_APP_SETTINGS } from './appSettings';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { snapToStep, DEFAULT_APP_SETTINGS, loadAppSettings } from './appSettings';
+
+const storage = new Map<string, string>();
+vi.mock('@react-native-async-storage/async-storage', () => ({
+  default: {
+    getItem: vi.fn(async (key: string) => storage.get(key) ?? null),
+    setItem: vi.fn(async (key: string, value: string) => { storage.set(key, value); }),
+  },
+}));
 
 describe('DEFAULT_APP_SETTINGS', () => {
+  beforeEach(() => {
+    storage.clear();
+  });
+
   it('엔진 옵션 기본값은 5선 상승 + 물타기 — 옛 5선 돌파 규칙 그대로(ADR 0012)', () => {
     expect(DEFAULT_APP_SETTINGS.engineOptions).toEqual({ ordered: false, ma5Up: true, allUp: false, martingale: true });
   });
@@ -12,6 +24,25 @@ describe('DEFAULT_APP_SETTINGS', () => {
 
   it('리스트 가격 상한 기본은 $200 — 수량 모드에서 진입금액 겸용 상한을 대체한다(2026-08-20 풀데이 시뮬)', () => {
     expect(DEFAULT_APP_SETTINGS.maxPriceUsd).toBe(200);
+  });
+
+  it('저장된 realtimeMa5 설정은 로드 시에도 유지되고 엔진 모드가 동기화된다', async () => {
+    const saved: any = {
+      ...DEFAULT_APP_SETTINGS,
+      entryStrategy: 'realtimeMa5',
+      exitStrategy: 'realtimeMa5',
+      engineMode: 'realtimeMa5',
+      realtimeMa5Config: { ...DEFAULT_APP_SETTINGS.realtimeMa5Config, orderQty: 3, sellTargetMultiplier: 1.05 },
+    };
+
+    storage.set('app:settings', JSON.stringify(saved));
+    const loaded = await loadAppSettings();
+
+    expect(loaded.entryStrategy).toBe('realtimeMa5');
+    expect(loaded.exitStrategy).toBe('realtimeMa5');
+    expect(loaded.engineMode).toBe('realtimeMa5');
+    expect(loaded.realtimeMa5Config.orderQty).toBe(3);
+    expect(loaded.realtimeMa5Config.sellTargetMultiplier).toBe(1.05);
   });
 });
 
