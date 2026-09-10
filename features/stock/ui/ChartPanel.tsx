@@ -10,7 +10,7 @@ import { Ionicons } from '@expo/vector-icons';
 import Svg, { G, Line, Polyline, Rect, Text as SvgText } from 'react-native-svg';
 import { computeTrendSeries } from '../../../core/trend';
 import { barKeyOf } from '../../../core/trend/bars';
-import { applyLivePriceOverlay, buildHistoricalWindow } from './chartView';
+import { applyLivePriceOverlay, buildHistoricalWindow, buildTradeMarkers, type ChartTradeMarker } from './chartView';
 import { describeReject, inspectModel, loadModel, type ModelInspection } from '../../../core/model';
 import { MODEL_BAR_MINUTES } from '../../../features/scalper/modelMode';
 import { MARTINGALE_BAR_MINUTES, MARTINGALE_MODE } from '../../../features/scalper/martingaleMode';
@@ -21,6 +21,7 @@ import type { KisCredentials, KisEnvironment } from '../../../kis/types';
 import { loadAppSettings } from '../../../lib/appSettings';
 import { fetchTossDailyCloses, fetchTossMinuteCandles, resolveTossProductCode } from '../../../lib/tossMinuteChart';
 import { loadKisSettings } from '../../../lib/kisSettings';
+import { readTodayTrades } from '../../scalper/tradeStore';
 import { secureTokenStorage } from '../../../lib/secureTokenStorage';
 import { formatKrw, formatUsd } from '../../../lib/format';
 import { useUsdKrwRate } from '../../../lib/useUsdKrwRate';
@@ -96,6 +97,8 @@ interface ChartCandle {
   low: number;
   close: number;
   volume: number;
+  /** 해당 봉의 시작 시각(ms) — 오늘 거래 마커 오버레이에 사용한다. */
+  ts?: number;
   /**
    * 아직 안 끝난 봉인가 — 토스는 현재 진행 중인 봉도 내려준다. 차트는 그걸 그대로 그리는데
    * 엔진은 닫힌 봉만 보므로, 그 차이를 화면에서 눈에 보이게 한다(2026-08-22).
@@ -198,6 +201,7 @@ const CandleChart = memo(function CandleChart({
   axisWidth,
   currencyUnit,
   usdKrwRate,
+  tradeMarkers = [],
   trendOverlay = false,
 }: {
   candles: ChartCandle[];
@@ -206,6 +210,7 @@ const CandleChart = memo(function CandleChart({
   axisWidth: number;
   currencyUnit: CurrencyUnit;
   usdKrwRate: number | null;
+  tradeMarkers?: ChartTradeMarker[];
   /** 분봉 모드 — 추세 4선(core/trend) 오버레이. 전체 봉으로 계산해 표시 구간만 그린다. */
   trendOverlay?: boolean;
 }) {
@@ -346,6 +351,21 @@ const CandleChart = memo(function CandleChart({
             <Polyline key={`trend-${l.key}`} points={l.points} fill="none" stroke={l.color} strokeWidth={1.2} />
           ) : null,
         )}
+
+        {tradeMarkers.map((marker, idx) => {
+          const x = marker.candleIndex * slotWidth + slotWidth / 2;
+          const y = priceToY(marker.price);
+          const fill = marker.side === 'buy' ? '#3182f6' : '#f04452';
+          return (
+            <G key={`${marker.side}-${marker.ts}-${idx}`}>
+              <Line x1={x} x2={x} y1={y - 14} y2={y + 14} stroke={fill} strokeWidth={1.5} opacity={0.9} />
+              <Rect x={x - 10} y={y - 10} width={20} height={20} rx={6} fill={fill} />
+              <SvgText x={x} y={y + 4} fontSize={10} fontWeight="700" fill="#ffffff" textAnchor="middle">
+                {marker.side === 'buy' ? 'B' : 'S'}
+              </SvgText>
+            </G>
+          );
+        })}
 
         {/* 마지막 종가 점선 + 우측 가격 태그 */}
         <Line
@@ -516,6 +536,7 @@ export const ChartPanel = memo(function ChartPanel({ ticker, excd, livePrice, li
   const [state, setState] = useState<LoadState>({ kind: 'sessionLoading' });
   const [sessionReloadKey, setSessionReloadKey] = useState(0);
   const [chartReloadKey, setChartReloadKey] = useState(0);
+  const [todayTrades, setTodayTrades] = useState<Array<{ entryTs: number; exitTs: number; entryPrice: number; exitPrice: number; ticker: string }>>([]);
   const usdKrwRate = useUsdKrwRate(sessionReloadKey + chartReloadKey);
   /** 티커→토스 productCode 캐시(불변) — 분봉 조회마다 검색을 다시 하지 않는다. */
   const tossCodeRef = useRef<{ ticker: string; code: string } | null>(null);
@@ -600,6 +621,32 @@ export const ChartPanel = memo(function ChartPanel({ ticker, excd, livePrice, li
     };
   }, [sessionReloadKey]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const trades = await readTodayTrades(AsyncStorage, { now: () => Date.now() });
+        if (cancelled) return;
+        setTodayTrades(
+          trades.filter((trade) => trade.ticker === ticker).map((trade) => ({
+            ticker: trade.ticker,
+            entryTs: trade.entryTs,
+            exitTs: trade.exitTs,
+            entryPrice: trade.entryPrice,
+            exitPrice: trade.exitPrice,
+          })),
+        );
+      } catch {
+        if (!cancelled) setTodayTrades([]);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ticker, chartReloadKey]);
+
   // 세션이 준비되면(그리고 모드/분봉 간격/새로고침 변경 시에만) 차트를 조회한다.
   useEffect(() => {
     if (!session) return;
@@ -631,6 +678,7 @@ export const ChartPanel = memo(function ChartPanel({ ticker, excd, livePrice, li
               low: c.low,
               close: c.close,
               volume: c.volume,
+              ts: new Date(c.dt).getTime(),
               inProgress: c.minuteKey >= nowBarKey,
             }));
         } else {
@@ -733,6 +781,11 @@ export const ChartPanel = memo(function ChartPanel({ ticker, excd, livePrice, li
     [visibleCandles, viewOffset, livePrice, liveTickAt, minuteInterval, mode],
   );
 
+  const tradeMarkers = useMemo(() => {
+    if (mode !== 'minute' || !liveCandles || todayTrades.length === 0) return [];
+    return buildTradeMarkers(liveCandles, todayTrades);
+  }, [mode, liveCandles, todayTrades]);
+
   const ma5Snapshot = useMemo(() => {
     if (liveCandles === null || mode !== 'minute' || liveCandles.length < 5) {
       return { ma5Closed: null as number | null, ma5Live: null as number | null };
@@ -813,6 +866,7 @@ export const ChartPanel = memo(function ChartPanel({ ticker, excd, livePrice, li
                     axisWidth={axisWidth}
                     currencyUnit={currencyUnit}
                     usdKrwRate={usdKrwRate}
+                    tradeMarkers={tradeMarkers}
                     trendOverlay={mode === 'minute'}
                   />
                   {viewOffset > 0 && (

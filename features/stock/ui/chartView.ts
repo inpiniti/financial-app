@@ -8,7 +8,55 @@ export interface ChartCandle {
   low: number;
   close: number;
   volume: number;
+  ts?: number;
   inProgress?: boolean;
+}
+
+export type TradeMarkerSide = 'buy' | 'sell';
+
+export interface ChartTradeMarker {
+  side: TradeMarkerSide;
+  price: number;
+  ts: number;
+  candleIndex: number;
+}
+
+export function buildTradeMarkers(
+  candles: ChartCandle[] | null,
+  trades: Array<{ entryTs: number; exitTs: number; entryPrice: number; exitPrice: number }>,
+): ChartTradeMarker[] {
+  if (!candles || candles.length === 0 || trades.length === 0) return [];
+
+  const markers: ChartTradeMarker[] = [];
+
+  for (const trade of trades) {
+    const buyIndex = candles.reduce<number | null>((bestIdx, candle, index) => {
+      if (candle.ts === undefined) return bestIdx;
+      const diff = Math.abs(candle.ts - trade.entryTs);
+      if (bestIdx === null) return index;
+      const best = candles[bestIdx];
+      if (!best || best.ts === undefined) return index;
+      return Math.abs(best.ts - trade.entryTs) > diff ? index : bestIdx;
+    }, null);
+
+    const sellIndex = candles.reduce<number | null>((bestIdx, candle, index) => {
+      if (candle.ts === undefined) return bestIdx;
+      const diff = Math.abs(candle.ts - trade.exitTs);
+      if (bestIdx === null) return index;
+      const best = candles[bestIdx];
+      if (!best || best.ts === undefined) return index;
+      return Math.abs(best.ts - trade.exitTs) > diff ? index : bestIdx;
+    }, null);
+
+    if (buyIndex !== null) {
+      markers.push({ side: 'buy', price: trade.entryPrice, ts: trade.entryTs, candleIndex: buyIndex });
+    }
+    if (sellIndex !== null) {
+      markers.push({ side: 'sell', price: trade.exitPrice, ts: trade.exitTs, candleIndex: sellIndex });
+    }
+  }
+
+  return markers;
 }
 
 function formatEtClockFromMs(tsMs: number): string {
