@@ -676,11 +676,10 @@ export class AutoPilot {
   // ---- 설정/영속화 ----
 
   /**
-   * 진입 설정(금액·수량·속도·동시 종목) — IDLE에서만. 검증 실패 문구를 반환한다(성공 시 null).
+   * 진입 설정(금액·수량·속도·동시 종목) — 실행 중에도 즉시 반영한다. 검증 실패 문구를 반환한다(성공 시 null).
    * 저장하지 않는다 — 정본은 lib/appSettings이고 부팅·포커스마다 applySettings로 다시 내려온다. 같은 값이면 no-op.
    */
   setConfig(config: AutoPilotConfig): string | null {
-    if (this.state !== 'IDLE') return '설정은 정지 상태에서 바꿀 수 있어요';
     const error = validateConfig(config);
     if (error) return error;
     const prev = this.config;
@@ -1115,6 +1114,7 @@ export class AutoPilot {
   private handleBuySignal(ctx: SlotSignalContext): void {
     if (this.stopRequested || !this.running || this.faulted || this.paused) return;
     if (this.actives.has(ctx.ticker) || this.pendingBuys.has(ctx.ticker)) return; // 이미 보유·진입 중
+    const realtimeMa5Mode = this.positionMode === 'realtimeMa5';
     // ↓ 여기부터는 "살 수 있었는데 안 산" 경로 — 전부 사유를 남긴다(2026-08-26 제보: 신호가 났는데
     //   안 샀고 기록도 없어 원인을 알 수 없었다. 2026-08-20 무음 폐기 교훈의 잔여 구멍).
     if (this.inAbandonCooldown(ctx.ticker)) {
@@ -1137,26 +1137,28 @@ export class AutoPilot {
     // 되돌리려면 이 자리에 필터를 다시 넣으면 된다(TREND_MIN_BAND_WIDTH_PCT·watchedTickers 그대로 있다).
 
     const rate = this.slotOf(ctx.ticker)?.tickRate(this.deps.clock.now()) ?? 0;
-    // 감지기가 전 종목에 붙으면서(2026-08-10) 느린 종목의 신호가 흔해졌다 — 프리플라이트(REST 왕복)
-    // 전에 여기서 거른다. commitBuy의 재검사(발주 직전)와 이중이지만 각자 다른 시점을 지킨다.
-    if (rate < (this.config?.minTickRate ?? DEFAULT_MIN_TICK_RATE)) {
-      // 2026-08-20까지는 무음 폐기였다 — 속도 필터가 ZNB +72% 신호를 버린 걸 이틀 뒤에야 알았다. 이벤트로 남긴다.
-      this.dropBuySignal(ctx.ticker, `속도 ${rate.toFixed(1)}틱/초 < 기준 ${this.config?.minTickRate ?? DEFAULT_MIN_TICK_RATE}`);
-      return;
-    }
+    if (!realtimeMa5Mode) {
+      // 감지기가 전 종목에 붙으면서(2026-08-10) 느린 종목의 신호가 흔해졌다 — 프리플라이트(REST 왕복)
+      // 전에 여기서 거른다. commitBuy의 재검사(발주 직전)와 이중이지만 각자 다른 시점을 지킨다.
+      if (rate < (this.config?.minTickRate ?? DEFAULT_MIN_TICK_RATE)) {
+        // 2026-08-20까지는 무음 폐기였다 — 속도 필터가 ZNB +72% 신호를 버린 걸 이틀 뒤에야 알았다. 이벤트로 남긴다.
+        this.dropBuySignal(ctx.ticker, `속도 ${rate.toFixed(1)}틱/초 < 기준 ${this.config?.minTickRate ?? DEFAULT_MIN_TICK_RATE}`);
+        return;
+      }
 
-    // 매수 후보 게이트(2026-08-24 사용자 요청) — 최소 속도를 넘겼어도 **틱/초 상위 watchCount종**이
-    // 아니면 사지 않는다. 모델은 리스트 전 종목을 계속 판정하지만(확률은 화면에 다 보인다) 실제 매수는
-    // "지금 가장 활발한 몇 종목" 안에서만 일어난다 — 조용한 종목의 신호는 호가가 얇아 빠져나오기 어렵다.
-    // 후보 목록은 reselect가 유지한다(보유·진입 중 종목은 빠져 있어 자리가 놀지 않는다).
-    if (!this.watchedTickers.includes(ctx.ticker)) {
-      this.dropBuySignal(
-        ctx.ticker,
-        `매수 후보(속도 상위 ${this.watchCountNow}종) 밖이에요 · 지금 ${rate.toFixed(1)}틱/초, 후보 ${
-          this.watchedTickers.length > 0 ? this.watchedTickers.join(', ') : '없음'
-        }`,
-      );
-      return;
+      // 매수 후보 게이트(2026-08-24 사용자 요청) — 최소 속도를 넘겼어도 **틱/초 상위 watchCount종**이
+      // 아니면 사지 않는다. 모델은 리스트 전 종목을 계속 판정하지만(확률은 화면에 다 보인다) 실제 매수는
+      // "지금 가장 활발한 몇 종목" 안에서만 일어난다 — 조용한 종목의 신호는 호가가 얇아 빠져나오기 어렵다.
+      // 후보 목록은 reselect가 유지한다(보유·진입 중 종목은 빠져 있어 자리가 놀지 않는다).
+      if (!this.watchedTickers.includes(ctx.ticker)) {
+        this.dropBuySignal(
+          ctx.ticker,
+          `매수 후보(속도 상위 ${this.watchCountNow}종) 밖이에요 · 지금 ${rate.toFixed(1)}틱/초, 후보 ${
+            this.watchedTickers.length > 0 ? this.watchedTickers.join(', ') : '없음'
+          }`,
+        );
+        return;
+      }
     }
     this.pendingBuys.set(ctx.ticker, { ctx, tickRate: rate });
     this.emit();
@@ -1170,6 +1172,7 @@ export class AutoPilot {
   private async commitBuy(ticker: string): Promise<void> {
     const candidate = this.pendingBuys.get(ticker);
     const config = this.config;
+    const realtimeMa5Mode = this.positionMode === 'realtimeMa5';
     if (!candidate || !config) {
       this.pendingBuys.delete(ticker);
       this.emit();
@@ -1227,7 +1230,9 @@ export class AutoPilot {
     // 기울기 단타(2026-09-02 사용자 확정): 매수는 신호 시점 현재가 지정가 — 매도1호가 크로스·정정 추격 없음("호가로 거니 손해").
     // 안 붙으면 설정의 매수 미체결 취소(buyCancelAfterMs)가 정리하고 다음 신호를 기다린다.
     // 매수 발주가(2026-09-03 주문 전략): quote=매도1호가 크로스, 그 외=신호 시점 현재가. 미주입이면 기울기 모드만 현재가(옛 동작).
-    const buyAtLastPrice = this.orderStrategy ? this.orderStrategy.buy !== 'quote' : this.positionMode === 'slope';
+    const buyAtLastPrice = this.orderStrategy
+      ? this.orderStrategy.buy !== 'quote'
+      : this.positionMode === 'slope' || realtimeMa5Mode;
     const adapter = new OrderPortAdapter({ broker, clock: this.deps.clock, buyAtLastPrice });
     const fault = await adapter.preflightCheckFills();
     if (this.stopRequested) return giveUp();
@@ -1238,12 +1243,14 @@ export class AutoPilot {
     }
 
     // 진입 직전 속도 재검사 — 감시 선정과 신호 사이에 유동성이 죽었으면 포기.
-    const rateNow = slot.tickRate(this.deps.clock.now());
-    if (rateNow < config.minTickRate) {
-      this.event(
-        `${ctx.ticker} 진입 포기 · 속도가 ${rateNow.toFixed(1)}틱/초로 떨어져 기준(${config.minTickRate})에 못 미쳐요`,
-      );
-      return giveUp();
+    if (!realtimeMa5Mode) {
+      const rateNow = slot.tickRate(this.deps.clock.now());
+      if (rateNow < config.minTickRate) {
+        this.event(
+          `${ctx.ticker} 진입 포기 · 속도가 ${rateNow.toFixed(1)}틱/초로 떨어져 기준(${config.minTickRate})에 못 미쳐요`,
+        );
+        return giveUp();
+      }
     }
 
     // 현금 부족 사전 판정 — 조회 실패(null/throw)면 판정 없이 진행(FAULT 인터록이 최후 방어선).

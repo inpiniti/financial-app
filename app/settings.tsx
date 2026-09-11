@@ -4,7 +4,7 @@
 // 흩어져 있던 매매 관련 값을 한 화면에서 다 보게 하려는 것이다.
 //
 // 저장은 전부 AsyncStorage(lib/appSettings)로만 간다. 실제 매매 엔진 반영은 managerProvider가
-// 트레이딩 화면 포커스마다 하며, 진입금액·속도·그리드 수는 **정지(IDLE) 상태에서만** 적용된다.
+// 트레이딩 화면 포커스마다 하며, 저장 직후에도 캐시 매니저가 있으면 즉시 반영된다.
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import Slider from '@react-native-community/slider';
@@ -30,6 +30,7 @@ import { DEFAULT_REALTIME_MA5_CONFIG } from '../core/realtime-ma5';
 import { DEFAULT_ENGINE_OPTIONS, type EngineOptions } from '../features/scalper/engineMode';
 import { ORDER_PRICING_LABEL, type OrderPricing } from '../features/scalper/orderStrategy';
 import { MODEL_SYMMETRIC_EXIT_CONFIG } from '../core/model/exitRule';
+import { refreshCachedManagerSettings } from '../features/scalper/ui/managerProvider';
 import {
   RankingSelectionPanel,
   draftFromSelection,
@@ -128,6 +129,11 @@ function describeFilters(o: EngineOptions): string {
 /** 종목당 진입금액 상한(USD) — 오타 하나(100 → 10000)가 그대로 발주 금액이 된다. */
 const START_AMOUNT_MAX_USD = 100_000;
 const DEFAULT_MIN_TICK_RATE_PER_MIN = DEFAULT_APP_SETTINGS.minTickRate * 60;
+const FIXED_ENTRY_STRATEGY: EntryStrategy = 'realtimeMa5';
+const FIXED_EXIT_STRATEGY: ExitStrategy = 'realtimeMa5';
+const FIXED_ENGINE_OPTIONS: EngineOptions = { ordered: false, ma5Up: false, allUp: false, martingale: false };
+const FIXED_BUY_STRATEGY: OrderPricing = 'lastChase';
+const FIXED_SELL_STRATEGY: OrderPricing = 'lastChase';
 
 type EntrySizingMode = 'amount' | 'qty';
 
@@ -489,10 +495,10 @@ export default function SettingsScreen() {
     (async () => {
       const appSettings = await loadAppSettings();
       savedOrderQtyRef.current = appSettings.orderQty;
-      setBuyCancelAfterSec(appSettings.buyCancelAfterSec);
-      setBuyStrategy(appSettings.buyStrategy);
-      setSellStrategy(appSettings.sellStrategy);
-      setSellCancelAfterSec(appSettings.sellCancelAfterSec);
+      setBuyCancelAfterSec(0);
+      setBuyStrategy(FIXED_BUY_STRATEGY);
+      setSellStrategy(FIXED_SELL_STRATEGY);
+      setSellCancelAfterSec(0);
       savedRollbackRef.current = {
         gridBuyWidthPct: appSettings.gridBuyWidthPct,
         gridSellWidthPct: appSettings.gridSellWidthPct,
@@ -509,17 +515,15 @@ export default function SettingsScreen() {
       setWatchCount(appSettings.watchCount);
       setMaxConcurrentGrids(appSettings.maxConcurrentGrids);
       setRankingDraft(draftFromSelection(appSettings.rankingSelection));
-      const loadedEntry = appSettings.entryStrategy ?? appSettings.engineMode ?? 'martingale';
-      const loadedExit = appSettings.exitStrategy ?? appSettings.engineMode ?? 'martingale';
-      const normalized = normalizeStrategyPair(loadedEntry, loadedExit);
+      const normalized = normalizeStrategyPair(FIXED_ENTRY_STRATEGY, FIXED_EXIT_STRATEGY);
       const initEntry = normalized.entryStrategy;
       const initExit = normalized.exitStrategy;
       setEntryStrategy(initEntry);
       savedEntryStrategyRef.current = initEntry;
       setExitStrategy(initExit);
       savedExitStrategyRef.current = initExit;
-      setEngineOptions(appSettings.engineOptions);
-      savedEngineOptionsRef.current = appSettings.engineOptions;
+      setEngineOptions(FIXED_ENGINE_OPTIONS);
+      savedEngineOptionsRef.current = FIXED_ENGINE_OPTIONS;
       setBbDipConfig(appSettings.bbDipConfig ?? DEFAULT_BBDIP_CONFIG);
       savedBbDipConfigRef.current = appSettings.bbDipConfig ?? DEFAULT_BBDIP_CONFIG;
       savedRealtimeMa5ConfigRef.current = appSettings.realtimeMa5Config ?? DEFAULT_APP_SETTINGS.realtimeMa5Config;
@@ -607,7 +611,7 @@ export default function SettingsScreen() {
     try {
       // 미체결 취소는 슬라이더가 범위·스텝 격자를 보장하므로 별도 검증이 없다.
       // 그리드 폭·배율·사다리 값은 화면에서 내렸다(조합 모드 미사용) — 로드해 둔 저장값 그대로 되쓴다(롤백 보존).
-      const normalized = normalizeStrategyPair(entryStrategy, exitStrategy);
+      const normalized = normalizeStrategyPair(FIXED_ENTRY_STRATEGY, FIXED_EXIT_STRATEGY);
       const normalizedEntryStrategy: EntryStrategy = normalized.entryStrategy;
       const normalizedExitStrategy: ExitStrategy = normalized.exitStrategy;
 
@@ -616,14 +620,14 @@ export default function SettingsScreen() {
         entryStrategy: normalizedEntryStrategy,
         exitStrategy: normalizedExitStrategy,
         engineMode: normalized.engineMode, // 하위 호환 유지
-        engineOptions,
-        bbDipConfig,
+        engineOptions: FIXED_ENGINE_OPTIONS,
+        bbDipConfig: DEFAULT_BBDIP_CONFIG,
         realtimeMa5Config: savedRealtimeMa5ConfigRef.current,
         orderQty: savedOrderQtyRef.current,
-        buyCancelAfterSec,
-        buyStrategy,
-        sellStrategy,
-        sellCancelAfterSec,
+        buyCancelAfterSec: 0,
+        buyStrategy: FIXED_BUY_STRATEGY,
+        sellStrategy: FIXED_SELL_STRATEGY,
+        sellCancelAfterSec: 0,
         ...savedRollbackRef.current,
         startAmountUsd: parsedStartAmountUsd,
         entryQty: parsedEntryQty,
@@ -632,29 +636,18 @@ export default function SettingsScreen() {
         minTickRate: parsedMinTickRate,
         watchCount: parsedWatchCount,
         maxConcurrentGrids: parsedMaxGrids,
-        rankingSelection,
+        rankingSelection: DEFAULT_APP_SETTINGS.rankingSelection,
       });
-      const optionsChanged = (Object.keys(engineOptions) as Array<keyof EngineOptions>).some(
-        (k) => engineOptions[k] !== savedEngineOptionsRef.current[k],
-      );
-      const bbDipChanged = JSON.stringify(bbDipConfig) !== JSON.stringify(savedBbDipConfigRef.current);
-      const strategyChanged =
-        normalizedEntryStrategy !== savedEntryStrategyRef.current ||
-        normalizedExitStrategy !== savedExitStrategyRef.current ||
-        optionsChanged ||
-        bbDipChanged;
       savedEntryStrategyRef.current = normalizedEntryStrategy;
       savedExitStrategyRef.current = normalizedExitStrategy;
       if (entryStrategy !== normalizedEntryStrategy) setEntryStrategy(normalizedEntryStrategy);
       if (exitStrategy !== normalizedExitStrategy) setExitStrategy(normalizedExitStrategy);
-      savedEngineOptionsRef.current = engineOptions;
-      savedBbDipConfigRef.current = bbDipConfig;
-      Alert.alert(
-        '알림',
-        strategyChanged
-          ? '설정을 저장했어요. 진입/청산 전략·옵션은 앱을 완전히 종료했다가 다시 켜면 적용돼요 — 보유·미체결이 없는 상태에서 바꾸는 걸 권해요.'
-          : '설정을 저장했어요.',
-      );
+      savedEngineOptionsRef.current = FIXED_ENGINE_OPTIONS;
+      savedBbDipConfigRef.current = DEFAULT_BBDIP_CONFIG;
+      await refreshCachedManagerSettings().catch(() => {
+        // 매니저 미생성/일시 오류는 저장 성공을 막지 않는다.
+      });
+      Alert.alert('알림', '설정을 저장했어요. 실시간 MA5 단일 전략으로 고정되어 동작해요.');
     } finally {
       setSaving(false);
     }
@@ -820,384 +813,19 @@ export default function SettingsScreen() {
           </View>
         </Panel>
 
-        <RankingSelectionPanel draft={rankingDraft} onChange={setRankingDraft} />
+        {false && <RankingSelectionPanel draft={rankingDraft} onChange={setRankingDraft} />}
 
-        {/* 진입 전략 패널(2026-09-04 분리) */}
-        <Panel title="진입 전략">
+        <Panel title="전략 상태">
           <View className="px-5 pb-5">
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              어떤 신호에서 매수 진입할지 골라요. 저장한 뒤 <Text className="font-semibold text-[#191f28]">앱을 완전히 종료했다가 다시 켜면</Text>{' '}
-              적용돼요 — 보유·미체결이 없는 상태에서 바꾸는 걸 권해요.
+              진입 전략, 진입 필터, 청산 전략, 포지션 옵션, 주문 전략 선택은 모두 제거했어요.
             </Text>
-            {realtimeMa5Dedicated && (
-              <View className="mb-3 rounded-2xl border border-[#bfdbfe] bg-[#eff6ff] px-4 py-3">
-                <Text className="text-xs leading-5 text-[#1d4ed8]">
-                  실시간 MA5 단타는 현재 선택된 진입 전략입니다. 진입 전략 자체는 이 화면에서 고정 표시만 하고, 매도 전략은 독립적으로 잠금 여부를 판단합니다.
-                </Text>
-              </View>
-            )}
-            {(
-              [
-                {
-                  value: 'bbDip' as const,
-                  title: '볼린저 하단 투매 반등 (기본)',
-                  desc: `20틱 볼린저 밴드 하단 -${Math.abs(DEFAULT_BBDIP_CONFIG.dipThreshold * 100).toFixed(1)}% 이하 투매 이탈 + 10초 가격 기울기 +${DEFAULT_BBDIP_CONFIG.s10Min}% 반등 + 틱속도 ${DEFAULT_BBDIP_CONFIG.minRm}건/분 + 체결강도 +${(DEFAULT_BBDIP_CONFIG.minFr * 100).toFixed(0)}% 충족 시 매수 진입`,
-                },
-                {
-                  value: 'martingale' as const,
-                  title: '5선 돌파',
-                  desc: `${MARTINGALE_BAR_MINUTES}분봉 종가가 5선(최근 5봉 평균)을 아래→위로 뚫는 순간 매수 진입 (진입 필터는 아래 옵션으로)`,
-                },
-                {
-                  value: 'model' as const,
-                  title: '예측 모델',
-                  desc: `${MODEL_BAR_MINUTES}분봉 지표 33개로 "+3%가 −3%보다 먼저 올 확률"을 계산해 상위 1% 기준값을 넘으면 매수 진입`,
-                },
-                {
-                  value: 'slope' as const,
-                  title: '기울기 돌파',
-                  desc: `리스트의 10초 가격 변화율(기울기)이 +${SLOPE_CONFIG.entryPct}% 이상으로 올라서는 순간 즉시 매수 진입`,
-                },
-                {
-                  value: 'realtimeMa5' as const,
-                  title: '실시간 MA5 단타',
-                  desc: `현재틱이 직전 MA5를 상향 돌파하면서 기울기가 상승하면 매수. 기본값은 ${DEFAULT_REALTIME_MA5_CONFIG.orderQty}주·익절 +${(DEFAULT_REALTIME_MA5_CONFIG.sellTargetMultiplier - 1) * 100}%·물타기 낙폭 ${DEFAULT_REALTIME_MA5_CONFIG.averagingDownThresholdPct}% 이하`,
-                },
-              ]
-            ).map((opt) => {
-              const selected = entryStrategy === opt.value;
-              return (
-                <Pressable
-                  key={opt.value}
-                  onPress={() => {
-                    setEntryStrategy(opt.value);
-                    if (opt.value === 'realtimeMa5') setExitStrategy('realtimeMa5');
-                  }}
-                  className={`mb-2 rounded-2xl border px-4 py-3 ${selected ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'}`}
-                >
-                  <View className="flex-row items-center justify-between">
-                    <Text className={`text-sm font-semibold ${selected ? 'text-[#3182f6]' : 'text-[#191f28]'}`}>
-                      {opt.title}
-                    </Text>
-                    {selected && <Text className="text-xs font-semibold text-[#3182f6]">선택됨</Text>}
-                  </View>
-                  <Text className="mt-1 text-xs leading-5 text-[#8b95a1]">{opt.desc}</Text>
-                </Pressable>
-              );
-            })}
-
-            {/* 진입 필터 옵션(중복 선택) */}
-            <Text className="mb-1 mt-4 text-xs font-semibold text-[#191f28]">진입 필터 옵션 (중복 선택)</Text>
-            <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              어느 진입 전략을 골랐든 함께 걸려요. {MARTINGALE_BAR_MINUTES}분봉 이동평균(5·20·60·120) 기준 진입 조건이며 체크한 조건이 전부 맞아야 사요.
-            </Text>
-            {(
-              [
-                { key: 'ordered' as const, title: '정배열', desc: '5선 > 20선 > 60선 > 120선일 때만' },
-                { key: 'ma5Up' as const, title: '5선만 상승', desc: '5선이 직전 봉보다 오르는 중일 때만' },
-                { key: 'allUp' as const, title: '5·20·60·120 모두 상승', desc: '네 선이 전부 직전 봉보다 오르는 중일 때만' },
-              ]
-            ).map((opt) => {
-              const on = engineOptions[opt.key];
-              return (
-                <Pressable
-                  key={opt.key}
-                  onPress={() => setEngineOptions({ ...engineOptions, [opt.key]: !on })}
-                  className={`mb-2 flex-row items-center rounded-2xl border px-4 py-3 ${on ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'}`}
-                >
-                  <View
-                    className={`mr-3 h-5 w-5 items-center justify-center rounded-md border ${on ? 'border-[#3182f6] bg-[#3182f6]' : 'border-[#d1d6db] bg-white'}`}
-                  >
-                    {on && <Text className="text-xs font-bold text-white">✓</Text>}
-                  </View>
-                  <View className="flex-1">
-                    <Text className={`text-sm font-semibold ${on ? 'text-[#3182f6]' : 'text-[#191f28]'}`}>{opt.title}</Text>
-                    <Text className="mt-0.5 text-xs leading-5 text-[#8b95a1]">{opt.desc}</Text>
-                  </View>
-                </Pressable>
-              );
-            })}
-          </View>
-        </Panel>
-
-        {/* 청산 전략 패널(2026-09-04 분리) */}
-        <Panel title="청산 전략">
-          <View className="px-5 pb-5">
-            <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              보유 포지션을 어떻게 익절/손절하고 마감할지 골라요. 저장한 뒤 <Text className="font-semibold text-[#191f28]">앱을 완전히 종료했다가 다시 켜면</Text>{' '}
-              적용돼요.
-            </Text>
-            {realtimeMa5SellLocked && (
-              <View className="mb-3 rounded-2xl border border-[#bfdbfe] bg-[#eff6ff] px-4 py-3">
-                <Text className="text-xs leading-5 text-[#1d4ed8]">
-                  실시간 MA5 익절·물타기 모드에서는 매도 주문 전략은 고정돼 있고, 매수 전략은 별도로 선택할 수 있어요.
-                </Text>
-              </View>
-            )}
-            {(
-              [
-                {
-                  value: 'bbDip' as const,
-                  title: 'MA20 중심선 회귀 · 맞춤 대칭 청산 (기본)',
-                  desc: `20틱 중심선(MA20) 도달 즉시 전량 익절 · +${(DEFAULT_BBDIP_CONFIG.takeProfitPct * 100).toFixed(1)}% 목표 익절 · +${(DEFAULT_BBDIP_CONFIG.trailingTriggerPct * 100).toFixed(1)}% 트레일링 · -${(DEFAULT_BBDIP_CONFIG.stopLossPct * 100).toFixed(1)}% 칼손절`,
-                },
-                {
-                  value: 'martingale' as const,
-                  title: '+3% 익절 · 마감 청산',
-                  desc: `평단보다 +${Math.round(MARTINGALE_CONFIG.tpPct * 100)}% 오르면 전량 익절, 안 닿으면 ${Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:${String(MARTINGALE_CONFIG.closeAtMin % 60).padStart(2, '0')} ET 마감 전량 청산 (손절 없음)`,
-                },
-                {
-                  value: 'model' as const,
-                  title: '±3% 대칭 밴드 · 래칫',
-                  desc: `+${Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.tpPct * 100)}% 익절 / −${Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.stopLossPct * 100)}% 손절(동적 래칫 방어) · 최장 ${MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분 만기 청산`,
-                },
-                {
-                  value: 'slope' as const,
-                  title: '기울기 하락 즉시 매도',
-                  desc: `리스트의 10초 기울기가 +${SLOPE_CONFIG.exitPct}% 아래로 내려오거나 끊기면 조건 없이 즉시 전량 매도 (익절·손절·마감청산 없음)`,
-                },
-                {
-                  value: 'realtimeMa5' as const,
-                  title: '실시간 MA5 익절·물타기',
-                  desc: `평단 × ${DEFAULT_REALTIME_MA5_CONFIG.sellTargetMultiplier} 목표가를 걸고, 낙폭 ${DEFAULT_REALTIME_MA5_CONFIG.averagingDownThresholdPct}% 이하에서 상승 기울기와 돌파가 맞으면 추가 매수`,
-                },
-              ]
-            ).map((opt) => {
-              const selected = exitStrategy === opt.value;
-              return (
-                <Pressable
-                  key={opt.value}
-                  onPress={() => setExitStrategy(opt.value)}
-                  className={`mb-2 rounded-2xl border px-4 py-3 ${selected ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'}`}
-                >
-                  <View className="flex-row items-center justify-between">
-                    <Text className={`text-sm font-semibold ${selected ? 'text-[#3182f6]' : 'text-[#191f28]'}`}>
-                      {opt.title}
-                    </Text>
-                    {selected && <Text className="text-xs font-semibold text-[#3182f6]">선택됨</Text>}
-                  </View>
-                  <Text className="mt-1 text-xs leading-5 text-[#8b95a1]">{opt.desc}</Text>
-                </Pressable>
-              );
-            })}
-
-            {/* 청산/포지션 옵션: 물타기 */}
-            <Text className="mb-1 mt-4 text-xs font-semibold text-[#191f28]">포지션 옵션</Text>
-            <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              보유 중 선택한 진입 신호가 다시 왔을 때, 평단보다 −{Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 넘게 내려가 있으면 추가 매수해요.
-            </Text>
-            {(() => {
-              const on = engineOptions.martingale;
-              return (
-                <Pressable
-                  onPress={() => setEngineOptions({ ...engineOptions, martingale: !on })}
-                  className={`mb-2 flex-row items-center rounded-2xl border px-4 py-3 ${on ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'}`}
-                >
-                  <View
-                    className={`mr-3 h-5 w-5 items-center justify-center rounded-md border ${on ? 'border-[#3182f6] bg-[#3182f6]' : 'border-[#d1d6db] bg-white'}`}
-                  >
-                    {on && <Text className="text-xs font-bold text-white">✓</Text>}
-                  </View>
-                  <View className="flex-1">
-                    <Text className={`text-sm font-semibold ${on ? 'text-[#3182f6]' : 'text-[#191f28]'}`}>(k−1)배 물타기</Text>
-                    <Text className="mt-0.5 text-xs leading-5 text-[#8b95a1]">
-                      평단 −k%(k≥{Math.round(MARTINGALE_CONFIG.dropStartPct * 100)})에서 진입 신호면 보유량 ×(k−1) 추가 매수 · 상한 −{Math.round(MARTINGALE_CONFIG.dropMaxPct * 100)}%
-                    </Text>
-                  </View>
-                </Pressable>
-              );
-            })()}
-          </View>
-        </Panel>
-
-        {/* 볼린저 반등 세부 설정 (BB Dip) 패널 — 진입 또는 청산 전략이 bbDip일 때 활성화 */}
-        {(entryStrategy === 'bbDip' || exitStrategy === 'bbDip') && (
-          <BbDipDetailPanel config={bbDipConfig} onChange={setBbDipConfig} />
-        )}
-
-        {/* 진입 전략 고정값 안내 패널 (bbDip 외 고정값 전략일 때) */}
-        {entryStrategy !== 'bbDip' && (
-          <Panel
-            title={`진입 전략: ${
-              entryStrategy === 'martingale'
-                ? '5선 돌파'
-                : entryStrategy === 'model'
-                  ? '예측 모델'
-                  : entryStrategy === 'realtimeMa5'
-                    ? '실시간 MA5 단타'
-                    : '기울기 돌파'
-            } (고정값)`}
-          >
-            <View className="px-5 pb-5">
-              {entryStrategy === 'martingale' ? (
-                <>
-                  <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                    진입은 {MARTINGALE_BAR_MINUTES}분봉 5선 돌파가 정해요. 진입 조건 필터는 위 옵션에서 골라요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
-                  </Text>
-                  <View className="mb-1 flex-row items-center justify-between">
-                    <Text className="text-xs text-[#8b95a1]">진입 규칙</Text>
-                    <Text className="text-sm font-semibold text-[#191f28]">5선 돌파{describeFilters(engineOptions)}</Text>
-                  </View>
-                  <Text className="text-xs leading-5 text-[#8b95a1]">
-                    {MARTINGALE_BAR_MINUTES}분봉 종가가 5선(최근 5봉 평균)을 아래에서 위로 뚫는 봉에 사요{engineOptions.ordered || engineOptions.ma5Up || engineOptions.allUp ? ' — 위에서 체크한 조건이 그 봉에서 함께 맞아야 해요' : ''}. 봉이 닫히기를 기다리지 않고 진행 중 봉을 현재가로 넣어 실시간으로 판단해요(봉당 1회). 프리·정규·애프터에서만 진입하고 주간거래 시간엔 쉬어요.
-                  </Text>
-                </>
-              ) : entryStrategy === 'model' ? (
-                <>
-                  <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                    진입은 LightGBM 예측 모델이 결정해요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
-                  </Text>
-                  <View className="mb-1 flex-row items-center justify-between">
-                    <Text className="text-xs text-[#8b95a1]">진입 규칙</Text>
-                    <Text className="text-sm font-semibold text-[#191f28]">모델 확률 ≥ 상위 1% 기준값</Text>
-                  </View>
-                  <Text className="text-xs leading-5 text-[#8b95a1]">
-                    {MODEL_BAR_MINUTES}분봉이 닫힐 때마다 리스트 전 종목에 대해 "+3%가 −3%보다 먼저 올 확률"을 지표 33개로 계산해요. 3년 반치 과거에서 상위 1%에 해당하는 값을 넘어야 사요. 정규장·그날 거래대금 $2M 이상·주가 $1 초과 종목만 봐요.
-                  </Text>
-                </>
-              ) : entryStrategy === 'realtimeMa5' ? (
-                <>
-                  <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                    진입은 실시간 MA5 단타 규칙이 결정해요. 현재 선택된 진입 전략은 이 값으로 고정 표시됩니다.
-                  </Text>
-                  <View className="mb-1 flex-row items-center justify-between">
-                    <Text className="text-xs text-[#8b95a1]">진입 규칙</Text>
-                    <Text className="text-sm font-semibold text-[#191f28]">현재 틱이 직전 MA5를 상향 돌파 + 기울기 상승</Text>
-                  </View>
-                  <Text className="text-xs leading-5 text-[#8b95a1]">
-                    현재가가 직전 5틱 평균을 상향 돌파하면서 동시에 기울기가 상승 중일 때 사요. 실시간 MA5는 매도 타이밍과 물타기 규칙이 함께 내부에서 관리돼요.
-                  </Text>
-                </>
-              ) : (
-                <>
-                  <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                    진입은 10초간 가격 변화율(기울기)이 결정해요. 아래 값은 설계 고정값이라 여기서 바꿀 수 없어요.
-                  </Text>
-                  <View className="mb-1 flex-row items-center justify-between">
-                    <Text className="text-xs text-[#8b95a1]">진입 규칙</Text>
-                    <Text className="text-sm font-semibold text-[#191f28]">기울기 ≥ +{SLOPE_CONFIG.entryPct}%</Text>
-                  </View>
-                  <Text className="text-xs leading-5 text-[#8b95a1]">
-                    체결 틱이 올 때마다 다시 재서, 10초 기울기가 +{SLOPE_CONFIG.entryPct}% 아래에서 이상으로 올라서는 순간 즉시 사요. 봉·이동평균 조건은 없으며 매수는 신호 순간 현재가로 내요.
-                  </Text>
-                </>
-              )}
+            <View className="rounded-2xl border border-[#bfdbfe] bg-[#eff6ff] px-4 py-3">
+              <Text className="text-sm font-semibold text-[#1d4ed8]">실시간 MA5 단일 전략 고정</Text>
+              <Text className="mt-1 text-xs leading-5 text-[#1d4ed8]">
+                이전틱 &lt; 현재 MA5 &lt; 현재틱 돌파에서 즉시 매수하고, 보유 중에는 낙폭 조건에서 물타기 후 평단 기준 +3% 매도 주문을 바로 재등록해요.
+              </Text>
             </View>
-          </Panel>
-        )}
-
-        {/* 청산 전략 고정값 안내 패널 (bbDip 외 고정값 전략일 때) */}
-        {exitStrategy !== 'bbDip' && (
-          <Panel
-            title={`청산 전략: ${
-              exitStrategy === 'martingale'
-                ? '+3% 익절 · 마감 청산'
-                : exitStrategy === 'model'
-                  ? '±3% 대칭 밴드 · 래칫'
-                  : exitStrategy === 'realtimeMa5'
-                    ? '실시간 MA5 익절·물타기'
-                    : '기울기 하락 즉시 매도'
-            } (고정값)`}
-          >
-            <View className="px-5 pb-5">
-              {exitStrategy === 'martingale' ? (
-                <>
-                  <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                    매도는 +3% 익절선과 마감 시각이 정해요. 물타기 여부는 위 옵션에서 골라요.
-                  </Text>
-                  <View className="mb-1 flex-row items-center justify-between">
-                    <Text className="text-xs text-[#8b95a1]">익절 및 마감</Text>
-                    <Text className="text-sm font-semibold text-[#191f28]">+{Math.round(MARTINGALE_CONFIG.tpPct * 100)}% 익절 · {Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:{String(MARTINGALE_CONFIG.closeAtMin % 60).padStart(2, '0')} ET 마감</Text>
-                  </View>
-                  <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                    평단보다 +{Math.round(MARTINGALE_CONFIG.tpPct * 100)}% 오르면 전량 익절해요. 안 닿으면 {Math.floor(MARTINGALE_CONFIG.closeAtMin / 60)}:{String(MARTINGALE_CONFIG.closeAtMin % 60).padStart(2, '0')} ET에 전량 청산해요 — 손절은 없으며 다음 날로 들고 가지 않아요.
-                  </Text>
-                  <View className="mb-1 flex-row items-center justify-between">
-                    <Text className="text-xs text-[#8b95a1]">물타기 동작</Text>
-                    <Text className="text-sm font-semibold text-[#191f28]">
-                      {engineOptions.martingale ? `평단 −${Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 아래 진입 신호 → (k−1)배` : '없음(옵션 꺼짐)'}
-                    </Text>
-                  </View>
-                  <Text className="text-xs leading-5 text-[#8b95a1]">
-                    {engineOptions.martingale
-                      ? `보유 중 현재가가 평단보다 −${Math.round(MARTINGALE_CONFIG.dropStartPct * 100)}% 이상 내려간 상태에서 진입 신호가 오면 추가로 사요. 낙폭 k%(내림)면 지금 보유량의 (k−1)배가 추가 매수됩니다.`
-                      : '옵션에서 (k−1)배 물타기를 체크하면 보유 중 진입 신호에서 낙폭 배수로 추가 매수해요. 지금은 단일 포지션만 유지해요.'}
-                  </Text>
-                </>
-              ) : exitStrategy === 'model' ? (
-                <>
-                  <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                    매도는 ±3% 대칭 밴드와 동적 래칫, 그리고 120분 만기 청산이 정해요.
-                  </Text>
-                  <View className="mb-1 flex-row items-center justify-between">
-                    <Text className="text-xs text-[#8b95a1]">밴드 & 래칫</Text>
-                    <Text className="text-sm font-semibold text-[#191f28]">익절 +{Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.tpPct * 100)}% / 손절 −{Math.round(MODEL_SYMMETRIC_EXIT_CONFIG.stopLossPct * 100)}%</Text>
-                  </View>
-                  <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                    산 가격보다 +3% 오르면 익절, −3% 내리면 손절해요. 익절선에 닿는 순간 모델이 여전히 상승 우위면 밴드를 그 자리 기준 ±3%로 올려 달아(래칫) 수익을 극대화해요.
-                  </Text>
-                  <View className="mb-1 flex-row items-center justify-between">
-                    <Text className="text-xs text-[#8b95a1]">시간 청산</Text>
-                    <Text className="text-sm font-semibold text-[#191f28]">최장 {MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분 만기</Text>
-                  </View>
-                  <Text className="text-xs leading-5 text-[#8b95a1]">
-                    산 지 {MODEL_SYMMETRIC_EXIT_CONFIG.maxHoldMin}분이 지나도 밴드에 닿지 않으면 전량 매도해요. 봉 마감을 기다리지 않고 체결가가 닿는 즉시 판단해요.
-                  </Text>
-                </>
-              ) : exitStrategy === 'realtimeMa5' ? (
-                <>
-                  <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                    매도는 실시간 MA5 익절·물타기 규칙이 결정해요. 이 모드에서는 매도 전략이 내부 규칙으로 고정됩니다.
-                  </Text>
-                  <View className="mb-1 flex-row items-center justify-between">
-                    <Text className="text-xs text-[#8b95a1]">청산 조건</Text>
-                    <Text className="text-sm font-semibold text-[#191f28]">평단 × {DEFAULT_REALTIME_MA5_CONFIG.sellTargetMultiplier} 목표가 + 낙폭 재진입</Text>
-                  </View>
-                  <Text className="text-xs leading-5 text-[#8b95a1]">
-                    평단 대비 {DEFAULT_REALTIME_MA5_CONFIG.sellTargetMultiplier}배 목표가에 닿으면 익절하고, 낙폭 {DEFAULT_REALTIME_MA5_CONFIG.averagingDownThresholdPct}% 이하에서 상승 기울기와 돌파가 맞으면 추가 매수해요. 이 규칙은 별도 주문 전략과는 독립적으로 동작합니다.
-                  </Text>
-                </>
-              ) : (
-                <>
-                  <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-                    매도는 10초간 가격 변화율(기울기) 하락이 결정해요.
-                  </Text>
-                  <View className="mb-1 flex-row items-center justify-between">
-                    <Text className="text-xs text-[#8b95a1]">청산 조건</Text>
-                    <Text className="text-sm font-semibold text-[#191f28]">기울기 &lt; +{SLOPE_CONFIG.exitPct}% → 즉시 전량</Text>
-                  </View>
-                  <Text className="text-xs leading-5 text-[#8b95a1]">
-                    보유 중 기울기가 +{SLOPE_CONFIG.exitPct}% 아래로 내려오면 수익이든 손실이든 보지 않고 그 자리에서 즉시 전량 매도해요. 체결 틱마다 및 {SLOPE_EXIT_TICK_MS}ms마다 다시 재며, 10초 넘게 체결이 끊겨도 팔아요. 익절·손절·마감 청산은 없어요.
-                  </Text>
-                </>
-              )}
-            </View>
-          </Panel>
-        )}
-
-        <Panel title="주문">
-          <View className="px-5 pb-5">
-            <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              어떤 가격에 걸고, 안 붙으면 어떻게 할지 매수·매도 따로 골라요. 저장하면 <Text className="font-semibold text-[#191f28]">바로 적용</Text>돼요(재시작
-              불필요) — 이미 걸린 주문도 다음 틱부터 새 전략으로 다뤄요.
-            </Text>
-            <OrderStrategyPicker
-              title="매수 전략"
-              side="buy"
-              value={buyStrategy}
-              onChange={setBuyStrategy}
-              cancelAfterSec={buyCancelAfterSec}
-              onCancelAfterSecChange={setBuyCancelAfterSec}
-            />
-            <OrderStrategyPicker
-              title="매도 전략"
-              side="sell"
-              value={sellStrategy}
-              onChange={setSellStrategy}
-              cancelAfterSec={sellCancelAfterSec}
-              onCancelAfterSecChange={setSellCancelAfterSec}
-              disabled={exitStrategy === 'realtimeMa5'}
-            />
           </View>
         </Panel>
 

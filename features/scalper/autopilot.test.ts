@@ -642,7 +642,7 @@ describe('AutoPilot — Stop·FAULT·영속화·마이그레이션', () => {
     expect(events.some((e) => e.includes('A 자동 재등록 못 했어요'))).toBe(true);
   });
 
-  it('applySettings — 그리드·매수취소는 실행 중에도 즉시, 진입 설정은 IDLE에서만(거절 사유 반환)', async () => {
+  it('applySettings — 실행 중에도 그리드·매수취소·진입 설정을 즉시 반영한다', async () => {
     const h = makeHarness(['A'], { config: { startAmountUsd: 50, minTickRate: 2 } });
     h.pilot.start();
     const err = h.pilot.applySettings({
@@ -650,13 +650,10 @@ describe('AutoPilot — Stop·FAULT·영속화·마이그레이션', () => {
       grid: { buyWidth: 0.04, sellWidth: 0.01, buyMultiplier: 1 },
       buyCancelAfterMs: 5000,
     });
-    expect(err).toBe('설정은 정지 상태에서 바꿀 수 있어요');
-    expect(h.pilot.getView().config).toEqual({ startAmountUsd: 50, minTickRate: 2 });
+    expect(err).toBeNull();
+    expect(h.pilot.getView().config).toEqual({ startAmountUsd: 99, minTickRate: 3 });
     expect(h.pilot.gridSettings).toEqual({ buyWidth: 0.04, sellWidth: 0.01, buyMultiplier: 1 });
     expect(h.events.some((e) => e.includes('매수 미체결 취소 5초'))).toBe(true);
-    h.pilot.stop();
-    expect(h.pilot.applySettings({ config: { startAmountUsd: 99, minTickRate: 3 } })).toBeNull();
-    expect(h.pilot.getView().config).toEqual({ startAmountUsd: 99, minTickRate: 3 });
   });
 
   it('영속화 — PAUSED 상태가 재시작 후에도 복원된다(자동 재개 금지)', async () => {
@@ -721,14 +718,14 @@ describe('AutoPilot — Stop·FAULT·영속화·마이그레이션', () => {
     expect(h.pilot.getView().cumPnl).toBe(0);
   });
 
-  it('설정 미입력이면 start를 거부하고, 실행 중 setConfig는 막힌다', () => {
+  it('설정 미입력이면 start를 거부하고, 실행 중 setConfig도 즉시 반영된다', () => {
     const h = makeHarness(['A'], { config: null });
     h.pilot.start();
     expect(h.pilot.getView().state).toBe('IDLE');
 
     expect(h.pilot.setConfig(CONFIG_100)).toBeNull();
     h.pilot.start();
-    expect(h.pilot.setConfig(CONFIG_100)).toContain('정지 상태');
+    expect(h.pilot.setConfig(CONFIG_100)).toBeNull();
   });
 });
 

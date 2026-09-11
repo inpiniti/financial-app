@@ -14,8 +14,8 @@ describe('DEFAULT_APP_SETTINGS', () => {
     storage.clear();
   });
 
-  it('엔진 옵션 기본값은 5선 상승 + 물타기 — 옛 5선 돌파 규칙 그대로(ADR 0012)', () => {
-    expect(DEFAULT_APP_SETTINGS.engineOptions).toEqual({ ordered: false, ma5Up: true, allUp: false, martingale: true });
+  it('엔진 옵션 기본값은 모두 꺼짐이다(실시간 MA5 단일 모드)', () => {
+    expect(DEFAULT_APP_SETTINGS.engineOptions).toEqual({ ordered: false, ma5Up: false, allUp: false, martingale: false });
   });
 
   it('기본 모드는 LIVE다 (PRD §9-6 확정)', () => {
@@ -26,12 +26,12 @@ describe('DEFAULT_APP_SETTINGS', () => {
     expect(DEFAULT_APP_SETTINGS.maxPriceUsd).toBe(200);
   });
 
-  it('저장된 realtimeMa5 설정은 로드 시에도 유지되고 엔진 모드가 동기화된다', async () => {
+  it('저장된 realtimeMa5 설정은 로드 시 유지되고 전략은 realtimeMa5로 고정된다', async () => {
     const saved: any = {
       ...DEFAULT_APP_SETTINGS,
-      entryStrategy: 'realtimeMa5',
-      exitStrategy: 'realtimeMa5',
-      engineMode: 'realtimeMa5',
+      entryStrategy: 'model',
+      exitStrategy: 'bbDip',
+      engineMode: 'model',
       realtimeMa5Config: { ...DEFAULT_APP_SETTINGS.realtimeMa5Config, orderQty: 3, sellTargetMultiplier: 1.05 },
     };
 
@@ -42,27 +42,30 @@ describe('DEFAULT_APP_SETTINGS', () => {
     expect(loaded.exitStrategy).toBe('realtimeMa5');
     expect(loaded.engineMode).toBe('realtimeMa5');
     expect(loaded.realtimeMa5Config.orderQty).toBe(3);
-    expect(loaded.realtimeMa5Config.sellTargetMultiplier).toBe(1.05);
+    expect(loaded.realtimeMa5Config.sellTargetMultiplier).toBe(1.03);
+    expect(loaded.realtimeMa5Config.averagingDownThresholdPct).toBe(-3);
   });
 
-  it('realtimeMa5가 청산 전략에만 저장되면 진입 전략은 유지한다', async () => {
+  it('저장된 주문 전략 값은 무시하고 lastChase 고정값을 쓴다', async () => {
     const saved: any = {
       ...DEFAULT_APP_SETTINGS,
-      entryStrategy: 'model',
-      exitStrategy: 'realtimeMa5',
-      engineMode: 'model',
+      buyStrategy: 'quote',
+      sellStrategy: 'lastCancel',
+      buyCancelAfterSec: 5,
+      sellCancelAfterSec: 7,
     };
 
     storage.set('app:settings', JSON.stringify(saved));
     const loaded = await loadAppSettings();
 
-    expect(loaded.entryStrategy).toBe('model');
-    expect(loaded.exitStrategy).toBe('realtimeMa5');
-    expect(loaded.engineMode).toBe('model');
+    expect(loaded.buyStrategy).toBe('lastChase');
+    expect(loaded.sellStrategy).toBe('lastChase');
+    expect(loaded.buyCancelAfterSec).toBe(0);
+    expect(loaded.sellCancelAfterSec).toBe(0);
   });
 
-  it('진입 전략이 realtimeMa5면 청산 전략도 같이 고정한다', () => {
-    expect(normalizeStrategyPair('realtimeMa5', 'martingale')).toEqual({
+  it('진입/청산 전략 normalize는 입력과 무관하게 realtimeMa5를 반환한다', () => {
+    expect(normalizeStrategyPair('model', 'bbDip')).toEqual({
       entryStrategy: 'realtimeMa5',
       exitStrategy: 'realtimeMa5',
       engineMode: 'realtimeMa5',

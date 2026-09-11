@@ -161,14 +161,14 @@ async function buildManager(): Promise<ManagerBootstrap> {
   const credentials: KisCredentials = { appKey: kisSettings.appKey, appSecret: kisSettings.appSecret };
   const account: KisAccount = { cano: kisSettings.cano, acntPrdtCd: kisSettings.acntPrdtCd };
   const environment: KisEnvironment = appSettings.environment;
-  // 진입·청산 전략(2026-09-04 분리) — 설정에서 읽어 앱 수명당 1회 확정한다.
-  const entryStrategy = appSettings.entryStrategy ?? appSettings.engineMode;
-  const exitStrategy = appSettings.exitStrategy ?? appSettings.engineMode;
+  // 실시간 MA5 단일 모드 고정.
+  const entryStrategy = 'realtimeMa5' as const;
+  const exitStrategy = 'realtimeMa5' as const;
   setActiveEntryStrategy(entryStrategy);
   setActiveExitStrategy(exitStrategy);
   setActiveEngineMode(entryStrategy);
-  // 엔진 옵션(2026-09-03 ADR 0012) — 진입 필터·물타기. 엔진과 같은 규약(앱 수명당 1회, 재시작 반영).
-  const engineOptions = appSettings.engineOptions;
+  // 진입 필터/포지션 옵션은 모두 비활성화.
+  const engineOptions = { ordered: false, ma5Up: false, allUp: false, martingale: false };
   setActiveEngineOptions(engineOptions);
   const entryFilters = { ordered: engineOptions.ordered, ma5Up: engineOptions.ma5Up, allUp: engineOptions.allUp };
 
@@ -322,10 +322,9 @@ async function buildManager(): Promise<ManagerBootstrap> {
       tossCodeCache.set(ticker, resolved);
       code = resolved;
     }
-    // ±3% 단타 모드는 1분봉 시드 — 진입 전략이 martingale이면 추세 봉 주기 대신 1분을 쓴다(슬롯 빌더도 1분).
+    // 실시간 MA5 단일 모드는 1분봉 시드를 고정 사용한다.
     return fetchTossMinuteBars(code, MINUTE_BAR_RING_SIZE, {
-      // 진입 필터(엔진 옵션)도 1분봉 4선 정의라, 켜져 있으면 모델·기울기 모드에서도 1분봉 시드.
-      intervalMin: (MARTINGALE_MODE && entryStrategy === 'martingale') || anyEntryFilter(entryFilters) ? MARTINGALE_BAR_MINUTES : TREND_BAR_MINUTES,
+      intervalMin: MARTINGALE_BAR_MINUTES,
     });
   };
 
@@ -380,7 +379,7 @@ async function buildManager(): Promise<ManagerBootstrap> {
 
   const finalManager = manager;
   const initialSettings = managerSettingsFrom(appSettings);
-  const resolvedBbDipConfig = appSettings.bbDipConfig ?? DEFAULT_BBDIP_CONFIG;
+  const realtimeMa5Config = appSettings.realtimeMa5Config ?? REALTIME_MA5_POSITION_CONFIG;
 
   const autopilot = new AutoPilotManager({
     realtime,
@@ -409,24 +408,18 @@ async function buildManager(): Promise<ManagerBootstrap> {
     inflection: INFLECTION_THRESHOLDS,
     entryStrategy,
     exitStrategy,
-    // 모델 → 매매 → 그리드 — 진입이 모델이거나 청산이 모델일 때 주입
-    model: (entryStrategy === 'model' || exitStrategy === 'model') ? MODEL_CONFIG : undefined,
+    model: undefined,
     fetchModelBars,
     fetchModelDailyCloses,
-    realtimeMa5: entryStrategy === 'realtimeMa5' || exitStrategy === 'realtimeMa5' ? REALTIME_MA5_POSITION_CONFIG : undefined,
-    // 5선 돌파/물타기 청산 — exitStrategy === 'martingale'일 때 주입
-    martingale: exitStrategy === 'martingale' ? MARTINGALE_POSITION_CONFIG : undefined,
-    // 기울기 단타 청산 — exitStrategy === 'slope'일 때 주입
-    slope: exitStrategy === 'slope' ? SLOPE_POSITION_CONFIG : undefined,
-    // 볼린저 투매 반등 청산 — exitStrategy === 'bbDip'일 때 주입
-    bbDip: (exitStrategy === 'bbDip' || !exitStrategy) ? { kind: 'bbDip', ...resolvedBbDipConfig } : undefined,
-    bbDipConfig: resolvedBbDipConfig,
-    // 엔진 옵션(ADR 0012) — 세 엔진 공통 진입 필터·(k−1)배 물타기.
+    realtimeMa5: { kind: 'realtimeMa5', ...realtimeMa5Config },
+    martingale: undefined,
+    slope: undefined,
+    bbDip: undefined,
+    bbDipConfig: undefined,
+    // 진입 필터/포지션 옵션은 단일 전략에서 사용하지 않는다.
     entryFilters,
-    averagingDown: engineOptions.martingale,
-    // 추세 → 그리드 → 매매(2026-08-18 도메인 문서) — 모델 롤백용 보존. 모델이 켜져 있는 동안은 쓰이지 않는다.
-    // 끄려면 TREND_MODE=false(한 줄 롤백 → 변곡점 조합) 또는 이 주입 두 줄을 뺀다.
-    trend: TREND_CONFIG,
+    averagingDown: false,
+    trend: undefined,
     fetchMinuteBars,
     recordTradeResult,
     keepAwake: expoKeepAwake,
@@ -550,7 +543,7 @@ function getOrCreateManager(): Promise<ManagerBootstrap> {
  */
 export async function refreshLiveSettings(autopilot: AutoPilotManager): Promise<void> {
   const appSettings = await loadAppSettings();
-  // 진입 설정(IDLE 게이트)이 거절돼도 나머지는 적용된다 — 매매 중 저장은 정지 후 다음 포커스·시작 직전에 반영된다.
+  // 설정 변경은 전 항목 즉시 반영 정책을 따른다.
   autopilot.applySettings(managerSettingsFrom(appSettings));
   // 순위 계획(2026-08-18) — 바뀌었을 때만 갈아끼우고, 폴링 중이면 다음 주기(최대 3분)를 기다리지 않고 즉시 재조회한다.
   // 정지 상태에서는 재조회하지 않는다(start가 즉시 1회 돌며 새 계획을 쓴다 — 정지 중 구독을 만들지 않게).
@@ -561,6 +554,14 @@ export async function refreshLiveSettings(autopilot: AutoPilotManager): Promise<
     liveRankingPlanKey = nextKey;
     if (autopilot.watchlist.running) void autopilot.watchlist.refresh();
   }
+}
+
+/**
+ * 설정 화면 저장 직후 즉시 반영용 — 이미 만들어진 매니저가 있을 때 최신 설정을 곧바로 흘려 넣는다.
+ */
+export async function refreshCachedManagerSettings(): Promise<void> {
+  if (!cached) return;
+  await refreshLiveSettings(cached.autopilot);
 }
 
 /**

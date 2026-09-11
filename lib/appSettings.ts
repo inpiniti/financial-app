@@ -1,11 +1,15 @@
 // 매매 파라미터(민감정보 아님) — AsyncStorage에 저장한다 (PRD §5 / §4-E). KIS 키는 lib/kisSettings.ts(secure-store) 담당.
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { KisEnvironment } from '../kis/types';
-import { DEFAULT_ENGINE_OPTIONS, type EngineOptions } from '../features/scalper/engineMode';
-import { DEFAULT_ORDER_STRATEGY, isOrderPricing, type OrderPricing } from '../features/scalper/orderStrategy';
+import type { EngineOptions } from '../features/scalper/engineMode';
+import type { OrderPricing } from '../features/scalper/orderStrategy';
 import { DEFAULT_RANKING_SELECTION, normalizeRankingSelection, type RankingSelection } from '../core/ranking';
 import { DEFAULT_BBDIP_CONFIG, type BbDipConfig } from '../core/bbDip';
-import { DEFAULT_REALTIME_MA5_CONFIG, type RealtimeMa5Config } from '../core/realtime-ma5';
+import {
+  DEFAULT_REALTIME_MA5_CONFIG,
+  REALTIME_MA5_AVERAGING_DOWN_THRESHOLD_PCT,
+  type RealtimeMa5Config,
+} from '../core/realtime-ma5';
 
 const STORAGE_KEY = 'app:settings';
 
@@ -15,17 +19,26 @@ const STORAGE_KEY = 'app:settings';
 export type EntryStrategy = 'martingale' | 'model' | 'slope' | 'bbDip' | 'realtimeMa5';
 export type ExitStrategy = 'martingale' | 'model' | 'slope' | 'bbDip' | 'realtimeMa5';
 
+const FIXED_STRATEGY: EntryStrategy = 'realtimeMa5';
+const FIXED_ENGINE_OPTIONS: EngineOptions = { ordered: false, ma5Up: false, allUp: false, martingale: false };
+const FIXED_BUY_STRATEGY: OrderPricing = 'lastChase';
+const FIXED_SELL_STRATEGY: OrderPricing = 'lastChase';
+const FIXED_REALTIME_MA5_RULES = {
+  sellTargetMultiplier: DEFAULT_REALTIME_MA5_CONFIG.sellTargetMultiplier,
+  averagingDownThresholdPct: REALTIME_MA5_AVERAGING_DOWN_THRESHOLD_PCT,
+} as const;
+
 export function normalizeStrategyPair(entryStrategy: EntryStrategy, exitStrategy: ExitStrategy): {
   entryStrategy: EntryStrategy;
   exitStrategy: ExitStrategy;
   engineMode: AppSettings['engineMode'];
 } {
-  const normalizedEntryStrategy = entryStrategy;
-  const normalizedExitStrategy = entryStrategy === 'realtimeMa5' ? 'realtimeMa5' : exitStrategy;
+  const _ignoredEntry = entryStrategy;
+  const _ignoredExit = exitStrategy;
   return {
-    entryStrategy: normalizedEntryStrategy,
-    exitStrategy: normalizedExitStrategy,
-    engineMode: normalizedEntryStrategy,
+    entryStrategy: FIXED_STRATEGY,
+    exitStrategy: FIXED_STRATEGY,
+    engineMode: FIXED_STRATEGY,
   };
 }
 
@@ -153,14 +166,14 @@ export interface AppSettings {
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   environment: 'live',
-  entryStrategy: 'bbDip',
-  exitStrategy: 'bbDip',
-  engineMode: 'bbDip',
-  engineOptions: DEFAULT_ENGINE_OPTIONS,
+  entryStrategy: FIXED_STRATEGY,
+  exitStrategy: FIXED_STRATEGY,
+  engineMode: FIXED_STRATEGY,
+  engineOptions: FIXED_ENGINE_OPTIONS,
   orderQty: 1,
   buyCancelAfterSec: 0,
-  buyStrategy: DEFAULT_ORDER_STRATEGY.buy,
-  sellStrategy: DEFAULT_ORDER_STRATEGY.sell,
+  buyStrategy: FIXED_BUY_STRATEGY,
+  sellStrategy: FIXED_SELL_STRATEGY,
   sellCancelAfterSec: 0,
   gridBuyWidthPct: 5,
   gridSellWidthPct: 2,
@@ -220,31 +233,19 @@ export async function loadAppSettings(): Promise<AppSettings> {
     // environment는 항상 'live'로 강제한다 (2026-07-30 사용자 확정 — 모의 전환 옵션 제거).
     // KIS 모의투자는 시세 WS·현재가·순위가 전부 미지원이라 이 앱에서 PAPER는 동작 불가이고,
     // 과거 스위치로 'paper'가 저장된 기기도 이 강제로 자연 복구된다.
-    const fallbackEngine = parsed.engineMode === 'model' || parsed.engineMode === 'slope' || parsed.engineMode === 'bbDip' || parsed.engineMode === 'realtimeMa5' ? parsed.engineMode : DEFAULT_APP_SETTINGS.engineMode;
-    const entryStrategy = parsed.entryStrategy === 'martingale' || parsed.entryStrategy === 'model' || parsed.entryStrategy === 'slope' || parsed.entryStrategy === 'bbDip' || parsed.entryStrategy === 'realtimeMa5'
-      ? parsed.entryStrategy
-      : fallbackEngine;
-    const exitStrategy = parsed.exitStrategy === 'martingale' || parsed.exitStrategy === 'model' || parsed.exitStrategy === 'slope' || parsed.exitStrategy === 'bbDip' || parsed.exitStrategy === 'realtimeMa5'
-      ? parsed.exitStrategy
-      : fallbackEngine;
-    const normalized = normalizeStrategyPair(entryStrategy, exitStrategy);
+    const normalized = normalizeStrategyPair(FIXED_STRATEGY, FIXED_STRATEGY);
 
     return {
       environment: 'live',
       entryStrategy: normalized.entryStrategy,
       exitStrategy: normalized.exitStrategy,
       engineMode: normalized.engineMode,
-      engineOptions: {
-        ordered: typeof parsed.engineOptions?.ordered === 'boolean' ? parsed.engineOptions.ordered : DEFAULT_ENGINE_OPTIONS.ordered,
-        ma5Up: typeof parsed.engineOptions?.ma5Up === 'boolean' ? parsed.engineOptions.ma5Up : DEFAULT_ENGINE_OPTIONS.ma5Up,
-        allUp: typeof parsed.engineOptions?.allUp === 'boolean' ? parsed.engineOptions.allUp : DEFAULT_ENGINE_OPTIONS.allUp,
-        martingale: typeof parsed.engineOptions?.martingale === 'boolean' ? parsed.engineOptions.martingale : DEFAULT_ENGINE_OPTIONS.martingale,
-      },
+      engineOptions: FIXED_ENGINE_OPTIONS,
       orderQty: parsed.orderQty ?? DEFAULT_APP_SETTINGS.orderQty,
-      buyCancelAfterSec: parsed.buyCancelAfterSec ?? DEFAULT_APP_SETTINGS.buyCancelAfterSec,
-      buyStrategy: isOrderPricing(parsed.buyStrategy) ? parsed.buyStrategy : DEFAULT_APP_SETTINGS.buyStrategy,
-      sellStrategy: isOrderPricing(parsed.sellStrategy) ? parsed.sellStrategy : DEFAULT_APP_SETTINGS.sellStrategy,
-      sellCancelAfterSec: parsed.sellCancelAfterSec ?? DEFAULT_APP_SETTINGS.sellCancelAfterSec,
+      buyCancelAfterSec: DEFAULT_APP_SETTINGS.buyCancelAfterSec,
+      buyStrategy: DEFAULT_APP_SETTINGS.buyStrategy,
+      sellStrategy: DEFAULT_APP_SETTINGS.sellStrategy,
+      sellCancelAfterSec: DEFAULT_APP_SETTINGS.sellCancelAfterSec,
       gridBuyWidthPct: parsed.gridBuyWidthPct ?? parsed.gridWidthPct ?? DEFAULT_APP_SETTINGS.gridBuyWidthPct,
       gridSellWidthPct: parsed.gridSellWidthPct ?? parsed.gridWidthPct ?? DEFAULT_APP_SETTINGS.gridSellWidthPct,
       gridBuyMultiplier: parsed.gridBuyMultiplier ?? DEFAULT_APP_SETTINGS.gridBuyMultiplier,
@@ -264,6 +265,7 @@ export async function loadAppSettings(): Promise<AppSettings> {
       realtimeMa5Config: {
         ...DEFAULT_REALTIME_MA5_CONFIG,
         ...(parsed.realtimeMa5Config ?? {}),
+        ...FIXED_REALTIME_MA5_RULES,
       },
       // 순위 선택은 저장값이 없으면 기본 구성, 있으면 카탈로그 기준으로 정리(모르는 id 폐기·누락 원천 채움).
       rankingSelection: normalizeRankingSelection(parsed.rankingSelection ?? DEFAULT_APP_SETTINGS.rankingSelection),

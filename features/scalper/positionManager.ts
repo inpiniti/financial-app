@@ -38,7 +38,14 @@ import { AveragingDownRule, MARTINGALE_CONFIG, MartingaleRule, type MartingaleCo
 import { SLOPE_CONFIG, SlopeRule, type SlopeConfig } from '../../core/slope';
 import { BbDipExitRule, DEFAULT_BBDIP_CONFIG, type BbDipConfig } from '../../core/bbDip';
 import { TrendExitRule } from '../../core/trend/exitRule';
-import { DEFAULT_REALTIME_MA5_CONFIG, sellTargetPrice, shouldAverageDown, averagingDownQty, type RealtimeMa5Config } from '../../core/realtime-ma5';
+import {
+  DEFAULT_REALTIME_MA5_CONFIG,
+  REALTIME_MA5_AVERAGING_DOWN_THRESHOLD_PCT,
+  sellTargetPrice,
+  shouldAverageDown,
+  averagingDownQty,
+  type RealtimeMa5Config,
+} from '../../core/realtime-ma5';
 import { BBDIP_MODE } from './bbDipMode';
 import { CIRCUIT_MODE } from './circuitMode';
 import { createExecutionPort } from './executionPort';
@@ -1292,6 +1299,10 @@ export class RealtimeMa5PositionManager implements PositionManager {
 
   /** 매수 Execution — 진입·물타기 매수를 추격. */
   private buyExec: Execution | null = null;
+  /** 가용자본 조회 중에는 중복 물타기 트리거를 잠근다. */
+  private averagingDownPending = false;
+  /** 같은 평단에서는 추가진입 이벤트를 1회만 처리한다. 체결로 평단이 바뀌면 해제된다. */
+  private averagedDownAtAvgPrice: number | null = null;
   /** 매도 Execution — 매수 체결 직후 선등록된 지정가. */
   private sellExec: Execution | null = null;
   /** 매도 주문의 목표가(평단×1.03) — 물타기 시 갱신. */
@@ -1332,7 +1343,7 @@ export class RealtimeMa5PositionManager implements PositionManager {
   }
 
   get busy(): boolean {
-    return this.buyExec !== null || this.sellExec !== null;
+    return this.buyExec !== null || this.sellExec !== null || this.averagingDownPending;
   }
 
   get isolated(): boolean {
@@ -1344,13 +1355,21 @@ export class RealtimeMa5PositionManager implements PositionManager {
   }
 
   onSignal(signal: Signal, price: number): void {
-    if (!this.armed || this.isolated || this.released || this.busy) return;
+    if (!this.armed || this.isolated || this.released || this.buyExec !== null || this.averagingDownPending) return;
     if (signal !== 'BUY') return;
+    if (this.averagedDownAtAvgPrice !== null && Math.abs(this.avgPrice - this.averagedDownAtAvgPrice) < 1e-9) return;
     // 물타기 조건 확인
-    if (!shouldAverageDown(price, this.avgPrice, { ma5: null, slope: 'up', breakout: true, refClose5: null }, this.cfg.averagingDownThresholdPct)) return;
-    const addQty = averagingDownQty(price, this.avgPrice, this.qty, /* availableCash */ Infinity);
-    if (addQty < 1) return;
-    this.startBuy(addQty, price);
+    if (
+      !shouldAverageDown(
+        price,
+        this.avgPrice,
+        { ma5: null, slope: 'up', breakout: true, refClose5: null },
+        REALTIME_MA5_AVERAGING_DOWN_THRESHOLD_PCT,
+      )
+    ) {
+      return;
+    }
+    void this.startAveragingDown(price);
   }
 
   async tick(opts: { canStart: boolean }): Promise<void> {
@@ -1372,7 +1391,10 @@ export class RealtimeMa5PositionManager implements PositionManager {
     if (this.sellExec !== null) {
       const remaining = this.qty;
       if (remaining > 0 && Number.isFinite(price) && price > 0) {
-        await this.sellExec.onPrice(price);
+        const orderPrice = this.sellExec.orderPrice;
+        if (orderPrice !== null && price >= this.sellTargetPrice && price > orderPrice) {
+          await this.sellExec.onPrice(price);
+        }
       }
     }
 
@@ -1409,11 +1431,11 @@ export class RealtimeMa5PositionManager implements PositionManager {
       if (r.kind === 'cancelled') {
         this.sellExec = null;
         // 매도 취소 — 매수 체결 후 다시 선등록
-        if (this.qty > 0) this.placeSellOrder(this.avgPrice);
+        if (this.qty > 0 && !this.released) this.placeSellOrder(this.avgPrice);
       }
       if (r.kind === 'fault') {
         this.sellExec = null;
-        if (this.qty > 0) this.placeSellOrder(this.avgPrice);
+        if (this.qty > 0 && !this.released) this.placeSellOrder(this.avgPrice);
       }
     }
 
@@ -1427,6 +1449,7 @@ export class RealtimeMa5PositionManager implements PositionManager {
         this.qty += r.result.filledQty;
         this.avgPrice = (prevQty * prevAvg + r.result.filledQty * fillPrice) / this.qty;
         this.buyExec = null;
+        if (Math.abs(this.avgPrice - prevAvg) >= 1e-9) this.averagedDownAtAvgPrice = null;
         this.event(`매수 체결 · ${r.result.filledQty}주 @ ${fillPrice.toFixed(2)} · 총 ${this.qty}주 · 새 평단 ${this.avgPrice.toFixed(2)}`);
         // 매도 주문 수정 — 새 평단 기준
         this.placeSellOrder(this.avgPrice);
@@ -1469,7 +1492,7 @@ export class RealtimeMa5PositionManager implements PositionManager {
       clock: this.deps.clock,
       side: 'sell',
       qty: this.qty,
-      shouldAbort: (p) => p < target, // 목표가 아래로 내려가면 취소(재시도)
+      shouldAbort: () => false,
     });
     void exec.start(target);
     this.sellExec = exec;
@@ -1488,6 +1511,36 @@ export class RealtimeMa5PositionManager implements PositionManager {
     void exec.start(price);
     this.buyExec = exec;
     this.event(`물타기 매수 시작 · ${qty}주 @ ${price.toFixed(2)}`);
+  }
+
+  private async startAveragingDown(price: number): Promise<void> {
+    if (this.averagingDownPending || this.buyExec !== null || this.released || this.isolated || !this.armed) return;
+    this.averagingDownPending = true;
+    try {
+      let availableCash = Infinity;
+      try {
+        const buyable = (await this.deps.fetchBuyableUsd?.(price)) ?? null;
+        if (buyable !== null && Number.isFinite(buyable)) {
+          availableCash = Math.max(0, buyable);
+        }
+      } catch {
+        availableCash = Infinity;
+      }
+
+      if (this.buyExec !== null || this.released || this.isolated || !this.armed) return;
+
+      const addQty = averagingDownQty(price, this.avgPrice, this.qty, availableCash);
+      if (addQty < 1) return;
+      if (this.sellExec !== null) {
+        // 추가진입 직전 기존 익절 주문을 내리고, 체결 후 새 평단 기준으로 다시 건다.
+        void this.sellExec.release();
+        this.sellExec = null;
+      }
+      this.averagedDownAtAvgPrice = this.avgPrice;
+      this.startBuy(addQty, price);
+    } finally {
+      this.averagingDownPending = false;
+    }
   }
 
   private startSell(qty: number, price: number): void {

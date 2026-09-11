@@ -356,6 +356,123 @@ describe('makePositionManager — 규칙형 어댑터(추세·변곡점)', () =>
   });
 });
 
+describe('RealtimeMa5PositionManager — 매도 선등록 루프 방지', () => {
+  it('목표가 미도달 구간에서는 매도 선등록 로그를 반복 생성하지 않는다', async () => {
+    const clock = fakeClock(1_000);
+    const broker = new FakeBroker({ autoFill: false });
+    const events: string[] = [];
+    let price = 100;
+    const pm = makePositionManager(
+      'realtimeMa5',
+      { realtimeMa5: { kind: 'realtimeMa5', ...DEFAULT_REALTIME_MA5_CONFIG } },
+      {
+        ticker: 'A',
+        broker,
+        clock,
+        price: () => ({ price, lastTradeAt: clock.now() }),
+        regularSession: () => true,
+        entry: null,
+        adopted: false,
+        onEvent: (t) => events.push(t),
+      },
+    );
+
+    expect(await pm.arm({ qty: 1, avgPrice: 100 })).toEqual({ ok: true });
+    await flush();
+
+    const before = events.filter((e) => e.includes('매도 지정가 선등록')).length;
+    for (let i = 0; i < 5; i += 1) {
+      price = 99;
+      await pm.tick({ canStart: true });
+      await pm.poll();
+      clock.advance(1_000);
+      await flush();
+    }
+
+    const after = events.filter((e) => e.includes('매도 지정가 선등록')).length;
+    expect(after).toBe(before);
+    expect(broker.placed.filter((p) => p.side === 'sell')).toHaveLength(1);
+  });
+
+  it('매도 정정은 목표가 이상 구간에서만 상향으로 수행한다', async () => {
+    const clock = fakeClock(1_000);
+    const broker = new FakeBroker({ autoFill: false });
+    const events: string[] = [];
+    let price = 100;
+    const pm = makePositionManager(
+      'realtimeMa5',
+      { realtimeMa5: { kind: 'realtimeMa5', ...DEFAULT_REALTIME_MA5_CONFIG } },
+      {
+        ticker: 'A',
+        broker,
+        clock,
+        price: () => ({ price, lastTradeAt: clock.now() }),
+        regularSession: () => true,
+        entry: null,
+        adopted: false,
+        onEvent: (t) => events.push(t),
+      },
+    );
+
+    expect(await pm.arm({ qty: 1, avgPrice: 100 })).toEqual({ ok: true });
+    await flush();
+
+    price = 102; // 목표가(103) 미만
+    clock.advance(1_100);
+    await pm.tick({ canStart: true });
+    expect(broker.amended).toHaveLength(0);
+
+    price = 104; // 목표가 이상
+    clock.advance(1_100);
+    await pm.tick({ canStart: true });
+    await flush();
+    expect(broker.amended).toHaveLength(1);
+    expect(broker.amended[0]?.price).toBe(104);
+  });
+
+  it('추가진입 매수 체결 후에는 새 평단 기준 +3%로 매도 주문을 다시 건다', async () => {
+    const clock = fakeClock(1_000);
+    const broker = new FakeBroker({ autoFill: false });
+    const events: string[] = [];
+    let price = 95;
+    const pm = makePositionManager(
+      'realtimeMa5',
+      { realtimeMa5: { kind: 'realtimeMa5', ...DEFAULT_REALTIME_MA5_CONFIG } },
+      {
+        ticker: 'A',
+        broker,
+        clock,
+        price: () => ({ price, lastTradeAt: clock.now() }),
+        regularSession: () => true,
+        entry: null,
+        adopted: false,
+        onEvent: (t) => events.push(t),
+      },
+    );
+
+    expect(await pm.arm({ qty: 1, avgPrice: 100 })).toEqual({ ok: true });
+    await flush();
+
+    const firstSell = broker.placed.filter((p) => p.side === 'sell').at(-1);
+    expect(firstSell?.price).toBe(103);
+
+    pm.onSignal('BUY', 95); // 평단 -5% 구간, 추가진입 조건 충족
+    await flush();
+
+    const buy = broker.placed.filter((p) => p.side === 'buy').at(-1);
+    expect(buy?.qty).toBe(4); // (5-1) * 1주
+    expect(buy?.price).toBe(95);
+
+    broker.fill(buy!.odno, 95);
+    await flush();
+    expect(await pm.poll()).toEqual({ kind: 'holding' });
+
+    const latestSell = broker.placed.filter((p) => p.side === 'sell').at(-1);
+    expect(latestSell?.price).toBeCloseTo(98.88); // 새 평단 96 * 1.03
+    expect(latestSell?.odno).not.toBe(firstSell?.odno);
+  });
+});
+
 describe('OcoGridPositionManager — OCO 매도그리드 어댑터(롤백 보존)', () => {
   const grid = { buyWidth: 0.1, sellWidth: 0.1, buyMultiplier: 1 };
 

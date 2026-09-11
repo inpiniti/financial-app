@@ -130,7 +130,7 @@ export interface RealtimeMa5State {
   ma5: number | null;
   /** 기울기: 현재틱 > 5개전 확정분봉 종가 → 'up', < → 'down', 비교 불가 → null. */
   slope: 'up' | 'down' | null;
-  /** 상향 돌파: 이전 틱이 이전 MA5 아래에 있고, 현재 틱이 이전 MA5를 상향 돌파한다. */
+  /** 상향 돌파: 이전틱 < 현재 MA5 < 현재틱. */
   breakout: boolean;
   /** 5개전 확정분봉 종가. 없으면 null. */
   refClose5: number | null;
@@ -142,15 +142,10 @@ export interface RealtimeMa5State {
  * MA5_realtime = (closes[n-4] + closes[n-3] + closes[n-2] + closes[n-1] + currentTick) / 5
  *
  * 기울기: currentTick > closes[n-5] (5개전 종가) → up, down.
- * 돌파: prevTick < prevMa5 && currentTick > prevMa5 → true.
- *
- * 중요: 실시간 MA5는 현재 MA5를 넘는지보다, 이전에 계산된 MA5를 기준으로 현재 틱이
- * 상향 돌파했는지를 봐야 한다. 이 규칙이 실시간 반응 속도와 물타기 경계선 사이에서
- * 가장 안정적이다.
+ * 돌파: prevTick < ma5Realtime(currentTick) < currentTick → true.
  */
 export class RealtimeMa5Calculator {
   private prevTick: number | null = null;
-  private prevMa5: number | null = null;
 
   /**
    * 현재 틱으로 MA5·기울기·돌파를 계산한다.
@@ -175,23 +170,19 @@ export class RealtimeMa5Calculator {
       slope = currentTick > refClose5 ? 'up' : currentTick < refClose5 ? 'down' : null;
     }
 
-    // 돌파: 이전 틱이 이전 MA5 아래에 있던 상태에서, 현재 틱이 이전 MA5를 상향 돌파했는가.
-    // 현재 MA5의 절대값보다 이전 MA5 기준으로 판단하는 이유는 "이전 시점의 추세선"을
-    // 기준으로 현 시점이 돌파했는지 확인해야 하기 때문이다.
+    // 돌파: 이전틱 < 현재 MA5 < 현재틱
     let breakout = false;
-    if (this.prevTick !== null && this.prevMa5 !== null) {
-      breakout = this.prevTick < this.prevMa5 && currentTick > this.prevMa5;
+    if (this.prevTick !== null && ma5 !== null) {
+      breakout = this.prevTick < ma5 && currentTick > ma5;
     }
 
     this.prevTick = currentTick;
-    this.prevMa5 = ma5;
 
     return { ma5, slope, breakout, refClose5 };
   }
 
   reset(): void {
     this.prevTick = null;
-    this.prevMa5 = null;
   }
 }
 
@@ -218,10 +209,13 @@ export interface RealtimeMa5Config {
   startAmountUsd: number;
 }
 
+/** 추가진입은 평단 대비 -3% 조건으로 고정한다. */
+export const REALTIME_MA5_AVERAGING_DOWN_THRESHOLD_PCT = -3;
+
 export const DEFAULT_REALTIME_MA5_CONFIG: RealtimeMa5Config = {
   orderQty: 1,
   sellTargetMultiplier: 1.03,
-  averagingDownThresholdPct: -3,
+  averagingDownThresholdPct: REALTIME_MA5_AVERAGING_DOWN_THRESHOLD_PCT,
   startAmountUsd: 100,
 };
 

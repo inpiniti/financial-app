@@ -325,8 +325,6 @@ export class FeedSlot {
   private readonly realtimeMa5Calc = new RealtimeMa5Calculator();
   /** 실시간 MA5 마지막 판정(뷰·진입 판정용). */
   private realtimeMa5State: RealtimeMa5State = { ma5: null, slope: null, breakout: false, refClose5: null };
-  /** 실시간 MA5 모드의 마지막 BUY를 낸 봉 키 — 봉당 1회 발화 방지. */
-  private realtimeMa5LastBuyBarKey: number | null = null;
   /** 진입 필터(엔진 옵션) — 5선 돌파 모드는 돌파 판정에, 모델·기울기 모드는 BUY 게이트에 쓴다. */
   private readonly entryFilters: EntryFilters;
   /** 모델·기울기 모드에서 필터가 켜져 1분봉을 같이 쌓는가. */
@@ -374,7 +372,9 @@ export class FeedSlot {
     // 물타기 모드·진입 필터는 봉 주기가 1분(4선 정의) — 주입값보다 우선한다.
     this.bars = new MinuteBarBuilder(
       undefined,
-      this.martingaleMode || this.filterBars ? MARTINGALE_BAR_MINUTES : (options.trendBarMinutes ?? TREND_BAR_MINUTES),
+      this.martingaleMode || this.realtimeMa5Mode || this.filterBars
+        ? MARTINGALE_BAR_MINUTES
+        : (options.trendBarMinutes ?? TREND_BAR_MINUTES),
     );
     this.inflectionMode =
       !this.slopeMode && !this.bbDipMode && !this.realtimeMa5Mode && !this.martingaleMode && !this.modelMode && !this.trendMode && INFLECTION_ENTRY && options.inflection === true;
@@ -408,9 +408,8 @@ export class FeedSlot {
 
     // 실시간 1분봉/MA5는 화면 공통 지표라 모드와 무관하게 매 틱 갱신한다.
     // 규칙: 마지막(미완성) 분봉 OHLC는 틱마다 갱신, MA5 = 직전 확정 4봉 종가 + 현재틱 / 5.
-    const rtClosed = this.realtimeCandleBuilder.pushTick(price, tsMs);
+    this.realtimeCandleBuilder.pushTick(price, tsMs);
     this.realtimeMa5State = this.realtimeMa5Calc.evaluate(this.realtimeCandleBuilder.closes, price);
-    if (rtClosed !== null) this.realtimeMa5LastBuyBarKey = null;
 
     if (this.slopeMode) {
       // 기울기 단타(ADR 0011) — 틱마다 기울기/10초를 재서 문턱 전환에서만 신호. 스로틀·봉·세션 게이트 없음.
@@ -428,7 +427,7 @@ export class FeedSlot {
     if (this.realtimeMa5Mode) {
       // 실시간 MA5 단타 — 위 공통 갱신된 MA5·기울기·돌파 스냅샷으로 진입 판정만 한다.
       this.bars.pushTick(price, tsMs); // 기존 1분봉 빌더도 유지 (시드·뷰 호환)
-      this.evaluateRealtimeMa5Tick(price, tsMs);
+      this.evaluateRealtimeMa5Tick(price);
       return null;
     }
 
@@ -830,19 +829,12 @@ export class FeedSlot {
 
   /**
    * 실시간 MA5 틱 판정 — 매 틱마다 MA5·기울기·돌파를 재고 진입 신호를 낸다.
-   * 기울기 상승 AND 돌파면 BUY(kind='realtimeMa5'). 봉당 1회 발화.
+   * 기울기 상승 AND 돌파면 BUY(kind='realtimeMa5').
    */
-  private evaluateRealtimeMa5Tick(price: number, _tsMs: number): void {
+  private evaluateRealtimeMa5Tick(price: number): void {
     if (this.trendListener === null) return;
     const state = this.realtimeMa5State;
     if (!shouldEnter(state)) return;
-    // 봉당 1회 방지 — 같은 확정 봉에서 이미 냈으면 건너뜀
-    const barKey = this.realtimeCandleBuilder.lastClosedKey;
-    if (barKey !== null && this.realtimeMa5LastBuyBarKey === barKey) return;
-    // 진행 중 봉 키로도 방지 (진입은 확정봉 다음 봉에서)
-    const inProgressKey = this.realtimeCandleBuilder.inProgress?.minuteKey;
-    if (inProgressKey !== null && inProgressKey !== undefined && this.realtimeMa5LastBuyBarKey === inProgressKey) return;
-    this.realtimeMa5LastBuyBarKey = inProgressKey ?? barKey;
     this.lastSignal = 'BUY';
     this.trendListener('BUY', {
       ticker: this.ticker,
