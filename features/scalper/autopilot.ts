@@ -1228,12 +1228,9 @@ export class AutoPilot {
     }
 
     const broker = this.deps.makeBroker(ctx.ticker);
-    // 기울기 단타(2026-09-02 사용자 확정): 매수는 신호 시점 현재가 지정가 — 매도1호가 크로스·정정 추격 없음("호가로 거니 손해").
-    // 안 붙으면 설정의 매수 미체결 취소(buyCancelAfterMs)가 정리하고 다음 신호를 기다린다.
-    // 매수 발주가(2026-09-03 주문 전략): quote=매도1호가 크로스, 그 외=신호 시점 현재가. 미주입이면 기울기 모드만 현재가(옛 동작).
-    const buyAtLastPrice = this.orderStrategy
-      ? this.orderStrategy.buy !== 'quote'
-      : this.positionMode === 'slope' || realtimeMa5Mode;
+    // 실시간 MA5(현행 단일 전략): 매수는 5선 상향 돌파 시점의 현재가 지정가 — 호가 크로스 슬리피지 없음.
+    // 그 외 레거시 모드: orderStrategy가 지정되어 있으면 그에 따르고, 미지정 시 기울기 모드만 현재가.
+    const buyAtLastPrice = realtimeMa5Mode || (this.orderStrategy ? this.orderStrategy.buy !== 'quote' : this.positionMode === 'slope');
     const adapter = new OrderPortAdapter({ broker, clock: this.deps.clock, buyAtLastPrice });
     const fault = await adapter.preflightCheckFills();
     if (this.stopRequested) return giveUp();
