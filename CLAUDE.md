@@ -5,7 +5,7 @@ KIS Open API로 미국주식 단타를 자동 매매하는 Expo(React Native) �
 ## 용어와 지도 (코드 읽기·설계·문서 쓰기 전에)
 - 용어 정본: `CONTEXT.md` — 실시간 MA5·포지션·주문·오토파일럿·서킷 등 이 repo의 말은 이 표의 정의로 쓴다.
 - 도메인 지도: `docs/domain/README.md` — 도메인별 상태·코드 위치. 모든 비즈니스 규칙·불변식·결정사항은 해당 `docs/domain/<이름>/` 문서가 유일한 정본(Single Source of Truth)이다. 도메인 규칙을 고치면 해당 도메인 문서도 같이 고친다.
-- 화면 단위는 `docs/features/`, 배선 plan은 `docs/development/`, 실거래 분석 일지는 `docs/분석/README.md`.
+- 화면 및 기능 단위는 `docs/domain/<이름>/feature-and-screens.md`, 배선 plan은 `docs/development/`, 실거래 분석 일지는 `docs/분석/README.md`.
 
 ## 스펙
 - KIS 엔드포인트·TR ID·필드는 `docs/koreainvestment/`가 정본. 연동 코드는 `kis-openapi` 스킬 절차대로.
