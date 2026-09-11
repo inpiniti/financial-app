@@ -662,7 +662,7 @@ export class FeedSlot {
     const probe = this.price ?? this.realtimeCandleBuilder.inProgress?.close ?? this.realtimeCandleBuilder.closes.at(-1) ?? null;
     this.realtimeMa5State =
       probe !== null && Number.isFinite(probe) && probe > 0
-        ? this.realtimeMa5Calc.evaluate(this.realtimeCandleBuilder.closes, probe)
+        ? this.realtimeMa5Calc.evaluate(this.realtimeCandleBuilder.closes, probe, false)
         : { ma5: null, slope: null, breakout: false, refClose5: null };
   }
 

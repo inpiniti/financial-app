@@ -256,6 +256,8 @@ export interface AutoPilotDeps {
   reselectIntervalMs?: number;
   hysteresisRatio?: number;
   watchCount?: number;
+  /** 정규장 신규 진입 가능 세션 여부 판정 (기본: isUsInitialEntryAllowed). */
+  isInitialEntryAllowed?: (epochMs: number) => boolean;
 }
 
 /** 진입 수량(순수) — 금액÷가격 내림. 1 미만이면 0(진입 포기 신호). */
@@ -296,20 +298,17 @@ export function validateConfig(config: AutoPilotConfig): string | null {
   return null;
 }
 
-/** 미국 정규장(ET 09:30~16:00, LULD 적용 시간)인가 — 서킷 감지 게이트(2026-08-19). 서머타임은 Intl이 처리한다. */
-export function isUsRegularSession(epochMs: number): boolean {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(new Date(epochMs));
-  const h = Number(parts.find((p) => p.type === 'hour')?.value ?? NaN) % 24;
-  const m = Number(parts.find((p) => p.type === 'minute')?.value ?? NaN);
-  if (!Number.isFinite(h) || !Number.isFinite(m)) return false;
-  const mins = h * 60 + m;
-  return mins >= 9 * 60 + 30 && mins < 16 * 60;
-}
+import {
+  isUsRegularSession,
+  isUsInitialEntryAllowed,
+  isUsAveragingDownAllowed,
+} from '../../core/realtime-ma5';
+
+export {
+  isUsRegularSession,
+  isUsInitialEntryAllowed,
+  isUsAveragingDownAllowed,
+};
 
 
 /** 미국 장 기준일(America/New_York 날짜, YYYY-MM-DD) — "오늘"의 기준(사용자 확정 §4-7). */
@@ -594,6 +593,11 @@ export class AutoPilot {
   /** 진입 후 관리 모드 — 판정은 positionManager.resolvePositionMode 한 곳(추세 > 변곡점 > OCO). null이면 옛 RunCycle SELL 경로. */
   private get positionMode() {
     return resolvePositionMode(this.positionManagement);
+  }
+
+  /** 신규 진입 가능 시간 판정 — deps 주입 시 검증, 미주입(하네스) 시 통과. 실서비스(AutoPilotManager)는 isUsInitialEntryAllowed를 주입한다. */
+  private isInitialEntryAllowed(now: number): boolean {
+    return this.deps.isInitialEntryAllowed ? this.deps.isInitialEntryAllowed(now) : true;
   }
 
   /**
@@ -1114,7 +1118,14 @@ export class AutoPilot {
   private handleBuySignal(ctx: SlotSignalContext): void {
     if (this.stopRequested || !this.running || this.faulted || this.paused) return;
     if (this.actives.has(ctx.ticker) || this.pendingBuys.has(ctx.ticker)) return; // 이미 보유·진입 중
-    const realtimeMa5Mode = this.positionMode === 'realtimeMa5';
+
+    // 정규장 세션 및 장마감 2시간 전 컷오프 (ET 09:30~14:00까지만 신규 진입 가능)
+    const now = this.deps.clock.now();
+    if (!this.isInitialEntryAllowed(now)) {
+      this.dropBuySignal(ctx.ticker, '정규장 진입 가능 시간(ET 09:30~14:00, 장마감 2시간 전까지)이 아니에요');
+      return;
+    }
+
     // ↓ 여기부터는 "살 수 있었는데 안 산" 경로 — 전부 사유를 남긴다(2026-08-26 제보: 신호가 났는데
     //   안 샀고 기록도 없어 원인을 알 수 없었다. 2026-08-20 무음 폐기 교훈의 잔여 구멍).
     if (this.inAbandonCooldown(ctx.ticker)) {
@@ -1130,35 +1141,21 @@ export class AutoPilot {
       return;
     }
 
-    // 2026-08-21 순수 상태기계 전환(사용자 확정) — 추세 전용 진입 필터를 전부 걷어냈다.
-    // 걷어낸 것: 챱 차단(밴드폭 하한, 2026-08-20) · 감시 요건(틱속도 상위 watchCount종, 2026-08-20).
-    // 근거: docs/분석/2026-08-21_4선-상태기계-검증.md — 규칙은 "4선 상태기계 하나"로 단순화하고,
-    // 필터의 가치는 869일 백테스트로 판정한다(하루치 in-sample 캘리브레이션이 반복해서 뒤집혔다).
-    // 되돌리려면 이 자리에 필터를 다시 넣으면 된다(TREND_MIN_BAND_WIDTH_PCT·watchedTickers 그대로 있다).
-
     const rate = this.slotOf(ctx.ticker)?.tickRate(this.deps.clock.now()) ?? 0;
-    if (!realtimeMa5Mode) {
-      // 감지기가 전 종목에 붙으면서(2026-08-10) 느린 종목의 신호가 흔해졌다 — 프리플라이트(REST 왕복)
-      // 전에 여기서 거른다. commitBuy의 재검사(발주 직전)와 이중이지만 각자 다른 시점을 지킨다.
-      if (rate < (this.config?.minTickRate ?? DEFAULT_MIN_TICK_RATE)) {
-        // 2026-08-20까지는 무음 폐기였다 — 속도 필터가 ZNB +72% 신호를 버린 걸 이틀 뒤에야 알았다. 이벤트로 남긴다.
-        this.dropBuySignal(ctx.ticker, `속도 ${rate.toFixed(1)}틱/초 < 기준 ${this.config?.minTickRate ?? DEFAULT_MIN_TICK_RATE}`);
-        return;
-      }
+    // 모든 모드(실시간 MA5 포함) 공통: 속도 필터 및 감시 후보 게이트 준수 (조용한 0틱 종목 진입 방지)
+    if (rate < (this.config?.minTickRate ?? DEFAULT_MIN_TICK_RATE)) {
+      this.dropBuySignal(ctx.ticker, `속도 ${rate.toFixed(1)}틱/초 < 기준 ${this.config?.minTickRate ?? DEFAULT_MIN_TICK_RATE}`);
+      return;
+    }
 
-      // 매수 후보 게이트(2026-08-24 사용자 요청) — 최소 속도를 넘겼어도 **틱/초 상위 watchCount종**이
-      // 아니면 사지 않는다. 모델은 리스트 전 종목을 계속 판정하지만(확률은 화면에 다 보인다) 실제 매수는
-      // "지금 가장 활발한 몇 종목" 안에서만 일어난다 — 조용한 종목의 신호는 호가가 얇아 빠져나오기 어렵다.
-      // 후보 목록은 reselect가 유지한다(보유·진입 중 종목은 빠져 있어 자리가 놀지 않는다).
-      if (!this.watchedTickers.includes(ctx.ticker)) {
-        this.dropBuySignal(
-          ctx.ticker,
-          `매수 후보(속도 상위 ${this.watchCountNow}종) 밖이에요 · 지금 ${rate.toFixed(1)}틱/초, 후보 ${
-            this.watchedTickers.length > 0 ? this.watchedTickers.join(', ') : '없음'
-          }`,
-        );
-        return;
-      }
+    if (!this.watchedTickers.includes(ctx.ticker)) {
+      this.dropBuySignal(
+        ctx.ticker,
+        `매수 후보(속도 상위 ${this.watchCountNow}종) 밖이에요 · 지금 ${rate.toFixed(1)}틱/초, 후보 ${
+          this.watchedTickers.length > 0 ? this.watchedTickers.join(', ') : '없음'
+        }`,
+      );
+      return;
     }
     this.pendingBuys.set(ctx.ticker, { ctx, tickRate: rate });
     this.emit();
@@ -1192,6 +1189,10 @@ export class AutoPilot {
     };
 
     if (this.stopRequested) return giveUp();
+    if (!this.isInitialEntryAllowed(this.deps.clock.now())) {
+      this.event(`${ticker} 진입 포기 · 정규장 진입 가능 시간(ET 09:30~14:00, 장마감 2시간 전까지)이 지났어요`);
+      return giveUp();
+    }
 
     // 진입 수량 — 고정 수량이 지정돼 있으면 가격과 무관하게 그 수량, 아니면 floor(진입금액 ÷ 현재가).
     const fixedQty = fixedEntryQtyOf(config);
@@ -1243,14 +1244,12 @@ export class AutoPilot {
     }
 
     // 진입 직전 속도 재검사 — 감시 선정과 신호 사이에 유동성이 죽었으면 포기.
-    if (!realtimeMa5Mode) {
-      const rateNow = slot.tickRate(this.deps.clock.now());
-      if (rateNow < config.minTickRate) {
-        this.event(
-          `${ctx.ticker} 진입 포기 · 속도가 ${rateNow.toFixed(1)}틱/초로 떨어져 기준(${config.minTickRate})에 못 미쳐요`,
-        );
-        return giveUp();
-      }
+    const rateNow = slot.tickRate(this.deps.clock.now());
+    if (rateNow < config.minTickRate) {
+      this.event(
+        `${ctx.ticker} 진입 포기 · 속도가 ${rateNow.toFixed(1)}틱/초로 떨어져 기준(${config.minTickRate})에 못 미쳐요`,
+      );
+      return giveUp();
     }
 
     // 현금 부족 사전 판정 — 조회 실패(null/throw)면 판정 없이 진행(FAULT 인터록이 최후 방어선).

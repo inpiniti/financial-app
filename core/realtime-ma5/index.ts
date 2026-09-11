@@ -146,13 +146,15 @@ export interface RealtimeMa5State {
  */
 export class RealtimeMa5Calculator {
   private prevTick: number | null = null;
+  private liveTickCount = 0;
 
   /**
    * 현재 틱으로 MA5·기울기·돌파를 계산한다.
    * confirmedCloses = 확정된 봉 종가 배열 (오름차순, 최소 5개 이상 권장).
    * currentTick = 현재 틱 가격.
+   * isLiveTick = 실제 수신된 라이브 틱 여부 (기본 true). 시드/프로브 조회 시 false로 전달하여 돌파 오판정 방지.
    */
-  evaluate(confirmedCloses: readonly number[], currentTick: number): RealtimeMa5State {
+  evaluate(confirmedCloses: readonly number[], currentTick: number, isLiveTick = true): RealtimeMa5State {
     const n = confirmedCloses.length;
 
     // MA5 = (최근 4 확정 종가 + 현재틱) / 5
@@ -170,20 +172,77 @@ export class RealtimeMa5Calculator {
       slope = currentTick > refClose5 ? 'up' : currentTick < refClose5 ? 'down' : null;
     }
 
-    // 돌파: 이전틱 < 현재 MA5 < 현재틱
+    // 돌파: 라이브 틱이 2개 이상 관측되었고, 이전 라이브틱 < 현재 MA5 < 현재 라이브틱
     let breakout = false;
-    if (this.prevTick !== null && ma5 !== null) {
-      breakout = this.prevTick < ma5 && currentTick > ma5;
+    if (isLiveTick) {
+      this.liveTickCount++;
+      if (this.prevTick !== null && ma5 !== null && this.liveTickCount >= 2) {
+        breakout = this.prevTick < ma5 && currentTick > ma5;
+      }
+      this.prevTick = currentTick;
     }
-
-    this.prevTick = currentTick;
 
     return { ma5, slope, breakout, refClose5 };
   }
 
   reset(): void {
     this.prevTick = null;
+    this.liveTickCount = 0;
   }
+}
+
+// ---------------------------------------------------------------------------
+// 세션 판정 (미국 정규장 및 진입/추가진입 시간 창)
+// ---------------------------------------------------------------------------
+
+/**
+ * 미국 정규장(ET 09:30~16:00, 월~금) 여부
+ */
+export function isUsRegularSession(epochMs: number): boolean {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(epochMs));
+  const weekday = parts.find((p) => p.type === 'weekday')?.value;
+  if (weekday === 'Sat' || weekday === 'Sun') return false;
+  const h = Number(parts.find((p) => p.type === 'hour')?.value ?? NaN) % 24;
+  const m = Number(parts.find((p) => p.type === 'minute')?.value ?? NaN);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return false;
+  const mins = h * 60 + m;
+  return mins >= 9 * 60 + 30 && mins < 16 * 60;
+}
+
+/**
+ * 미국 정규장 신규 진입 허용 여부:
+ * 정규장 개장(ET 09:30)부터 장마감 2시간 전(ET 14:00)까지만 신규 진입 허용.
+ * ET 14:00~16:00 및 장외/주간거래는 신규 진입 금지.
+ */
+export function isUsInitialEntryAllowed(epochMs: number): boolean {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(epochMs));
+  const weekday = parts.find((p) => p.type === 'weekday')?.value;
+  if (weekday === 'Sat' || weekday === 'Sun') return false;
+  const h = Number(parts.find((p) => p.type === 'hour')?.value ?? NaN) % 24;
+  const m = Number(parts.find((p) => p.type === 'minute')?.value ?? NaN);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return false;
+  const mins = h * 60 + m;
+  return mins >= 9 * 60 + 30 && mins < 14 * 60; // ET 09:30 ~ 14:00 (장마감 2시간 전까지)
+}
+
+/**
+ * 미국 정규장 추가진입(물타기) 허용 여부:
+ * 정규장 시간(ET 09:30 ~ 16:00) 내내 언제든 허용 (장마감 2시간 전인 ET 14:00~16:00에도 가능).
+ */
+export function isUsAveragingDownAllowed(epochMs: number): boolean {
+  return isUsRegularSession(epochMs);
 }
 
 // ---------------------------------------------------------------------------

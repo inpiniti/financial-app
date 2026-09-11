@@ -1357,6 +1357,8 @@ export class RealtimeMa5PositionManager implements PositionManager {
   onSignal(signal: Signal, price: number): void {
     if (!this.armed || this.isolated || this.released || this.buyExec !== null || this.averagingDownPending) return;
     if (signal !== 'BUY') return;
+    // 미국 정규장(ET 09:30~16:00) 외 추가진입 차단 (장마감 2시간 전인 14:00~16:00에도 추가진입은 허용)
+    if (!this.deps.regularSession(this.deps.clock.now())) return;
     if (this.averagedDownAtAvgPrice !== null && Math.abs(this.avgPrice - this.averagedDownAtAvgPrice) < 1e-9) return;
     // 물타기 조건 확인
     if (
@@ -1375,8 +1377,11 @@ export class RealtimeMa5PositionManager implements PositionManager {
   async tick(opts: { canStart: boolean }): Promise<void> {
     if (!this.armed || this.isolated || this.released) return;
     const view = this.deps.price();
-    if (!view || view.price === null) return;
-    const price = view.price;
+    let price = view?.price ?? null;
+    if (price === null && this.deps.fetchRestPrice) {
+      price = await this.deps.fetchRestPrice();
+    }
+    if (price === null || !Number.isFinite(price) || price <= 0) return;
     const now = this.deps.clock.now();
 
     // 마감 청산 — 19:55 ET

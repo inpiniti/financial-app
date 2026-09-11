@@ -471,6 +471,34 @@ describe('RealtimeMa5PositionManager — 매도 선등록 루프 방지', () => 
     expect(latestSell?.price).toBeCloseTo(98.88); // 새 평단 96 * 1.03
     expect(latestSell?.odno).not.toBe(firstSell?.odno);
   });
+
+  it('정규장 세션이 아니면 추가진입(물타기) 신호가 와도 매수 발주하지 않는다', async () => {
+    const clock = fakeClock(1_000);
+    const broker = new FakeBroker({ autoFill: false });
+    let price = 95;
+    const pm = makePositionManager(
+      'realtimeMa5',
+      { realtimeMa5: { kind: 'realtimeMa5', ...DEFAULT_REALTIME_MA5_CONFIG } },
+      {
+        ticker: 'A',
+        broker,
+        clock,
+        price: () => ({ price, lastTradeAt: clock.now() }),
+        regularSession: () => false, // 정규장 아님
+        entry: null,
+        adopted: false,
+      },
+    );
+
+    expect(await pm.arm({ qty: 1, avgPrice: 100 })).toEqual({ ok: true });
+    await flush();
+
+    pm.onSignal('BUY', 95);
+    await flush();
+
+    const buys = broker.placed.filter((p) => p.side === 'buy');
+    expect(buys).toHaveLength(0);
+  });
 });
 
 describe('OcoGridPositionManager — OCO 매도그리드 어댑터(롤백 보존)', () => {

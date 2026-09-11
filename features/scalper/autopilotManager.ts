@@ -23,6 +23,7 @@ import {
   type ModelGridConfig,
   type TrendGridConfig,
 } from './autopilot';
+import { isUsInitialEntryAllowed } from '../../core/realtime-ma5';
 import { isDaytimeSessionOpen } from './daySession';
 import { FeedSlot, INFLECTION_ENTRY, LADDER_ENTRY, type FeedSlotView, type LadderEntryOptions } from './feedSlot';
 import { BBDIP_MODE } from './bbDipMode';
@@ -389,6 +390,7 @@ export class AutoPilotManager {
       buyCancelAfterMs: deps.buyCancelAfterMs,
       orderStrategy: deps.orderStrategy,
       reselectIntervalMs: deps.reselectIntervalMs,
+      isInitialEntryAllowed: isUsInitialEntryAllowed,
       onTrade: (record) => {
         // 채용 거래소를 함께 남긴다 — 거래기록 화면에서 행 탭 → 종목상세 진입 시 시장 판별용.
         // 종목명도 같이 남긴다 — 기록은 나중에 읽히는데 그때는 리스트에 없어 이름을 되찾을 길이 없다.
