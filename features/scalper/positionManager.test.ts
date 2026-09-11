@@ -550,4 +550,39 @@ describe('OcoGridPositionManager — OCO 매도그리드 어댑터(롤백 보존
     await pm.tick({ canStart: true });
     expect(broker.placed).toHaveLength(0);
   });
+
+  describe('RealtimeMa5PositionManager — 체결 응답 유실 대응(잔고 재대조)', () => {
+    it('체결 응답이 안 와도 2회 연속 잔고가 0이면 MANUAL로 정산 종결한다', async () => {
+      const clock = fakeClock(1_000);
+      const broker = new FakeBroker({ autoFill: false });
+      const events: string[] = [];
+      const pm = makePositionManager(
+        'realtimeMa5',
+        { realtimeMa5: DEFAULT_REALTIME_MA5_CONFIG },
+        adapterDeps(broker, clock, events, { feeRate: 0 }),
+      );
+
+      await pm.arm({ qty: 10, avgPrice: 100 });
+      expect(pm.gaugeView().holdingQty).toBe(10);
+
+      // 브로커 잔고를 0(매도 완료 상태)으로 설정 (체결 통보는 아직 미반영 상태)
+      broker.position = null;
+
+      // 1회차 확인 (15초 경과) -> manualMisses = 1, 여전히 holding
+      clock.advance(15_000);
+      let r = await pm.poll();
+      expect(r.kind).toBe('holding');
+
+      // 2회차 확인 (추가 15초 경과) -> 2회 연속 부재 확인 -> MANUAL 정산 종결
+      clock.advance(15_000);
+      r = await pm.poll();
+      expect(r.kind).toBe('sold');
+      if (r.kind === 'sold') {
+        expect(r.record.exitReason).toBe('MANUAL');
+        expect(r.record.qty).toBe(10);
+      }
+      expect(events.at(-1)).toContain('잔고에서 사라졌어요');
+      expect(pm.gaugeView().holdingQty).toBe(0);
+    });
+  });
 });

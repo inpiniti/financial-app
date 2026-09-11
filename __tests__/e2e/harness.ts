@@ -344,6 +344,7 @@ export function makeHarness(opts: MakeHarnessOptions = {}): Harness {
     bufferSize: opts.bufferSize ?? 7,
     // 짧은 역V 시퀀스로 "전환 즉시 매도"를 검증하므로 매도 문턱 0(끔)을 명시해 의미를 보존한다.
     minSellMomentum: 0,
+    isInitialEntryAllowed: () => true,
   });
   // WS 단일 연결 공유 — 허브의 라우터가 오토파일럿 슬롯으로 흘려보낸다(managerProvider와 동일 배선).
   manager.setAuxRoutes(autopilot.routeTick, autopilot.routeQuote);

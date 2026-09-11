@@ -212,6 +212,8 @@ export interface AutoPilotManagerDeps {
   orderStrategy?: OrderStrategy;
   reselectIntervalMs?: number;
   watchlistPollIntervalMs?: number;
+  /** 정규장 신규 진입 가능 세션 여부 판정 함수 오버라이드 (미주입 시 기본: isUsInitialEntryAllowed) */
+  isInitialEntryAllowed?: (epochMs: number) => boolean;
   /**
    * 외부 보조 소비자(종목 상세화면)가 이 (trKey, trId)를 잡고 있는지 조회 — managerProvider가
    * ScalperManager.holdsFeed로 배선한다. true면 dropSlot/reconcileQuoteSubs가 unsubscribe를 건너뛴다
@@ -390,7 +392,7 @@ export class AutoPilotManager {
       buyCancelAfterMs: deps.buyCancelAfterMs,
       orderStrategy: deps.orderStrategy,
       reselectIntervalMs: deps.reselectIntervalMs,
-      isInitialEntryAllowed: isUsInitialEntryAllowed,
+      isInitialEntryAllowed: deps.isInitialEntryAllowed ?? isUsInitialEntryAllowed,
       onTrade: (record) => {
         // 채용 거래소를 함께 남긴다 — 거래기록 화면에서 행 탭 → 종목상세 진입 시 시장 판별용.
         // 종목명도 같이 남긴다 — 기록은 나중에 읽히는데 그때는 리스트에 없어 이름을 되찾을 길이 없다.

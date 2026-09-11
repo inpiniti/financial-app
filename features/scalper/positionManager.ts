@@ -75,6 +75,8 @@ export const INFLECTION_GRID = true;
 
 /** 외부(수동) 청산 재확인 주기(ms) — 추세 관리에서 잔고를 다시 읽는 간격(2회 연속 없음이면 MANUAL 정산). */
 export const MANUAL_EXIT_CHECK_MS = 120_000;
+/** 실시간 MA5 청산 재확인 주기(ms) — 15초마다 잔고 재대조. */
+export const REALTIME_MA5_MANUAL_EXIT_CHECK_MS = 15_000;
 
 /**
  * 청산 매도 발주가에 쓸 1호가의 신선도 한계(ms) — OrderPortAdapter.quoteStaleMs와 같은 값.
@@ -1307,6 +1309,9 @@ export class RealtimeMa5PositionManager implements PositionManager {
   private sellExec: Execution | null = null;
   /** 매도 주문의 목표가(평단×1.03) — 물타기 시 갱신. */
   private sellTargetPrice = 0;
+  /** 잔고 재대조(Reconciliation): 브로커 체결 응답 유실 시 유령 포지션 방지용. */
+  private manualCheckAt = 0;
+  private manualMisses = 0;
 
   constructor(deps: PositionManagerDeps, cfg: RealtimeMa5Config) {
     this.deps = deps;
@@ -1465,7 +1470,58 @@ export class RealtimeMa5PositionManager implements PositionManager {
       }
     }
 
+    // 잔고 재대조(Reconciliation) — 브로커 체결 응답 유실 시 유령 포지션 방지
+    const manualResult = await this.checkManualExit();
+    if (manualResult.kind !== 'holding') return manualResult;
+
     return { kind: 'holding' };
+  }
+
+  /**
+   * 외부(수동 또는 체결응답 유실) 청산 인지 — 15초 주기로 잔고를 재확인해 2회 연속 잔고에 없으면 MANUAL 사유로 정산 종결.
+   */
+  private async checkManualExit(): Promise<PositionPollResult> {
+    if (this.released || this.buyExec !== null) return { kind: 'holding' };
+    const now = this.deps.clock.now();
+    if (now < this.manualCheckAt) return { kind: 'holding' };
+    this.manualCheckAt = now + REALTIME_MA5_MANUAL_EXIT_CHECK_MS;
+
+    let pos: ConditionalPosition | null;
+    try {
+      pos = await this.deps.broker.fetchPosition();
+    } catch {
+      return { kind: 'holding' }; // 조회 실패는 판단 유예
+    }
+
+    if (pos !== null && pos.qty > 0) {
+      this.manualMisses = 0;
+      return { kind: 'holding' };
+    }
+
+    this.manualMisses += 1;
+    if (this.manualMisses < 2) return { kind: 'holding' };
+
+    // 2회 연속 계좌에 수량이 없음 → 이미 체결/정리된 포지션
+    const exitPrice = this.deps.price()?.price ?? this.sellTargetPrice;
+    const record = makeTradeRecord({
+      ticker: this.ticker,
+      qty: this.qty,
+      entryPrice: this.avgPrice,
+      exitPrice,
+      entry: this.deps.entry,
+      exitReason: 'MANUAL',
+      feeRate: this.deps.feeRate,
+      now: this.deps.clock.now(),
+    });
+
+    this.qty = 0;
+    if (this.sellExec !== null) {
+      void this.sellExec.release();
+      this.sellExec = null;
+    }
+    this.armed = false;
+    this.event(`잔고에서 사라졌어요 — 체결 응답 유실 또는 외부 매도로 보고 정산 종결해요 · 현재가 ${exitPrice.toFixed(2)} 기준 기록`);
+    return { kind: 'sold', record };
   }
 
   sellNow(price: number): boolean {

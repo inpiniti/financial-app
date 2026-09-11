@@ -636,7 +636,7 @@ export default function SettingsScreen() {
         minTickRate: parsedMinTickRate,
         watchCount: parsedWatchCount,
         maxConcurrentGrids: parsedMaxGrids,
-        rankingSelection: DEFAULT_APP_SETTINGS.rankingSelection,
+        rankingSelection,
       });
       savedEntryStrategyRef.current = normalizedEntryStrategy;
       savedExitStrategyRef.current = normalizedExitStrategy;
@@ -813,7 +813,7 @@ export default function SettingsScreen() {
           </View>
         </Panel>
 
-        {false && <RankingSelectionPanel draft={rankingDraft} onChange={setRankingDraft} />}
+        <RankingSelectionPanel draft={rankingDraft} onChange={setRankingDraft} />
 
         <Panel title="전략 상태">
           <View className="px-5 pb-5">
