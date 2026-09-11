@@ -3,9 +3,8 @@
 KIS Open API로 미국주식 단타를 자동 매매하는 Expo(React Native) 단독 앱. 실계좌·소액 전제.
 
 ## 용어와 지도 (코드 읽기·설계·문서 쓰기 전에)
-- 용어 정본: `CONTEXT.md` — 추세·그리드·매매·오토파일럿·서킷 등 이 repo의 말은 이 표의 정의로 쓴다.
-- 도메인 지도: `docs/domain/README.md` — 도메인별 상태·코드 위치. 도메인 규칙을 고치면 해당 `docs/domain/<이름>/` 문서도 같이 고친다.
-- 되돌리기 어려운 결정: `docs/adr/` — 여기 적힌 결정을 뒤집는 변경은 새 ADR부터.
+- 용어 정본: `CONTEXT.md` — 실시간 MA5·포지션·주문·오토파일럿·서킷 등 이 repo의 말은 이 표의 정의로 쓴다.
+- 도메인 지도: `docs/domain/README.md` — 도메인별 상태·코드 위치. 모든 비즈니스 규칙·불변식·결정사항은 해당 `docs/domain/<이름>/` 문서가 유일한 정본(Single Source of Truth)이다. 도메인 규칙을 고치면 해당 도메인 문서도 같이 고친다.
 - 화면 단위는 `docs/features/`, 배선 plan은 `docs/development/`, 실거래 분석 일지는 `docs/분석/README.md`.
 
 ## 스펙
@@ -29,4 +28,4 @@ KIS Open API로 미국주식 단타를 자동 매매하는 Expo(React Native) �
 
 ### Domain docs
 
-단일 컨텍스트 — 루트 `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
+단일 컨텍스트 — 루트 `CONTEXT.md` + `docs/domain/`. See `docs/domain/README.md`.

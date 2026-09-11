@@ -1,6 +1,6 @@
 # CONTEXT — 도메인 용어집
 
-이 repo의 정본 용어 — 코드·문서·대화에서 같은 뜻으로 쓴다. 상세는 `docs/domain/` 각 문서(지도: `docs/domain/README.md`), 되돌리기 어려운 결정은 `docs/adr/`.
+이 repo의 정본 용어 — 코드·문서·대화에서 같은 뜻으로 쓴다. 상세는 `docs/domain/` 각 문서(지도: `docs/domain/README.md`)가 유일한 정본(Single Source of Truth)입니다.
 
 ## 신호 (언제)
 

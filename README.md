@@ -153,9 +153,9 @@ Expo Go에서 자동으로 최신 버전을 다운로드받습니다 (앱 재시
 
 ## 문서
 
-- **용어집**: `CONTEXT.md` — 정본 용어 · **도메인 지도**: `docs/domain/README.md` — 도메인별 규칙·코드 위치 · **ADR**: `docs/adr/`
+- **용어집**: `CONTEXT.md` — 정본 용어 · **도메인 지도**: `docs/domain/README.md` — 도메인별 규칙·불변식·코드 위치 (Single Source of Truth)
 - **PRD**(최초): `docs/prd/2026-07-29_변곡점-단타-앱-prd.md` — 초기 기능 명세(변곡점 시절)
-- **개발 플랜**: `docs/development/` — 날짜별 구현 plan(최신 규칙은 `docs/domain/추세/`)
+- **개발 플랜**: `docs/development/` — 날짜별 구현 plan(최신 규칙은 `docs/domain/`)
 - **KIS API**: `docs/koreainvestment/README.md` — 한국투자증권 공식 문서 목차 및 필드 정의
 
 ## 라이선스
