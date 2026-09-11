@@ -3,6 +3,7 @@ import {
   RealtimeMa5Calculator,
   averagingDownQty,
   shouldEnter,
+  shouldAverageDown,
   isUsRegularSession,
   isUsInitialEntryAllowed,
   isUsAveragingDownAllowed,
@@ -34,14 +35,35 @@ describe('RealtimeMa5Calculator', () => {
     expect(shouldEnter(state)).toBe(false);
   });
 
-  it('기울기 하락이면 진입 조건은 거짓이다', () => {
+  it('급락 후 바닥에서 5선 돌파 시 5개 전 종가보다 낮아 slope가 down이어도 돌파 및 진입은 즉시 true가 된다', () => {
     const calc = new RealtimeMa5Calculator();
-    calc.evaluate([100, 100, 100, 100], 90);
-    const state = calc.evaluate([100, 100, 100, 100, 110], 90);
+    // 5분 전 종가는 120으로 매우 높고, 최근 4개 봉은 100, 95, 90, 90으로 급락한 상황
+    calc.evaluate([120, 100, 95, 90, 90], 90);
+    // 현재 틱 97로 반등하며 5선((100+95+90+90+97)/5 = 94.4)을 상향 돌파!
+    const state = calc.evaluate([120, 100, 95, 90, 90], 97);
 
+    // 5분 전 종가(120)보다는 낮으므로 slope는 'down'이지만
     expect(state.slope).toBe('down');
-    expect(state.breakout).toBe(false);
-    expect(shouldEnter(state)).toBe(false);
+    // 5선(94.4)을 90 -> 97로 상향 돌파했으므로 breakout은 true!
+    expect(state.breakout).toBe(true);
+    // 진입 신호도 과거 5분 지연 없이 즉시 발화!
+    expect(shouldEnter(state)).toBe(true);
+  });
+
+  it('FTFT 이슈 시나리오: 평단 $3.28에서 $2.78로 급락 후 $3.04로 5선($3.03) 돌파 시 즉시 물타기(-7.31% <= -3%)가 성립한다', () => {
+    const calc = new RealtimeMa5Calculator();
+    // 최근 4개 봉 종가합 12.11 (현재틱 3.04일 때 5선 = (12.11 + 3.04) / 5 = 3.030)
+    const closes = [3.35, 3.10, 3.05, 2.96, 3.00];
+    // 직전 틱 3.01 (5선 3.024 아래)
+    calc.evaluate(closes, 3.01);
+    // 현재 틱 3.04로 5선(3.030) 돌파!
+    const state = calc.evaluate(closes, 3.04);
+
+    expect(state.breakout).toBe(true);
+    // 5분 전 가격 3.30보다는 낮아 slope는 down이지만
+    expect(state.slope).toBe('down');
+    // 물타기 판정은 즉시 true! 지연 없이 매수 가능!
+    expect(shouldAverageDown(3.04, 3.28, state)).toBe(true);
   });
 
   it('시드 프로브(isLiveTick=false)는 이전틱을 오염시키지 않아 첫 라이브 틱에서 돌파가 발생하지 않는다', () => {

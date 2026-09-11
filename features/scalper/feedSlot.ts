@@ -828,8 +828,8 @@ export class FeedSlot {
   }
 
   /**
-   * 실시간 MA5 틱 판정 — 매 틱마다 MA5·기울기·돌파를 재고 진입 신호를 낸다.
-   * 기울기 상승 AND 돌파면 BUY(kind='realtimeMa5').
+   * 실시간 MA5 틱 판정 — 매 틱마다 MA5·돌파를 재고 신호를 낸다.
+   * 실시간 상향 돌파면 지체 없이 즉시 BUY(kind='realtimeMa5').
    */
   private evaluateRealtimeMa5Tick(price: number): void {
     if (this.trendListener === null) return;

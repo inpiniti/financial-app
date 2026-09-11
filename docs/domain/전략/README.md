@@ -27,11 +27,12 @@
   - **시드 오염 방지**: REST 분봉 시드(`seed`) 시점의 `probe` 계산은 순수 스냅샷 계산으로만 격리하고, 실시간 틱 계산기의 `prevLiveTick` 및 라이브 틱 카운트를 오염시키지 않습니다.
 
 ### 도메인 서비스 (Domain Service)
-- **`RealtimeMa5Calculator`**: 무지연 MA5 및 기울기 연산
+- **`RealtimeMa5Calculator`**: 무지연 MA5 및 실시간 상태 연산
   $$\text{MA5}_{\text{realtime}} = \frac{\text{Close}_{n-4} + \text{Close}_{n-3} + \text{Close}_{n-2} + \text{Close}_{n-1} + \text{Tick}_{\text{current}}}{5}$$
   $$\text{Slope} = \begin{cases} \text{'up'} & \text{if } \text{Tick}_{\text{current}} > \text{Close}_{n-5} \\ \text{'down'} & \text{if } \text{Tick}_{\text{current}} < \text{Close}_{n-5} \\ \text{null} & \text{otherwise} \end{cases}$$
-- **`BreakoutDetector`**: 상향 돌파 판정
-  $$\text{PrevLiveTick} < \text{MA5}_{\text{realtime}} \quad \land \quad \text{CurrentLiveTick} > \text{MA5}_{\text{realtime}}$$
+  *(참고: 5분 전 종가 비교 Slope는 보조 지표이며, 급락 후 바닥 반등 시 지연을 방지하기 위해 물타기/진입 돌파 판정을 차단하지 않습니다)*
+- **`BreakoutDetector`**: 무지연 상향 돌파 판정
+  $$\text{PrevLiveTick} \le \text{MA5}_{\text{realtime}} \quad \land \quad \text{CurrentLiveTick} > \text{MA5}_{\text{realtime}}$$
   - **라이브 틱 관측 요건**: 최소 2회 이상의 라이브 틱(`liveTickCount >= 2`)이 연속 관측된 상태에서만 돌파 판정 가능 (시작 첫 틱 또는 과거 데이터 비교 돌파 원천 방지).
 
 ---
@@ -42,6 +43,7 @@
 2. **돌파 순수성 불변식**:
    - 모든 상향 돌파는 동일 세션 내에서 최소 2개 이상의 라이브 틱이 교차한 경우에만 인정되며, 시드 프로브는 돌파 판정에 영향을 미치지 않습니다.
    - 동일한 분봉 내에서 여러 번의 상향 돌파가 발생하더라도 `봉당 1회` 신호만 발생하도록 엄격히 방어합니다.
-3. **신호 라우팅 책임**:
-   - 미보유 종목 돌파 $\to$ **[포지션 도메인: 신규 진입 게이트]**로 라우팅
-   - 보유 중 종목 돌파 $\to$ **[포지션 도메인: 추가진입(물타기) 게이트]**로 라우팅
+3. **신호 라우팅 책임 및 물타기 무지연 불변식**:
+   - **미보유 종목 돌파** $\to$ **[포지션 도메인: 신규 진입 게이트]**로 라우팅
+   - **보유 중 종목 돌파** $\to$ **[포지션 도메인: 추가진입(물타기) 게이트]**로 라우팅
+   - **물타기 무지연 보장**: 물타기는 평단 대비 -3% 이하 낙폭 상태에서 바닥 돌파 즉시 실행되어야 하며, 과거 5분 전 종가($C_{-5}$)와의 비교 필터로 인해 매수가 지연되어서는 안 됩니다.

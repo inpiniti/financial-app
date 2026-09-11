@@ -172,12 +172,12 @@ export class RealtimeMa5Calculator {
       slope = currentTick > refClose5 ? 'up' : currentTick < refClose5 ? 'down' : null;
     }
 
-    // 돌파: 라이브 틱이 2개 이상 관측되었고, 이전 라이브틱 < 현재 MA5 < 현재 라이브틱
+    // 돌파: 라이브 틱이 2개 이상 관측되었고, 이전 라이브틱 <= 현재 MA5 < 현재 라이브틱
     let breakout = false;
     if (isLiveTick) {
       this.liveTickCount++;
       if (this.prevTick !== null && ma5 !== null && this.liveTickCount >= 2) {
-        breakout = this.prevTick < ma5 && currentTick > ma5;
+        breakout = this.prevTick <= ma5 && currentTick > ma5;
       }
       this.prevTick = currentTick;
     }
@@ -279,16 +279,18 @@ export const DEFAULT_REALTIME_MA5_CONFIG: RealtimeMa5Config = {
 };
 
 /**
- * 진입 조건 판정 — 기울기 상승 ∧ 돌파.
+ * 진입 조건 판정 — 상향 돌파 시 진입.
+ * (5분 전 종가 비교 C_-5는 급락 후 바닥 반등 시 심각한 매수 지연을 유발하므로 돌파 자체를 트리거로 함)
  */
 export function shouldEnter(state: RealtimeMa5State): boolean {
-  return state.slope === 'up' && state.breakout;
+  return state.breakout;
 }
 
 /**
  * 물타기 조건 판정.
  * gapRate = (현재가 - 평단가) / 평단가 × 100.
- * 조건: gapRate ≤ thresholdPct AND 기울기 상승 AND 돌파.
+ * 조건: gapRate ≤ thresholdPct AND 돌파.
+ * (바닥에서 5선을 뚫는 즉시 추가 매수하여 평단을 낮추고 반등 탈출)
  */
 export function shouldAverageDown(
   currentPrice: number,
@@ -298,7 +300,7 @@ export function shouldAverageDown(
 ): boolean {
   if (avgPrice <= 0 || currentPrice <= 0) return false;
   const gapRate = ((currentPrice - avgPrice) / avgPrice) * 100;
-  return gapRate <= thresholdPct && state.slope === 'up' && state.breakout;
+  return gapRate <= thresholdPct && state.breakout;
 }
 
 /**
