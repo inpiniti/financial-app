@@ -677,60 +677,139 @@ export default function SettingsScreen() {
               이미 보유 중인 종목은 다시 진입하지 않고(물타기 옵션 제외), 매도가 끝나면 그 자리에 새 종목이 들어와요.
             </Text>
 
-            <Text className="mb-1 text-xs font-semibold text-[#191f28]">진입 크기 기준 (양자선택)</Text>
+            <Text className="mb-1 text-xs font-semibold text-[#191f28]">진입 크기 기준</Text>
             <Text className="mb-3 text-xs leading-5 text-[#8b95a1]">
-              진입금액과 수량 중 하나만 선택해 써요. 선택하지 않은 값은 저장만 유지되고, 실제 진입 계산에는 쓰지 않아요.
+              진입금액과 수량 중 하나를 선택해 운용해요. 미선택 기준은 저장만 유지되고 발주에는 반영되지 않아요.
             </Text>
-            <View className="mb-3 rounded-2xl border border-[#e5e8eb] bg-white p-2">
-              <Pressable
-                onPress={() => setEntrySizingMode('amount')}
-                className={`mb-2 flex-row items-center rounded-xl border px-3 py-3 ${entrySizingMode === 'amount' ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'}`}
-              >
-                <View className={`mr-3 h-5 w-5 items-center justify-center rounded-full border ${entrySizingMode === 'amount' ? 'border-[#3182f6]' : 'border-[#d1d6db]'}`}>
-                  {entrySizingMode === 'amount' ? <View className="h-2.5 w-2.5 rounded-full bg-[#3182f6]" /> : null}
+
+            {/* 1. 진입금액 기준 행 */}
+            <Pressable
+              onPress={() => setEntrySizingMode('amount')}
+              className={`mb-2.5 flex-row items-center justify-between rounded-2xl border px-3.5 py-3 ${
+                entrySizingMode === 'amount'
+                  ? 'border-[#3182f6] bg-[#f2f7ff]'
+                  : 'border-[#e5e8eb] bg-white'
+              }`}
+            >
+              <View className="mr-3 flex-1 flex-row items-center">
+                <View
+                  className={`mr-2.5 h-5 w-5 items-center justify-center rounded-full border ${
+                    entrySizingMode === 'amount' ? 'border-[#3182f6]' : 'border-[#d1d6db]'
+                  }`}
+                >
+                  {entrySizingMode === 'amount' ? (
+                    <View className="h-2.5 w-2.5 rounded-full bg-[#3182f6]" />
+                  ) : null}
                 </View>
                 <View className="flex-1">
-                  <Text className={`text-sm font-semibold ${entrySizingMode === 'amount' ? 'text-[#3182f6]' : 'text-[#191f28]'}`}>진입금액 기준</Text>
-                  <Text className="mt-0.5 text-xs text-[#8b95a1]">진입 수량 = floor(진입금액 ÷ 현재가)</Text>
+                  <Text
+                    className={`text-sm font-semibold ${
+                      entrySizingMode === 'amount' ? 'text-[#3182f6]' : 'text-[#191f28]'
+                    }`}
+                  >
+                    진입금액 기준
+                  </Text>
+                  <Text className="mt-0.5 text-[11px] text-[#8b95a1]">
+                    진입 수량 = floor(진입금액 ÷ 현재가)
+                  </Text>
                 </View>
-              </Pressable>
-              <Pressable
-                onPress={() => setEntrySizingMode('qty')}
-                className={`flex-row items-center rounded-xl border px-3 py-3 ${entrySizingMode === 'qty' ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'}`}
+              </View>
+
+              <View
+                className={`flex-row items-center rounded-xl border px-3 py-2 ${
+                  entrySizingMode === 'amount'
+                    ? 'border-[#3182f6] bg-white'
+                    : 'border-[#e5e8eb] bg-[#f8fafc]'
+                }`}
+                style={{ width: 135 }}
               >
-                <View className={`mr-3 h-5 w-5 items-center justify-center rounded-full border ${entrySizingMode === 'qty' ? 'border-[#3182f6]' : 'border-[#d1d6db]'}`}>
-                  {entrySizingMode === 'qty' ? <View className="h-2.5 w-2.5 rounded-full bg-[#3182f6]" /> : null}
+                <TextInput
+                  value={startAmountUsd}
+                  onChangeText={setStartAmountUsd}
+                  onFocus={() => setEntrySizingMode('amount')}
+                  keyboardType="decimal-pad"
+                  editable={entrySizingMode === 'amount'}
+                  placeholder={String(DEFAULT_APP_SETTINGS.startAmountUsd)}
+                  placeholderTextColor="#b0b8c1"
+                  className={`flex-1 text-right text-sm font-semibold p-0 ${
+                    entrySizingMode === 'amount' ? 'text-[#191f28]' : 'text-[#8b95a1]'
+                  }`}
+                />
+                <Text
+                  className={`ml-1.5 text-xs font-bold ${
+                    entrySizingMode === 'amount' ? 'text-[#3182f6]' : 'text-[#8b95a1]'
+                  }`}
+                >
+                  USD
+                </Text>
+              </View>
+            </Pressable>
+
+            {/* 2. 수량 기준 행 */}
+            <Pressable
+              onPress={() => setEntrySizingMode('qty')}
+              className={`mb-2 flex-row items-center justify-between rounded-2xl border px-3.5 py-3 ${
+                entrySizingMode === 'qty'
+                  ? 'border-[#3182f6] bg-[#f2f7ff]'
+                  : 'border-[#e5e8eb] bg-white'
+              }`}
+            >
+              <View className="mr-3 flex-1 flex-row items-center">
+                <View
+                  className={`mr-2.5 h-5 w-5 items-center justify-center rounded-full border ${
+                    entrySizingMode === 'qty' ? 'border-[#3182f6]' : 'border-[#d1d6db]'
+                  }`}
+                >
+                  {entrySizingMode === 'qty' ? (
+                    <View className="h-2.5 w-2.5 rounded-full bg-[#3182f6]" />
+                  ) : null}
                 </View>
                 <View className="flex-1">
-                  <Text className={`text-sm font-semibold ${entrySizingMode === 'qty' ? 'text-[#3182f6]' : 'text-[#191f28]'}`}>수량 기준</Text>
-                  <Text className="mt-0.5 text-xs text-[#8b95a1]">종목 가격과 무관하게 고정 수량으로 진입</Text>
+                  <Text
+                    className={`text-sm font-semibold ${
+                      entrySizingMode === 'qty' ? 'text-[#3182f6]' : 'text-[#191f28]'
+                    }`}
+                  >
+                    수량 기준
+                  </Text>
+                  <Text className="mt-0.5 text-[11px] text-[#8b95a1]">
+                    가격과 무관하게 고정 수량 진입
+                  </Text>
                 </View>
-              </Pressable>
-            </View>
+              </View>
 
-            <Text className={`mb-1 text-xs ${entrySizingMode === 'amount' ? 'text-[#8b95a1]' : 'text-[#b0b8c1]'}`}>진입금액 (USD) — 종목 하나를 살 때 쓰는 금액</Text>
-            <TextInput
-              value={startAmountUsd}
-              onChangeText={setStartAmountUsd}
-              keyboardType="decimal-pad"
-              editable={entrySizingMode === 'amount'}
-              placeholder={`기본 ${DEFAULT_APP_SETTINGS.startAmountUsd}`}
-              placeholderTextColor="#8b95a1"
-              className={`mb-4 rounded-2xl border px-4 py-3 text-base ${entrySizingMode === 'amount' ? 'border-[#e5e8eb] text-[#191f28] bg-white' : 'border-[#eceff2] text-[#8b95a1] bg-[#f8fafc]'}`}
-            />
+              <View
+                className={`flex-row items-center rounded-xl border px-3 py-2 ${
+                  entrySizingMode === 'qty'
+                    ? 'border-[#3182f6] bg-white'
+                    : 'border-[#e5e8eb] bg-[#f8fafc]'
+                }`}
+                style={{ width: 135 }}
+              >
+                <TextInput
+                  value={entryQty}
+                  onChangeText={setEntryQty}
+                  onFocus={() => setEntrySizingMode('qty')}
+                  keyboardType="number-pad"
+                  editable={entrySizingMode === 'qty'}
+                  placeholder="1"
+                  placeholderTextColor="#b0b8c1"
+                  className={`flex-1 text-right text-sm font-semibold p-0 ${
+                    entrySizingMode === 'qty' ? 'text-[#191f28]' : 'text-[#8b95a1]'
+                  }`}
+                />
+                <Text
+                  className={`ml-1.5 text-xs font-bold ${
+                    entrySizingMode === 'qty' ? 'text-[#3182f6]' : 'text-[#8b95a1]'
+                  }`}
+                >
+                  주
+                </Text>
+              </View>
+            </Pressable>
 
-            <Text className={`mb-1 text-xs ${entrySizingMode === 'qty' ? 'text-[#8b95a1]' : 'text-[#b0b8c1]'}`}>수량 (주) — 수량 기준에서만 사용해요</Text>
-            <TextInput
-              value={entryQty}
-              onChangeText={setEntryQty}
-              keyboardType="number-pad"
-              editable={entrySizingMode === 'qty'}
-              placeholder="예: 1"
-              placeholderTextColor="#8b95a1"
-              className={`mb-1 rounded-2xl border px-4 py-3 text-base ${entrySizingMode === 'qty' ? 'border-[#e5e8eb] text-[#191f28] bg-white' : 'border-[#eceff2] text-[#8b95a1] bg-[#f8fafc]'}`}
-            />
             <Text className="mb-4 text-xs leading-5 text-[#8b95a1]">
-              수량 기준을 고르면 종목 가격과 상관없이 딱 이 수량만 사요($0.01짜리도 $9짜리도 같은 수량). 물타기도 이 수량씩 해요.
+              수량 기준을 고르면 종목 가격과 무관하게 지정한 수량으로 진입하며, 물타기도 동일 수량으로 진행돼요.
             </Text>
 
             <Text className="mb-1 text-xs text-[#8b95a1]">
