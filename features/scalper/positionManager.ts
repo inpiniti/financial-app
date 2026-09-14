@@ -370,6 +370,8 @@ export interface PositionManagerDeps {
   orderStrategy?: () => OrderStrategy | null;
   /** 정규장 판정(서킷 heartbeat 입력). */
   regularSession: (nowMs: number) => boolean;
+  /** 추가진입(물타기) 허용 여부 판정 (미주입 시 regularSession 사용). */
+  isAveragingDownAllowed?: (nowMs: number) => boolean;
   /** 매수가능금액 사전 조회(물타기 매수) — null/미지정/throw면 판정 없이 진행(fail-open). */
   fetchBuyableUsd?: (price: number) => Promise<number | null>;
   /** 진입 실측(우리가 산 포지션) — 입양이면 null. 정산 기록의 entryTs·entrySnapshot. */
@@ -1362,8 +1364,11 @@ export class RealtimeMa5PositionManager implements PositionManager {
   onSignal(signal: Signal, price: number): void {
     if (!this.armed || this.isolated || this.released || this.buyExec !== null || this.averagingDownPending) return;
     if (signal !== 'BUY') return;
-    // 미국 정규장(ET 09:30~16:00) 외 추가진입 차단 (장마감 2시간 전인 14:00~16:00에도 추가진입은 허용)
-    if (!this.deps.regularSession(this.deps.clock.now())) return;
+    // 프리마켓·정규장·애프터마켓(ET 04:00~19:55) 외 추가진입 차단
+    const averagingAllowed = this.deps.isAveragingDownAllowed
+      ? this.deps.isAveragingDownAllowed(this.deps.clock.now())
+      : this.deps.regularSession(this.deps.clock.now());
+    if (!averagingAllowed) return;
     if (this.averagedDownAtAvgPrice !== null && Math.abs(this.avgPrice - this.averagedDownAtAvgPrice) < 1e-9) return;
     // 물타기 조건 확인
     if (

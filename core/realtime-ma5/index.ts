@@ -195,54 +195,51 @@ export class RealtimeMa5Calculator {
 // 세션 판정 (미국 정규장 및 진입/추가진입 시간 창)
 // ---------------------------------------------------------------------------
 
+function getUsEtWeekdayAndMinutes(epochMs: number): { isWeekend: boolean; mins: number } | null {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(epochMs));
+  const weekday = parts.find((p) => p.type === 'weekday')?.value;
+  if (weekday === 'Sat' || weekday === 'Sun') return { isWeekend: true, mins: 0 };
+  const h = Number(parts.find((p) => p.type === 'hour')?.value ?? NaN) % 24;
+  const m = Number(parts.find((p) => p.type === 'minute')?.value ?? NaN);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  return { isWeekend: false, mins: h * 60 + m };
+}
+
 /**
  * 미국 정규장(ET 09:30~16:00, 월~금) 여부
  */
 export function isUsRegularSession(epochMs: number): boolean {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    weekday: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(new Date(epochMs));
-  const weekday = parts.find((p) => p.type === 'weekday')?.value;
-  if (weekday === 'Sat' || weekday === 'Sun') return false;
-  const h = Number(parts.find((p) => p.type === 'hour')?.value ?? NaN) % 24;
-  const m = Number(parts.find((p) => p.type === 'minute')?.value ?? NaN);
-  if (!Number.isFinite(h) || !Number.isFinite(m)) return false;
-  const mins = h * 60 + m;
-  return mins >= 9 * 60 + 30 && mins < 16 * 60;
+  const et = getUsEtWeekdayAndMinutes(epochMs);
+  if (!et || et.isWeekend) return false;
+  return et.mins >= 9 * 60 + 30 && et.mins < 16 * 60;
 }
 
 /**
- * 미국 정규장 신규 진입 허용 여부:
- * 정규장 개장(ET 09:30)부터 장마감 2시간 전(ET 14:00)까지만 신규 진입 허용.
- * ET 14:00~16:00 및 장외/주간거래는 신규 진입 금지.
+ * 미국 주식 신규 진입 허용 여부:
+ * 프리마켓 개장(ET 04:00)부터 정규장 마감(ET 16:00)까지만 신규 진입 허용.
+ * ET 16:00~20:00(애프터마켓) 및 주간거래(ATS), 주말/공휴일은 신규 진입 차단.
  */
 export function isUsInitialEntryAllowed(epochMs: number): boolean {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    weekday: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(new Date(epochMs));
-  const weekday = parts.find((p) => p.type === 'weekday')?.value;
-  if (weekday === 'Sat' || weekday === 'Sun') return false;
-  const h = Number(parts.find((p) => p.type === 'hour')?.value ?? NaN) % 24;
-  const m = Number(parts.find((p) => p.type === 'minute')?.value ?? NaN);
-  if (!Number.isFinite(h) || !Number.isFinite(m)) return false;
-  const mins = h * 60 + m;
-  return mins >= 9 * 60 + 30 && mins < 14 * 60; // ET 09:30 ~ 14:00 (장마감 2시간 전까지)
+  const et = getUsEtWeekdayAndMinutes(epochMs);
+  if (!et || et.isWeekend) return false;
+  return et.mins >= 4 * 60 && et.mins < 16 * 60; // ET 04:00 ~ 16:00 (프리마켓 + 정규장)
 }
 
 /**
- * 미국 정규장 추가진입(물타기) 허용 여부:
- * 정규장 시간(ET 09:30 ~ 16:00) 내내 언제든 허용 (장마감 2시간 전인 ET 14:00~16:00에도 가능).
+ * 미국 주식 추가진입(물타기) 허용 여부:
+ * 프리마켓, 정규장, 애프터마켓(ET 04:00 ~ 19:55) 내내 허용.
+ * 마감 일괄 청산 시점(ET 19:55) 이후 및 장외/주간거래/주말은 차단.
  */
 export function isUsAveragingDownAllowed(epochMs: number): boolean {
-  return isUsRegularSession(epochMs);
+  const et = getUsEtWeekdayAndMinutes(epochMs);
+  if (!et || et.isWeekend) return false;
+  return et.mins >= 4 * 60 && et.mins < 19 * 60 + 55; // ET 04:00 ~ 19:55 (마감 5분 전까지)
 }
 
 // ---------------------------------------------------------------------------

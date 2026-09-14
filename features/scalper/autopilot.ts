@@ -1119,10 +1119,10 @@ export class AutoPilot {
     if (this.stopRequested || !this.running || this.faulted || this.paused) return;
     if (this.actives.has(ctx.ticker) || this.pendingBuys.has(ctx.ticker)) return; // 이미 보유·진입 중
 
-    // 정규장 세션 및 장마감 2시간 전 컷오프 (ET 09:30~14:00까지만 신규 진입 가능)
+    // 신규 진입 세션 검증 (ET 04:00~16:00, 프리마켓 및 정규장 허용)
     const now = this.deps.clock.now();
     if (!this.isInitialEntryAllowed(now)) {
-      this.dropBuySignal(ctx.ticker, '정규장 진입 가능 시간(ET 09:30~14:00, 장마감 2시간 전까지)이 아니에요');
+      this.dropBuySignal(ctx.ticker, '신규 진입 가능 시간(ET 04:00~16:00, 프리마켓 및 정규장)이 아니에요');
       return;
     }
 
@@ -1190,7 +1190,7 @@ export class AutoPilot {
 
     if (this.stopRequested) return giveUp();
     if (!this.isInitialEntryAllowed(this.deps.clock.now())) {
-      this.event(`${ticker} 진입 포기 · 정규장 진입 가능 시간(ET 09:30~14:00, 장마감 2시간 전까지)이 지났어요`);
+      this.event(`${ticker} 진입 포기 · 신규 진입 가능 시간(ET 04:00~16:00, 프리마켓 및 정규장)이 아니에요`);
       return giveUp();
     }
 
@@ -1463,6 +1463,7 @@ export class AutoPilot {
         // 주문 전략(2026-09-03) — 틱마다 읽는다(실행 중 설정 변경 즉시 반영). null이면 옛 동작(1호가 크로스·추격).
         orderStrategy: () => this.orderStrategy,
         regularSession: isUsRegularSession,
+        isAveragingDownAllowed: isUsAveragingDownAllowed,
         fetchBuyableUsd: this.deps.fetchBuyableUsd ? (price) => this.deps.fetchBuyableUsd!(ticker, price) : undefined,
         entry: pos ? { entryTs: pos.entryTs, entrySnapshot: pos.entrySnapshot } : null,
         adopted: active.adopted,
@@ -1574,7 +1575,7 @@ export class AutoPilot {
 
     const now = this.deps.clock.now();
     if (!this.isInitialEntryAllowed(now)) {
-      return '정규장 진입 가능 시간(ET 09:30~14:00, 장마감 2시간 전까지)이 아니에요';
+      return '신규 진입 가능 시간(ET 04:00~16:00, 프리마켓 및 정규장)이 아니에요';
     }
 
     const config = this.config;

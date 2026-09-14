@@ -1373,7 +1373,7 @@ describe('AutoPilot — 세션 전환(정규장↔주간거래) 그리드 주문
     expect(broker.placed).toHaveLength(2); // 재발주 없음 — 이미 팔린 포지션이다.
   });
 
-  it('정규장 진입 가능 시간(ET 09:30~14:00)이 아니면 BUY 신호를 무시하고 사유를 이벤트로 남긴다', async () => {
+  it('신규 진입 가능 시간(ET 04:00~16:00)이 아니면 BUY 신호를 무시하고 사유를 이벤트로 남긴다', async () => {
     const h = makeHarness(['A']);
     const pilot = new AutoPilot({
       ...(h.pilot as unknown as { deps: AutoPilotDeps }).deps,
@@ -1395,7 +1395,7 @@ describe('AutoPilot — 세션 전환(정규장↔주간거래) 그리드 주문
     await flush();
 
     expect(pilot.getView().activeTickers).toHaveLength(0);
-    expect(h.events.some((e) => e.includes('정규장 진입 가능 시간'))).toBe(true);
+    expect(h.events.some((e) => e.includes('신규 진입 가능 시간'))).toBe(true);
   });
 
   describe('사용자 요청 매매 (buyNow, sellNow, isHeld)', () => {

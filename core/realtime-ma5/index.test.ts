@@ -99,41 +99,77 @@ describe('세션 시간 판정 (미국 정규장 및 진입 허용 창)', () => 
     expect(isUsRegularSession(postMarket)).toBe(false);
   });
 
-  it('신규 진입은 ET 09:30~14:00(장마감 2시간 전)까지만 허용되고 14:00 이후는 차단된다', () => {
-    // 2026-09-11 (금) 13:59 ET -> 신규 진입 가능
-    const beforeCutoff = new Date('2026-09-11T17:59:00Z').getTime();
-    expect(isUsInitialEntryAllowed(beforeCutoff)).toBe(true);
+  it('신규 진입은 프리마켓 및 정규장(ET 04:00~16:00) 동안 허용되고 애프터마켓(16:00 이후)은 차단된다', () => {
+    // 2026-09-11 (금) 03:59 ET -> 프리마켓 개장 전 (차단)
+    const beforePre = new Date('2026-09-11T07:59:00Z').getTime();
+    expect(isUsInitialEntryAllowed(beforePre)).toBe(false);
 
-    // 2026-09-11 (금) 14:00 ET -> 신규 진입 금지 (마감 2시간 전)
-    const atCutoff = new Date('2026-09-11T18:00:00Z').getTime();
-    expect(isUsInitialEntryAllowed(atCutoff)).toBe(false);
+    // 2026-09-11 (금) 04:00 ET -> 프리마켓 개장 (허용)
+    const preStart = new Date('2026-09-11T08:00:00Z').getTime();
+    expect(isUsInitialEntryAllowed(preStart)).toBe(true);
 
-    // 2026-09-11 (금) 15:30 ET -> 신규 진입 금지
-    const nearClose = new Date('2026-09-11T19:30:00Z').getTime();
-    expect(isUsInitialEntryAllowed(nearClose)).toBe(false);
+    // 2026-09-11 (금) 09:30 ET -> 정규장 개장 (허용)
+    const regStart = new Date('2026-09-11T13:30:00Z').getTime();
+    expect(isUsInitialEntryAllowed(regStart)).toBe(true);
 
-    // 주간거래 시간(KST 13:20 -> 2026-09-11T04:20:00Z -> ET 00:20) -> 신규 진입 금지
+    // 2026-09-11 (금) 14:30 ET -> 정규장 후반 (기존 14:00 차단 삭제 -> 이제 허용)
+    const regAfternoon = new Date('2026-09-11T18:30:00Z').getTime();
+    expect(isUsInitialEntryAllowed(regAfternoon)).toBe(true);
+
+    // 2026-09-11 (금) 15:59 ET -> 정규장 마감 1분 전 (허용)
+    const regNearClose = new Date('2026-09-11T19:59:00Z').getTime();
+    expect(isUsInitialEntryAllowed(regNearClose)).toBe(true);
+
+    // 2026-09-11 (금) 16:00 ET -> 애프터마켓 (신규 진입 차단)
+    const postStart = new Date('2026-09-11T20:00:00Z').getTime();
+    expect(isUsInitialEntryAllowed(postStart)).toBe(false);
+
+    // 2026-09-11 (금) 18:00 ET -> 애프터마켓 (신규 진입 차단)
+    const postMarket = new Date('2026-09-11T22:00:00Z').getTime();
+    expect(isUsInitialEntryAllowed(postMarket)).toBe(false);
+
+    // 주간거래 시간(KST 13:20 -> 2026-09-11T04:20:00Z -> ET 00:20) -> 신규 진입 차단
     const daytimeKst = new Date('2026-09-11T04:20:00Z').getTime();
     expect(isUsInitialEntryAllowed(daytimeKst)).toBe(false);
+
+    // 주말 2026-09-12 (토) 10:00 ET -> 신규 진입 차단
+    const weekend = new Date('2026-09-12T14:00:00Z').getTime();
+    expect(isUsInitialEntryAllowed(weekend)).toBe(false);
   });
 
-  it('추가진입(물타기)은 정규장(ET 09:30~16:00) 내내 허용된다 (14:00~16:00도 허용)', () => {
-    // 13:59 ET -> 추가진입 가능
-    const beforeCutoff = new Date('2026-09-11T17:59:00Z').getTime();
-    expect(isUsAveragingDownAllowed(beforeCutoff)).toBe(true);
+  it('추가진입(물타기)은 프리마켓, 정규장, 애프터마켓(ET 04:00~19:55) 내내 허용되고 19:55 이후는 차단된다', () => {
+    // 03:59 ET -> 프리마켓 개장 전 (차단)
+    const beforePre = new Date('2026-09-11T07:59:00Z').getTime();
+    expect(isUsAveragingDownAllowed(beforePre)).toBe(false);
 
-    // 14:30 ET (장마감 1.5시간 전) -> 신규 진입은 불가능하지만 추가진입은 가능
-    const afterCutoff = new Date('2026-09-11T18:30:00Z').getTime();
-    expect(isUsInitialEntryAllowed(afterCutoff)).toBe(false);
-    expect(isUsAveragingDownAllowed(afterCutoff)).toBe(true);
+    // 04:00 ET -> 프리마켓 개장 (허용)
+    const preStart = new Date('2026-09-11T08:00:00Z').getTime();
+    expect(isUsAveragingDownAllowed(preStart)).toBe(true);
 
-    // 15:59 ET -> 추가진입 가능
-    const nearClose = new Date('2026-09-11T19:59:00Z').getTime();
-    expect(isUsAveragingDownAllowed(nearClose)).toBe(true);
+    // 14:30 ET -> 정규장 (허용)
+    const regAfternoon = new Date('2026-09-11T18:30:00Z').getTime();
+    expect(isUsAveragingDownAllowed(regAfternoon)).toBe(true);
 
-    // 16:00 ET (마감) -> 추가진입 불가
-    const closed = new Date('2026-09-11T20:00:00Z').getTime();
+    // 16:00 ET (애프터마켓 시작) -> 신규는 차단되지만 물타기는 허용
+    const postStart = new Date('2026-09-11T20:00:00Z').getTime();
+    expect(isUsInitialEntryAllowed(postStart)).toBe(false);
+    expect(isUsAveragingDownAllowed(postStart)).toBe(true);
+
+    // 19:54 ET -> 마감 청산 1분 전 (물타기 허용)
+    const beforeCloseout = new Date('2026-09-11T23:54:00Z').getTime();
+    expect(isUsAveragingDownAllowed(beforeCloseout)).toBe(true);
+
+    // 19:55 ET -> 마감 청산 시점 (물타기 차단)
+    const atCloseout = new Date('2026-09-11T23:55:00Z').getTime();
+    expect(isUsAveragingDownAllowed(atCloseout)).toBe(false);
+
+    // 20:00 ET (장 마감) -> 추가진입 불가
+    const closed = new Date('2026-09-12T00:00:00Z').getTime();
     expect(isUsAveragingDownAllowed(closed)).toBe(false);
+
+    // 주말 -> 추가진입 불가
+    const weekend = new Date('2026-09-12T14:00:00Z').getTime();
+    expect(isUsAveragingDownAllowed(weekend)).toBe(false);
   });
 });
 
