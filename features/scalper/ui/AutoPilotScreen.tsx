@@ -461,7 +461,7 @@ function SlotRow({
 
   return (
     <Pressable
-      className="bg-white"
+      className="border-b border-[#e5e8eb] bg-white"
       onPress={() => onPress(ticker, item.entry.market, name)}
       android_ripple={{ color: '#f2f4f6' }}
     >
@@ -472,6 +472,7 @@ function SlotRow({
           </View>
           <View className="flex-1">
             <View className="flex-row items-start justify-between" style={{ columnGap: 10 }}>
+              {/* 좌측 컬럼: 종목명 -> 배지 -> 상태/속도 라인 */}
               <View className="flex-1">
                 <Text className="text-base font-bold text-[#191f28]" numberOfLines={1}>
                   {name ? (
@@ -483,44 +484,41 @@ function SlotRow({
                     ticker
                   )}
                 </Text>
+                <View className="mt-1">
+                  <SlotBadge row={item} activeTickers={activeTickers} candidates={candidates} />
+                  {statusLine !== null && (
+                    <Text
+                      className="mt-0.5 text-xs"
+                      style={{ color: item.feedRejected ? '#f04452' : '#8b95a1', fontVariant: ['tabular-nums'] }}
+                      numberOfLines={1}
+                    >
+                      {statusLine}
+                    </Text>
+                  )}
+                  {!item.feedRejected && statusLine === null && (
+                    <Text className="mt-0.5 text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
+                      {`${formatTickRates(item.view.tickRate)} · ${formatSlopeRates(item.view.slopeRate)}`}
+                    </Text>
+                  )}
+                </View>
               </View>
 
+              {/* 우측 컬럼: 현재가 / 원화 -> 보유 정보 / 손익 */}
               <View className="items-end">
                 <Text className="text-base font-bold text-[#191f28]">{formatPrice(currentPrice)}</Text>
                 {currentKrw !== null && <Text className="text-xs text-[#8b95a1]">{currentKrw}</Text>}
-              </View>
-            </View>
-
-            <View className="mt-1 flex-row items-start justify-between" style={{ columnGap: 8 }}>
-              <View className="flex-1">
-                <SlotBadge row={item} activeTickers={activeTickers} candidates={candidates} />
-                {statusLine !== null && (
-                  <Text
-                    className="mt-0.5 text-xs"
-                    style={{ color: item.feedRejected ? '#f04452' : '#8b95a1', fontVariant: ['tabular-nums'] }}
-                    numberOfLines={1}
-                  >
-                    {statusLine}
-                  </Text>
-                )}
-                {!item.feedRejected && statusLine === null && (
-                  <Text className="mt-0.5 text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
-                    {`${formatTickRates(item.view.tickRate)} · ${formatSlopeRates(item.view.slopeRate)}`}
-                  </Text>
+                {grid !== null && (
+                  <View className="mt-1 items-end">
+                    <Text className="text-xs text-[#4e5968]">
+                      {holdingValueUsd === null ? `${grid.holdingQty}주` : `${grid.holdingQty}주 ${formatUsd(holdingValueUsd, 2)}`}
+                      {holdingValueKrw !== null ? ` ${formatKrw(holdingValueKrw)}` : ''}
+                    </Text>
+                    <Text className="text-xs font-semibold" style={{ color: pnlColor(pnlRatio) }}>
+                      {`${formatSignedPercentFromRatio(pnlRatio, 2)} ${pnlAmountText}`}
+                    </Text>
+                  </View>
                 )}
               </View>
-
-              {grid !== null && (
-                <View className="items-end">
-                  <Text className="text-xs text-[#4e5968]">
-                    {holdingValueUsd === null ? `${grid.holdingQty}주` : `${grid.holdingQty}주 ${formatUsd(holdingValueUsd, 2)}`}
-                    {holdingValueKrw !== null ? ` ${formatKrw(holdingValueKrw)}` : ''}
-                  </Text>
-                  <Text className="text-xs font-semibold" style={{ color: pnlColor(pnlRatio) }}>
-                    {`${formatSignedPercentFromRatio(pnlRatio, 2)} ${pnlAmountText}`}
-                  </Text>
-                </View>
-              )}
             </View>
 
             <InlineGrid
