@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Alert, FlatList, Pressable, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import Svg, { Polygon } from 'react-native-svg';
 import { ListRow } from '../../../components/ListRow';
 import { Panel } from '../../../components/Panel';
 import { TickerAvatar } from '../../../components/TickerAvatar';
@@ -314,30 +315,14 @@ function InlineGrid({
 
   return (
     <View className="mt-2.5">
-      {/* 1. 상단 현재가 지시자 (▼ 검정색) */}
-      <View className="relative" style={{ height: 12 }}>
-        {currentPos !== null && (
-          <View
-            style={{
-              position: 'absolute',
-              left: pctLeft(currentPos),
-              transform: [{ translateX: -6 }],
-              width: 12,
-              alignItems: 'center',
-            }}
-          >
-            <Text style={{ color: '#191f28', fontSize: 10, lineHeight: 12 }}>▼</Text>
-          </View>
-        )}
-      </View>
-
-      {/* 2. 트랙 바 & 평단 마커 (| 파란색) */}
-      <View className="relative" style={{ height: 14 }}>
-        {/* 가로 트랙 선 */}
+      {/* 게이지 트랙 & 지시자 통합 영역 (높이 16px) */}
+      <View className="relative" style={{ height: 16 }}>
+        {/* 가로 트랙 선 (y: 7~9) */}
         <View
           className="absolute left-0 right-0"
-          style={{ top: 6, height: 2, backgroundColor: '#e5e8eb', borderRadius: 999 }}
+          style={{ top: 7, height: 2, backgroundColor: '#e5e8eb', borderRadius: 999 }}
         />
+
         {/* 최소 끝단 마커 */}
         {minPos !== null && (
           <View
@@ -346,12 +331,13 @@ function InlineGrid({
               left: 0,
               top: 3,
               width: 1.5,
-              height: 8,
+              height: 10,
               backgroundColor: '#b0b8c1',
               borderRadius: 1,
             }}
           />
         )}
+
         {/* 최대 끝단 마커 */}
         {maxPos !== null && (
           <View
@@ -360,13 +346,14 @@ function InlineGrid({
               right: 0,
               top: 3,
               width: 1.5,
-              height: 8,
+              height: 10,
               backgroundColor: '#b0b8c1',
               borderRadius: 1,
             }}
           />
         )}
-        {/* 평단가 마커 (| 파란색 세로 바) */}
+
+        {/* 평단가 마커 (| 파란색 세로 바) - 트랙을 상하로 관통 */}
         {showAverage && avgPos !== null && (
           <View
             style={{
@@ -374,34 +361,49 @@ function InlineGrid({
               left: pctLeft(avgPos),
               top: 0,
               width: 2.5,
-              height: 14,
+              height: 16,
               backgroundColor: '#3182f6',
               borderRadius: 1,
               transform: [{ translateX: -1.25 }],
             }}
           />
         )}
-      </View>
 
-      {/* 3. 하단 5선 지시자 (▲ 노란색) */}
-      <View className="relative" style={{ height: 12 }}>
+        {/* 현재가 지시자 (▼ 검정색 역삼각형) - 트랙 상단 표면에 정확히 맞닿음 (끝점 y=7) */}
+        {currentPos !== null && (
+          <View
+            style={{
+              position: 'absolute',
+              left: pctLeft(currentPos),
+              top: 0,
+              transform: [{ translateX: -4.5 }],
+            }}
+          >
+            <Svg width={9} height={7}>
+              <Polygon points="0,0 9,0 4.5,7" fill="#191f28" />
+            </Svg>
+          </View>
+        )}
+
+        {/* 5선 지시자 (▲ 노란색 정삼각형) - 트랙 하단 표면에 정확히 맞닿음 (끝점 y=9) */}
         {ma5Pos !== null && (
           <View
             style={{
               position: 'absolute',
               left: pctLeft(ma5Pos),
-              transform: [{ translateX: -6 }],
-              width: 12,
-              alignItems: 'center',
+              top: 9,
+              transform: [{ translateX: -4.5 }],
             }}
           >
-            <Text style={{ color: '#f59e0b', fontSize: 10, lineHeight: 12 }}>▲</Text>
+            <Svg width={9} height={7}>
+              <Polygon points="4.5,0 0,7 9,7" fill="#f59e0b" />
+            </Svg>
           </View>
         )}
       </View>
 
-      {/* 4. 양 끝 최소/최대 범위 표기 */}
-      <View className="mt-0.5 flex-row items-center justify-between">
+      {/* 양 끝 최소/최대 범위 표기 */}
+      <View className="mt-1 flex-row items-center justify-between">
         <Text className="text-[10px] text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }}>
           {formatPrice(min)}
         </Text>
