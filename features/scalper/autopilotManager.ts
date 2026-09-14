@@ -629,9 +629,43 @@ export class AutoPilotManager {
     return this.pilot.adoptPosition(ticker);
   }
 
-  /** 관리 중인 1종목을 사용자 요청으로 전량 매도한다(게이지 두 번 누르기). 성공하면 null, 실패하면 사용자 문구. */
-  sellNow(ticker: string): string | null {
-    return this.pilot.sellNow(ticker);
+  /** 해당 종목을 현재 보유 또는 진입 중인지 여부 (actives 포함) */
+  isHeld(ticker: string): boolean {
+    return this.pilot.isHeld(ticker);
+  }
+
+  /** 증권사 실잔고까지 확인하여 보유 여부 조회 */
+  async checkHolding(ticker: string): Promise<boolean> {
+    if (this.isHeld(ticker)) return true;
+    if (!this.deps.fetchHoldings) return false;
+    try {
+      const holdings = await this.deps.fetchHoldings();
+      return holdings.includes(ticker);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 사용자 요청 매수 (상세화면 수동 진입) — 진입 규칙(금액/수량, 현재가 지정가)에 따라 매수 발주.
+   */
+  async buyNow(
+    ticker: string,
+    opts?: { price?: number; market?: WatchMarket; name?: string },
+  ): Promise<string | null> {
+    if (opts?.market) this.tickerMarkets.set(ticker, opts.market);
+    if (opts?.name) this.tickerNames.set(ticker, opts.name);
+    this.addSlot(ticker);
+    return this.pilot.buyNow(ticker, opts);
+  }
+
+  /** 관리 중인 1종목을 사용자 요청으로 전량 매도한다. 성공하면 null, 실패하면 사용자 문구. */
+  async sellNow(ticker: string, price?: number): Promise<string | null> {
+    if (!this.pilot.getView().activeTickers.includes(ticker)) {
+      const adoptErr = await this.pilot.adoptPosition(ticker);
+      if (adoptErr) return adoptErr;
+    }
+    return this.pilot.sellNow(ticker, price);
   }
 
   /**

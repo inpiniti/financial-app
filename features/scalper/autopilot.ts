@@ -1547,6 +1547,112 @@ export class AutoPilot {
     return null;
   }
 
+  /** 해당 종목이 현재 보유(또는 진입) 중인지 여부 */
+  isHeld(ticker: string): boolean {
+    return this.actives.has(ticker) || this.pendingBuys.has(ticker);
+  }
+
+  /**
+   * 사용자 요청 매수 (상세화면 수동 진입) — 복잡한 수량 지정 없이 기존 진입 규칙(startAmountUsd/fixedQty, 현재가 지정가)에 따라 진입.
+   * 성공 시 null, 실패 시 사용자 안내 문구 반환.
+   */
+  async buyNow(ticker: string, opts?: { price?: number }): Promise<string | null> {
+    if (!this.running) return '자동 트레이딩을 먼저 시작해 주세요';
+    if (this.faulted) return '멈춤 상태예요 — 먼저 Stop으로 해제해 주세요';
+    if (this.paused) return '일시정지 중이에요 — 재개한 뒤 다시 시도해 주세요';
+    if (this.stopRequested) return '정지하는 중이에요 — 진행 중인 매매가 끝나면 자동으로 정리돼요';
+    if (this.actives.has(ticker) || this.pendingBuys.has(ticker)) return `${ticker}은(는) 이미 보유 또는 진입 중이에요`;
+    if (this.actives.size + this.pendingBuys.size >= this.maxGrids) {
+      return `동시 그리드 수(${this.maxGrids}개)가 꽉 찼어요 — 설정에서 늘리거나 기다려 주세요`;
+    }
+
+    const slot = this.slotOf(ticker);
+    const price = opts?.price && opts.price > 0 ? opts.price : (slot?.getView().price ?? null);
+    if (price === null || !(price > 0)) {
+      return `${ticker} 현재가를 아직 못 받았어요 — 잠시 뒤 다시 눌러 주세요`;
+    }
+
+    const now = this.deps.clock.now();
+    if (!this.isInitialEntryAllowed(now)) {
+      return '정규장 진입 가능 시간(ET 09:30~14:00, 장마감 2시간 전까지)이 아니에요';
+    }
+
+    const config = this.config;
+    if (!config) return '진입 설정이 준비되지 않았어요';
+    const fixedQty = fixedEntryQtyOf(config);
+    const entryAmountUsd = config.startAmountUsd;
+    const qty = fixedQty ?? qtyForAmount(entryAmountUsd, price);
+    if (qty < 1) {
+      return `진입금액($${entryAmountUsd.toFixed(2)})이 1주 가격($${price.toFixed(2)})보다 작아요`;
+    }
+
+    const needed = qty * price;
+    let buyable: number | null = null;
+    try {
+      buyable = (await this.deps.fetchBuyableUsd?.(ticker, price)) ?? null;
+    } catch {
+      buyable = null;
+    }
+    if (buyable !== null && buyable < needed) {
+      return `주문가능 금액($${buyable.toFixed(2)})이 필요 금액($${needed.toFixed(2)})보다 부족해요`;
+    }
+
+    const broker = this.deps.makeBroker(ticker);
+    const realtimeMa5Mode = this.positionMode === 'realtimeMa5';
+    const buyAtLastPrice = realtimeMa5Mode || (this.orderStrategy ? this.orderStrategy.buy !== 'quote' : this.positionMode === 'slope');
+    const adapter = new OrderPortAdapter({ broker, clock: this.deps.clock, buyAtLastPrice });
+    const fault = await adapter.preflightCheckFills();
+    if (fault) {
+      this.enterFault(fault);
+      return `주문 전 체결 점검 오류: ${fault.reason}`;
+    }
+
+    const active: ActiveCycle = {
+      ticker,
+      slot: slot ?? null,
+      adapter,
+      cycle: null,
+      adopted: false,
+      broker,
+      cond: null,
+      gridFaulted: false,
+      buyingSince: this.deps.clock.now(),
+      abandonRequested: false,
+      pendingSettle: null,
+      arming: false,
+    };
+    active.cycle = new RunCycle({
+      ticker,
+      qty,
+      port: adapter,
+      clock: this.deps.clock,
+      feeRate: this.deps.feeRate,
+      onTrade: (record) => {
+        active.pendingSettle = record;
+        this.deps.onTrade?.(record);
+      },
+    });
+    this.actives.set(ticker, active);
+    this.enteredOn.set(ticker, etDateString(Math.floor(this.deps.clock.now() / 60_000)));
+    void this.persist();
+    this.deps.pin(ticker);
+    this.watchedTickers = this.watchedTickers.filter((t) => t !== ticker);
+
+    adapter.setLimitPrice(price);
+    const quote = slot?.quote;
+    if (quote) adapter.setQuote(quote.bid1, quote.ask1, quote.at);
+
+    active.cycle.start();
+    active.cycle.onSignal('BUY', { price, slope: 0, accel: 0, ts: now });
+    this.startPollTimer();
+    this.event(
+      `${ticker} 사용자 매수 요청 · ${qty}주 @ $${price.toFixed(2)} (${fixedQty !== null ? `고정 수량 ${fixedQty}주` : `진입금액 $${entryAmountUsd.toFixed(2)}`}) · 그리드 ${this.actives.size}/${this.maxGrids}`,
+    );
+    this.reselect();
+    this.emit();
+    return null;
+  }
+
   /**
    * 사용자 요청 전량 매도(2026-08-22) — 게이지를 두 번 눌러 확인한 종목 하나를 지금 판다.
    *
@@ -1556,7 +1662,7 @@ export class AutoPilot {
    *
    * 성공하면 null, 못 하면 사용자에게 보여줄 문구를 돌려준다(adoptPosition과 같은 계약).
    */
-  sellNow(ticker: string): string | null {
+  sellNow(ticker: string, targetPrice?: number): string | null {
     if (!this.running) return '자동 트레이딩을 먼저 시작해 주세요';
     if (this.faulted) return '멈춤 상태예요 — 먼저 Stop으로 해제해 주세요';
     // Stop 진행 중에는 새 발주가 mayStart에서 막힌다 — 조용히 실패하지 않게 여기서 먼저 알린다.
@@ -1565,8 +1671,8 @@ export class AutoPilot {
     if (!active) return `${ticker}은(는) 관리 중이 아니에요`;
     if (active.gridFaulted) return `${ticker} 그리드가 멈춰 있어요 — 주문은 계좌에서 직접 확인해 주세요`;
     if (!active.cond?.sellNow) return `${ticker}은(는) 여기서 매도할 수 없어요 — 계좌에서 직접 팔아 주세요`;
-    // 발주 시작가는 슬롯의 최신 체결가. 틱이 아직 없으면 값을 지어내지 않고 되돌려보낸다.
-    const price = active.slot?.getView().price ?? null;
+    // 발주 시작가는 전달된 targetPrice 또는 슬롯의 최신 체결가.
+    const price = (targetPrice && targetPrice > 0) ? targetPrice : (active.slot?.getView().price ?? null);
     if (price === null || !(price > 0)) return `${ticker} 현재가를 아직 못 받았어요 — 잠시 뒤 다시 눌러 주세요`;
     if (!active.cond.sellNow(price)) return `${ticker}은(는) 이미 매도 주문이 나가 있어요`;
     this.event(`${ticker} 사용자 매도 요청 · 전량을 현재가 $${price.toFixed(2)}부터 추격 매도해요`);

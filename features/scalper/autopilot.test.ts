@@ -21,6 +21,7 @@ import {
 } from './autopilot';
 import { FeedSlot } from './feedSlot';
 import { FakeBroker, FakeStore, fakeClock, flush, noopScheduler } from './fakes';
+import { REALTIME_MA5_POSITION_CONFIG } from './positionManager';
 
 // core/integration.test.ts에서 검증된 시퀀스(버퍼 7·청크 1초).
 const V = [20, 16, 12, 8, 4, 2, 4, 8, 12, 16, 20];
@@ -58,6 +59,7 @@ function makeHarness(
     config?: AutoPilotConfig | null;
     fetchBuyableUsd?: AutoPilotDeps['fetchBuyableUsd'];
     gridConfig?: GridExitConfig;
+    positionManagement?: AutoPilotDeps['positionManagement'];
     /** 그리드 매수 다리 지연(ms). 기본 0 — 기존 시나리오는 즉시 발주를 전제한다. */
     gridBuyLegDelayMs?: number;
     /** 티커별 잔고 심 — makeBroker가 브로커를 만들 때마다 심어 준다(입양 테스트용). */
@@ -89,7 +91,7 @@ function makeHarness(
       return b;
     },
     fetchBuyableUsd: opts.fetchBuyableUsd,
-    positionManagement: opts.gridConfig ? { grid: opts.gridConfig } : undefined,
+    positionManagement: opts.positionManagement ?? (opts.gridConfig ? { grid: opts.gridConfig } : undefined),
     gridBuyLegDelayMs: opts.gridBuyLegDelayMs ?? 0,
     clock,
     scheduler: noopScheduler(),
@@ -1394,5 +1396,63 @@ describe('AutoPilot — 세션 전환(정규장↔주간거래) 그리드 주문
 
     expect(pilot.getView().activeTickers).toHaveLength(0);
     expect(h.events.some((e) => e.includes('정규장 진입 가능 시간'))).toBe(true);
+  });
+
+  describe('사용자 요청 매매 (buyNow, sellNow, isHeld)', () => {
+    it('트레이딩 시작 전에는 buyNow가 실패 문구를 반환한다', async () => {
+      const h = makeHarness(['A']);
+      expect(await h.pilot.buyNow('A', { price: 10 })).toContain('자동 트레이딩을 먼저 시작해 주세요');
+      expect(h.pilot.isHeld('A')).toBe(false);
+    });
+
+    it('buyNow 호출 시 설정된 진입금액에 맞춰 현재가 지정가로 진입하고, isHeld가 true가 된다', async () => {
+      const h = makeHarness(['A'], { config: CONFIG_100 });
+      h.pilot.start();
+      expect(h.pilot.isHeld('A')).toBe(false);
+
+      // 현재가 $20으로 수동 매수 요청 -> startAmountUsd 100 기준 5주
+      const res = await h.pilot.buyNow('A', { price: 20 });
+      expect(res).toBeNull();
+      expect(h.pilot.isHeld('A')).toBe(true);
+      expect(h.pins).toContain('A');
+
+      const broker = h.brokers.get('A')!;
+      expect(broker.placed).toHaveLength(1);
+      expect(broker.placed[0]).toMatchObject({
+        side: 'buy',
+        qty: 5,
+        price: 20,
+      });
+
+      // 이미 진입 중인 경우 추가 buyNow는 거절됨
+      const duplicateRes = await h.pilot.buyNow('A', { price: 20 });
+      expect(duplicateRes).toContain('이미 보유 또는 진입 중');
+    });
+
+    it('sellNow에 targetPrice를 전달하면 해당 가격으로 매도를 시작한다', async () => {
+      const h = makeHarness(['A'], {
+        config: CONFIG_100,
+        positionManagement: {
+          realtimeMa5: REALTIME_MA5_POSITION_CONFIG,
+        },
+      });
+      h.pilot.start();
+
+      // 진입
+      await h.pilot.buyNow('A', { price: 20 });
+      const broker = h.brokers.get('A')!;
+      // 체결
+      broker.fill(broker.placed[0].odno, 20);
+      await h.pilot.pollCycle();
+      await flush();
+
+      // 현재가 $25로 사용자 전량 매도 요청
+      const sellRes = h.pilot.sellNow('A', 25);
+      expect(sellRes).toBeNull();
+      await flush();
+
+      const sellOrder = broker.placed.find((p) => p.side === 'sell');
+      expect(sellOrder).toBeDefined();
+    });
   });
 });

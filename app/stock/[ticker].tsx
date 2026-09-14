@@ -13,6 +13,7 @@ import { PriceHeader } from '../../features/stock/ui/PriceHeader';
 import { CompanyPanel } from '../../features/stock/ui/CompanyPanel';
 import { toStockMarketCode } from '../../features/stock/marketCodes';
 import { useQuoteFeed } from '../../features/stock/useQuoteFeed';
+import { StockActionBar } from '../../features/stock/ui/StockActionBar';
 
 type DetailTab = 'chart' | 'comments' | 'company';
 
@@ -90,6 +91,7 @@ export default function StockDetailScreen() {
 
   const bootstrap = useScalperManager();
   const manager = bootstrap.kind === 'ready' ? bootstrap.manager : null;
+  const autopilot = bootstrap.kind === 'ready' ? bootstrap.autopilot : null;
 
   const [tab, setTab] = useState<DetailTab>('chart');
 
@@ -140,6 +142,13 @@ export default function StockDetailScreen() {
           />
         )}
       </View>
+      <StockActionBar
+        ticker={ticker}
+        market={market}
+        name={name}
+        livePrice={quoteState.price}
+        autopilot={autopilot}
+      />
     </View>
   );
 }

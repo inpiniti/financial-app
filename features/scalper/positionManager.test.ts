@@ -584,5 +584,38 @@ describe('OcoGridPositionManager — OCO 매도그리드 어댑터(롤백 보존
       expect(events.at(-1)).toContain('잔고에서 사라졌어요');
       expect(pm.gaugeView().holdingQty).toBe(0);
     });
+
+    it('선등록 매도 주문이 있는 상태에서 sellNow 호출 시 기존 주문을 취소하고 현재가 매도 주문을 발주한다', async () => {
+      const clock = fakeClock(1_000);
+      const broker = new FakeBroker({ autoFill: false });
+      const events: string[] = [];
+      const pm = makePositionManager(
+        'realtimeMa5',
+        { realtimeMa5: DEFAULT_REALTIME_MA5_CONFIG },
+        adapterDeps(broker, clock, events, { feeRate: 0 }),
+      );
+
+      await pm.arm({ qty: 10, avgPrice: 100 });
+      await flush();
+      // arm 시점에 +3% 지정가 매도 주문이 선등록되어 있어야 한다.
+      expect(broker.placed).toHaveLength(1);
+      const preSell = broker.placed[0];
+      expect(preSell.side).toBe('sell');
+      expect(preSell.price).toBe(103);
+
+      // 사용자 즉시 매도 요청 (현재가 $101)
+      const res = pm.sellNow?.(101);
+      expect(res).toBe(true);
+      await flush();
+      await flush();
+
+      // 기존 선등록 주문이 취소되고, $101로 새 매도 주문이 발주되어야 함
+      expect(broker.canceled).toContain(preSell.odno);
+      const nowSell = broker.placed.find((p) => p.odno !== preSell.odno);
+      expect(nowSell).toBeDefined();
+      expect(nowSell?.side).toBe('sell');
+      expect(nowSell?.price).toBe(101);
+      expect(nowSell?.qty).toBe(10);
+    });
   });
 });

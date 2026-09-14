@@ -1525,8 +1525,12 @@ export class RealtimeMa5PositionManager implements PositionManager {
   }
 
   sellNow(price: number): boolean {
-    if (!this.armed || this.isolated || this.released || this.busy) return false;
+    if (!this.armed || this.isolated || this.released || this.buyExec !== null || this.averagingDownPending) return false;
     if (this.qty <= 0) return false;
+    if (this.sellExec !== null) {
+      void this.sellExec.release();
+      this.sellExec = null;
+    }
     this.startSell(this.qty, price);
     return true;
   }
