@@ -20,7 +20,6 @@ import type { FeedEvent, ScalperManager } from '../scalperManager';
 import type { ModelVerdictView } from '../feedSlot';
 import type { FeedStatus } from '../types';
 import { isDaytimeSessionOpen } from '../daySession';
-import { rankingSourceLabelOf } from '../../../core/ranking';
 import { MODEL_BAR_MINUTES, MODEL_MODE } from '../modelMode';
 import { MARTINGALE_MODE } from '../martingaleMode';
 import { SLOPE_MODE } from '../slopeMode';
@@ -304,115 +303,111 @@ function InlineGrid({
   const fallbackHi = max ?? current ?? ma5 ?? avg ?? fallbackLo * 1.001;
   const scale = gaugeScaleOf([min, ma5, current, avg, max], fallbackLo, fallbackHi);
 
-  // 최소/최대는 사용자가 기대한 대로 양끝 고정으로 그린다.
+  // 최소/최대는 양끝 고정
   const minPos = min !== null ? 0 : markerPosition(min, scale.lo, scale.hi);
   const maxPos = max !== null ? 1 : markerPosition(max, scale.lo, scale.hi);
   const ma5Pos = markerPosition(ma5, scale.lo, scale.hi);
   const currentPos = markerPosition(current, scale.lo, scale.hi);
   const avgPos = showAverage ? markerPosition(avg, scale.lo, scale.hi) : null;
 
-  const POINT_WIDTH = 68;
-  const CURRENT_BUBBLE_WIDTH = 80;
-  const [trackWidth, setTrackWidth] = useState(0);
-
   const pctLeft = (pos: number) => `${(pos * 100).toFixed(2)}%` as `${number}%`;
 
-  const Marker = ({ pos, color, height, width = 2 }: { pos: number | null; color: string; height: number; width?: number }) => {
-    if (pos === null) return null;
-    const left = pctLeft(pos);
-    return (
-      <View
-        style={{
-          position: 'absolute',
-          left,
-          top: (16 - height) / 2,
-          width,
-          height,
-          backgroundColor: color,
-          borderRadius: 1,
-          transform: [{ translateX: -width / 2 }],
-        }}
-      />
-    );
-  };
-
-  const Point = ({
-    pos,
-    align,
-    label,
-    value,
-    labelColor,
-  }: {
-    pos: number | null;
-    align: 'left' | 'center' | 'right';
-    label: string;
-    value: string;
-    labelColor?: string;
-  }) => {
-    if (pos === null) return null;
-    return (
-      <View
-        style={{
-          position: 'absolute',
-          left: pctLeft(pos),
-          width: POINT_WIDTH,
-          transform: [{ translateX: align === 'center' ? -POINT_WIDTH / 2 : align === 'right' ? -POINT_WIDTH : 0 }],
-          alignItems: align === 'left' ? 'flex-start' : align === 'right' ? 'flex-end' : 'center',
-        }}
-      >
-        <Text className="text-[10px] font-semibold" style={{ color: labelColor ?? '#8b95a1' }}>
-          {label}
-        </Text>
-        <Text className="text-[11px] font-bold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
-          {value}
-        </Text>
-      </View>
-    );
-  };
-
-  const currentBubbleLeft = (() => {
-    if (currentPos === null || trackWidth <= 0) return null;
-    const half = CURRENT_BUBBLE_WIDTH / 2;
-    const x = currentPos * trackWidth;
-    return Math.min(trackWidth - half, Math.max(half, x)) - half;
-  })();
-
   return (
-    <View className="mt-3">
-      <View className="relative" style={{ height: 38 }}>
-        {currentBubbleLeft !== null && (
+    <View className="mt-2.5">
+      {/* 1. 상단 현재가 지시자 (▼ 검정색) */}
+      <View className="relative" style={{ height: 12 }}>
+        {currentPos !== null && (
           <View
             style={{
               position: 'absolute',
-              left: currentBubbleLeft,
-              top: 0,
-              width: CURRENT_BUBBLE_WIDTH,
+              left: pctLeft(currentPos),
+              transform: [{ translateX: -6 }],
+              width: 12,
               alignItems: 'center',
             }}
           >
-            <Text className="text-[10px] font-semibold text-[#8b95a1]">현재</Text>
-            <Text className="text-[11px] font-bold text-[#191f28]" style={{ fontVariant: ['tabular-nums'] }}>
-              {formatPrice(current)}
-            </Text>
-            <Text style={{ color: '#191f28', fontSize: 11, lineHeight: 12, marginTop: 1 }}>▼</Text>
+            <Text style={{ color: '#191f28', fontSize: 10, lineHeight: 12 }}>▼</Text>
           </View>
         )}
       </View>
 
-      <View className="relative" style={{ height: 16 }} onLayout={(e) => setTrackWidth(e.nativeEvent.layout.width)}>
-        <View className="absolute left-0 right-0" style={{ top: 7, height: 2, backgroundColor: '#e5e8eb', borderRadius: 999 }} />
-        <Marker pos={minPos} color="#8b95a1" height={10} width={1.5} />
-        <Marker pos={ma5Pos} color="#f59e0b" height={12} />
-        <Marker pos={currentPos} color="#191f28" height={13} />
-        {showAverage && <Marker pos={avgPos} color="#3182f6" height={13} />}
-        <Marker pos={maxPos} color="#8b95a1" height={10} width={1.5} />
+      {/* 2. 트랙 바 & 평단 마커 (| 파란색) */}
+      <View className="relative" style={{ height: 14 }}>
+        {/* 가로 트랙 선 */}
+        <View
+          className="absolute left-0 right-0"
+          style={{ top: 6, height: 2, backgroundColor: '#e5e8eb', borderRadius: 999 }}
+        />
+        {/* 최소 끝단 마커 */}
+        {minPos !== null && (
+          <View
+            style={{
+              position: 'absolute',
+              left: 0,
+              top: 3,
+              width: 1.5,
+              height: 8,
+              backgroundColor: '#b0b8c1',
+              borderRadius: 1,
+            }}
+          />
+        )}
+        {/* 최대 끝단 마커 */}
+        {maxPos !== null && (
+          <View
+            style={{
+              position: 'absolute',
+              right: 0,
+              top: 3,
+              width: 1.5,
+              height: 8,
+              backgroundColor: '#b0b8c1',
+              borderRadius: 1,
+            }}
+          />
+        )}
+        {/* 평단가 마커 (| 파란색 세로 바) */}
+        {showAverage && avgPos !== null && (
+          <View
+            style={{
+              position: 'absolute',
+              left: pctLeft(avgPos),
+              top: 0,
+              width: 2.5,
+              height: 14,
+              backgroundColor: '#3182f6',
+              borderRadius: 1,
+              transform: [{ translateX: -1.25 }],
+            }}
+          />
+        )}
       </View>
 
-      <View className="relative mt-2" style={{ height: 30 }}>
-        <Point pos={minPos} align="left" label="최소" value={formatPrice(min)} />
-        <Point pos={ma5Pos} align="center" label="5선" value={formatPrice(ma5)} labelColor="#f59e0b" />
-        {showAverage && <Point pos={avgPos} align="center" label="평단" value={formatPrice(avg)} />}
-        <Point pos={maxPos} align="right" label="최대" value={formatPrice(max)} />
+      {/* 3. 하단 5선 지시자 (▲ 노란색) */}
+      <View className="relative" style={{ height: 12 }}>
+        {ma5Pos !== null && (
+          <View
+            style={{
+              position: 'absolute',
+              left: pctLeft(ma5Pos),
+              transform: [{ translateX: -6 }],
+              width: 12,
+              alignItems: 'center',
+            }}
+          >
+            <Text style={{ color: '#f59e0b', fontSize: 10, lineHeight: 12 }}>▲</Text>
+          </View>
+        )}
+      </View>
+
+      {/* 4. 양 끝 최소/최대 범위 표기 */}
+      <View className="mt-0.5 flex-row items-center justify-between">
+        <Text className="text-[10px] text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }}>
+          {formatPrice(min)}
+        </Text>
+        <Text className="text-[10px] text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }}>
+          {formatPrice(max)}
+        </Text>
       </View>
     </View>
   );
@@ -439,8 +434,6 @@ function SlotRow({
   // 종목명이 있으면 이름을 제목으로, 티커는 부제 맨 앞으로 — 이름 없이 티커만 보이면 무슨 종목인지
   // 알 수 없어 조회 탭 리스트(종목명 · 티커)와 읽는 방식이 달랐다.
   const { ticker, name } = item.entry;
-  // 분속 = 틱/초 × 60(최근 10초 창의 순간값을 분당으로) — 사용자가 읽기 쉬운 단위(2026-08-29 데스크탑에서 이식).
-  const perMinute = Math.round(item.view.tickRate * 60);
   const statusLine = item.feedRejected
     ? formatFeedRejectedLine(item.feedRejected)
     : SLOPE_MODE && getActiveEngineMode() === 'slope'
@@ -490,14 +483,6 @@ function SlotRow({
                     ticker
                   )}
                 </Text>
-                <View className="mt-0.5 flex-row items-center" style={{ columnGap: 8 }}>
-                  <Text className="text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }}>
-                    {`${perMinute}틱/분`}
-                  </Text>
-                  <View className="mb-0.5 rounded-full bg-[#f2f4f6] px-2 py-0.5">
-                    <Text className="text-[10px] font-semibold text-[#6b7684]">{rankingSourceLabelOf(item.entry.source)}</Text>
-                  </View>
-                </View>
               </View>
 
               <View className="items-end">
