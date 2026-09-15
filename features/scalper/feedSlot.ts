@@ -411,7 +411,12 @@ export class FeedSlot {
     // 실시간 1분봉/MA5는 화면 공통 지표라 모드와 무관하게 매 틱 갱신한다.
     // 규칙: 마지막(미완성) 분봉 OHLC는 틱마다 갱신, MA5 = 직전 확정 4봉 종가 + 현재틱 / 5.
     this.realtimeCandleBuilder.pushTick(price, tsMs);
-    this.realtimeMa5State = this.realtimeMa5Calc.evaluate(this.realtimeCandleBuilder.closes, price);
+    this.realtimeMa5State = this.realtimeMa5Calc.evaluate(
+      this.realtimeCandleBuilder.closes,
+      price,
+      true,
+      this.lastTickAt ?? this.clock.now(),
+    );
 
     if (this.slopeMode) {
       // 기울기 단타(ADR 0011) — 틱마다 기울기/10초를 재서 문턱 전환에서만 신호. 스로틀·봉·세션 게이트 없음.
@@ -664,7 +669,7 @@ export class FeedSlot {
     const probe = this.price ?? this.realtimeCandleBuilder.inProgress?.close ?? this.realtimeCandleBuilder.closes.at(-1) ?? null;
     this.realtimeMa5State =
       probe !== null && Number.isFinite(probe) && probe > 0
-        ? this.realtimeMa5Calc.evaluate(this.realtimeCandleBuilder.closes, probe, false)
+        ? this.realtimeMa5Calc.evaluate(this.realtimeCandleBuilder.closes, probe, false, this.clock.now())
         : { ma5: null, slope: null, breakout: false, refClose5: null };
   }
 

@@ -130,11 +130,18 @@ export interface RealtimeMa5State {
   ma5: number | null;
   /** 기울기: 현재틱 > 5개전 확정분봉 종가 → 'up', < → 'down', 비교 불가 → null. */
   slope: 'up' | 'down' | null;
-  /** 상향 돌파: 이전틱 < 현재 MA5 < 현재틱. */
+  /** 상향 돌파: 5선 하단 체류(3초) 충족 후 이전틱 <= 현재 MA5 < 현재틱. */
   breakout: boolean;
   /** 5개전 확정분봉 종가. 없으면 null. */
   refClose5: number | null;
+  /** 5선 하단 체류 시간(ms). 5선 위면 null. */
+  belowDwellMs?: number | null;
+  /** 5선 하단 체류를 충족하여 돌파 준비가 완료된 상태인가. */
+  isArmed?: boolean;
 }
+
+/** 5선 하단 최소 연속 체류 시간 기본값(3초 = 3,000ms). */
+export const DEFAULT_MA5_DWELL_MS = 3_000;
 
 /**
  * 실시간 MA5 계산기 — 확정 봉 4개 + 현재 틱으로 MA5를 계산한다.
@@ -142,20 +149,35 @@ export interface RealtimeMa5State {
  * MA5_realtime = (closes[n-4] + closes[n-3] + closes[n-2] + closes[n-1] + currentTick) / 5
  *
  * 기울기: currentTick > closes[n-5] (5개전 종가) → up, down.
- * 돌파: prevTick < ma5Realtime(currentTick) < currentTick → true.
+ * 돌파: 5선 아래(price <= MA5)에서 minDwellMs(기본 3초) 이상 연속 체류 후,
+ *       이전틱 <= 현재 MA5 < 현재틱으로 상향 돌파하는 순간 1회 발화.
  */
 export class RealtimeMa5Calculator {
   private prevTick: number | null = null;
   private liveTickCount = 0;
+  private belowStartMs: number | null = null;
+  private isArmed = false;
+  private readonly minDwellMs: number;
+
+  constructor(minDwellMs = DEFAULT_MA5_DWELL_MS) {
+    this.minDwellMs = minDwellMs;
+  }
 
   /**
    * 현재 틱으로 MA5·기울기·돌파를 계산한다.
    * confirmedCloses = 확정된 봉 종가 배열 (오름차순, 최소 5개 이상 권장).
    * currentTick = 현재 틱 가격.
    * isLiveTick = 실제 수신된 라이브 틱 여부 (기본 true). 시드/프로브 조회 시 false로 전달하여 돌파 오판정 방지.
+   * tsMs = 체결 시각(epoch ms). 미전달 시 Date.now() 사용.
    */
-  evaluate(confirmedCloses: readonly number[], currentTick: number, isLiveTick = true): RealtimeMa5State {
+  evaluate(
+    confirmedCloses: readonly number[],
+    currentTick: number,
+    isLiveTick = true,
+    tsMs?: number,
+  ): RealtimeMa5State {
     const n = confirmedCloses.length;
+    const nowMs = tsMs ?? (typeof Date !== 'undefined' ? Date.now() : 0);
 
     // MA5 = (최근 4 확정 종가 + 현재틱) / 5
     let ma5: number | null = null;
@@ -172,22 +194,49 @@ export class RealtimeMa5Calculator {
       slope = currentTick > refClose5 ? 'up' : currentTick < refClose5 ? 'down' : null;
     }
 
-    // 돌파: 라이브 틱이 2개 이상 관측되었고, 이전 라이브틱 <= 현재 MA5 < 현재 라이브틱
+    // 5선 하단 체류 및 돌파 판정
     let breakout = false;
+    let belowDwellMs: number | null = null;
+
     if (isLiveTick) {
       this.liveTickCount++;
-      if (this.prevTick !== null && ma5 !== null && this.liveTickCount >= 2) {
-        breakout = this.prevTick <= ma5 && currentTick > ma5;
+
+      if (ma5 !== null) {
+        if (currentTick <= ma5) {
+          // 5선 이하 체류 중
+          if (this.belowStartMs === null) {
+            this.belowStartMs = nowMs;
+          }
+          belowDwellMs = Math.max(0, nowMs - this.belowStartMs);
+          if (belowDwellMs >= this.minDwellMs) {
+            this.isArmed = true;
+          }
+        } else {
+          // currentTick > ma5 (5선 위로 올라섬)
+          if (this.prevTick !== null && this.liveTickCount >= 2 && this.prevTick <= ma5 && this.isArmed) {
+            // 5선 하단 3초 이상 체류(isArmed) 후 상향 돌파!
+            breakout = true;
+            this.isArmed = false; // 돌파 발화 즉시 소진
+          }
+          // 5선 위이므로 체류 타이머 리셋 (엄격한 연속 체류)
+          this.belowStartMs = null;
+        }
+      } else {
+        this.belowStartMs = null;
+        this.isArmed = false;
       }
+
       this.prevTick = currentTick;
     }
 
-    return { ma5, slope, breakout, refClose5 };
+    return { ma5, slope, breakout, refClose5, belowDwellMs, isArmed: this.isArmed };
   }
 
   reset(): void {
     this.prevTick = null;
     this.liveTickCount = 0;
+    this.belowStartMs = null;
+    this.isArmed = false;
   }
 }
 
