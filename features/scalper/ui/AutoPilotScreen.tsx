@@ -4,8 +4,21 @@
 // 운용 설정(진입금액·동시 그리드·최소 속도)은 상단바 > 설정 > "트레이딩 설정"으로 옮겼다(2026-08-12) —
 // 매매파라미터와 흩어져 있던 설정을 한 화면에 모았다. 값 반영은 managerProvider가 트레이딩 포커스마다 한다.
 // app-ui-style: 풀폭 Panel + 촘촘한 ListRow, 이모지 금지(Ionicons), 손익 색은 pnlColor()만.
-import { useCallback, useEffect, useState } from 'react';
-import { Alert, FlatList, Pressable, Text, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  Alert,
+  Animated,
+  Easing,
+  FlatList,
+  LayoutAnimation,
+  Platform,
+  Pressable,
+  Text,
+  UIManager,
+  View,
+  type LayoutChangeEvent,
+} from 'react-native';
+import AnimatedReanimated, { LinearTransition } from 'react-native-reanimated';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Polygon } from 'react-native-svg';
@@ -36,8 +49,13 @@ import type { RealtimeMa5State } from '../../../core/realtime-ma5';
 import { AdoptSheet } from './AdoptSheet';
 import { refreshLiveSettings } from './managerProvider';
 import { LiveRaceTrackCard } from './race/LiveRaceTrackCard';
+import { AnimatedPrice } from './components/AnimatedPrice';
 import { formatHHMM, formatPrice, formatSlopeRate, formatSlopeRates, formatTickRates } from './format';
 import { gaugeScaleOf, normalizeGridPosition } from './gridGaugeMath';
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 
 const STATE_BADGE: Record<AutoPilotState, { label: string; bg: string; fg: string }> = {
   IDLE: { label: '대기 중', bg: '#f2f4f6', fg: '#8b95a1' },
@@ -310,6 +328,9 @@ function InlineGrid({
   max: number | null;
   showAverage: boolean;
 }) {
+  const [trackWidth, setTrackWidth] = useState(0);
+  const onTrackLayout = (e: LayoutChangeEvent) => setTrackWidth(e.nativeEvent.layout.width);
+
   const fallbackLo = min ?? current ?? ma5 ?? avg ?? 1;
   const fallbackHi = max ?? current ?? ma5 ?? avg ?? fallbackLo * 1.001;
   const scale = gaugeScaleOf([min, ma5, current, avg, max], fallbackLo, fallbackHi);
@@ -323,10 +344,50 @@ function InlineGrid({
 
   const pctLeft = (pos: number) => `${(pos * 100).toFixed(2)}%` as `${number}%`;
 
+  // 현재가 지시자 부드러운 글라이딩 (Animated translateX)
+  const currentTargetX = currentPos !== null && trackWidth > 0 ? currentPos * trackWidth : null;
+  const currentAnimX = useRef(new Animated.Value(0)).current;
+  const currentInit = useRef(false);
+
+  useEffect(() => {
+    if (currentTargetX === null) return;
+    if (!currentInit.current) {
+      currentInit.current = true;
+      currentAnimX.setValue(currentTargetX);
+      return;
+    }
+    Animated.timing(currentAnimX, {
+      toValue: currentTargetX,
+      duration: 250,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start();
+  }, [currentTargetX, currentAnimX]);
+
+  // 5선 지시자 부드러운 글라이딩 (Animated translateX)
+  const ma5TargetX = ma5Pos !== null && trackWidth > 0 ? ma5Pos * trackWidth : null;
+  const ma5AnimX = useRef(new Animated.Value(0)).current;
+  const ma5Init = useRef(false);
+
+  useEffect(() => {
+    if (ma5TargetX === null) return;
+    if (!ma5Init.current) {
+      ma5Init.current = true;
+      ma5AnimX.setValue(ma5TargetX);
+      return;
+    }
+    Animated.timing(ma5AnimX, {
+      toValue: ma5TargetX,
+      duration: 250,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start();
+  }, [ma5TargetX, ma5AnimX]);
+
   return (
     <View className="mt-2.5">
       {/* 게이지 트랙 & 지시자 통합 영역 (높이 16px) */}
-      <View className="relative" style={{ height: 16 }}>
+      <View onLayout={onTrackLayout} className="relative" style={{ height: 16 }}>
         {/* 가로 트랙 선 (y: 7~9) */}
         <View
           className="absolute left-0 right-0"
@@ -380,7 +441,20 @@ function InlineGrid({
         )}
 
         {/* 현재가 지시자 (▼ 검정색 역삼각형) - 트랙 상단 표면에 정확히 맞닿음 (끝점 y=7) */}
-        {currentPos !== null && (
+        {currentTargetX !== null ? (
+          <Animated.View
+            style={{
+              position: 'absolute',
+              left: 0,
+              top: 0,
+              transform: [{ translateX: currentAnimX }, { translateX: -4.5 }],
+            }}
+          >
+            <Svg width={9} height={7}>
+              <Polygon points="0,0 9,0 4.5,7" fill="#191f28" />
+            </Svg>
+          </Animated.View>
+        ) : currentPos !== null ? (
           <View
             style={{
               position: 'absolute',
@@ -393,10 +467,23 @@ function InlineGrid({
               <Polygon points="0,0 9,0 4.5,7" fill="#191f28" />
             </Svg>
           </View>
-        )}
+        ) : null}
 
         {/* 5선 지시자 (▲ 노란색 정삼각형) - 트랙 하단 표면에 정확히 맞닿음 (끝점 y=9) */}
-        {ma5Pos !== null && (
+        {ma5TargetX !== null ? (
+          <Animated.View
+            style={{
+              position: 'absolute',
+              left: 0,
+              top: 9,
+              transform: [{ translateX: ma5AnimX }, { translateX: -4.5 }],
+            }}
+          >
+            <Svg width={9} height={7}>
+              <Polygon points="4.5,0 0,7 9,7" fill="#f59e0b" />
+            </Svg>
+          </Animated.View>
+        ) : ma5Pos !== null ? (
           <View
             style={{
               position: 'absolute',
@@ -409,7 +496,7 @@ function InlineGrid({
               <Polygon points="4.5,0 0,7 9,7" fill="#f59e0b" />
             </Svg>
           </View>
-        )}
+        ) : null}
       </View>
 
       {/* 양 끝 최소/최대 범위 표기 */}
@@ -517,9 +604,9 @@ function SlotRow({
                 </View>
               </View>
 
-              {/* 우측 컬럼: 현재가 / 원화 -> 보유 정보 / 손익 */}
+              {/* 우측 컬럼: 현재가(카운트업+플래시) / 원화 -> 보유 정보 / 손익 */}
               <View className="items-end">
-                <Text className="text-base font-bold text-[#191f28]">{formatPrice(currentPrice)}</Text>
+                <AnimatedPrice value={currentPrice} />
                 {currentKrw !== null && <Text className="text-xs text-[#8b95a1]">{currentKrw}</Text>}
                 {grid !== null && (
                   <View className="mt-1 items-end">
@@ -568,8 +655,17 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
   // 오늘 성과 원화 병기용 환율(잔고 기준·30분 캐시) — 못 구하면 null이라 USD만 보여준다.
   const usdKrw = useUsdKrwRate();
 
+  const handleRowsUpdate = useCallback((newRows: readonly AutoPilotSlotRow[]) => {
+    try {
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    } catch {
+      // 무시
+    }
+    setRows(newRows);
+  }, []);
+
   useEffect(() => autopilot.subscribeView(setView), [autopilot]);
-  useEffect(() => autopilot.subscribeList(setRows), [autopilot]);
+  useEffect(() => autopilot.subscribeList(handleRowsUpdate), [autopilot, handleRowsUpdate]);
   useEffect(() => manager.subscribeFeedStatus(setFeedStatus), [manager]);
   useEffect(() => manager.subscribeFeedDiagnostic(setFeedEvent), [manager]);
   useEffect(
@@ -582,9 +678,9 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
   const running = engaged && view.state !== 'PAUSED';
   useEffect(() => {
     if (!engaged) return;
-    const timer = setInterval(() => setRows(autopilot.getRows()), 2000);
+    const timer = setInterval(() => handleRowsUpdate(autopilot.getRows()), 2000);
     return () => clearInterval(timer);
-  }, [autopilot, engaged]);
+  }, [autopilot, engaged, handleRowsUpdate]);
 
   const handleRun = useCallback(async () => {
     // 정지 → 시작 사이에는 화면 포커스 이벤트가 없어 포커스마다 도는 설정 재적용 경로가 돌지 않는다.
@@ -619,14 +715,16 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
     ({ item }: { item: AutoPilotSlotRow }) => (
       // 보유 중인 종목만 AutoPilot 그리드 스냅샷이 있다. 미보유 종목은 평단/보유손익 없이 축(최소·5선·현재·최대)만 그린다.
       // 리스트 내부에서 모두 보여 주되, 보유 정보는 보유 종목에서만 조건부 노출.
-      <SlotRow
-        item={item}
-        grid={view.grids.find((g) => g.ticker === item.entry.ticker) ?? null}
-        usdKrw={usdKrw}
-        activeTickers={view.activeTickers}
-        candidates={view.watched}
-        onPress={handleRowPress}
-      />
+      <AnimatedReanimated.View layout={LinearTransition.duration(300)}>
+        <SlotRow
+          item={item}
+          grid={view.grids.find((g) => g.ticker === item.entry.ticker) ?? null}
+          usdKrw={usdKrw}
+          activeTickers={view.activeTickers}
+          candidates={view.watched}
+          onPress={handleRowPress}
+        />
+      </AnimatedReanimated.View>
     ),
     [view.activeTickers, view.grids, view.watched, handleRowPress, usdKrw],
   );
