@@ -853,26 +853,26 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                   </Pressable>
                 )}
                 {running && (
-                  <>
+                  <View className="flex-row items-center" style={{ gap: 8 }}>
                     {/* 그리드 자리가 남아 있을 때만 — 만석이면 등록해도 거절되므로 버튼을 감춘다. */}
-                    {view.activeTickers.length < view.maxGrids && (
+                    {view.activeTickers.length < view.maxGrids ? (
                       <Pressable
                         onPress={() => setAdoptVisible(true)}
-                        className="flex-row items-center justify-center rounded-2xl bg-[#eaf2ff] py-4 active:opacity-80"
+                        className="flex-1 flex-row items-center justify-center rounded-2xl bg-[#eaf2ff] py-4 active:opacity-80"
                         style={{ minHeight: 48, gap: 6 }}
                       >
                         <Ionicons name="wallet-outline" size={16} color="#3182f6" />
                         <Text className="text-base font-semibold text-[#3182f6]">보유 종목 등록</Text>
                       </Pressable>
-                    )}
+                    ) : null}
                     <Pressable
                       onPress={handleStop}
-                      className="items-center rounded-2xl bg-[#f7f9fc] py-4 active:opacity-80"
+                      className="flex-1 items-center justify-center rounded-2xl bg-[#f7f9fc] py-4 active:opacity-80"
                       style={{ minHeight: 48 }}
                     >
                       <Text className="text-base font-semibold text-[#4e5968]">정지하기</Text>
                     </Pressable>
-                  </>
+                  </View>
                 )}
                 {view.state === 'PAUSED' && (
                   <Pressable onPress={handleStop} className="items-center py-2 active:opacity-60">
