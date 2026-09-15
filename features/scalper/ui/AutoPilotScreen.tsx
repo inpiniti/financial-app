@@ -720,7 +720,6 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
   );
 
   const config = view.config;
-  const idleWatch = view.state === 'SCANNING' && view.watched.length === 0 && rows.length > 0;
   const feedAckSummary = formatFeedAckSummary(rows);
 
   return (
@@ -799,14 +798,6 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                       주세요
                     </Text>
                   )}
-                </View>
-              )}
-              {idleWatch && config && (
-                <View className="px-5 pb-2">
-                  <Text className="text-xs leading-5 text-[#8b95a1]">
-                    모든 종목이 {config.minTickRate}틱/초 미만이라 기다리고 있어요 — 거래가 살아나면 자동으로 감시를
-                    시작해요
-                  </Text>
                 </View>
               )}
               <View className="px-5 pb-4 pt-2" style={{ gap: 8 }}>
