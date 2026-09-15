@@ -43,8 +43,17 @@ flowchart TD
 
 ---
 
-## 4. 설정 화면 연동 (`screens.md`, `server-state.md`)
+## 4. 순위 화면 UI 및 스크롤 체감
+
+- **페이지 패널 일체화**: 상단 필터 셀렉트 박스(`SelectBox` 묶음)를 고정 `View`로 분리하지 않고 `FlatList`의 `ListHeaderComponent`에 배치합니다.
+- **당겨서 새로고침(Pull-to-Refresh)**: 트레이딩/보유종목 화면과 동일하게 화면 전체를 아래로 당기면 상단 필터부터 목록까지 한 덩어리로 시원하게 당겨지며 새로고침됩니다.
+- **시야 공간 확보**: 아래로 스크롤할 때 필터 영역이 자연스럽게 위로 밀려나 종목 목록을 볼 수 있는 화면 가시 영역이 극대화됩니다.
+
+---
+
+## 5. 설정 화면 연동 (`screens.md`, `server-state.md`)
 
 - **설정 컴포넌트**: `RankingSelectionPanel` (`features/scalper/ui/RankingSelectionPanel.tsx`)
 - **저장 위치**: `lib/appSettings.ts` 내 `rankingSelection`
 - **검증 규칙**: `validateRankingSelection` (선택된 개수 총합 $\le 30$)
+

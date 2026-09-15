@@ -299,83 +299,103 @@ export function Ranking() {
   const periodValue = timeUnit === 'minute' ? minuteWindow : dayWindow;
   const handlePeriodChange = timeUnit === 'minute' ? setMinuteWindow : setDayWindow;
 
-  return (
-    <View className="flex-1 bg-[#f2f4f6]">
-      <View className="mb-2 bg-white px-4 pb-3 pt-3">
-        <View className="flex-row" style={{ gap: 8 }}>
+  const filterHeader = (
+    <View className="mb-2 bg-white px-4 pb-3 pt-3">
+      <View className="flex-row" style={{ gap: 8 }}>
+        <SelectBox
+          label="순위 종류"
+          value={kind}
+          options={KIND_OPTIONS}
+          onChange={(v) => {
+            // 종류가 바뀌면 직전 결과를 비운다 — 원천이 달라 잔상이 남으면 오해를 부른다.
+            setRows(null);
+            setDataError(null);
+            setKind(v as UiRankingKind);
+          }}
+        />
+        {isToss && (
           <SelectBox
-            label="순위 종류"
-            value={kind}
-            options={KIND_OPTIONS}
-            onChange={(v) => {
-              // 종류가 바뀌면 직전 결과를 비운다 — 원천이 달라 잔상이 남으면 오해를 부른다.
-              setRows(null);
-              setDataError(null);
-              setKind(v as UiRankingKind);
-            }}
+            label="기간"
+            value={tossDuration}
+            options={TOSS_DURATION_OPTIONS}
+            onChange={(v) => setTossDuration(v as TossRankingDuration)}
           />
-          {isToss && (
-            <SelectBox
-              label="기간"
-              value={tossDuration}
-              options={TOSS_DURATION_OPTIONS}
-              onChange={(v) => setTossDuration(v as TossRankingDuration)}
-            />
-          )}
-          {isToss && (
-            <SelectBox
-              label="위험종목"
-              value={tossRisk}
-              options={TOSS_RISK_OPTIONS}
-              onChange={(v) => setTossRisk(v as 'include' | 'exclude')}
-            />
-          )}
-          {!isToss && (
-            <SelectBox
-              label={timeUnit === 'minute' ? '기간(분)' : '기간(일)'}
-              value={periodValue}
-              options={periodOptions}
-              onChange={(v) => handlePeriodChange(v as DayWindow)}
-            />
-          )}
-        </View>
-
-        {DIRECTION_KINDS.includes(kind) && (
-          <View className="mt-2 flex-row">
-            <SelectBox
-              label="방향"
-              value={priceDirection}
-              options={kind === 'upDownRate' ? UPDOWN_DIRECTION_OPTIONS : DIRECTION_OPTIONS}
-              onChange={(v) => setPriceDirection(v as PriceFluctDirection)}
-            />
-          </View>
+        )}
+        {isToss && (
+          <SelectBox
+            label="위험종목"
+            value={tossRisk}
+            options={TOSS_RISK_OPTIONS}
+            onChange={(v) => setTossRisk(v as 'include' | 'exclude')}
+          />
+        )}
+        {!isToss && (
+          <SelectBox
+            label={timeUnit === 'minute' ? '기간(분)' : '기간(일)'}
+            value={periodValue}
+            options={periodOptions}
+            onChange={(v) => handlePeriodChange(v as DayWindow)}
+          />
         )}
       </View>
 
-      {sessionBlocked ? (
-        session.kind === 'needsSetup' ? (
-          <SetupNotice />
-        ) : (
-          <ErrorNotice message={session.kind === 'error' ? session.message : ''} />
-        )
-      ) : (!isToss && session.kind === 'loading') || (loadingData && rows === null) ? (
-        <Panel style={{ flex: 1, marginBottom: 0 }}>
-          <SkeletonList />
-        </Panel>
-      ) : dataError && rows === null ? (
-        <ErrorNotice message={dataError} />
-      ) : (
-        <Panel style={{ flex: 1, marginBottom: 0 }}>
-          <FlatList
-            data={rows ?? []}
-            keyExtractor={(item, idx) => `${item.symb}-${idx}`}
-            renderItem={renderRow}
-            contentContainerStyle={{ flexGrow: 1 }}
-            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#3182f6" />}
-            ListEmptyComponent={<EmptyState icon="bar-chart-outline" title="조건에 맞는 종목이 없어요" description="다른 종류나 기간으로 바꿔보세요" />}
+      {DIRECTION_KINDS.includes(kind) && (
+        <View className="mt-2 flex-row">
+          <SelectBox
+            label="방향"
+            value={priceDirection}
+            options={kind === 'upDownRate' ? UPDOWN_DIRECTION_OPTIONS : DIRECTION_OPTIONS}
+            onChange={(v) => setPriceDirection(v as PriceFluctDirection)}
           />
-        </Panel>
+        </View>
+      )}
+    </View>
+  );
+
+  return (
+    <View className="flex-1 bg-[#f2f4f6]">
+      {sessionBlocked ? (
+        <View className="flex-1">
+          {filterHeader}
+          {session.kind === 'needsSetup' ? (
+            <SetupNotice />
+          ) : (
+            <ErrorNotice message={session.kind === 'error' ? session.message : ''} />
+          )}
+        </View>
+      ) : (!isToss && session.kind === 'loading') || (loadingData && rows === null) ? (
+        <View className="flex-1">
+          {filterHeader}
+          <Panel style={{ flex: 1, marginBottom: 0 }}>
+            <SkeletonList />
+          </Panel>
+        </View>
+      ) : dataError && rows === null ? (
+        <View className="flex-1">
+          {filterHeader}
+          <ErrorNotice message={dataError} />
+        </View>
+      ) : (
+        <FlatList
+          data={rows ?? []}
+          keyExtractor={(item, idx) => `${item.symb}-${idx}`}
+          renderItem={renderRow}
+          contentContainerStyle={{ flexGrow: 1, paddingBottom: 24 }}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#3182f6" />}
+          ListHeaderComponent={
+            <>
+              {filterHeader}
+              <View className="bg-white" style={{ height: 4 }} />
+            </>
+          }
+          ListEmptyComponent={
+            <Panel style={{ flex: 1, marginBottom: 0 }}>
+              <EmptyState icon="bar-chart-outline" title="조건에 맞는 종목이 없어요" description="다른 종류나 기간으로 바꿔보세요" />
+            </Panel>
+          }
+        />
       )}
     </View>
   );
 }
+

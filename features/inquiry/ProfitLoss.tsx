@@ -294,41 +294,47 @@ export function ProfitLoss({ onDetailOpenChange }: ProfitLossProps = {}) {
     return <DayDetail day={selectedDay} onBack={() => setSelectedDt(null)} />;
   }
 
+  const monthNav = (
+    <MonthNavigator
+      year={ym.year}
+      month={ym.month}
+      maxYear={nowYm.year}
+      maxMonth={nowYm.month}
+      onChange={(year, month) => {
+        setSelectedDt(null);
+        // 이전 달 데이터를 즉시 비워 스켈레톤을 띄운다 — 어느 달 데이터인지 헷갈리는 잔상을 막는다.
+        // (당겨서 새로고침은 여기를 거치지 않으므로 기존 데이터 위에 스피너만 돈다.)
+        setItems(null);
+        setSummary(null);
+        setDataError(null);
+        setYm({ year, month });
+      }}
+    />
+  );
+
   return (
     <View className="flex-1 bg-[#f2f4f6]">
-      <MonthNavigator
-        year={ym.year}
-        month={ym.month}
-        maxYear={nowYm.year}
-        maxMonth={nowYm.month}
-        onChange={(year, month) => {
-          setSelectedDt(null);
-          // 이전 달 데이터를 즉시 비워 스켈레톤을 띄운다 — 어느 달 데이터인지 헷갈리는 잔상을 막는다.
-          // (당겨서 새로고침은 여기를 거치지 않으므로 기존 데이터 위에 스피너만 돈다.)
-          setItems(null);
-          setSummary(null);
-          setDataError(null);
-          setYm({ year, month });
-        }}
-      />
-
       {/* 데이터가 아직 없고 에러도 아니면 스켈레톤 — 로딩 플래그가 아니라 데이터 유무로 판단해, 월 전환 직후 fetch 시작 전 한 프레임에 빈 상태가 번쩍이지 않게 한다. */}
       {session.kind === 'loading' || (items === null && summary === null && !kisFailed) ? (
-        <Panel title="손익" style={{ flex: 1, marginBottom: 0 }}>
-          <SkeletonList />
-        </Panel>
+        <View className="flex-1">
+          {monthNav}
+          <Panel title="손익" style={{ flex: 1, marginBottom: 0 }}>
+            <SkeletonList />
+          </Panel>
+        </View>
       ) : (
-        <Panel title="일별 손익" style={{ flex: 1, marginBottom: 0 }}>
-          <FlatList
-            data={kisFailed ? [] : dailyList}
-            keyExtractor={(day) => day.tradeDt}
-            renderItem={renderDaily}
-            contentContainerStyle={{ flexGrow: 1 }}
-            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#3182f6" />}
-            ListHeaderComponent={
-              <>
-                {!kisFailed && summary && (
-                  <View className="border-b border-[#e5e8eb] px-5 pb-4 pt-2">
+        <FlatList
+          data={kisFailed ? [] : dailyList}
+          keyExtractor={(day) => day.tradeDt}
+          renderItem={renderDaily}
+          contentContainerStyle={{ flexGrow: 1, paddingBottom: 24 }}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#3182f6" />}
+          ListHeaderComponent={
+            <>
+              {monthNav}
+              {!kisFailed && summary && (
+                <Panel>
+                  <View className="px-5 pb-4 pt-4">
                     <Text className="text-xs text-[#8b95a1]">{`${ym.month}월 실현손익`}</Text>
                     <Text className="mt-1 text-[22px] font-bold" style={{ color: pnlColor(summary.totalRealizedPnl) }}>
                       {formatSignedKrw(summary.totalRealizedPnl)}
@@ -337,31 +343,46 @@ export function ProfitLoss({ onDetailOpenChange }: ProfitLossProps = {}) {
                       {formatSignedPercent(summary.totalPnlRate, 2)}
                     </Text>
                   </View>
-                )}
+                </Panel>
+              )}
 
-                {kisFailed && (
+              {kisFailed && (
+                <Panel>
                   <View className="bg-[#fff9db] px-5 py-3">
                     <Text className="text-xs text-[#8b6f00]">잠시 연결이 어려워 KIS 손익 내역을 불러오지 못했어요</Text>
                   </View>
-                )}
+                </Panel>
+              )}
 
+              <View className="bg-white">
+                <View className="flex-row items-center justify-between px-5 pb-2 pt-4">
+                  <Text className="text-[15px] font-bold text-[#191f28]">일별 손익</Text>
+                </View>
                 {showTodayRow && todayEstimate && <TodayEstimateRow tradeDt={todayDt} estimate={todayEstimate} />}
-              </>
-            }
-            // 켈리 배율 조회(docs/domain/켈리) — 기록된 거래 결과로 계산해 보여주기만 한다. 매매와 무관.
-            ListFooterComponent={<KellySection />}
-            ListEmptyComponent={
-              kisFailed || showTodayRow ? null : (
+              </View>
+            </>
+          }
+          // 켈리 배율 조회(docs/domain/켈리) — 기록된 거래 결과로 계산해 보여주기만 한다. 매매와 무관.
+          ListFooterComponent={
+            <>
+              <View className="bg-white" style={{ height: 8, marginBottom: 8 }} />
+              <KellySection />
+            </>
+          }
+          ListEmptyComponent={
+            kisFailed || showTodayRow ? null : (
+              <View className="bg-white pb-4">
                 <EmptyState
                   icon="trending-down-outline"
                   title="이 달엔 손익이 없어요"
                   description="다른 달을 선택해 보세요"
                 />
-              )
-            }
-          />
-        </Panel>
+              </View>
+            )
+          }
+        />
       )}
     </View>
   );
 }
+

@@ -85,9 +85,11 @@ interface ScaleInExecution {
     - 상단 필터 칩: `전체` | `진입` | `추가진입` | `청산`
     - 당일 체결 요약: 실현 손익 및 체결 건수 통계
     - 체결 타임라인: 액션별 뱃지, 체결시각, 체결단가·수량·대금(USD/원화), 평단 변화 또는 실현손익
-  - `app/index.tsx` (손익 탭: `ProfitLoss.tsx`, `KellySection.tsx`)
+  - `app/index.tsx` / `app/home.tsx` (손익 탭: `ProfitLoss.tsx`, `KellySection.tsx`):
+    - **페이지 단위 패널화 (통일된 드래그 체감)**: `MonthNavigator`와 당월 요약 카드, "일별 손익" 리스트, 하단 `KellySection`이 단일 `FlatList`로 통합 구성되어, 화면 전체를 아래로 당겨 새로고침(Pull-to-Refresh)할 수 있습니다.
 - **커스텀 훅**:
   - `useTodayTradeActions()`: 당일 로컬 체결 액션(`ENTRY`, `SCALE_IN`, `EXIT`) 실시간 조회 및 정렬
   - `useTodayTrades()`: 당일 완료된 매수→매도 사이클 기록 조회 (기존 호환)
   - `useKellyStats()`: 최근 거래 이력 기반 켈리 계산 결과 및 권장 배율 구독
   - `useTradeHistory()`: 로컬 및 Supabase 동기화된 거래 내역 페이징 조회
+
