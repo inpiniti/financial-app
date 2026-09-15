@@ -50,7 +50,7 @@ import { AdoptSheet } from './AdoptSheet';
 import { refreshLiveSettings } from './managerProvider';
 import { LiveRaceTrackCard } from './race/LiveRaceTrackCard';
 import { AnimatedPrice } from './components/AnimatedPrice';
-import { formatHHMM, formatPrice, formatSlopeRate, formatSlopeRates, formatTickRates } from './format';
+import { formatHHMM, formatPrice, formatSlopeRate } from './format';
 import { gaugeScaleOf, normalizeGridPosition } from './gridGaugeMath';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -598,7 +598,7 @@ function SlotRow({
                   )}
                   {!item.feedRejected && statusLine === null && (
                     <Text className="mt-0.5 text-xs text-[#8b95a1]" style={{ fontVariant: ['tabular-nums'] }} numberOfLines={1}>
-                      {`${formatTickRates(item.view.tickRate)} · ${formatSlopeRates(item.view.slopeRate)}`}
+                      {`분속 ${Math.round(item.view.tickRate * 60)}틱 · 기울기 ${formatSlopeRate(item.view.slopeRate)}%`}
                     </Text>
                   )}
                 </View>
