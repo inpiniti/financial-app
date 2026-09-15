@@ -9,6 +9,8 @@
 ### 엔티티 (Entity)
 - **`TradeResultRecord`**: 청산된 단일 매매 사이클의 결과 엔티티.
   - 필드: `id`(UUID), `accountNo`, `strategy`, `ticker`, `qty`, `entryPrice`, `exitPrice`, `grossPnl`, `fees`, `pnl`, `returnPct`, `exitReason`, `entrySnapshot`, `exitSnapshot`
+- **`TradeActionRecord`**: 장중 실시간 체결 액션(진입, 추가진입, 청산) 엔티티.
+  - 필드: `id`, `cycleId`, `action`(`'ENTRY'` | `'SCALE_IN'` | `'EXIT'`), `ticker`, `market`, `name`, `price`, `qty`, `amountUsd`, `ts`, `targetPrice`, `prevAvgPrice`, `newAvgPrice`, `totalQty`, `exitReason`, `entryAvgPrice`, `pnl`, `returnRatio`
 
 ### 값 객체 (Value Object)
 - **`KellyResult`**: 계산된 켈리 통계 지표.
@@ -21,6 +23,7 @@
 ### 애그리게잇 (Aggregate)
 - **`TradeStoreAggregate` (Root: `features/scalper/tradeStore.ts`)**:
   - 로컬 `AsyncStorage`를 **1차 정본(Single Source of Truth)**으로 관리하여 네트워크가 끊겨도 거래 기록이 유실되지 않도록 보장합니다.
+  - 당일 체결 기록을 `trade_actions.YYYY-MM-DD` 키에 즉시 영속화하여 청산 전 보유 중(진입, 물타기 추가진입)에도 세부 체결 내역이 보존됩니다.
   - Supabase 업로드 실패 시 로컬 미전송 큐(`pendingUploadQueue`)에 적재하여 다음 기회에 자동 재전송합니다 (Fail-Open 원칙).
 
 ### 도메인 서비스 (Domain Service)

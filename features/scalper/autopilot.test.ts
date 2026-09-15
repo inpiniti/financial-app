@@ -22,6 +22,7 @@ import {
 import { FeedSlot } from './feedSlot';
 import { FakeBroker, FakeStore, fakeClock, flush, noopScheduler } from './fakes';
 import { REALTIME_MA5_POSITION_CONFIG } from './positionManager';
+import type { TradeActionRecord } from './tradeStore';
 
 // core/integration.test.ts에서 검증된 시퀀스(버퍼 7·청크 1초).
 const V = [20, 16, 12, 8, 4, 2, 4, 8, 12, 16, 20];
@@ -47,6 +48,7 @@ interface Harness {
   clock: ReturnType<typeof fakeClock>;
   store: FakeStore;
   trades: TradeRecord[];
+  actions: TradeActionRecord[];
   pins: string[];
   unpins: string[];
   events: string[];
@@ -76,6 +78,7 @@ function makeHarness(
   );
   const brokers = new Map<string, FakeBroker>();
   const trades: TradeRecord[] = [];
+  const actions: TradeActionRecord[] = [];
   const pins: string[] = [];
   const unpins: string[] = [];
   const events: string[] = [];
@@ -97,11 +100,12 @@ function makeHarness(
     scheduler: noopScheduler(),
     storage: store,
     onTrade: (r) => trades.push(r),
+    onTradeAction: (a) => actions.push(a),
     onEvent: (e) => events.push(e.text),
   };
   const pilot = new AutoPilot(deps);
   if (opts.config !== null) pilot.setConfig(opts.config ?? CONFIG_100);
-  return { pilot, slots, brokers, clock, store, trades, pins, unpins, events };
+  return { pilot, slots, brokers, clock, store, trades, actions, pins, unpins, events };
 }
 
 /** 같은 clock 시각대에 n틱 버스트 — 틱/초를 n/10으로 만든다(10초 윈도우, 청크 마감 없음, ts 고정). */
@@ -1453,6 +1457,78 @@ describe('AutoPilot — 세션 전환(정규장↔주간거래) 그리드 주문
 
       const sellOrder = broker.placed.find((p) => p.side === 'sell');
       expect(sellOrder).toBeDefined();
+    });
+
+    it('진입, 추가진입, 청산 시 onTradeAction이 올바른 정보와 함께 순서대로 발행된다', async () => {
+      const h = makeHarness(['A'], {
+        config: CONFIG_100,
+        positionManagement: {
+          realtimeMa5: REALTIME_MA5_POSITION_CONFIG,
+        },
+      });
+      h.pilot.start();
+
+      // 1. 진입 (buyNow)
+      await h.pilot.buyNow('A', { price: 100 });
+      const broker = h.brokers.get('A')!;
+      expect(broker.placed).toHaveLength(1);
+      const buy1 = broker.placed[0];
+
+      // 체결
+      broker.fill(buy1.odno, 100);
+      await h.pilot.pollCycle();
+      await flush();
+
+      // ENTRY 액션 확인
+      const entryAction = h.actions.find((a) => a.action === 'ENTRY');
+      expect(entryAction).toBeDefined();
+      expect(entryAction?.ticker).toBe('A');
+      expect(entryAction?.price).toBe(100);
+      expect(entryAction?.qty).toBe(1);
+      expect(entryAction?.amountUsd).toBe(100);
+
+      // 2. 추가진입 (신호 발송: 평단 100 대비 -5% = 95)
+      const pm = (h.pilot as unknown as { actives: Map<string, { cond: { onSignal: (sig: string, p: number) => void } }> })
+        .actives.get('A')!.cond;
+      pm.onSignal('BUY', 95);
+      await flush();
+
+      const buy2 = broker.placed.filter((p) => p.side === 'buy').at(-1);
+      expect(buy2).toBeDefined();
+      expect(buy2?.qty).toBe(4);
+
+      broker.fill(buy2!.odno, 95);
+      await h.pilot.pollCycle();
+      await flush();
+
+      // SCALE_IN 액션 확인
+      const scaleInAction = h.actions.find((a) => a.action === 'SCALE_IN');
+      expect(scaleInAction).toBeDefined();
+      expect(scaleInAction?.ticker).toBe('A');
+      expect(scaleInAction?.price).toBe(95);
+      expect(scaleInAction?.qty).toBe(4);
+      expect(scaleInAction?.prevAvgPrice).toBe(100);
+      expect(scaleInAction?.newAvgPrice).toBe(96);
+      expect(scaleInAction?.totalQty).toBe(5);
+
+      // 3. 청산 (sellNow)
+      h.pilot.sellNow('A', 100);
+      await flush();
+      const sell = broker.placed.filter((p) => p.side === 'sell').at(-1);
+      expect(sell).toBeDefined();
+
+      broker.fill(sell!.odno, 100);
+      await h.pilot.pollCycle();
+      await flush();
+
+      // EXIT 액션 확인
+      const exitAction = h.actions.find((a) => a.action === 'EXIT');
+      expect(exitAction).toBeDefined();
+      expect(exitAction?.ticker).toBe('A');
+      expect(exitAction?.price).toBe(100);
+      expect(exitAction?.qty).toBe(5);
+      expect(exitAction?.entryAvgPrice).toBe(96);
+      expect(exitAction?.pnl).toBeCloseTo(20); // (100 - 96) * 5
     });
   });
 });

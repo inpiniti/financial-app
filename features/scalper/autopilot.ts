@@ -40,6 +40,7 @@ import {
   type PositionManager,
   type PositionPollResult,
 } from './positionManager';
+import type { TradeActionRecord } from './tradeStore';
 
 // 진입 후 관리(포지션 관리자) 쪽 정의 — 정본은 positionManager.ts. 기존 import 경로 호환을 위해 다시 내보낸다.
 export {
@@ -239,6 +240,8 @@ export interface AutoPilotDeps {
   storage: KeyValueStore;
   /** 사이클 종료 기록 — 매니저가 tradeStore에 연결. */
   onTrade?: (record: TradeRecord) => void;
+  /** 체결 액션(진입, 추가진입, 청산) 기록 — 매니저가 tradeStore에 연결. */
+  onTradeAction?: (action: TradeActionRecord) => void;
   onEvent?: (event: AutoPilotEvent) => void;
   onFault?: (fault: InstanceFault) => void;
   /** 거래 수수료율(소수·편도, 0=끔) — 사이클 RunCycle로 넘겨 손익에서 차감한다. */
@@ -358,6 +361,8 @@ interface ActiveCycle {
   pendingSettle: TradeRecord | null;
   /** 그리드 arm이 진행 중 — 같은 종목에 두 번 걸지 않기 위한 가드. */
   arming: boolean;
+  cycleId?: string;
+  entryRecorded?: boolean;
 }
 
 interface PendingBuy {
@@ -1293,6 +1298,8 @@ export class AutoPilot {
       abandonRequested: false,
       pendingSettle: null,
       arming: false,
+      cycleId: `${ctx.ticker}-${this.deps.clock.now()}`,
+      entryRecorded: false,
     };
     active.cycle = new RunCycle({
       ticker: ctx.ticker,
@@ -1403,6 +1410,25 @@ export class AutoPilot {
       active.buyingSince = null;
       active.abandonRequested = false;
       this.clearAbandon(active.ticker);
+
+      if (!active.entryRecorded) {
+        active.entryRecorded = true;
+        const entry = active.cycle.position;
+        if (entry) {
+          this.deps.onTradeAction?.({
+            id: `${entry.ticker}-entry-${entry.entryTs}`,
+            cycleId: active.cycleId,
+            action: 'ENTRY',
+            ticker: entry.ticker,
+            price: entry.entryPrice,
+            qty: entry.qty,
+            amountUsd: entry.entryPrice * entry.qty,
+            ts: entry.entryTs,
+            targetPrice: entry.entryPrice > 0 ? +(entry.entryPrice * 1.03).toFixed(2) : undefined,
+          });
+        }
+      }
+
       // 진입 체결 → 포지션 관리자 인계(모드는 팩토리가 정한다). 인계 실패는 인터록(armPosition이 건다).
       if (this.positionMode !== null && !active.cond && !active.arming) {
         const armed = await this.armPosition(active, { interlockOnFailure: true });
@@ -1467,6 +1493,21 @@ export class AutoPilot {
         fetchBuyableUsd: this.deps.fetchBuyableUsd ? (price) => this.deps.fetchBuyableUsd!(ticker, price) : undefined,
         entry: pos ? { entryTs: pos.entryTs, entrySnapshot: pos.entrySnapshot } : null,
         adopted: active.adopted,
+        onScaleIn: (info) => {
+          this.deps.onTradeAction?.({
+            id: `${info.ticker}-scale-in-${info.ts}`,
+            cycleId: active.cycleId,
+            action: 'SCALE_IN',
+            ticker: info.ticker,
+            price: info.price,
+            qty: info.qty,
+            amountUsd: info.price * info.qty,
+            ts: info.ts,
+            prevAvgPrice: info.prevAvgPrice,
+            newAvgPrice: info.newAvgPrice,
+            totalQty: info.totalQty,
+          });
+        },
         feeRate: this.deps.feeRate,
         mayStart: () => !this.stopRequested && !this.faulted && !active.gridFaulted && this.actives.has(ticker),
         onEvent: (text) => this.event(text),
@@ -1621,6 +1662,8 @@ export class AutoPilot {
       abandonRequested: false,
       pendingSettle: null,
       arming: false,
+      cycleId: `${ticker}-${this.deps.clock.now()}`,
+      entryRecorded: false,
     };
     active.cycle = new RunCycle({
       ticker,
@@ -1794,6 +1837,7 @@ export class AutoPilot {
     this.teardownActive(active);
 
     if (record) {
+      this.emitExitAction(active, record);
       this.rolloverDailyIfNeeded();
       this.cycles += 1;
       this.cumPnl += record.pnl;
@@ -1812,6 +1856,26 @@ export class AutoPilot {
     }
     this.reselect();
     this.emit();
+  }
+
+  private emitExitAction(active: ActiveCycle, record: TradeRecord): void {
+    const action: TradeActionRecord = {
+      id: `${record.ticker}-exit-${record.exitTs}`,
+      cycleId: active.cycleId,
+      action: 'EXIT',
+      ticker: record.ticker,
+      price: record.exitPrice,
+      qty: record.qty,
+      amountUsd: record.exitPrice * record.qty,
+      ts: record.exitTs,
+      exitReason: record.exitReason,
+      entryAvgPrice: record.entryPrice,
+      pnl: record.pnl,
+      grossPnl: record.grossPnl,
+      fees: record.fees,
+      returnRatio: record.entryPrice > 0 ? (record.exitPrice - record.entryPrice) / record.entryPrice : 0,
+    };
+    this.deps.onTradeAction?.(action);
   }
 
   // ---- 내부 ----

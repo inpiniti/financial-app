@@ -8,7 +8,7 @@
 // WS 핸들러는 ScalperManager(피드 허브)가 유일 소유하므로, 이 매니저는 setAuxRoutes로 등록된
 // routeTick/routeQuote를 통해 같은 연결의 수신을 나눠 받는다.
 
-import { appendTradeRecord } from './tradeStore';
+import { appendTradeAction, appendTradeRecord } from './tradeStore';
 import {
   AutoPilot,
   type AutoPilotConfig,
@@ -393,6 +393,13 @@ export class AutoPilotManager {
       orderStrategy: deps.orderStrategy,
       reselectIntervalMs: deps.reselectIntervalMs,
       isInitialEntryAllowed: deps.isInitialEntryAllowed ?? isUsInitialEntryAllowed,
+      onTradeAction: (action) => {
+        void appendTradeAction(deps.storage, {
+          ...action,
+          market: action.market ?? this.marketOf(action.ticker),
+          name: action.name ?? this.tickerNames.get(action.ticker),
+        }).catch((err) => this.deps.onError?.(err));
+      },
       onTrade: (record) => {
         // 채용 거래소를 함께 남긴다 — 거래기록 화면에서 행 탭 → 종목상세 진입 시 시장 판별용.
         // 종목명도 같이 남긴다 — 기록은 나중에 읽히는데 그때는 리스트에 없어 이름을 되찾을 길이 없다.

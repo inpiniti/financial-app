@@ -434,6 +434,7 @@ describe('RealtimeMa5PositionManager — 매도 선등록 루프 방지', () => 
     const clock = fakeClock(1_000);
     const broker = new FakeBroker({ autoFill: false });
     const events: string[] = [];
+    const scaleIns: unknown[] = [];
     let price = 95;
     const pm = makePositionManager(
       'realtimeMa5',
@@ -447,6 +448,7 @@ describe('RealtimeMa5PositionManager — 매도 선등록 루프 방지', () => 
         entry: null,
         adopted: false,
         onEvent: (t) => events.push(t),
+        onScaleIn: (info) => scaleIns.push(info),
       },
     );
 
@@ -466,6 +468,17 @@ describe('RealtimeMa5PositionManager — 매도 선등록 루프 방지', () => 
     broker.fill(buy!.odno, 95);
     await flush();
     expect(await pm.poll()).toEqual({ kind: 'holding' });
+
+    expect(scaleIns).toHaveLength(1);
+    expect(scaleIns[0]).toEqual({
+      ticker: 'A',
+      price: 95,
+      qty: 4,
+      prevAvgPrice: 100,
+      newAvgPrice: 96,
+      totalQty: 5,
+      ts: 1_000,
+    });
 
     const latestSell = broker.placed.filter((p) => p.side === 'sell').at(-1);
     expect(latestSell?.price).toBeCloseTo(98.88); // 새 평단 96 * 1.03

@@ -5,6 +5,9 @@ import {
   appendTradeRecord,
   readTodayTrades,
   readTradesByDate,
+  appendTradeAction,
+  readTodayTradeActions,
+  readTradeActionsByDate,
   tradeKeyFor,
   TRADE_KEY_PREFIX,
 } from './tradeStore';
@@ -58,5 +61,74 @@ describe('tradeStore — 일자별 append/조회', () => {
     const today = await readTodayTrades(store, clock);
     expect(today).toHaveLength(1);
     expect(today[0].instanceId).toBe('inst-1');
+  });
+
+  it('appendTradeAction 및 readTodayTradeActions가 정상 동작한다', async () => {
+    const store = new FakeStore();
+    const ts = Date.UTC(2026, 6, 29, 10, 0, 0);
+    const clock = fakeClock(ts);
+
+    await appendTradeAction(store, {
+      id: 'AAPL-entry-1',
+      action: 'ENTRY',
+      ticker: 'AAPL',
+      price: 150,
+      qty: 5,
+      amountUsd: 750,
+      ts,
+      targetPrice: 154.5,
+    });
+
+    await appendTradeAction(store, {
+      id: 'AAPL-scale-in-1',
+      action: 'SCALE_IN',
+      ticker: 'AAPL',
+      price: 145,
+      qty: 5,
+      amountUsd: 725,
+      ts: ts + 60_000,
+      prevAvgPrice: 150,
+      newAvgPrice: 147.5,
+      totalQty: 10,
+    });
+
+    await appendTradeAction(store, {
+      id: 'AAPL-exit-1',
+      action: 'EXIT',
+      ticker: 'AAPL',
+      price: 152,
+      qty: 10,
+      amountUsd: 1520,
+      ts: ts + 120_000,
+      entryAvgPrice: 147.5,
+      pnl: 45,
+      returnRatio: 0.0305,
+    });
+
+    const actions = await readTodayTradeActions(store, clock);
+    expect(actions).toHaveLength(3);
+    expect(actions[0].action).toBe('ENTRY');
+    expect(actions[1].action).toBe('SCALE_IN');
+    expect(actions[2].action).toBe('EXIT');
+    expect(actions[1].prevAvgPrice).toBe(150);
+    expect(actions[1].newAvgPrice).toBe(147.5);
+    expect(actions[2].pnl).toBe(45);
+  });
+
+  it('체결 액션이 없고 구버전 StoredTrade만 있을 때 ENTRY, EXIT으로 자동 폴백 변환한다', async () => {
+    const store = new FakeStore();
+    const clock = fakeClock(Date.UTC(2026, 6, 29, 23, 0, 0));
+    await appendTradeRecord(store, 'inst-1', sampleTrade({ ticker: 'TSLA', entryPrice: 200, exitPrice: 206, pnl: 12 }));
+
+    const actions = await readTodayTradeActions(store, clock);
+    expect(actions).toHaveLength(2);
+    expect(actions[0].action).toBe('ENTRY');
+    expect(actions[0].ticker).toBe('TSLA');
+    expect(actions[0].price).toBe(200);
+
+    expect(actions[1].action).toBe('EXIT');
+    expect(actions[1].ticker).toBe('TSLA');
+    expect(actions[1].price).toBe(206);
+    expect(actions[1].pnl).toBe(12);
   });
 });

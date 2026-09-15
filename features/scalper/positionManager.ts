@@ -378,6 +378,16 @@ export interface PositionManagerDeps {
   entry: { entryTs: number; entrySnapshot: SignalSnapshot } | null;
   /** 잔고에서 주워 온 포지션인가 — 인계 문구(등록/인계)용. */
   adopted: boolean;
+  /** 추가진입(물타기) 매수 체결 통보 — 수량, 단가, 이전 평단, 새 평단, 총 수량, 시각. */
+  onScaleIn?: (info: {
+    ticker: string;
+    price: number;
+    qty: number;
+    prevAvgPrice: number;
+    newAvgPrice: number;
+    totalQty: number;
+    ts: number;
+  }) => void;
   feeRate?: number;
   /** 비동기 발주 직전 최종 게이트 — false면 이번 매매를 시작하지 않는다(오토파일럿 Stop/FAULT/정산 완료). */
   mayStart?: () => boolean;
@@ -1180,6 +1190,17 @@ export class RulePositionManager implements PositionManager {
     const pos = await this.fetchPosition();
     const next = pos && pos.qty > 0 && pos.avgPrice > 0 ? pos : merged;
     if (next.qty <= 0) return this.settleSell(result, exitReason ?? 'SELL_SIGNAL', exitSnapshot);
+    if (side === 'buy') {
+      this.deps.onScaleIn?.({
+        ticker: this.ticker,
+        price: fillPrice,
+        qty: result.filledQty,
+        prevAvgPrice: prev.avgPrice,
+        newAvgPrice: next.avgPrice,
+        totalQty: next.qty,
+        ts: this.deps.clock.now(),
+      });
+    }
     rule.setPosition(next);
     return { kind: 'holding' };
   }
@@ -1466,6 +1487,15 @@ export class RealtimeMa5PositionManager implements PositionManager {
         this.buyExec = null;
         if (Math.abs(this.avgPrice - prevAvg) >= 1e-9) this.averagedDownAtAvgPrice = null;
         this.event(`매수 체결 · ${r.result.filledQty}주 @ ${fillPrice.toFixed(2)} · 총 ${this.qty}주 · 새 평단 ${this.avgPrice.toFixed(2)}`);
+        this.deps.onScaleIn?.({
+          ticker: this.ticker,
+          price: fillPrice,
+          qty: r.result.filledQty,
+          prevAvgPrice: prevAvg,
+          newAvgPrice: this.avgPrice,
+          totalQty: this.qty,
+          ts: this.deps.clock.now(),
+        });
         // 매도 주문 수정 — 새 평단 기준
         this.placeSellOrder(this.avgPrice);
         return { kind: 'holding' };
@@ -1644,6 +1674,8 @@ export class OcoGridPositionManager implements PositionManager {
   private readonly grid: Grid;
   private armed = false;
   private _isolated: string | null = null;
+  private prevAvgPrice = 0;
+  private prevQty = 0;
 
   constructor(deps: PositionManagerDeps, cfg: GridExitConfig) {
     this.deps = deps;
@@ -1668,6 +1700,8 @@ export class OcoGridPositionManager implements PositionManager {
     if (this.grid.state === 'FAULT') return { ok: false, reason: this.grid.faultText ?? '그리드 발주 실패' };
     this.armed = true;
     const v = this.grid.view;
+    this.prevAvgPrice = v.avgPrice;
+    this.prevQty = v.holdingQty;
     const delay = this.deps.buyLegDelayMs ?? 0;
     const buyText =
       v.buyLegStatus === 'pending'
@@ -1758,6 +1792,20 @@ export class OcoGridPositionManager implements PositionManager {
       case 'rebracket': {
         const v = this.grid.view;
         const head = result.cause === 'reissue' ? '그리드 주문 재등록' : '그리드 리브래킷';
+        if (result.cause !== 'reissue') {
+          const addedQty = result.position.qty - this.prevQty;
+          this.deps.onScaleIn?.({
+            ticker: this.ticker,
+            price: result.position.avgPrice,
+            qty: addedQty > 0 ? addedQty : result.position.qty,
+            prevAvgPrice: this.prevAvgPrice,
+            newAvgPrice: result.position.avgPrice,
+            totalQty: result.position.qty,
+            ts: this.deps.clock.now(),
+          });
+          this.prevAvgPrice = result.position.avgPrice;
+          this.prevQty = result.position.qty;
+        }
         this.event(
           `${head} · 평단 $${result.position.avgPrice.toFixed(2)} · ${result.position.qty}주${
             v.buyLegStatus === 'reduced'
