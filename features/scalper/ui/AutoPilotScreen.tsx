@@ -35,6 +35,7 @@ import type { TrendEval } from '../../../core/trend/signal';
 import type { RealtimeMa5State } from '../../../core/realtime-ma5';
 import { AdoptSheet } from './AdoptSheet';
 import { refreshLiveSettings } from './managerProvider';
+import { LiveRaceTrackCard } from './race/LiveRaceTrackCard';
 import { formatHHMM, formatPrice, formatSlopeRate, formatSlopeRates, formatTickRates } from './format';
 import { gaugeScaleOf, normalizeGridPosition } from './gridGaugeMath';
 
@@ -770,6 +771,12 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                 )}
               </View>
             </Panel>
+            {/* 실시간 레이스 스타디움 (게이미피케이션 기믹 카드) */}
+            <LiveRaceTrackCard
+              view={view}
+              slotRows={rows}
+              getLiveByTicker={(ticker) => autopilot.getGridLive(ticker)}
+            />
             {/* "트레이딩 리스트" 패널 헤더 — 행들은 FlatList 아이템으로 이어진다. */}
             <View className="bg-white">
               <View className="flex-row items-center justify-between px-5 pb-2 pt-4">
