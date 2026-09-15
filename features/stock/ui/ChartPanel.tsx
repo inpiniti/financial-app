@@ -511,21 +511,6 @@ function EngineVerdict({
 
 // memo — 부모(종목 상세화면)가 실시간 체결가로 1초마다 리렌더돼도, props(ticker·excd 문자열)가
 // 같으면 차트 탭 전체가 다시 그려지지 않게 한다(2026-09-01 렌더 격리).
-function formatEtClockFromMs(tsMs: number): string {
-  try {
-    return new Intl.DateTimeFormat('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-      timeZone: 'America/New_York',
-    }).format(new Date(tsMs));
-  } catch {
-    const d = new Date(tsMs);
-    const hh = String(d.getUTCHours()).padStart(2, '0');
-    const mm = String(d.getUTCMinutes()).padStart(2, '0');
-    return `${hh}:${mm}`;
-  }
-}
 
 export const ChartPanel = memo(function ChartPanel({ ticker, excd, livePrice, liveTickAt }: ChartPanelProps) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();

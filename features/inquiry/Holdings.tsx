@@ -1,7 +1,7 @@
 // 보유종목 (kis/balance.ts 잔고 API) — 홈 보유종목 섹션(HoldingsAndPending)의 상단 패널.
 // 섹션이 ScrollView 하나로 미체결 패널과 함께 스크롤하므로 자체 스크롤 없이 map 렌더만 한다.
 // 색 규칙(PRD 명시 — toss-design 기본 색 규칙보다 우선): 한국 관례로 이익=빨강 계열, 손실=파랑 계열.
-import { useCallback, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import { Text, View } from 'react-native';
 import { router } from 'expo-router';
 import { ListRow } from '../../components/ListRow';
@@ -29,16 +29,17 @@ function ProfitText({ amount, rate }: { amount: string; rate: string }) {
   );
 }
 
-function HoldingRow({ item }: { item: OverseasBalancePosition }) {
+// memo — 부모(HoldingsPanel)가 리렌더될 때 item 참조가 같은 행은 다시 그리지 않는다.
+const HoldingRow = memo(function HoldingRow({ item }: { item: OverseasBalancePosition }) {
   // 행 탭 → 종목 상세화면(차트/댓글/호가). market은 잔고 응답 거래소 코드(NASD 등)를 정규화해 전달 —
   // 매핑이 안 되는 값이면 raw를 그대로 넘기고 상세화면이 에러 상태를 표시한다.
-  const handlePress = () => {
+  const handlePress = useCallback(() => {
     const market = toStockMarketCode(item.ovrs_excg_cd);
     router.push({
       pathname: '/stock/[ticker]',
       params: { ticker: item.pdno, market: market ?? item.ovrs_excg_cd, name: item.prdt_name },
     });
-  };
+  }, [item]);
   return (
     <ListRow
       onPress={handlePress}
@@ -58,7 +59,7 @@ function HoldingRow({ item }: { item: OverseasBalancePosition }) {
       }
     />
   );
-}
+});
 
 export interface HoldingsData {
   positions: OverseasBalancePosition[] | null;

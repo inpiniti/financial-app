@@ -11,14 +11,18 @@
 const DAYTIME_START_MINUTES = 10 * 60; // 10:00 KST
 const DAYTIME_END_MINUTES = 16 * 60; // 16:00 KST (미포함)
 
+// 모듈 스코프에서 한 번만 생성 — isDaytimeSessionOpen이 실시간 틱 경로에서 반복 호출되므로
+// 매 호출마다 new Intl.DateTimeFormat(...)을 생성하면 GC 압박이 생긴다(perf §js-hoist-intl).
+const KST_HOUR_MINUTE_DTF = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'Asia/Seoul',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
+
 /** epochMs가 미국 주간거래 창(KST 10:00~16:00, 경계는 [시작 포함, 끝 미포함)) 안인지 판정한다. */
 export function isDaytimeSessionOpen(epochMs: number): boolean {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Seoul',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(new Date(epochMs));
+  const parts = KST_HOUR_MINUTE_DTF.formatToParts(new Date(epochMs));
   const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? '0');
   // Intl이 자정을 '24'로 주는 로케일 잔재 방어(en-US에서 hour12:false여도 발생할 수 있음).
   const minutes = (get('hour') % 24) * 60 + get('minute');

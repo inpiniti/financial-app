@@ -59,14 +59,17 @@ export function buildTradeMarkers(
   return markers;
 }
 
+// 모듈 스코프에서 한 번만 생성 — 실시간 봉 갱신 시 반복 호출되므로 GC 압박 방지(perf §js-hoist-intl).
+const NY_HOUR_MINUTE_DTF = new Intl.DateTimeFormat('en-US', {
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+  timeZone: 'America/New_York',
+});
+
 function formatEtClockFromMs(tsMs: number): string {
   try {
-    return new Intl.DateTimeFormat('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-      timeZone: 'America/New_York',
-    }).format(new Date(tsMs));
+    return NY_HOUR_MINUTE_DTF.format(new Date(tsMs));
   } catch {
     const d = new Date(tsMs);
     const hh = String(d.getUTCHours()).padStart(2, '0');

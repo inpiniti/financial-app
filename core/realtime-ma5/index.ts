@@ -244,14 +244,18 @@ export class RealtimeMa5Calculator {
 // 세션 판정 (미국 정규장 및 진입/추가진입 시간 창)
 // ---------------------------------------------------------------------------
 
+// 모듈 스코프에서 한 번만 생성 — getUsEtWeekdayAndMinutes는 매 틱 처리 경로에서 호출될 수 있으므로
+// 매 호출마다 new Intl.DateTimeFormat(...)을 생성하면 GC 압박이 생긴다(perf §js-hoist-intl).
+const NY_WEEKDAY_HOUR_MINUTE_DTF = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  weekday: 'short',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
+
 function getUsEtWeekdayAndMinutes(epochMs: number): { isWeekend: boolean; mins: number } | null {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    weekday: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(new Date(epochMs));
+  const parts = NY_WEEKDAY_HOUR_MINUTE_DTF.formatToParts(new Date(epochMs));
   const weekday = parts.find((p) => p.type === 'weekday')?.value;
   if (weekday === 'Sat' || weekday === 'Sun') return { isWeekend: true, mins: 0 };
   const h = Number(parts.find((p) => p.type === 'hour')?.value ?? NaN) % 24;

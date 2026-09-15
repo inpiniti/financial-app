@@ -1,6 +1,7 @@
 // 토스 커뮤니티 댓글/답글 공용 행 — 목록(CommentsPanel)과 답글 시트(RepliesSheet)가 같은 모양을 쓴다.
 import { memo, useState } from 'react';
-import { Image, Pressable, Text, View } from 'react-native';
+import { Image } from 'expo-image';
+import { Pressable, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { formatTossMessage, type TossComment, type TossCommentExecution } from '../../../lib/tossCommunity';
 
@@ -91,7 +92,12 @@ export const CommentRow = memo(function CommentRow({ comment, onPress, asParent 
     <>
       <View className="flex-row items-center">
         {comment.author.profilePictureUrl ? (
-          <Image source={{ uri: comment.author.profilePictureUrl }} style={{ width: 32, height: 32, borderRadius: 16 }} />
+          // expo-image: RN Image 대비 디스크 캐싱·메모리 효율 우수(perf §ui-expo-image)
+          <Image
+            source={{ uri: comment.author.profilePictureUrl }}
+            style={{ width: 32, height: 32, borderRadius: 16 }}
+            contentFit="cover"
+          />
         ) : (
           <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: '#e5e8eb' }} />
         )}
@@ -124,10 +130,11 @@ export const CommentRow = memo(function CommentRow({ comment, onPress, asParent 
       {(comment.media ?? [])
         .filter((m) => m.type === 'image' && m.url)
         .map((m, i) => (
+          // expo-image: URL 기반 이미지 캐싱 + 디스크 캐시 자동 적용(perf §ui-expo-image)
           <Image
             key={`${m.url}-${i}`}
             source={{ uri: m.url }}
-            resizeMode="cover"
+            contentFit="cover"
             style={{ width: '100%', aspectRatio: m.pictureRatio && m.pictureRatio > 0 ? m.pictureRatio : 1.5, borderRadius: 12, marginTop: 8, backgroundColor: '#f2f4f6' }}
           />
         ))}

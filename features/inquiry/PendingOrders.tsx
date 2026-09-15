@@ -1,7 +1,7 @@
 // 미체결 (kis/nccs.ts inquireOverseasUnfilled + kis/orderCancel.ts 취소) — 홈 보유종목 섹션의 하단 패널.
 // 주문체결내역(TTTS3035R)이 일부 계좌에서 APTR0058로 거절되어 미체결 전용 TR(TTTS3018R)로 전환 (README.md 참조).
 // 섹션이 ScrollView 하나로 보유종목 패널과 함께 스크롤하므로 자체 스크롤 없이 map 렌더만 한다.
-import { useCallback, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import { ListRow } from '../../components/ListRow';
@@ -15,16 +15,25 @@ import { formatUsd } from '../../lib/format';
 import { EmptyState, SkeletonList } from './components';
 import type { KisSessionState } from './useKisSession';
 
-function PendingRow({ item, onCancel, cancelling }: { item: OverseasUnfilledItem; onCancel: () => void; cancelling: boolean }) {
+// memo — item/onCancel/cancelling 참조가 같으면 리렌더하지 않는다.
+const PendingRow = memo(function PendingRow({
+  item,
+  onCancel,
+  cancelling,
+}: {
+  item: OverseasUnfilledItem;
+  onCancel: () => void;
+  cancelling: boolean;
+}) {
   const isBuy = item.sll_buy_dvsn_cd === '02';
   // 행 탭 → 종목 상세화면. market은 미체결 응답 거래소 코드(NASD 등)를 정규화 — 실패 시 raw 전달(상세가 에러 표시).
-  const handlePress = () => {
+  const handlePress = useCallback(() => {
     const market = toStockMarketCode(item.ovrs_excg_cd);
     router.push({
       pathname: '/stock/[ticker]',
       params: { ticker: item.pdno, market: market ?? item.ovrs_excg_cd, name: item.prdt_name },
     });
-  };
+  }, [item]);
   return (
     <View className="border-b border-[#f2f4f6]">
       <ListRow
@@ -55,11 +64,29 @@ function PendingRow({ item, onCancel, cancelling }: { item: OverseasUnfilledItem
         className="mx-5 mb-3 items-center rounded-2xl bg-[#fdecee] py-2 active:opacity-80"
         style={{ minHeight: 44, justifyContent: 'center' }}
       >
-        <Text className="text-sm font-semibold text-[#f04452]">{cancelling ? '취소하는 중이에요…' : '취소하기'}</Text>
+        <Text className="text-sm font-semibold text-[#f04452]">{cancelling ? '취소하는 중이에…' : '취소하기'}</Text>
       </Pressable>
     </View>
   );
-}
+});
+
+/**
+ * 리스트 행 래퍼 — onCancel 콜백을 useCallback으로 안정화해 PendingRow의 memo가 실펨하게.
+ * .map() 안에 인라인 화살표 함수를 넣으면 매 렌더마다 새 참조라 memo가 무력해지므로 여기서 안정화한다.
+ */
+const PendingOrderRow = memo(function PendingOrderRow({
+  item,
+  cancelOrder,
+  cancellingOdno,
+}: {
+  item: OverseasUnfilledItem;
+  cancelOrder: (item: OverseasUnfilledItem) => void;
+  cancellingOdno: string | null;
+}) {
+  const onCancel = useCallback(() => cancelOrder(item), [cancelOrder, item]);
+  return <PendingRow item={item} onCancel={onCancel} cancelling={cancellingOdno === item.odno} />;
+});
+
 
 export interface PendingOrdersData {
   orders: OverseasUnfilledItem[] | null;
@@ -140,7 +167,7 @@ export function PendingOrdersPanel({ data }: { data: PendingOrdersData }) {
         <EmptyState icon="hourglass-outline" title="미체결 주문이 없어요" description="주문을 넣으면 여기에 나타나요" />
       ) : (
         (orders ?? []).map((item) => (
-          <PendingRow key={item.odno} item={item} onCancel={() => cancelOrder(item)} cancelling={cancellingOdno === item.odno} />
+          <PendingOrderRow key={item.odno} item={item} cancelOrder={cancelOrder} cancellingOdno={cancellingOdno} />
         ))
       )}
       <View style={{ height: 8 }} />

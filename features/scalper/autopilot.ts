@@ -316,15 +316,18 @@ export {
   sellTargetPrice,
 };
 
+// 모듈 스코프에서 한 번만 생성 — etDateOf는 오토파일럿 사이클 루프에서 반복 호출되므로
+// 매 호출마다 new Intl.DateTimeFormat(...)을 생성하면 GC 압박이 생긴다(perf §js-hoist-intl).
+const NY_DATE_DTF = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/New_York',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
 
 /** 미국 장 기준일(America/New_York 날짜, YYYY-MM-DD) — "오늘"의 기준(사용자 확정 §4-7). */
 export function etDateOf(epochMs: number): string {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/New_York',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(new Date(epochMs));
+  return NY_DATE_DTF.format(new Date(epochMs));
 }
 
 /**
