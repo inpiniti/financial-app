@@ -14,8 +14,8 @@ export type EntryStrategy = 'martingale' | 'model' | 'slope' | 'bbDip' | 'realti
 export type ExitStrategy = 'martingale' | 'model' | 'slope' | 'bbDip' | 'realtimeMa5';
 export type EngineMode = EntryStrategy;
 
-let activeEntry: EntryStrategy = 'martingale';
-let activeExit: ExitStrategy = 'martingale';
+let activeEntry: EntryStrategy = 'realtimeMa5';
+let activeExit: ExitStrategy = 'realtimeMa5';
 
 /** buildManager 전용 — 매니저 생성 직전에 설정값으로 1회 확정한다. */
 export function setActiveEntryStrategy(strategy: EntryStrategy): void {

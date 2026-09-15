@@ -44,7 +44,9 @@ import {
   sellTargetPrice,
   shouldAverageDown,
   averagingDownQty,
+  isUsMarketCloseExitTime,
   type RealtimeMa5Config,
+  type RealtimeMa5State,
 } from '../../core/realtime-ma5';
 import { BBDIP_MODE } from './bbDipMode';
 import { CIRCUIT_MODE } from './circuitMode';
@@ -56,6 +58,7 @@ import { SLOPE_MODE } from './slopeMode';
 import { TREND_MODE } from './trendMode';
 import type { ScalperBroker } from './types';
 import type { OrderStrategy } from './orderStrategy';
+import type { ScaleInExecution } from './tradeStore';
 
 // ---------------------------------------------------------------------------
 // 모드 스위치·설정 (한 곳)
@@ -314,7 +317,7 @@ export interface PositionManager {
   readonly restingOrders: boolean;
   readonly isolated: boolean;
   readonly faultText: string | null;
-  onSignal(signal: Signal, price: number): void;
+  onSignal(signal: Signal, price: number, state?: RealtimeMa5State): void;
   /**
    * 사용자 요청 전량 매도(2026-08-22) — 신호를 기다리지 않고 지금 보유 수량 전부를 매매로 넘긴다.
    * 매매는 평소와 똑같이 **체결될 때까지 현재가로 정정하며 따라간다**(취소선 없음). 청산 사유는 USER_SELL.
@@ -378,16 +381,8 @@ export interface PositionManagerDeps {
   entry: { entryTs: number; entrySnapshot: SignalSnapshot } | null;
   /** 잔고에서 주워 온 포지션인가 — 인계 문구(등록/인계)용. */
   adopted: boolean;
-  /** 추가진입(물타기) 매수 체결 통보 — 수량, 단가, 이전 평단, 새 평단, 총 수량, 시각. */
-  onScaleIn?: (info: {
-    ticker: string;
-    price: number;
-    qty: number;
-    prevAvgPrice: number;
-    newAvgPrice: number;
-    totalQty: number;
-    ts: number;
-  }) => void;
+  /** 추가진입(물타기) 매수 체결 통보 — ScaleInExecution VO */
+  onScaleIn?: (info: ScaleInExecution) => void;
   feeRate?: number;
   /** 비동기 발주 직전 최종 게이트 — false면 이번 매매를 시작하지 않는다(오토파일럿 Stop/FAULT/정산 완료). */
   mayStart?: () => boolean;
@@ -1382,7 +1377,7 @@ export class RealtimeMa5PositionManager implements PositionManager {
     return this._isolated;
   }
 
-  onSignal(signal: Signal, price: number): void {
+  onSignal(signal: Signal, price: number, state?: RealtimeMa5State): void {
     if (!this.armed || this.isolated || this.released || this.buyExec !== null || this.averagingDownPending) return;
     if (signal !== 'BUY') return;
     // 프리마켓·정규장·애프터마켓(ET 04:00~19:55) 외 추가진입 차단
@@ -1391,12 +1386,13 @@ export class RealtimeMa5PositionManager implements PositionManager {
       : this.deps.regularSession(this.deps.clock.now());
     if (!averagingAllowed) return;
     if (this.averagedDownAtAvgPrice !== null && Math.abs(this.avgPrice - this.averagedDownAtAvgPrice) < 1e-9) return;
-    // 물타기 조건 확인
+    // 물타기 조건 확인 (실제 틱에서 계산된 RealtimeMa5State 우선 반영)
+    const ma5State: RealtimeMa5State = state ?? { ma5: null, slope: 'up', breakout: true, refClose5: null };
     if (
       !shouldAverageDown(
         price,
         this.avgPrice,
-        { ma5: null, slope: 'up', breakout: true, refClose5: null },
+        ma5State,
         REALTIME_MA5_AVERAGING_DOWN_THRESHOLD_PCT,
       )
     ) {
@@ -1415,9 +1411,8 @@ export class RealtimeMa5PositionManager implements PositionManager {
     if (price === null || !Number.isFinite(price) || price <= 0) return;
     const now = this.deps.clock.now();
 
-    // 마감 청산 — 19:55 ET
-    const etMin = Math.floor(((now % 86_400_000) + 86_400_000 - 14_400_000) / 60_000) % 1440;
-    if (etMin >= 1195 && this.qty > 0 && !this.busy) {
+    // 마감 청산 — 19:55 ET (Intl 기반 서머타임 자동 인식)
+    if (isUsMarketCloseExitTime(now) && this.qty > 0 && !this.busy) {
       this.event('마감 청산 · 확장세션 마감 전이라 남은 수량을 전량 매도해요');
       this.startSell(this.qty, price);
       return;
@@ -1794,9 +1789,17 @@ export class OcoGridPositionManager implements PositionManager {
         const head = result.cause === 'reissue' ? '그리드 주문 재등록' : '그리드 리브래킷';
         if (result.cause !== 'reissue') {
           const addedQty = result.position.qty - this.prevQty;
+          // 직전 수량과 새 수량, 평단가로 실제 물타기 체결 단가 역산 (newAvg*newQty - prevAvg*prevQty) / addedQty
+          const fillPrice =
+            addedQty > 0 && this.prevQty > 0
+              ? +(
+                  (result.position.avgPrice * result.position.qty - this.prevAvgPrice * this.prevQty) /
+                  addedQty
+                ).toFixed(2)
+              : result.position.avgPrice;
           this.deps.onScaleIn?.({
             ticker: this.ticker,
-            price: result.position.avgPrice,
+            price: fillPrice,
             qty: addedQty > 0 ? addedQty : result.position.qty,
             prevAvgPrice: this.prevAvgPrice,
             newAvgPrice: result.position.avgPrice,

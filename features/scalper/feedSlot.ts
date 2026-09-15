@@ -187,6 +187,8 @@ export interface SlotSignalContext {
   readonly kind?: 'entry' | 'realtimeMa5';
   /** 물타기 단타 모드 신호의 근거 — 지금은 'cross'(5선 상향 돌파) 하나. */
   readonly entryEvent?: MartingaleEntryEvent;
+  /** 실시간 MA5 모드 상태 (MA5값, 기울기, 돌파여부) */
+  readonly realtimeMa5State?: RealtimeMa5State;
 }
 
 export interface FeedSlotView {
@@ -843,6 +845,7 @@ export class FeedSlot {
       accel: 0,
       at: this.lastTickAt ?? this.clock.now(),
       kind: 'realtimeMa5',
+      realtimeMa5State: state,
     });
   }
 

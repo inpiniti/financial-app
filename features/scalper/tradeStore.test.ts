@@ -8,6 +8,8 @@ import {
   appendTradeAction,
   readTodayTradeActions,
   readTradeActionsByDate,
+  readTodayTradeSummary,
+  calculateTradeSummaryStats,
   tradeKeyFor,
   TRADE_KEY_PREFIX,
 } from './tradeStore';
@@ -130,5 +132,87 @@ describe('tradeStore — 일자별 append/조회', () => {
     expect(actions[1].ticker).toBe('TSLA');
     expect(actions[1].price).toBe(206);
     expect(actions[1].pnl).toBe(12);
+  });
+
+  it('당일 신규 체결 액션과 레거시 StoredTrade가 함께 존재할 때 무손실로 병합한다', async () => {
+    const store = new FakeStore();
+    const ts = Date.UTC(2026, 6, 29, 14, 0, 0);
+    const clock = fakeClock(ts + 300_000);
+
+    // 1. 레거시 사이클 1건 기록 (과거 시각)
+    await appendTradeRecord(
+      store,
+      'inst-legacy',
+      sampleTrade({ ticker: 'NVDA', entryPrice: 100, exitPrice: 103, entryTs: ts, exitTs: ts + 60_000, pnl: 30 }),
+    );
+
+    // 2. 신규 체결 액션 1건 기록 (이후 시각)
+    await appendTradeAction(store, {
+      id: 'AAPL-entry-1',
+      action: 'ENTRY',
+      ticker: 'AAPL',
+      price: 150,
+      qty: 10,
+      amountUsd: 1500,
+      ts: ts + 120_000,
+    });
+
+    const actions = await readTodayTradeActions(store, clock);
+    // 레거시 2건(ENTRY, EXIT) + 신규 1건(ENTRY) = 총 3건이 모두 보존되어야 함
+    expect(actions).toHaveLength(3);
+    expect(actions[0].ticker).toBe('NVDA');
+    expect(actions[0].action).toBe('ENTRY');
+    expect(actions[1].ticker).toBe('NVDA');
+    expect(actions[1].action).toBe('EXIT');
+    expect(actions[2].ticker).toBe('AAPL');
+    expect(actions[2].action).toBe('ENTRY');
+  });
+
+  it('readTodayTradeSummary는 체결 액션과 통계 요약(entries, scaleIns, exits, totalPnl)을 한 번에 집계한다', async () => {
+    const store = new FakeStore();
+    const ts = Date.UTC(2026, 6, 29, 14, 0, 0);
+    const clock = fakeClock(ts + 300_000);
+
+    await appendTradeAction(store, {
+      id: 'AAPL-entry-1',
+      action: 'ENTRY',
+      ticker: 'AAPL',
+      price: 150,
+      qty: 10,
+      amountUsd: 1500,
+      ts: ts + 10_000,
+    });
+
+    await appendTradeAction(store, {
+      id: 'AAPL-scale-1',
+      action: 'SCALE_IN',
+      ticker: 'AAPL',
+      price: 145,
+      qty: 10,
+      amountUsd: 1450,
+      ts: ts + 20_000,
+      prevAvgPrice: 150,
+      newAvgPrice: 147.5,
+      totalQty: 20,
+    });
+
+    await appendTradeAction(store, {
+      id: 'AAPL-exit-1',
+      action: 'EXIT',
+      ticker: 'AAPL',
+      price: 152,
+      qty: 20,
+      amountUsd: 3040,
+      ts: ts + 30_000,
+      pnl: 90,
+      returnRatio: 0.0305,
+    });
+
+    const summary = await readTodayTradeSummary(store, clock);
+    expect(summary.actions).toHaveLength(3);
+    expect(summary.stats.entries).toBe(1);
+    expect(summary.stats.scaleIns).toBe(1);
+    expect(summary.stats.exits).toBe(1);
+    expect(summary.stats.totalPnl).toBe(90);
   });
 });

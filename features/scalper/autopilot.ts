@@ -40,7 +40,8 @@ import {
   type PositionManager,
   type PositionPollResult,
 } from './positionManager';
-import type { TradeActionRecord } from './tradeStore';
+import { makeTradeActionId, type ScaleInExecution, type TradeActionRecord } from './tradeStore';
+import { selectWatchedTickers } from './watchlistSelector';
 
 // 진입 후 관리(포지션 관리자) 쪽 정의 — 정본은 positionManager.ts. 기존 import 경로 호환을 위해 다시 내보낸다.
 export {
@@ -305,12 +306,14 @@ import {
   isUsRegularSession,
   isUsInitialEntryAllowed,
   isUsAveragingDownAllowed,
+  sellTargetPrice,
 } from '../../core/realtime-ma5';
 
 export {
   isUsRegularSession,
   isUsInitialEntryAllowed,
   isUsAveragingDownAllowed,
+  sellTargetPrice,
 };
 
 
@@ -971,58 +974,23 @@ export class AutoPilot {
     const minRate = this.config?.minTickRate ?? DEFAULT_MIN_TICK_RATE;
     const now = this.deps.clock.now();
     const slots = this.deps.slots();
-    const byTicker = new Map(slots.map((s) => [s.ticker, s]));
 
-    // ★ 감지기는 리스트 전 종목 상시 부착(2026-08-10) — 예전처럼 감시(top3) 교체 때 감지기를
-    //   떼면 attachDetector가 새 앵커로 시작해 사다리 홀 카운트가 리셋됐고, 속도가 출렁이는
-    //   주간거래에서는 교체가 잦아 변곡점이 영영 안 쌓였다. 감시 목록은 이제 호가 예열·UI
-    //   요약용 우선순위일 뿐이다. 이미 부착된 슬롯은 건너뛴다(재부착 = 앵커 리셋이라 금물).
-    //   신규 슬롯(리스트 편입)도 이 루프가 받는다 — 리스트 변경 시 매니저가 reselect를 부른다.
     for (const s of slots) {
       if (!s.watched) s.attachDetector((signal, ctx) => this.handleSignal(signal, ctx));
     }
 
-    const rateOf = (t: string) => byTicker.get(t)?.tickRate(now) ?? 0;
-    const eligible = (t: string) =>
-      byTicker.has(t) &&
-      rateOf(t) >= minRate &&
-      !this.inAbandonCooldown(t) &&
-      !this.actives.has(t) &&
-      !this.pendingBuys.has(t);
+    const { next, changed } = selectWatchedTickers({
+      slots,
+      currentlyWatched: this.watchedTickers,
+      minTickRate: minRate,
+      watchCount: this.watchCountNow,
+      hysteresisRatio: this.hysteresisRatio,
+      isExcluded: (t) => this.inAbandonCooldown(t) || this.actives.has(t) || this.pendingBuys.has(t),
+      nowMs: now,
+    });
 
-    // 리스트에서 사라졌거나 자격 미달이 된(또는 방금 보유가 된) 감시 종목은 즉시 정리.
-    let watched = this.watchedTickers.filter(eligible);
-
-    const candidates = slots
-      .map((s) => s.ticker)
-      .filter((t) => !watched.includes(t) && eligible(t))
-      .sort((a, b) => rateOf(b) - rateOf(a));
-
-    // 빈 자리는 자격자로만 채운다(히스테리시스 없음 — 신규 편입).
-    while (watched.length < this.watchCountNow && candidates.length > 0) {
-      watched.push(candidates.shift()!);
-    }
-
-    // 교체 판정 — 최저 감시 vs 최고 후보, 배율 상회 시에만.
-    watched.sort((a, b) => rateOf(a) - rateOf(b));
-    for (const challenger of candidates) {
-      const lowest = watched[0];
-      if (lowest === undefined) break;
-      if (rateOf(challenger) > rateOf(lowest) * this.hysteresisRatio) {
-        watched.shift();
-        watched.push(challenger);
-        watched.sort((a, b) => rateOf(a) - rateOf(b));
-      } else {
-        break;
-      }
-    }
-
-    const next = watched.sort((a, b) => rateOf(b) - rateOf(a));
-    const prev = this.watchedTickers;
-    const changed = next.length !== prev.length || next.some((t) => !prev.includes(t));
     if (!changed) return;
 
-    // 감시 교체는 감지기를 건드리지 않는다(위 상시 부착 루프 참조) — 목록·이벤트만 갱신한다.
     this.watchedTickers = next;
     this.event(
       next.length > 0
@@ -1049,7 +1017,7 @@ export class AutoPilot {
       if (active0.gridFaulted || this.stopRequested || !this.running || this.faulted || this.paused) return;
       // 물타기 단타 모드(2026-09-02): 보유 중 5선 돌파 봉(kind='entry')은 물타기 후보다 — 낙폭(평단 −k%, k≥3)과
       // 배수((k−1)배)는 규칙(MartingaleRule.decide)이 판정한다. 청산(익절·마감)은 틱 판정 몫.
-      active0.cond.onSignal(signal, ctx.price);
+      active0.cond.onSignal(signal, ctx.price, ctx.realtimeMa5State);
       return;
     }
     if (signal === 'BUY') {
@@ -1416,7 +1384,7 @@ export class AutoPilot {
         const entry = active.cycle.position;
         if (entry) {
           this.deps.onTradeAction?.({
-            id: `${entry.ticker}-entry-${entry.entryTs}`,
+            id: makeTradeActionId(entry.ticker, 'ENTRY', entry.entryTs),
             cycleId: active.cycleId,
             action: 'ENTRY',
             ticker: entry.ticker,
@@ -1424,7 +1392,7 @@ export class AutoPilot {
             qty: entry.qty,
             amountUsd: entry.entryPrice * entry.qty,
             ts: entry.entryTs,
-            targetPrice: entry.entryPrice > 0 ? +(entry.entryPrice * 1.03).toFixed(2) : undefined,
+            targetPrice: entry.entryPrice > 0 ? sellTargetPrice(entry.entryPrice) : undefined,
           });
         }
       }
@@ -1493,9 +1461,9 @@ export class AutoPilot {
         fetchBuyableUsd: this.deps.fetchBuyableUsd ? (price) => this.deps.fetchBuyableUsd!(ticker, price) : undefined,
         entry: pos ? { entryTs: pos.entryTs, entrySnapshot: pos.entrySnapshot } : null,
         adopted: active.adopted,
-        onScaleIn: (info) => {
+        onScaleIn: (info: ScaleInExecution) => {
           this.deps.onTradeAction?.({
-            id: `${info.ticker}-scale-in-${info.ts}`,
+            id: makeTradeActionId(info.ticker, 'SCALE_IN', info.ts),
             cycleId: active.cycleId,
             action: 'SCALE_IN',
             ticker: info.ticker,
@@ -1860,7 +1828,7 @@ export class AutoPilot {
 
   private emitExitAction(active: ActiveCycle, record: TradeRecord): void {
     const action: TradeActionRecord = {
-      id: `${record.ticker}-exit-${record.exitTs}`,
+      id: makeTradeActionId(record.ticker, 'EXIT', record.exitTs),
       cycleId: active.cycleId,
       action: 'EXIT',
       ticker: record.ticker,

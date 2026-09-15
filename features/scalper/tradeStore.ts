@@ -8,6 +8,24 @@ export const TRADE_ACTION_KEY_PREFIX = 'trade_actions.';
 export type TradeActionType = 'ENTRY' | 'SCALE_IN' | 'EXIT';
 
 /**
+ * 추가진입(물타기) 체결 이벤트 정보 (ScaleInExecution VO)
+ */
+export interface ScaleInExecution {
+  ticker: string;
+  price: number;
+  qty: number;
+  prevAvgPrice: number;
+  newAvgPrice: number;
+  totalQty: number;
+  ts: number;
+}
+
+/** 체결 액션 고유 ID 생성 규칙 일원화 */
+export function makeTradeActionId(ticker: string, action: TradeActionType, ts: number): string {
+  return `${ticker}-${action.toLowerCase().replace('_', '-')}-${ts}`;
+}
+
+/**
  * 실시간 체결 액션 레코드 — 진입, 추가진입(물타기), 청산 체결 즉시 AsyncStorage에 저장된다.
  * 트레이딩 > 오늘성과 > 오늘거래 기록 화면에서 세세하게 볼 수 있는 정본 데이터.
  */
@@ -100,8 +118,8 @@ export async function readTradeActionsByDate(
 
 /**
  * 오늘(clock 기준 UTC 일자) 체결 액션 목록을 읽는다.
- * 체결 액션 기록이 아직 없고 완료된 StoredTrade만 있는 경우(기존 데이터),
- * ENTRY와 EXIT 액션으로 자동 합성 변환하여 과거 데이터와 100% 호환된다.
+ * 체결 액션과 완료된 StoredTrade(레거시 데이터)가 공존하더라도,
+ * ID 기반 중복 방지를 거쳐 무손실로 합성·병합하여 시간순으로 반환한다.
  */
 export async function readTodayTradeActions(
   storage: KeyValueStore,
@@ -109,46 +127,106 @@ export async function readTodayTradeActions(
 ): Promise<TradeActionRecord[]> {
   const dateKey = tradeActionKeyFor(clock.now());
   const actions = await readKey<TradeActionRecord>(storage, dateKey);
-  if (actions.length > 0) return actions;
-
-  // 레거시 StoredTrade 폴백 변환
   const legacyTrades = await readTodayTrades(storage, clock);
-  if (legacyTrades.length === 0) return [];
 
-  const converted: TradeActionRecord[] = [];
+  if (actions.length === 0 && legacyTrades.length === 0) return [];
+  if (legacyTrades.length === 0) return [...actions].sort((a, b) => a.ts - b.ts);
+
+  // 레거시 StoredTrade 변환 및 중복 방지 병합
+  const existingIds = new Set(actions.map((a) => a.id));
+  const merged: TradeActionRecord[] = [...actions];
+
   for (const t of legacyTrades) {
-    converted.push({
-      id: `${t.ticker}-entry-${t.entryTs}`,
-      cycleId: t.instanceId,
-      action: 'ENTRY',
-      ticker: t.ticker,
-      market: t.market,
-      name: t.name,
-      price: t.entryPrice,
-      qty: t.qty,
-      amountUsd: t.entryPrice * t.qty,
-      ts: t.entryTs,
-    });
-    converted.push({
-      id: `${t.ticker}-exit-${t.exitTs}`,
-      cycleId: t.instanceId,
-      action: 'EXIT',
-      ticker: t.ticker,
-      market: t.market,
-      name: t.name,
-      price: t.exitPrice,
-      qty: t.qty,
-      amountUsd: t.exitPrice * t.qty,
-      ts: t.exitTs,
-      exitReason: t.exitReason,
-      entryAvgPrice: t.entryPrice,
-      pnl: t.pnl,
-      grossPnl: t.grossPnl,
-      fees: t.fees,
-      returnRatio: t.entryPrice > 0 ? (t.exitPrice - t.entryPrice) / t.entryPrice : 0,
-    });
+    const entryId = makeTradeActionId(t.ticker, 'ENTRY', t.entryTs);
+    if (!existingIds.has(entryId)) {
+      merged.push({
+        id: entryId,
+        cycleId: t.instanceId,
+        action: 'ENTRY',
+        ticker: t.ticker,
+        market: t.market,
+        name: t.name,
+        price: t.entryPrice,
+        qty: t.qty,
+        amountUsd: t.entryPrice * t.qty,
+        ts: t.entryTs,
+        targetPrice: t.entryPrice > 0 ? +(t.entryPrice * 1.03).toFixed(2) : undefined,
+      });
+    }
+
+    const exitId = makeTradeActionId(t.ticker, 'EXIT', t.exitTs);
+    if (!existingIds.has(exitId)) {
+      merged.push({
+        id: exitId,
+        cycleId: t.instanceId,
+        action: 'EXIT',
+        ticker: t.ticker,
+        market: t.market,
+        name: t.name,
+        price: t.exitPrice,
+        qty: t.qty,
+        amountUsd: t.exitPrice * t.qty,
+        ts: t.exitTs,
+        exitReason: t.exitReason,
+        entryAvgPrice: t.entryPrice,
+        pnl: t.pnl,
+        grossPnl: t.grossPnl,
+        fees: t.fees,
+        returnRatio: t.entryPrice > 0 ? (t.exitPrice - t.entryPrice) / t.entryPrice : 0,
+      });
+    }
   }
-  return converted.sort((a, b) => a.ts - b.ts);
+
+  return merged.sort((a, b) => a.ts - b.ts);
+}
+
+/**
+ * 당일 체결 액션 집계 요약 통계
+ */
+export interface TradeSummaryStats {
+  entries: number;
+  scaleIns: number;
+  exits: number;
+  totalPnl: number;
+}
+
+/**
+ * 당일 체결 기록 및 집계 요약 VO
+ */
+export interface TodayTradeSummary {
+  actions: TradeActionRecord[];
+  stats: TradeSummaryStats;
+}
+
+/**
+ * 체결 액션 목록으로부터 요약 통계를 순수 함수로 집계한다.
+ */
+export function calculateTradeSummaryStats(actions: readonly TradeActionRecord[]): TradeSummaryStats {
+  let entries = 0;
+  let scaleIns = 0;
+  let exits = 0;
+  let totalPnl = 0;
+  for (const a of actions) {
+    if (a.action === 'ENTRY') entries++;
+    else if (a.action === 'SCALE_IN') scaleIns++;
+    else if (a.action === 'EXIT') {
+      exits++;
+      totalPnl += a.pnl ?? 0;
+    }
+  }
+  return { entries, scaleIns, exits, totalPnl };
+}
+
+/**
+ * 오늘 체결 액션 목록 및 사전 집계된 통계 요약을 함께 읽는다.
+ */
+export async function readTodayTradeSummary(
+  storage: KeyValueStore,
+  clock: ClockLike,
+): Promise<TodayTradeSummary> {
+  const actions = await readTodayTradeActions(storage, clock);
+  const stats = calculateTradeSummaryStats(actions);
+  return { actions, stats };
 }
 
 /**

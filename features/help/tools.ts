@@ -525,8 +525,9 @@ export async function runHelpTool(
         // 엔진 봉 주기·판정 종류 — 활성 엔진 모드(설정, 2026-09-01)를 따른다. 예전 실수(커밋 56ec78e가
         // 매뉴얼·챗 화면만 ±3%로 바꾸고 이 도구는 5분봉 모델로 남아 "엔진과 같은 계산"이라 잘못 주장)의 재발 방지.
         const { getActiveEngineMode } = await import('../scalper/engineMode');
-        const mgEngine = MARTINGALE_MODE && getActiveEngineMode() === 'martingale';
-        const slopeEngine = getActiveEngineMode() === 'slope';
+        const mode = getActiveEngineMode();
+        const mgEngine = (MARTINGALE_MODE && mode === 'martingale') || mode === 'realtimeMa5';
+        const slopeEngine = mode === 'slope';
         const engineBarMin = mgEngine || slopeEngine ? MARTINGALE_BAR_MINUTES : MODEL_BAR_MINUTES;
         const intervalMin = Math.max(1, Math.floor(num(args.intervalMin) || engineBarMin));
         const count = Math.max(1, Math.min(300, Math.floor(num(args.count) || 130)));

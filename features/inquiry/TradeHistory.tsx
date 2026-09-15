@@ -1,5 +1,5 @@
 // 오늘 거래 기록 — 앱이 직접 기록한 오늘의 진입, 추가진입(물타기), 청산 체결 기록.
-// KIS 세션 없이 AsyncStorage만 읽는다. 홈 트레이딩 섹션 및 /trades 화면에서 재사용된다.
+// KIS 세션 없이 AsyncStorage만 읽는다. 오늘 거래 기록(/trades) 화면에서 사용된다.
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -17,11 +17,15 @@ import {
   pnlColor,
 } from '../../lib/format';
 import {
+  calculateTradeSummaryStats,
   readTodayTradeActions,
   readTodayTrades,
+  readTodayTradeSummary,
   type StoredTrade,
+  type TodayTradeSummary,
   type TradeActionRecord,
   type TradeActionType,
+  type TradeSummaryStats,
 } from '../scalper/tradeStore';
 import { EmptyState, SkeletonList } from './components';
 
@@ -217,6 +221,28 @@ function CycleRow({ item, usdKrw }: { item: StoredTrade; usdKrw: number | null }
 /**
  * 오늘 체결 액션 로드 훅 — reloadKey가 바뀌면 다시 읽는다.
  */
+/**
+ * 오늘 체결 액션 및 요약 통계를 함께 읽는 훅
+ */
+export function useTodayTradeSummary(reloadKey: number = 0): TodayTradeSummary | null {
+  const [summary, setSummary] = useState<TodayTradeSummary | null>(null);
+
+  const load = useCallback(async () => {
+    const s = await readTodayTradeSummary(AsyncStorage, clock);
+    // 최신 체결순(내림차순) 정렬
+    setSummary({
+      ...s,
+      actions: [...s.actions].sort((a, b) => b.ts - a.ts),
+    });
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load, reloadKey]);
+
+  return summary;
+}
+
 export function useTodayTradeActions(reloadKey: number = 0): TradeActionRecord[] | null {
   const [actions, setActions] = useState<TradeActionRecord[] | null>(null);
 
@@ -253,10 +279,12 @@ export function useTodayTrades(reloadKey: number = 0): StoredTrade[] | null {
 
 /** 오늘 거래 기록 패널 — 필터 탭(전체/진입/추가진입/청산)과 체결 타임라인 렌더 */
 export function TradeHistoryPanel({
-  actions,
+  summary,
+  actions: rawActions,
   trades,
   usdKrw = null,
 }: {
+  summary?: TodayTradeSummary | null;
   actions?: TradeActionRecord[] | null;
   trades?: StoredTrade[] | null;
   /** USD→KRW 환율. null이면 USD로 보여준다. */
@@ -264,23 +292,14 @@ export function TradeHistoryPanel({
 }) {
   const [filter, setFilter] = useState<FilterActionType>('ALL');
 
-  // 통계 계산
+  const actions = summary !== undefined ? (summary ? summary.actions : null) : rawActions;
+
+  // 통계 계산 (요약 객체가 있으면 O(1) 소비, 없으면 순수 함수 집계)
   const stats = useMemo(() => {
+    if (summary) return summary.stats;
     if (!actions) return { entries: 0, scaleIns: 0, exits: 0, totalPnl: 0 };
-    let entries = 0;
-    let scaleIns = 0;
-    let exits = 0;
-    let totalPnl = 0;
-    for (const a of actions) {
-      if (a.action === 'ENTRY') entries++;
-      else if (a.action === 'SCALE_IN') scaleIns++;
-      else if (a.action === 'EXIT') {
-        exits++;
-        totalPnl += a.pnl ?? 0;
-      }
-    }
-    return { entries, scaleIns, exits, totalPnl };
-  }, [actions]);
+    return calculateTradeSummaryStats(actions);
+  }, [summary, actions]);
 
   // 필터 적용
   const filteredActions = useMemo(() => {

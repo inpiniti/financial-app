@@ -60,18 +60,32 @@ interface StoredTradeAction {
   fees?: number;
   returnRatio?: number;                        // 수익률
 }
+
+/** 추가진입(물타기) 체결 이벤트 도메인 값 객체 (ScaleInExecution VO) */
+interface ScaleInExecution {
+  ticker: string;
+  price: number;                               // 실제 체결 단가 (USD)
+  qty: number;                                 // 체결 수량
+  prevAvgPrice: number;                        // 직전 평단가
+  newAvgPrice: number;                         // 체결 후 새 평단가
+  totalQty: number;                            // 체결 후 총 보유 수량
+  ts: number;                                  // 체결 시각 (epoch ms)
+}
 ```
+
+> **[불변식] 당일 체결 기록 무손실 보장 (Lossless Migration)**:  
+> 당일 신규 체결 액션(`trade_actions.*`)이 기록된 상태라도, 아직 변환되지 않은 당일 구버전 사이클 기록(`trades.*`)이 존재하면 ID 기반 중복 방지를 거쳐 무손실로 합성·병합하여 사용자에게 온전한 거래 이력을 제공합니다.
 
 ---
 
 ## 3. 화면 및 커스텀 훅 (`screens.md`, `custom-hook.md`)
 
 - **화면**:
-  - `app/trades.tsx` (오늘 거래 기록 세부 화면):
+  - `app/trades.tsx` (오늘 거래 기록 세부 화면 — `TradeHistory.tsx` 탑재):
     - 상단 필터 칩: `전체` | `진입` | `추가진입` | `청산`
     - 당일 체결 요약: 실현 손익 및 체결 건수 통계
     - 체결 타임라인: 액션별 뱃지, 체결시각, 체결단가·수량·대금(USD/원화), 평단 변화 또는 실현손익
-  - `app/index.tsx` (손익 탭: `ProfitLoss.tsx`, `KellySection.tsx`, 거래기록: `TradeHistory.tsx`)
+  - `app/index.tsx` (손익 탭: `ProfitLoss.tsx`, `KellySection.tsx`)
 - **커스텀 훅**:
   - `useTodayTradeActions()`: 당일 로컬 체결 액션(`ENTRY`, `SCALE_IN`, `EXIT`) 실시간 조회 및 정렬
   - `useTodayTrades()`: 당일 완료된 매수→매도 사이클 기록 조회 (기존 호환)

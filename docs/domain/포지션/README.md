@@ -16,6 +16,7 @@
 - **`ProfitLoss`**: 손익 금액 및 수익률 VO (`pnlColor()` 내장).
 - **`BracketLines`**: 익절선(Take Profit Line = $P_{avg} \times 1.03$) 및 물타기 감시선($P_{avg} \times (1 - 0.03)$).
 - **`OrderStrategyConfig`**: 매수/매도 호가 정책 (`quote` 1호가 크로스, `lastChase` 현재가 추종, `lastCancel` 시간 취소).
+- **`ScaleInExecution`**: 추가진입(물타기) 체결 이벤트 VO (`ticker`, `price`, `qty`, `prevAvgPrice`, `newAvgPrice`, `totalQty`, `ts`).
 
 ### 애그리게잇 (Aggregate)
 - **`PositionAggregate` (Root: `RealtimeMa5PositionManager`)**:

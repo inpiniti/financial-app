@@ -242,6 +242,15 @@ export function isUsAveragingDownAllowed(epochMs: number): boolean {
   return et.mins >= 4 * 60 && et.mins < 19 * 60 + 55; // ET 04:00 ~ 19:55 (마감 5분 전까지)
 }
 
+/**
+ * 미국 주식 마감 일괄 청산 시점(ET 19:55~20:00, 월~금) 여부
+ */
+export function isUsMarketCloseExitTime(epochMs: number): boolean {
+  const et = getUsEtWeekdayAndMinutes(epochMs);
+  if (!et || et.isWeekend) return false;
+  return et.mins >= 19 * 60 + 55 && et.mins < 20 * 60;
+}
+
 // ---------------------------------------------------------------------------
 // 진입·물타기 조건
 // ---------------------------------------------------------------------------

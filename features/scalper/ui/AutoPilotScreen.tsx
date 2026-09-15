@@ -32,6 +32,7 @@ import { MARTINGALE_CONFIG, MARTINGALE_MIN_BARS, type MartingaleBarEval } from '
 import { etMinuteOfDay, TRADING_DAY_START_MIN } from '../../../core/model/session';
 import { TREND_MODE } from '../trendMode';
 import type { TrendEval } from '../../../core/trend/signal';
+import type { RealtimeMa5State } from '../../../core/realtime-ma5';
 import { AdoptSheet } from './AdoptSheet';
 import { refreshLiveSettings } from './managerProvider';
 import { formatHHMM, formatPrice, formatSlopeRate, formatSlopeRates, formatTickRates } from './format';
@@ -142,6 +143,14 @@ export function formatFeedAckSummary(rows: readonly AutoPilotSlotRow[]): string 
   const ok = rows.filter((r) => r.feedAck === 'ok').length;
   const pending = rows.length - ok - rejected;
   return `시세 구독 ${rows.length}건 · 수락 ${ok} · 거절 ${rejected} · 응답 없음 ${pending}`;
+}
+
+/** 실시간 MA5 단일 전략 한 줄 상태 표시 */
+function formatRealtimeMa5Line(state: RealtimeMa5State | null | undefined): string | null {
+  if (!state || state.ma5 === null) return '5선 계산 중';
+  const slopeText = state.slope === 'up' ? '5선 상승 중' : state.slope === 'down' ? '5선 하락 중' : '5선 수평';
+  const breakoutText = state.breakout ? ' · 돌파 진입 신호' : ' · 돌파 대기';
+  return `5선 $${state.ma5.toFixed(2)} · ${slopeText}${breakoutText}`;
 }
 
 /** 기울기 단타 한 줄(2026-09-02 ADR 0011) — 문턱(+1%) 대비 지금 상태. 값 자체는 행 머리의 "기울기"가 이미 보인다. */
@@ -438,15 +447,17 @@ function SlotRow({
   const { ticker, name } = item.entry;
   const statusLine = item.feedRejected
     ? formatFeedRejectedLine(item.feedRejected)
-    : SLOPE_MODE && getActiveEngineMode() === 'slope'
-      ? formatSlopeModeLine(item.view.slopeRate) + (item.view.entryFilterPass === false ? ' · 옵션 조건 미충족' : '')
-      : MARTINGALE_MODE && getActiveEngineMode() === 'martingale'
-        ? formatMartingaleLine(item.view.martingaleLive ?? item.view.martingale)
-        : MODEL_MODE && getActiveEngineMode() === 'model'
-          ? formatModelLine(item.view.modelVerdict) + (item.view.entryFilterPass === false ? ' · 옵션 조건 미충족' : '')
-          : TREND_MODE
-            ? formatTrendLine(item.view.trend, item.view.trendLive)
-            : null;
+    : getActiveEngineMode() === 'realtimeMa5'
+      ? formatRealtimeMa5Line(item.view.realtimeMa5)
+      : SLOPE_MODE && getActiveEngineMode() === 'slope'
+        ? formatSlopeModeLine(item.view.slopeRate) + (item.view.entryFilterPass === false ? ' · 옵션 조건 미충족' : '')
+        : MARTINGALE_MODE && getActiveEngineMode() === 'martingale'
+          ? formatMartingaleLine(item.view.martingaleLive ?? item.view.martingale)
+          : MODEL_MODE && getActiveEngineMode() === 'model'
+            ? formatModelLine(item.view.modelVerdict) + (item.view.entryFilterPass === false ? ' · 옵션 조건 미충족' : '')
+            : TREND_MODE
+              ? formatTrendLine(item.view.trend, item.view.trendLive)
+              : null;
 
   const currentPrice = grid?.currentPrice ?? item.view.price;
   const ma5 = ma5Of(item);
