@@ -41,6 +41,17 @@ export interface OverseasBalancePosition {
   [key: string]: unknown;
 }
 
+/**
+ * 유효한 체결기준 보유 포지션 여부 판정 (docs/domain/포지션 불변식 3, UC-POS-07):
+ * 1) 체결기준 수량(ccld_qty_smtl1) > 0 : 미국주식 T+1 결제라 당일 매도 완료된 종목이 결제잔고(cblc_qty13)에는 남아도 체결잔고는 0
+ * 2) 현재가(ovrs_now_pric1) > 0 : CVR, 상장폐지 등 거래 불능 잔여 권리 및 무효 종목 제외
+ */
+export function isHoldablePosition(p: OverseasBalancePosition): boolean {
+  const qty = Number(p.ccld_qty_smtl1);
+  const price = Number(p.ovrs_now_pric1);
+  return Number.isFinite(qty) && qty > 0 && Number.isFinite(price) && price > 0;
+}
+
 // output3 — 원화 환산 합계(문서: "해외유가증권 …의 원화 환산 금액").
 export interface OverseasBalanceSummary {
   pchs_amt_smtl: string;

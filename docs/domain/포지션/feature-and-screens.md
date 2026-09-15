@@ -37,6 +37,13 @@
 3. **청산 체결 통보**: 익절/손절/수동매도 완료 시 실현 손익 및 수익률을 포함하는 `EXIT` 액션을 즉시 기록.
 4. 모든 체결 액션은 사이클 종료 전이라도 `AsyncStorage`에 실시간 영속화되어 당일 거래 기록 화면에서 세세하게 열람 가능.
 
+### UC-POS-07: 유효 보유 종목 선별 (Filtering Invalid/Zero-Qty Holdings)
+1. **선별 조건**: KIS 해외주식 잔고 API(`inquireOverseasBalance`) 응답 중 체결기준 수량(`ccld_qty_smtl1`) > 0 및 현재가(`ovrs_now_pric1`) > 0을 모두 만족하는 유효 포지션(`isHoldablePosition`)만 선별합니다.
+2. **예외/이상 종목 자동 제외**:
+   - 당일 매도 완료로 실제 잔고는 없으나 T+1 결제 미도래로 잔고 응답에 남은 종목(`ccld_qty_smtl1 <= 0`)
+   - 현재가가 0으로 잡히는 CVR, 상장폐지 등 거래 불능 잔여 권리 및 비정상 종목(`ovrs_now_pric1 <= 0`)
+3. 보유종목 리스트(`Holdings.tsx`)와 보유 종목 등록 시트(`AdoptSheet.tsx`) 양쪽에서 불일치 없이 동일한 기준을 적용하여 화면 잔고 왜곡 및 유령 종목 노출을 방지합니다.
+
 ---
 
 ## 2. 연관 화면 및 컴포넌트 (`screens.md`, `custom-hook.md`)

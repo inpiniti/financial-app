@@ -290,7 +290,7 @@ export async function runHelpTool(
       case 'getHoldings': {
         const session = await loadKisSession();
         if (!session) return NEEDS_KIS;
-        const { inquireOverseasBalance } = await import('../../kis/balance');
+        const { inquireOverseasBalance, isHoldablePosition } = await import('../../kis/balance');
         const res = await inquireOverseasBalance(
           session.environment,
           session.credentials,
@@ -299,10 +299,10 @@ export async function runHelpTool(
           { fetchImpl: deps.fetchImpl },
         );
         return {
-          positions: res.output1.map((p) => ({
+          positions: (res.output1 ?? []).filter(isHoldablePosition).map((p) => ({
             ticker: p.pdno,
             name: p.prdt_name,
-            qty: num(p.cblc_qty13),
+            qty: num(p.ccld_qty_smtl1),
             avgPrice: num(p.avg_unpr3),
             nowPrice: num(p.ovrs_now_pric1),
             pnl: num(p.evlu_pfls_amt2),

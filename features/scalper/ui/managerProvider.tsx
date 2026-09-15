@@ -18,7 +18,7 @@ import {
 } from '../../../lib/appSettings';
 import { loadKisSettings } from '../../../lib/kisSettings';
 import { secureTokenStorage } from '../../../lib/secureTokenStorage';
-import { inquireOverseasBalance } from '../../../kis/balance';
+import { inquireOverseasBalance, isHoldablePosition } from '../../../kis/balance';
 import { inquireOverseasPriceDetail } from '../../../kis/priceDetail';
 import { buyableUsdOf, inquirePsAmount } from '../../../kis/psamount';
 import { isDaytimeSessionOpen } from '../daySession';
@@ -273,8 +273,8 @@ async function buildManager(): Promise<ManagerBootstrap> {
   const fetchHoldings = async (): Promise<string[]> => {
     const accessToken = await getTokenStr();
     const res = await inquireOverseasBalance(environment, credentials, accessToken, { account });
-    return res.output1
-      .filter((p) => Number(p.ccld_qty_smtl1) > 0 && Number(p.ovrs_now_pric1) > 0)
+    return (res.output1 ?? [])
+      .filter(isHoldablePosition)
       .map((p) => p.pdno);
   };
 

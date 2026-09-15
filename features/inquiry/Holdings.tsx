@@ -7,7 +7,7 @@ import { router } from 'expo-router';
 import { ListRow } from '../../components/ListRow';
 import { Panel } from '../../components/Panel';
 import { TickerAvatar } from '../../components/TickerAvatar';
-import { inquireOverseasBalance, type OverseasBalancePosition } from '../../kis/balance';
+import { inquireOverseasBalance, isHoldablePosition, type OverseasBalancePosition } from '../../kis/balance';
 import { toStockMarketCode } from '../stock/marketCodes';
 import { formatSignedPercent, formatSignedUsd, pnlColor } from '../../lib/format';
 import { EmptyState, SkeletonList } from './components';
@@ -80,7 +80,7 @@ export function useHoldings(session: KisSessionState): HoldingsData {
       const result = await inquireOverseasBalance(session.session.environment, session.session.credentials, session.session.accessToken, {
         account: session.session.account,
       });
-      setPositions(result.output1);
+      setPositions((result.output1 ?? []).filter(isHoldablePosition));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
