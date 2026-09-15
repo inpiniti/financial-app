@@ -470,6 +470,7 @@ export default function SettingsScreen() {
   // 동시 그리드 수·매수 후보 수는 슬라이더(2026-08-30 데스크탑에서 이식) — 정수 범위가 좁아 입력창보다 슬라이더가 맞다.
   const [watchCount, setWatchCount] = useState<number>(DEFAULT_APP_SETTINGS.watchCount);
   const [maxConcurrentGrids, setMaxConcurrentGrids] = useState<number>(DEFAULT_APP_SETTINGS.maxConcurrentGrids);
+  const [showTickAnimation, setShowTickAnimation] = useState<boolean>(DEFAULT_APP_SETTINGS.showTickAnimation);
   // 순위 선택(2026-08-18 순위 도메인) — 트레이딩 리스트 원천별 켬·개수·(한투) 기간창.
   const [rankingDraft, setRankingDraft] = useState<RankingSelectionDraft>(() =>
     draftFromSelection(normalizeRankingSelection(DEFAULT_APP_SETTINGS.rankingSelection)),
@@ -514,6 +515,7 @@ export default function SettingsScreen() {
       setMinTickRatePerMin(String((appSettings.minTickRate * 60).toFixed(1)));
       setWatchCount(appSettings.watchCount);
       setMaxConcurrentGrids(appSettings.maxConcurrentGrids);
+      setShowTickAnimation(appSettings.showTickAnimation ?? DEFAULT_APP_SETTINGS.showTickAnimation);
       setRankingDraft(draftFromSelection(appSettings.rankingSelection));
       const normalized = normalizeStrategyPair(FIXED_ENTRY_STRATEGY, FIXED_EXIT_STRATEGY);
       const initEntry = normalized.entryStrategy;
@@ -637,6 +639,7 @@ export default function SettingsScreen() {
         watchCount: parsedWatchCount,
         maxConcurrentGrids: parsedMaxGrids,
         rankingSelection,
+        showTickAnimation,
       });
       savedEntryStrategyRef.current = normalizedEntryStrategy;
       savedExitStrategyRef.current = normalizedExitStrategy;
@@ -882,6 +885,30 @@ export default function SettingsScreen() {
               formatValue={(v) => `${v}종목`}
               helper={'판정은 리스트 전 종목에 대해 계속 돌지만, 매수는 이 후보 안에서만 일어나요. 조용한 종목은 호가가 얇아 사고팔 때 불리해요. 보유·진입 중인 종목은 후보에서 빠지니 자리가 놀지 않아요. 후보 밖 신호는 트레이딩 화면 기록에 "매수 후보 밖이에요"로 남아요.'}
             />
+
+            {/* 수신 틱 애니메이션 On/Off 토글 */}
+            <Pressable
+              onPress={() => setShowTickAnimation((prev) => !prev)}
+              className={`mb-4 flex-row items-center justify-between rounded-2xl border px-4 py-3.5 ${
+                showTickAnimation ? 'border-[#3182f6] bg-[#f2f7ff]' : 'border-[#e5e8eb] bg-white'
+              }`}
+            >
+              <View className="mr-3 flex-1">
+                <Text className={`text-sm font-semibold ${showTickAnimation ? 'text-[#3182f6]' : 'text-[#191f28]'}`}>
+                  수신 틱 애니메이션 (Wave)
+                </Text>
+                <Text className="mt-1 text-xs leading-5 text-[#8b95a1]">
+                  트레이딩 리스트에서 시세가 들어올 때 은은한 반투명 빛줄기 효과를 표시해요.
+                </Text>
+              </View>
+              <View
+                className={`h-6 w-11 justify-center rounded-full p-0.5 ${
+                  showTickAnimation ? 'items-end bg-[#3182f6]' : 'items-start bg-[#e5e8eb]'
+                }`}
+              >
+                <View className="h-5 w-5 rounded-full bg-white shadow-sm" />
+              </View>
+            </Pressable>
 
             <View className="rounded-2xl bg-[#f2f4f6] px-4 py-3">
               <Text className="text-xs leading-5 text-[#4e5968]">

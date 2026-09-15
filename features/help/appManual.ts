@@ -205,6 +205,7 @@ ${
 - **매수 미체결 취소(초)** — "현재가 지정 · 시간 지나면 취소" 매수 전략의 대기 시간. 안 붙으면 취소하고 다음 신호를 기다려요. 0이면 체결까지 대기, 권장 2~3초. 일부라도 체결됐으면 취소하지 않아요.
 - **매도 미체결 취소(초)** — 같은 매도 전략의 대기 시간. 안 붙으면 취소하고 다음 틱 판정이 새 현재가로 다시 내요. 0이면 체결까지 그대로 둬요.
 - **순위 원천** — 트레이딩 리스트를 어디서 채울지 골라요. 토스 8종·한투 7종이 있고 원천별로 켜고 개수를 정해요. 켠 개수의 합은 ${RANKING_TOTAL_MAX}개를 넘을 수 없어요. 목록에서 위에 있는 원천이 겹치는 종목을 먼저 가져가요.
+- **수신 틱 애니메이션 (Wave)** — 트레이딩 리스트에서 시세가 들어올 때 은은한 반투명 빛줄기 효과를 표시해요(기본 켬).
 
 ⚠ **진입금액·수량·최소 속도·매수 후보 수·동시 그리드 수는 정지 상태에서만 적용돼요.** 매매 중에 저장했다면 정지한 뒤 트레이딩 화면으로 돌아올 때 반영돼요.
 
@@ -306,6 +307,7 @@ export const USER_FACING_SETTING_KEYS = [
   'sellStrategy',
   'sellCancelAfterSec',
   'rankingSelection',
+  'showTickAnimation',
 ] as const satisfies readonly (keyof AppSettings)[];
 
 /** 화면에 없는 값 — 고정(environment)이거나 롤백 경로 보존용(그리드 폭·사다리) 및 하위호환 키(engineMode)라 매뉴얼에 적지 않는다. */
@@ -364,6 +366,7 @@ export function describeUserSettings(settings: AppSettings): string {
     .filter(([, sel]) => sel.enabled && sel.count > 0)
     .map(([id, sel]) => `${rankingSourceLabelOf(id)} ${sel.count}개`);
   lines.push(`순위 원천: ${sources.length ? sources.join(', ') : '없음 — 트레이딩 리스트가 비어요'}`);
+  lines.push(`수신 틱 애니메이션: ${settings.showTickAnimation ? '켬' : '끔'}`);
   return lines.join('\n');
 }
 

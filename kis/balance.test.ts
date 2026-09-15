@@ -91,7 +91,7 @@ describe('inquireOverseasBalance — API 호출 및 파싱', () => {
     });
 
     const res = await inquireOverseasBalance(
-      'virtual',
+      'paper',
       { appKey: 'key', appSecret: 'secret' },
       'token',
       { account: { cano: '12345678', acntPrdtCd: '01' } },

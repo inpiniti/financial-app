@@ -162,6 +162,10 @@ export interface AppSettings {
    * managerProvider가 폴링마다 계획(planFromSelection)으로 바꿔 순위를 조회한다.
    */
   rankingSelection: RankingSelection;
+  /**
+   * 트레이딩 리스트 실시간 수신 틱 애니메이션 (Wave) 표시 여부 (기본 true).
+   */
+  showTickAnimation: boolean;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -190,6 +194,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   bbDipConfig: DEFAULT_BBDIP_CONFIG,
   realtimeMa5Config: DEFAULT_REALTIME_MA5_CONFIG,
   rankingSelection: DEFAULT_RANKING_SELECTION,
+  showTickAnimation: true,
 };
 
 /** 사다리 간격 %를 소수로(3% → 0.03). 비정상·0 이하는 기본값(3%)으로 방어(감지가 꺼지는 개념이 아니다). */
@@ -269,6 +274,7 @@ export async function loadAppSettings(): Promise<AppSettings> {
       },
       // 순위 선택은 저장값이 없으면 기본 구성, 있으면 카탈로그 기준으로 정리(모르는 id 폐기·누락 원천 채움).
       rankingSelection: normalizeRankingSelection(parsed.rankingSelection ?? DEFAULT_APP_SETTINGS.rankingSelection),
+      showTickAnimation: parsed.showTickAnimation ?? DEFAULT_APP_SETTINGS.showTickAnimation,
     };
   } catch {
     // 저장값 파손 — 기본값으로 자연 복구.

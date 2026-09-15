@@ -49,6 +49,8 @@ import { AdoptSheet } from './AdoptSheet';
 import { refreshLiveSettings } from './managerProvider';
 import { LiveRaceTrackCard } from './race/LiveRaceTrackCard';
 import { AnimatedPrice } from './components/AnimatedPrice';
+import { TickWaveOverlay } from './components/TickWaveOverlay';
+import { loadAppSettings } from '../../../lib/appSettings';
 import { formatHHMM, formatPrice, formatSlopeRate } from './format';
 import { gaugeScaleOf, normalizeGridPosition } from './gridGaugeMath';
 
@@ -512,6 +514,9 @@ function SlotRow({
   usdKrw,
   activeTickers,
   candidates,
+  manager,
+  isVisible,
+  showTickAnimation,
   onPress,
 }: {
   item: AutoPilotSlotRow;
@@ -520,6 +525,9 @@ function SlotRow({
   activeTickers: readonly string[];
   /** 지금 매수가 허용되는 종목들(속도 상위 N) — 배지 표시용. */
   candidates: readonly string[];
+  manager: ScalperManager;
+  isVisible: boolean;
+  showTickAnimation: boolean;
   onPress: (ticker: string, market: string, name?: string) => void;
 }) {
   // 종목명이 있으면 이름을 제목으로, 티커는 부제 맨 앞으로 — 이름 없이 티커만 보이면 무슨 종목인지
@@ -552,10 +560,16 @@ function SlotRow({
 
   return (
     <Pressable
-      className="border-b border-[#e5e8eb] bg-white"
+      className="relative border-b border-[#e5e8eb] bg-white overflow-hidden"
       onPress={() => onPress(ticker, item.entry.market, name)}
       android_ripple={{ color: '#f2f4f6' }}
     >
+      <TickWaveOverlay
+        ticker={ticker}
+        manager={manager}
+        isVisible={isVisible}
+        enabled={showTickAnimation}
+      />
       <View className="px-5 py-[13px]">
         <View className="flex-row">
           <View className="mr-3 pt-0.5">
@@ -645,6 +659,29 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
   // 오늘 성과 원화 병기용 환율(잔고 기준·30분 캐시) — 못 구하면 null이라 USD만 보여준다.
   const usdKrw = useUsdKrwRate();
 
+  // 수신 틱 애니메이션 On/Off 설정 (기본값 true)
+  const [showTickAnimation, setShowTickAnimation] = useState<boolean>(true);
+  useEffect(() => {
+    loadAppSettings()
+      .then((s) => setShowTickAnimation(s.showTickAnimation ?? true))
+      .catch(() => {});
+  }, []);
+
+  // 뷰포트 내 가시 종목 집합 추적 (화면 밖 틱 애니메이션 CPU 0% 격리)
+  const [viewableTickers, setViewableTickers] = useState<Set<string>>(new Set());
+  const onViewableItemsChanged = useRef(
+    ({ viewableItems }: { viewableItems: Array<{ item: AutoPilotSlotRow }> }) => {
+      const next = new Set<string>();
+      for (const v of viewableItems) {
+        if (v.item?.entry?.ticker) next.add(v.item.entry.ticker);
+      }
+      setViewableTickers(next);
+    },
+  ).current;
+  const viewabilityConfig = useRef({
+    itemVisiblePercentThreshold: 10,
+  }).current;
+
   const handleRowsUpdate = useCallback((newRows: readonly AutoPilotSlotRow[]) => {
     try {
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -712,11 +749,14 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
           usdKrw={usdKrw}
           activeTickers={view.activeTickers}
           candidates={view.watched}
+          manager={manager}
+          isVisible={viewableTickers.size === 0 || viewableTickers.has(item.entry.ticker)}
+          showTickAnimation={showTickAnimation}
           onPress={handleRowPress}
         />
       </AnimatedReanimated.View>
     ),
-    [view.activeTickers, view.grids, view.watched, handleRowPress, usdKrw],
+    [view.activeTickers, view.grids, view.watched, handleRowPress, usdKrw, manager, viewableTickers, showTickAnimation],
   );
 
   const config = view.config;
@@ -728,6 +768,8 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
         data={rows as AutoPilotSlotRow[]}
         keyExtractor={(item) => item.entry.ticker}
         renderItem={renderRow}
+        onViewableItemsChanged={onViewableItemsChanged}
+        viewabilityConfig={viewabilityConfig}
         contentContainerStyle={{ paddingBottom: 32 }}
         ListHeaderComponent={
           <>

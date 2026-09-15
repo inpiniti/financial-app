@@ -135,6 +135,7 @@ describe('설정 키 커버리지 — 설정을 추가하면 문서도 같이 �
       sellStrategy: '**매도 전략**',
       sellCancelAfterSec: '**매도 미체결 취소(초)**',
       rankingSelection: '**순위 원천**',
+      showTickAnimation: '**수신 틱 애니메이션 (Wave)**',
     };
     for (const key of USER_FACING_SETTING_KEYS) {
       expect(APP_MANUAL, `${key} 설명 누락`).toContain(LABEL[key]);
