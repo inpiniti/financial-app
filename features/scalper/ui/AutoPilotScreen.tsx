@@ -4,7 +4,7 @@
 // 운용 설정(진입금액·동시 그리드·최소 속도)은 상단바 > 설정 > "트레이딩 설정"으로 옮겼다(2026-08-12) —
 // 매매파라미터와 흩어져 있던 설정을 한 화면에 모았다. 값 반영은 managerProvider가 트레이딩 포커스마다 한다.
 // app-ui-style: 풀폭 Panel + 촘촘한 ListRow, 이모지 금지(Ionicons), 손익 색은 pnlColor()만.
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Animated,
@@ -18,7 +18,6 @@ import {
   View,
   type LayoutChangeEvent,
 } from 'react-native';
-import AnimatedReanimated, { LinearTransition } from 'react-native-reanimated';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Polygon } from 'react-native-svg';
@@ -47,7 +46,6 @@ import { TREND_MODE } from '../trendMode';
 import type { TrendEval } from '../../../core/trend/signal';
 import { AdoptSheet } from './AdoptSheet';
 import { refreshLiveSettings } from './managerProvider';
-import { LiveRaceTrackCard } from './race/LiveRaceTrackCard';
 import { AnimatedPrice } from './components/AnimatedPrice';
 import { TickWaveOverlay } from './components/TickWaveOverlay';
 import { loadAppSettings } from '../../../lib/appSettings';
@@ -504,7 +502,7 @@ function InlineGrid({
 
 /** 리스트 행 — "트레이딩 리스트" 패널의 연속이므로(FlatList 아이템) 직접 흰 배경을 입힌다.
  * 탭하면 부모가 액션시트(댓글/차트/호가)를 띄운다 — onPress는 표시용 UI 상태만 바꾼다(매매 로직 무관). */
-function SlotRow({
+const SlotRow = memo(function SlotRow({
   item,
   grid,
   usdKrw,
@@ -604,9 +602,9 @@ function SlotRow({
                 </View>
               </View>
 
-              {/* 우측 컬럼: 현재가(카운트업+플래시) / 원화 -> 보유 정보 / 손익 */}
+              {/* 우측 컬럼: 현재가(네이티브 플래시) / 원화 -> 보유 정보 / 손익 */}
               <View className="items-end">
-                <AnimatedPrice value={currentPrice} />
+                <AnimatedPrice value={currentPrice} isVisible={isVisible} />
                 {currentKrw !== null && <Text className="text-xs text-[#8b95a1]">{currentKrw}</Text>}
                 {grid !== null && (
                   <View className="mt-1 items-end">
@@ -635,7 +633,7 @@ function SlotRow({
       </View>
     </Pressable>
   );
-}
+});
 
 export interface AutoPilotScreenProps {
   autopilot: AutoPilotManager;
@@ -664,7 +662,14 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
   }, []);
 
   // 뷰포트 내 가시 종목 집합 추적 (화면 밖 틱 애니메이션 CPU 0% 격리)
-  const [viewableTickers, setViewableTickers] = useState<Set<string>>(new Set());
+  // 초기 마운트 시 첫 화면 뷰포트(6개)만 가시 종목으로 초기화하여 불필요한 전체 틱 구독 방지
+  const [viewableTickers, setViewableTickers] = useState<Set<string>>(() => {
+    const initial = new Set<string>();
+    for (const r of rows.slice(0, 6)) {
+      if (r.entry?.ticker) initial.add(r.entry.ticker);
+    }
+    return initial;
+  });
   const onViewableItemsChanged = useRef(
     ({ viewableItems }: { viewableItems: Array<{ item: AutoPilotSlotRow }> }) => {
       const next = new Set<string>();
@@ -738,7 +743,7 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
     ({ item }: { item: AutoPilotSlotRow }) => (
       // 보유 중인 종목만 AutoPilot 그리드 스냅샷이 있다. 미보유 종목은 평단/보유손익 없이 축(최소·5선·현재·최대)만 그린다.
       // 리스트 내부에서 모두 보여 주되, 보유 정보는 보유 종목에서만 조건부 노출.
-      <AnimatedReanimated.View layout={LinearTransition.duration(300)}>
+      <View>
         <SlotRow
           item={item}
           grid={view.grids.find((g) => g.ticker === item.entry.ticker) ?? null}
@@ -746,11 +751,11 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
           activeTickers={view.activeTickers}
           candidates={view.watched}
           manager={manager}
-          isVisible={viewableTickers.size === 0 || viewableTickers.has(item.entry.ticker)}
+          isVisible={viewableTickers.has(item.entry.ticker)}
           showTickAnimation={showTickAnimation}
           onPress={handleRowPress}
         />
-      </AnimatedReanimated.View>
+      </View>
     ),
     [view.activeTickers, view.grids, view.watched, handleRowPress, usdKrw, manager, viewableTickers, showTickAnimation],
   );
@@ -766,6 +771,10 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
         renderItem={renderRow}
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={viewabilityConfig}
+        initialNumToRender={6}
+        maxToRenderPerBatch={5}
+        windowSize={5}
+        removeClippedSubviews={Platform.OS === 'android'}
         contentContainerStyle={{ paddingBottom: 32 }}
         ListHeaderComponent={
           <>
@@ -888,12 +897,6 @@ export function AutoPilotScreen({ autopilot, manager }: AutoPilotScreenProps) {
                 )}
               </View>
             </Panel>
-            {/* 실시간 레이스 스타디움 (게이미피케이션 기믹 카드) */}
-            <LiveRaceTrackCard
-              view={view}
-              slotRows={rows}
-              getLiveByTicker={(ticker) => autopilot.getGridLive(ticker)}
-            />
             {/* "트레이딩 리스트" 패널 헤더 — 행들은 FlatList 아이템으로 이어진다. */}
             <View className="bg-white">
               <View className="flex-row items-center justify-between px-5 pb-2 pt-4">
