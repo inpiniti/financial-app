@@ -71,9 +71,17 @@ export interface StoredTrade extends TradeRecord {
   name?: string;
 }
 
-/** epoch ms → 'YYYY-MM-DD' (UTC). */
+// 모듈 스코프에서 한 번만 생성 — formatTradeDate가 빈번하게 호출되므로 GC 압박을 방지한다(perf §js-hoist-intl).
+const NY_DATE_DTF = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/New_York',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+/** epoch ms → 'YYYY-MM-DD' (미국 동부시간 America/New_York, ET 기준일). */
 export function formatTradeDate(tsMs: number): string {
-  return new Date(tsMs).toISOString().slice(0, 10);
+  return NY_DATE_DTF.format(new Date(tsMs));
 }
 
 export function tradeKeyFor(tsMs: number): string {

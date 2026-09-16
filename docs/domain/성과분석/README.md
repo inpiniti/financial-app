@@ -23,7 +23,7 @@
 ### 애그리게잇 (Aggregate)
 - **`TradeStoreAggregate` (Root: `features/scalper/tradeStore.ts`)**:
   - 로컬 `AsyncStorage`를 **1차 정본(Single Source of Truth)**으로 관리하여 네트워크가 끊겨도 거래 기록이 유실되지 않도록 보장합니다.
-  - 당일 체결 기록을 `trade_actions.YYYY-MM-DD` 키에 즉시 영속화하여 청산 전 보유 중(진입, 물타기 추가진입)에도 세부 체결 내역이 보존됩니다.
+  - 당일 체결 기록을 미국 동부시간(America/New_York, ET) 기준일의 `trade_actions.YYYY-MM-DD` 키에 즉시 영속화하여, 오토파일럿 오늘 성과(`cumPnl`)와 거래 기록이 시차 없이 1:1 일치하도록 보장합니다. 청산 전 보유 중(진입, 물타기 추가진입)에도 세부 체결 내역이 보존됩니다.
   - Supabase 업로드 실패 시 로컬 미전송 큐(`pendingUploadQueue`)에 적재하여 다음 기회에 자동 재전송합니다 (Fail-Open 원칙).
 
 ### 도메인 서비스 (Domain Service)

@@ -10,6 +10,7 @@ import {
   readTradeActionsByDate,
   readTodayTradeSummary,
   calculateTradeSummaryStats,
+  formatTradeDate,
   tradeKeyFor,
   TRADE_KEY_PREFIX,
 } from './tradeStore';
@@ -31,6 +32,40 @@ function sampleTrade(overrides: Partial<TradeRecord> = {}): TradeRecord {
 }
 
 describe('tradeStore — 일자별 append/조회', () => {
+  it('formatTradeDate는 UTC가 아닌 미국 동부시간(America/New_York, ET) 기준일을 반환한다', () => {
+    // 겨울 EST (UTC-5): 2026-01-15 03:00 UTC -> 2026-01-14 22:00 EST
+    expect(formatTradeDate(Date.UTC(2026, 0, 15, 3, 0))).toBe('2026-01-14');
+    // 여름 EDT (UTC-4): 2026-07-15 03:00 UTC -> 2026-07-14 23:00 EDT
+    expect(formatTradeDate(Date.UTC(2026, 6, 15, 3, 0))).toBe('2026-07-14');
+    // 한국 오전 10:47:45 KST (= 2026-09-16 01:47:45 UTC = 2026-09-15 21:47:45 EDT)
+    expect(formatTradeDate(Date.UTC(2026, 8, 16, 1, 47, 45))).toBe('2026-09-15');
+    // 한국 오후 14:00:00 KST (= 2026-09-16 05:00:00 UTC = 2026-09-16 01:00:00 EDT - 롤오버 이후)
+    expect(formatTradeDate(Date.UTC(2026, 8, 16, 5, 0, 0))).toBe('2026-09-16');
+  });
+
+  it('한국 오전(새벽 정규장 종료 후 10:47 KST)에 전일 밤 체결된 액션이 오늘 거래 기록으로 조회된다', async () => {
+    const store = new FakeStore();
+    // 전일 밤 미국 정규장 체결: 2026-09-15 23:30 KST (= 2026-09-15 14:30 UTC = 2026-09-15 10:30 EDT)
+    const nightTradeTs = Date.UTC(2026, 8, 15, 14, 30, 0);
+    await appendTradeAction(store, {
+      id: 'AAPL-exit-night',
+      action: 'EXIT',
+      ticker: 'AAPL',
+      price: 150,
+      qty: 10,
+      amountUsd: 1500,
+      ts: nightTradeTs,
+      pnl: -480,
+    });
+
+    // 다음날 한국 오전 10:47 KST (= 2026-09-16 01:47 UTC = 2026-09-15 21:47 EDT)
+    const morningClock = fakeClock(Date.UTC(2026, 8, 16, 1, 47, 0));
+    const todayActions = await readTodayTradeActions(store, morningClock);
+
+    expect(todayActions).toHaveLength(1);
+    expect(todayActions[0].id).toBe('AAPL-exit-night');
+    expect(todayActions[0].pnl).toBe(-480);
+  });
   it('exitTs 일자 키(trades.YYYY-MM-DD)에 instanceId를 포함해 append한다', async () => {
     const store = new FakeStore();
     await appendTradeRecord(store, 'inst-1', sampleTrade());

@@ -34,7 +34,7 @@ create table trade_results (
 ## 2. 로컬 저장소 스키마 (`AsyncStorage`)
 
 ```typescript
-// 키: `trade_actions.YYYY-MM-DD` (UTC 기준 일자)
+// 키: `trade_actions.YYYY-MM-DD` (미국 동부시간 America/New_York, ET 기준 일자)
 interface StoredTradeAction {
   id: string;                                  // 고유 식별자 (ticker-action-ts)
   cycleId?: string;                            // 매매 사이클 식별자
@@ -73,7 +73,10 @@ interface ScaleInExecution {
 }
 ```
 
-> **[불변식] 당일 체결 기록 무손실 보장 (Lossless Migration)**:  
+> **[불변식 1] 미국 동부시간(America/New_York, ET) 기준 거래일 일원화**:  
+> 오토파일럿의 일일 성과(`cumPnl`)와 `tradeStore`의 체결 기록(`trade_actions.*`, `trades.*`)은 동일하게 미국 동부시간(ET) 기준일(`YYYY-MM-DD`)을 단일 정본으로 사용합니다. 한국 시각 오전(새벽 정규장 종료 후)에도 직전 미국장 세션의 체결 기록과 오늘 성과가 정확히 1:1로 일치하여 보존됩니다.
+>
+> **[불변식 2] 당일 체결 기록 무손실 보장 (Lossless Migration)**:  
 > 당일 신규 체결 액션(`trade_actions.*`)이 기록된 상태라도, 아직 변환되지 않은 당일 구버전 사이클 기록(`trades.*`)이 존재하면 ID 기반 중복 방지를 거쳐 무손실로 합성·병합하여 사용자에게 온전한 거래 이력을 제공합니다.
 
 ---
