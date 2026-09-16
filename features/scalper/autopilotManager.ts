@@ -641,6 +641,11 @@ export class AutoPilotManager {
     return this.pilot.isHeld(ticker);
   }
 
+  /** 해당 종목이 청산 매도 진행 중인지 여부 */
+  isExiting(ticker: string): boolean {
+    return this.pilot.isExiting(ticker);
+  }
+
   /** 증권사 실잔고까지 확인하여 보유 여부 조회 */
   async checkHolding(ticker: string): Promise<boolean> {
     if (this.isHeld(ticker)) return true;

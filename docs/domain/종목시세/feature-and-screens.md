@@ -19,7 +19,7 @@
   - `app/index.tsx` (순위 탭 `Ranking.tsx`)
   - `app/search.tsx` (종목 검색 화면)
   - `app/stock/[ticker].tsx` (종목 상세 및 차트 화면)
-  - `features/stock/ui/StockActionBar.tsx` (상세화면 하단 고정 매도/매수 액션바: 보유 종목은 매수 비활성화·매도 활성화, 미보유 종목은 매수 활성화·매도 비활성화, 진입/청산 규칙 원클릭 연동)
+  - `features/stock/ui/StockActionBar.tsx` (상세화면 하단 고정 매도/매수 액션바: `IDLE`/`HELD`/`EXITING` 3단 상태 머신. 보유 종목은 매수 비활성화·매도 활성화, 매도 진행 중(`EXITING`)은 매수/매도 둘 다 비활성화, 미보유 종목은 매수 활성화·매도 비활성화, 진입/청산 규칙 원클릭 연동)
 - **AI 기업 요약 (Company Brief, 호가 탭 대체)**:
   - 종목 상세 화면 내에서 KIS 현재가 상세 정보(시총, PER, 52주 고저), Yahoo 뉴스 기사 본문 N건을 조합하여 AI가 `종합 / 호재 / 악재 / 지켜볼 점`으로 요약하여 제공합니다.
   - 종목+거래일(ET) 단위 로컬 캐시 적용 및 스트리밍 타이핑 렌더링.

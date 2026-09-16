@@ -313,6 +313,8 @@ export interface PositionManager {
   gaugeView(): PositionGaugeView;
   /** 진행 중 매매가 있거나 발주 중 — 신호 거절·Stop 문구용. */
   readonly busy: boolean;
+  /** 현재 청산(매도) 진행 중인가 */
+  readonly isExiting?: boolean;
   /** 계좌에 **쉬고 있는 지정가**가 있는가(OCO 두 다리) — Stop이 즉시 놓을지(false) 사이클 완주를 기다릴지(true) 가른다. */
   readonly restingOrders: boolean;
   readonly isolated: boolean;
@@ -803,6 +805,10 @@ export class RulePositionManager implements PositionManager {
 
   get busy(): boolean {
     return this.exec !== null || this.starting;
+  }
+
+  get isExiting(): boolean {
+    return (this.exec !== null && this.execSide === 'sell') || (this.starting && this.pendingExitReason !== null);
   }
 
   get isolated(): boolean {
@@ -1327,6 +1333,7 @@ export class RealtimeMa5PositionManager implements PositionManager {
   private sellExec: Execution | null = null;
   /** 매도 주문의 목표가(평단×1.03) — 물타기 시 갱신. */
   private sellTargetPrice = 0;
+  private sellReason: ExitReason = 'TAKE_PROFIT';
   /** 잔고 재대조(Reconciliation): 브로커 체결 응답 유실 시 유령 포지션 방지용. */
   private manualCheckAt = 0;
   private manualMisses = 0;
@@ -1367,6 +1374,10 @@ export class RealtimeMa5PositionManager implements PositionManager {
 
   get busy(): boolean {
     return this.buyExec !== null || this.sellExec !== null || this.averagingDownPending;
+  }
+
+  get isExiting(): boolean {
+    return this.sellExec !== null && this.sellReason === 'USER_SELL';
   }
 
   get isolated(): boolean {
@@ -1418,13 +1429,19 @@ export class RealtimeMa5PositionManager implements PositionManager {
       return;
     }
 
-    // 매도 추격 — lastChase
+    // 매도 추격 — 수동 매도(USER_SELL)는 현재가를 계속 추격하고, 선등록 익절(TAKE_PROFIT)은 목표가 이상에서만 추격
     if (this.sellExec !== null) {
       const remaining = this.qty;
       if (remaining > 0 && Number.isFinite(price) && price > 0) {
         const orderPrice = this.sellExec.orderPrice;
-        if (orderPrice !== null && price >= this.sellTargetPrice && price > orderPrice) {
-          await this.sellExec.onPrice(price);
+        if (orderPrice !== null) {
+          if (this.sellReason === 'USER_SELL') {
+            if (price !== orderPrice) {
+              await this.sellExec.onPrice(price);
+            }
+          } else if (price >= this.sellTargetPrice && price > orderPrice) {
+            await this.sellExec.onPrice(price);
+          }
         }
       }
     }
@@ -1443,20 +1460,22 @@ export class RealtimeMa5PositionManager implements PositionManager {
     if (this.sellExec !== null) {
       const r = await this.sellExec.poll();
       if (r.kind === 'done') {
+        const reason = this.sellReason;
         const record = makeTradeRecord({
           ticker: this.ticker,
           qty: r.result.filledQty,
           entryPrice: this.avgPrice,
           exitPrice: r.result.fillPrice ?? this.sellTargetPrice,
           entry: this.deps.entry,
-          exitReason: 'TAKE_PROFIT',
+          exitReason: reason,
           feeRate: this.deps.feeRate,
           now: this.deps.clock.now(),
         });
         this.qty = 0;
         this.sellExec = null;
         this.armed = false;
-        this.event(`익절 체결 · ${r.result.filledQty}주 · 평단 ${this.avgPrice.toFixed(2)} → 체결가 ${(r.result.fillPrice ?? this.sellTargetPrice).toFixed(2)}`);
+        const reasonText = reason === 'USER_SELL' ? '사용자 매도 체결' : '익절 체결';
+        this.event(`${reasonText} · ${r.result.filledQty}주 · 평단 ${this.avgPrice.toFixed(2)} → 체결가 ${(r.result.fillPrice ?? this.sellTargetPrice).toFixed(2)}`);
         return { kind: 'sold', record };
       }
       if (r.kind === 'cancelled') {
@@ -1561,6 +1580,7 @@ export class RealtimeMa5PositionManager implements PositionManager {
       void this.sellExec.release();
       this.sellExec = null;
     }
+    this.sellReason = 'USER_SELL';
     this.startSell(this.qty, price);
     return true;
   }

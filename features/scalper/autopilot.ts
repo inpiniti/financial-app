@@ -187,6 +187,8 @@ export interface AutoPilotView {
   readonly watched: readonly string[];
   /** 사이클(진입~그리드 관리)이 열려 있는 모든 티커. */
   readonly activeTickers: readonly string[];
+  /** 청산 매도 진행 중인 티커 (수동 매도 또는 자동 청산 중). */
+  readonly exitingTickers: readonly string[];
   /** 진입 확정 대기(pendingBuys) 티커 — 매니저가 호가 구독을 미리 데우는 데 쓴다. */
   readonly entering: readonly string[];
   /** 하위호환 — activeTickers의 첫 종목(없으면 null). */
@@ -496,8 +498,20 @@ export class AutoPilot {
     };
   }
 
+  isExiting(ticker: string): boolean {
+    const active = this.actives.get(ticker);
+    if (!active) return false;
+    if (active.cond) {
+      if (typeof active.cond.isExiting === 'boolean') return active.cond.isExiting;
+      return active.cond.busy;
+    }
+    if (active.cycle?.state === 'SELLING') return true;
+    return false;
+  }
+
   getView(): AutoPilotView {
     const activeTickers = [...this.actives.keys()];
+    const exitingTickers = activeTickers.filter((t) => this.isExiting(t));
     const grids = this.gridViews();
     return {
       state: this.state,
@@ -505,6 +519,7 @@ export class AutoPilot {
       paused: this.paused,
       watched: [...this.watchedTickers],
       activeTickers,
+      exitingTickers,
       entering: [...this.pendingBuys.keys()],
       activeTicker: activeTickers[0] ?? null,
       maxGrids: this.maxGrids,
@@ -1677,7 +1692,7 @@ export class AutoPilot {
    *
    * 성공하면 null, 못 하면 사용자에게 보여줄 문구를 돌려준다(adoptPosition과 같은 계약).
    */
-  sellNow(ticker: string, targetPrice?: number): string | null {
+  async sellNow(ticker: string, targetPrice?: number): Promise<string | null> {
     if (!this.running) return '자동 트레이딩을 먼저 시작해 주세요';
     if (this.faulted) return '멈춤 상태예요 — 먼저 Stop으로 해제해 주세요';
     // Stop 진행 중에는 새 발주가 mayStart에서 막힌다 — 조용히 실패하지 않게 여기서 먼저 알린다.
@@ -1686,8 +1701,30 @@ export class AutoPilot {
     if (!active) return `${ticker}은(는) 관리 중이 아니에요`;
     if (active.gridFaulted) return `${ticker} 그리드가 멈춰 있어요 — 주문은 계좌에서 직접 확인해 주세요`;
     if (!active.cond?.sellNow) return `${ticker}은(는) 여기서 매도할 수 없어요 — 계좌에서 직접 팔아 주세요`;
-    // 발주 시작가는 전달된 targetPrice 또는 슬롯의 최신 체결가.
-    const price = (targetPrice && targetPrice > 0) ? targetPrice : (active.slot?.getView().price ?? null);
+
+    // 발주 시작가 4단계 폴백 체인:
+    // 1. 전달된 targetPrice
+    // 2. 슬롯의 최신 틱 체결가
+    // 3. 포지션 평단가 (cond.gaugeView().avgPrice 또는 cycle.position.entryPrice)
+    // 4. REST 현재가 조회 (deps.fetchRestPrice)
+    let price: number | null = (targetPrice && targetPrice > 0) ? targetPrice : (active.slot?.getView().price ?? null);
+    if (price === null || !(price > 0)) {
+      const avgPrice = active.cond?.gaugeView().avgPrice ?? active.cycle?.position?.entryPrice ?? null;
+      if (avgPrice !== null && avgPrice > 0) {
+        price = avgPrice;
+      }
+    }
+    if ((price === null || !(price > 0)) && this.deps.fetchRestPrice) {
+      try {
+        const restPrice = await this.deps.fetchRestPrice(ticker);
+        if (restPrice !== null && restPrice > 0) {
+          price = restPrice;
+        }
+      } catch {
+        // fetch 실패 시 price 유지
+      }
+    }
+
     if (price === null || !(price > 0)) return `${ticker} 현재가를 아직 못 받았어요 — 잠시 뒤 다시 눌러 주세요`;
     if (!active.cond.sellNow(price)) return `${ticker}은(는) 이미 매도 주문이 나가 있어요`;
     this.event(`${ticker} 사용자 매도 요청 · 전량을 현재가 $${price.toFixed(2)}부터 추격 매도해요`);

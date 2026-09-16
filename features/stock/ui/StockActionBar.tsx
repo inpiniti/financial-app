@@ -17,12 +17,14 @@ export interface StockActionBarProps {
   autopilot: AutoPilotManager | null;
 }
 
+export type StockHoldingState = 'IDLE' | 'HELD' | 'EXITING';
+
 export function StockActionBar({ ticker, market, name, livePrice, autopilot }: StockActionBarProps) {
   const insets = useSafeAreaInsets();
-  const [isHeld, setIsHeld] = useState<boolean>(false);
+  const [holdingState, setHoldingState] = useState<StockHoldingState>('IDLE');
   const [submitting, setSubmitting] = useState<'buy' | 'sell' | null>(null);
 
-  // 보유 상태 구독 및 동기화
+  // 보유/매도 상태 구독 및 동기화
   useEffect(() => {
     let cancelled = false;
 
@@ -30,14 +32,21 @@ export function StockActionBar({ ticker, market, name, livePrice, autopilot }: S
       return;
     }
 
-    // 1. 메모리 상의 activeTickers 즉시 확인
-    const immediatelyHeld = autopilot.isHeld(ticker);
-    setIsHeld(immediatelyHeld);
+    // 1. 메모리 상의 activeTickers 및 exitingTickers 즉시 확인
+    const isExitingNow = autopilot.isExiting(ticker);
+    const isHeldNow = autopilot.isHeld(ticker);
+    setHoldingState(isExitingNow ? 'EXITING' : isHeldNow ? 'HELD' : 'IDLE');
 
     // 2. 실시간 view 변경 구독 (진입·체결·청산 시 자동 반영)
     const unsubscribe = autopilot.subscribeView((view) => {
       if (!cancelled) {
-        setIsHeld(view.activeTickers.includes(ticker));
+        if (view.exitingTickers.includes(ticker)) {
+          setHoldingState('EXITING');
+        } else if (view.activeTickers.includes(ticker)) {
+          setHoldingState('HELD');
+        } else {
+          setHoldingState('IDLE');
+        }
       }
     });
 
@@ -46,7 +55,11 @@ export function StockActionBar({ ticker, market, name, livePrice, autopilot }: S
       .checkHolding(ticker)
       .then((held) => {
         if (!cancelled) {
-          setIsHeld(held);
+          // 실시간으로 EXITING 중이면 잔고 결과로 덮어쓰지 않는다
+          setHoldingState((prev) => {
+            if (prev === 'EXITING') return 'EXITING';
+            return held ? 'HELD' : 'IDLE';
+          });
         }
       })
       .catch(() => {});
@@ -88,7 +101,7 @@ export function StockActionBar({ ticker, market, name, livePrice, autopilot }: S
                 if (err) {
                   Alert.alert('매수 실패', err);
                 } else {
-                  setIsHeld(true);
+                  setHoldingState('HELD');
                 }
               } catch (e) {
                 Alert.alert('매수 오류', e instanceof Error ? e.message : String(e));
@@ -121,7 +134,7 @@ export function StockActionBar({ ticker, market, name, livePrice, autopilot }: S
               if (err) {
                 Alert.alert('매수 실패', err);
               } else {
-                setIsHeld(true);
+                setHoldingState('HELD');
               }
             } catch (e) {
               Alert.alert('매수 오류', e instanceof Error ? e.message : String(e));
@@ -161,7 +174,7 @@ export function StockActionBar({ ticker, market, name, livePrice, autopilot }: S
                 if (err) {
                   Alert.alert('매도 실패', err);
                 } else {
-                  setIsHeld(false);
+                  setHoldingState('EXITING');
                 }
               } catch (e) {
                 Alert.alert('매도 오류', e instanceof Error ? e.message : String(e));
@@ -190,7 +203,7 @@ export function StockActionBar({ ticker, market, name, livePrice, autopilot }: S
               if (err) {
                 Alert.alert('매도 실패', err);
               } else {
-                setIsHeld(false);
+                setHoldingState('EXITING');
               }
             } catch (e) {
               Alert.alert('매도 오류', e instanceof Error ? e.message : String(e));
@@ -203,8 +216,9 @@ export function StockActionBar({ ticker, market, name, livePrice, autopilot }: S
     );
   }, [autopilot, livePrice, name, ticker]);
 
-  const isBuyDisabled = isHeld || submitting !== null;
-  const isSellDisabled = !isHeld || submitting !== null;
+  const isBuyDisabled = holdingState !== 'IDLE' || submitting !== null;
+  const isSellDisabled = holdingState !== 'HELD' || submitting !== null;
+  const isExiting = holdingState === 'EXITING';
 
   return (
     <View
@@ -221,7 +235,7 @@ export function StockActionBar({ ticker, market, name, livePrice, autopilot }: S
           minHeight: 48,
         }}
         accessibilityRole="button"
-        accessibilityLabel="매도"
+        accessibilityLabel={isExiting ? '매도 중' : '매도'}
         accessibilityState={{ disabled: isSellDisabled }}
       >
         {submitting === 'sell' ? (
@@ -231,7 +245,7 @@ export function StockActionBar({ ticker, market, name, livePrice, autopilot }: S
             className="text-base font-bold"
             style={{ color: isSellDisabled ? '#b0b8c1' : '#ffffff' }}
           >
-            매도
+            {isExiting ? '매도 중...' : '매도'}
           </Text>
         )}
       </Pressable>

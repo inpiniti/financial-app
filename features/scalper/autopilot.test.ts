@@ -1451,12 +1451,46 @@ describe('AutoPilot — 세션 전환(정규장↔주간거래) 그리드 주문
       await flush();
 
       // 현재가 $25로 사용자 전량 매도 요청
-      const sellRes = h.pilot.sellNow('A', 25);
+      const sellRes = await h.pilot.sellNow('A', 25);
       expect(sellRes).toBeNull();
       await flush();
 
       const sellOrder = broker.placed.find((p) => p.side === 'sell');
       expect(sellOrder).toBeDefined();
+    });
+
+    it('sellNow 호출 시 targetPrice가 없어도 슬롯/평단가 폴백으로 매도 발주되며 exitingTickers에 포함된다', async () => {
+      const h = makeHarness(['A'], {
+        config: CONFIG_100,
+        positionManagement: {
+          realtimeMa5: REALTIME_MA5_POSITION_CONFIG,
+        },
+      });
+      h.pilot.start();
+
+      await h.pilot.buyNow('A', { price: 20 });
+      const broker = h.brokers.get('A')!;
+      broker.fill(broker.placed[0].odno, 20);
+      await h.pilot.pollCycle();
+      await flush();
+
+      expect(h.pilot.getView().exitingTickers).toEqual([]);
+
+      // targetPrice 없이 매도 호출 -> 평단가($20) 또는 슬롯 가격 폴백
+      const sellRes = await h.pilot.sellNow('A');
+      expect(sellRes).toBeNull();
+      await flush();
+
+      // 매도 진행 중이므로 exitingTickers에 A 포함
+      expect(h.pilot.getView().exitingTickers).toContain('A');
+      expect(h.pilot.isExiting('A')).toBe(true);
+
+      // 체결 후 arm 시점에 선등록된 익절 주문(20 * 1.03 = 20.6) 외에,
+      // sellNow로 새로 나간 매도 주문은 평단가($20)로 발주된다.
+      const sellOrders = broker.placed.filter((p) => p.side === 'sell');
+      expect(sellOrders.length).toBeGreaterThanOrEqual(1);
+      const latestSellOrder = sellOrders.at(-1);
+      expect(latestSellOrder?.price).toBe(20);
     });
 
     it('진입, 추가진입, 청산 시 onTradeAction이 올바른 정보와 함께 순서대로 발행된다', async () => {
@@ -1512,7 +1546,7 @@ describe('AutoPilot — 세션 전환(정규장↔주간거래) 그리드 주문
       expect(scaleInAction?.totalQty).toBe(5);
 
       // 3. 청산 (sellNow)
-      h.pilot.sellNow('A', 100);
+      await h.pilot.sellNow('A', 100);
       await flush();
       const sell = broker.placed.filter((p) => p.side === 'sell').at(-1);
       expect(sell).toBeDefined();

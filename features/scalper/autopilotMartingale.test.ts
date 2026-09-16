@@ -136,7 +136,7 @@ describe('5선 물타기 단타 모드 — 진입', () => {
     await tick(h, 216, BASE);
     await tick(h, 230, BASE + 1); // 진입
     expect(h.pilot.getView().activeTickers).toEqual(['A']);
-    expect(h.pilot.sellNow('A')).toBeNull();
+    expect(await h.pilot.sellNow('A')).toBeNull();
     await flush();
     await h.pilot.pollCycle();
     await flush();

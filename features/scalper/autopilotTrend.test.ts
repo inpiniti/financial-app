@@ -424,7 +424,7 @@ describe('추세 → 그리드 → 매매 — 사용자 요청 전량 매도(202
     const g = h.pilot.getView().grids[0];
     expect(broker.placed).toHaveLength(1); // 진입 매수뿐 — 4선은 아직 안 꺾였다.
 
-    expect(h.pilot.sellNow('A')).toBeNull();
+    expect(await h.pilot.sellNow('A')).toBeNull();
     await flush();
     expect(broker.placed).toHaveLength(2);
     expect(broker.placed[1].side).toBe('sell');
@@ -442,17 +442,17 @@ describe('추세 → 그리드 → 매매 — 사용자 요청 전량 매도(202
     const h = makeHarness();
     await enter(h);
     h.brokers.get('A')!.autoFill = false; // 매도가 안 붙게 — 추격 중 상태를 만든다.
-    expect(h.pilot.sellNow('A')).toBeNull();
+    expect(await h.pilot.sellNow('A')).toBeNull();
     await flush();
-    expect(h.pilot.sellNow('A')).toContain('이미 매도 주문이 나가 있어요');
+    expect(await h.pilot.sellNow('A')).toContain('이미 매도 주문이 나가 있어요');
     expect(h.brokers.get('A')!.placed.filter((o) => o.side === 'sell')).toHaveLength(1);
   });
 
   it('관리 중이 아니거나 시작 전이면 사유 문구 — 아무 주문도 내지 않는다', async () => {
     const h = makeHarness();
-    expect(h.pilot.sellNow('A')).toContain('자동 트레이딩을 먼저 시작해 주세요');
+    expect(await h.pilot.sellNow('A')).toContain('자동 트레이딩을 먼저 시작해 주세요');
     await enter(h);
-    expect(h.pilot.sellNow('ZZZ')).toContain('관리 중이 아니에요');
+    expect(await h.pilot.sellNow('ZZZ')).toContain('관리 중이 아니에요');
     expect(h.brokers.get('A')!.placed).toHaveLength(1);
   });
 });
