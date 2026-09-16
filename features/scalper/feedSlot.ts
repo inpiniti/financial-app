@@ -257,6 +257,10 @@ export interface FeedSlotView {
    * 실시간 MA5 스냅샷 — MA5 값, 기울기(up/down), 돌파 여부. 다른 모드면 null.
    */
   readonly realtimeMa5: RealtimeMa5State | null;
+  /**
+   * 실시간 볼린저 하단선 (1분봉 20선 2σ) — 워밍업 전이면 null.
+   */
+  readonly lowerBb: number | null;
 }
 
 /** 화면용 모델 판정 스냅샷 — ModelEval에서 화면이 쓰는 것만 + 판정 시각. */
@@ -960,6 +964,7 @@ export class FeedSlot {
       entryFilterPass: this.filterBars ? this.entryFilterPass : null,
       martingaleLive: this.martingaleMode ? this.martingaleLiveEval : null,
       realtimeMa5: this.realtimeMa5State,
+      lowerBb: this.realtimeMa5State?.lowerBb ?? this.bbMeter.lowerBb ?? null,
     };
   }
 }

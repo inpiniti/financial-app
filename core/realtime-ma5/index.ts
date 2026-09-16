@@ -122,50 +122,114 @@ export class RealtimeCandleBuilder {
 }
 
 // ---------------------------------------------------------------------------
-// MA5 실시간 계산
 // ---------------------------------------------------------------------------
+// 실시간 볼린저 밴드 및 MA5 실시간 계산
+// ---------------------------------------------------------------------------
+
+export interface RealtimeBbResult {
+  /** 실시간 1분봉 20선 볼린저 하단선 (20분봉 2σ). 계산 불가면 null. */
+  lowerBb: number | null;
+  /** 실시간 1분봉 20선 볼린저 중심선 (MA20). 계산 불가면 null. */
+  ma20: number | null;
+  /** 실시간 1분봉 20선 볼린저 상단선 (20분봉 2σ). 계산 불가면 null. */
+  upperBb: number | null;
+}
+
+/**
+ * 실시간 1분봉 20선 볼린저 밴드(20분봉, 2.0σ) 계산.
+ * 직전 확정 (period - 1)개 분봉 종가 + 현재 틱 = 총 period개 표본으로
+ * 중심선(MA20), 분산, 표준편차, 상/하단선을 매 틱 실시간으로 계산한다.
+ */
+export function calculateRealtimeBb(
+  confirmedCloses: readonly number[],
+  currentTick: number,
+  period = 20,
+  dev = 2.0,
+): RealtimeBbResult {
+  const n = confirmedCloses.length;
+  if (n < period - 1 || !Number.isFinite(currentTick) || currentTick <= 0) {
+    return { lowerBb: null, ma20: null, upperBb: null };
+  }
+
+  const startIdx = n - (period - 1);
+  let sum = currentTick;
+  for (let i = startIdx; i < n; i++) {
+    sum += confirmedCloses[i];
+  }
+  const mean = sum / period;
+
+  let sumSqDiff = Math.pow(currentTick - mean, 2);
+  for (let i = startIdx; i < n; i++) {
+    sumSqDiff += Math.pow(confirmedCloses[i] - mean, 2);
+  }
+  const variance = sumSqDiff / period;
+  const std = Math.sqrt(variance);
+
+  return {
+    lowerBb: mean - dev * std,
+    ma20: mean,
+    upperBb: mean + dev * std,
+  };
+}
 
 export interface RealtimeMa5State {
   /** MA5 실시간 값 = (직전 확정 4봉 종가 + 현재틱) / 5. 계산 불가면 null. */
   ma5: number | null;
   /** 기울기: 현재틱 > 5개전 확정분봉 종가 → 'up', < → 'down', 비교 불가 → null. */
   slope: 'up' | 'down' | null;
-  /** 상향 돌파: 5선 하단 체류(3초) 충족 후 이전틱 <= 현재 MA5 < 현재틱. */
+  /** 상향 돌파: 볼린저 하단선(lowerBb) 하단 3초 + 상단 3초 체류 충족 시 발화. */
   breakout: boolean;
   /** 5개전 확정분봉 종가. 없으면 null. */
   refClose5: number | null;
-  /** 5선 하단 체류 시간(ms). 5선 위면 null. */
+  /** 하단 체류 시간(ms). */
   belowDwellMs?: number | null;
-  /** 5선 하단 체류를 충족하여 돌파 준비가 완료된 상태인가. */
+  /** 상단 체류 시간(ms). */
+  aboveDwellMs?: number | null;
+  /** 하단 체류 충족 여부 (3초 완료). */
+  belowDwellOk?: boolean;
+  /** 상단 체류까지 충족하여 돌파 준비 완료 상태인가. */
   isArmed?: boolean;
+  /** 실시간 1분봉 20선 볼린저 하단선(2σ). */
+  lowerBb?: number | null;
+  /** 실시간 1분봉 20선 볼린저 중심선(MA20). */
+  ma20?: number | null;
+  /** 실시간 1분봉 20선 볼린저 상단선(2σ). */
+  upperBb?: number | null;
 }
 
-/** 5선 하단 최소 연속 체류 시간 기본값(3초 = 3,000ms). */
+/** 하단/상단 최소 연속 체류 시간 기본값(3초 = 3,000ms). */
 export const DEFAULT_MA5_DWELL_MS = 3_000;
 
+/** 이탈 취소 디바운스 버퍼 기본값(1초 = 1,000ms). 1초 미만의 일시적 잔파동(noise)은 취소하지 않고 무시한다. */
+export const DEFAULT_CANCEL_DEBOUNCE_MS = 1_000;
+
 /**
- * 실시간 MA5 계산기 — 확정 봉 4개 + 현재 틱으로 MA5를 계산한다.
- *
- * MA5_realtime = (closes[n-4] + closes[n-3] + closes[n-2] + closes[n-1] + currentTick) / 5
- *
- * 기울기: currentTick > closes[n-5] (5개전 종가) → up, down.
- * 돌파: 5선 아래(price <= MA5)에서 minDwellMs(기본 3초) 이상 연속 체류 후,
- *       이전틱 <= 현재 MA5 < 현재틱으로 상향 돌파하는 순간 1회 발화.
+ * 실시간 전략 계산기 — 확정 봉들과 현재 틱으로 실시간 MA5, 실시간 볼린저 밴드(Realtime BB)를 계산하고,
+ * 하단 3초 체류 + 상단 3초 체류(1초 디바운스 버퍼)를 모두 통과한 상향 돌파를 판정한다.
  */
 export class RealtimeMa5Calculator {
   private prevTick: number | null = null;
   private liveTickCount = 0;
   private belowStartMs: number | null = null;
+  private aboveEscapeStartMs: number | null = null;
+  private belowDwellOk = false;
+  private aboveStartMs: number | null = null;
+  private belowDipStartMs: number | null = null;
   private isArmed = false;
   private readonly minDwellMs: number;
+  private readonly cancelDebounceMs: number;
 
-  constructor(minDwellMs = DEFAULT_MA5_DWELL_MS) {
+  constructor(
+    minDwellMs = DEFAULT_MA5_DWELL_MS,
+    cancelDebounceMs = DEFAULT_CANCEL_DEBOUNCE_MS,
+  ) {
     this.minDwellMs = minDwellMs;
+    this.cancelDebounceMs = cancelDebounceMs;
   }
 
   /**
-   * 현재 틱으로 MA5·기울기·돌파를 계산한다.
-   * confirmedCloses = 확정된 봉 종가 배열 (오름차순, 최소 5개 이상 권장).
+   * 현재 틱으로 MA5·실시간BB·기울기·돌파를 계산한다.
+   * confirmedCloses = 확정된 봉 종가 배열 (오름차순, 최소 5개 이상 권장, 19개 이상 시 BB 계산 활성).
    * currentTick = 현재 틱 가격.
    * isLiveTick = 실제 수신된 라이브 틱 여부 (기본 true). 시드/프로브 조회 시 false로 전달하여 돌파 오판정 방지.
    * tsMs = 체결 시각(epoch ms). 미전달 시 Date.now() 사용.
@@ -179,14 +243,18 @@ export class RealtimeMa5Calculator {
     const n = confirmedCloses.length;
     const nowMs = tsMs ?? (typeof Date !== 'undefined' ? Date.now() : 0);
 
-    // MA5 = (최근 4 확정 종가 + 현재틱) / 5
+    // 1. 실시간 MA5 = (최근 4 확정 종가 + 현재틱) / 5
     let ma5: number | null = null;
     if (n >= 4) {
       const sum4 = confirmedCloses[n - 4] + confirmedCloses[n - 3] + confirmedCloses[n - 2] + confirmedCloses[n - 1];
       ma5 = (sum4 + currentTick) / 5;
     }
 
-    // 기울기: 현재틱 vs 5개전 확정분봉 종가
+    // 2. 실시간 볼린저 밴드 (19개 확정 종가 + 현재 틱 = 20개 표본)
+    const bb = calculateRealtimeBb(confirmedCloses, currentTick);
+    const { lowerBb, ma20, upperBb } = bb;
+
+    // 3. 기울기: 현재틱 vs 5개전 확정분봉 종가
     let slope: 'up' | 'down' | null = null;
     let refClose5: number | null = null;
     if (n >= 5) {
@@ -194,48 +262,134 @@ export class RealtimeMa5Calculator {
       slope = currentTick > refClose5 ? 'up' : currentTick < refClose5 ? 'down' : null;
     }
 
-    // 5선 하단 체류 및 돌파 판정
+    // 4. 돌파 판정 기준선: lowerBb 우선, 워밍업(19봉 미만) 시 ma5로 유연하게 fallback
+    const baseline = lowerBb ?? ma5;
+
     let breakout = false;
     let belowDwellMs: number | null = null;
+    let aboveDwellMs: number | null = null;
 
     if (isLiveTick) {
       this.liveTickCount++;
 
-      if (ma5 !== null) {
-        if (currentTick <= ma5) {
-          // 5선 이하 체류 중
-          if (this.belowStartMs === null) {
-            this.belowStartMs = nowMs;
-          }
-          belowDwellMs = Math.max(0, nowMs - this.belowStartMs);
-          if (belowDwellMs >= this.minDwellMs) {
-            this.isArmed = true;
+      if (baseline !== null) {
+        if (this.minDwellMs === 0) {
+          // minDwellMs = 0이면 지연 없이 즉시 교차 돌파 (테스트 및 하위 호환)
+          if (this.prevTick !== null && this.liveTickCount >= 2 && this.prevTick <= baseline && currentTick > baseline) {
+            breakout = true;
           }
         } else {
-          // currentTick > ma5 (5선 위로 올라섬)
-          if (this.prevTick !== null && this.liveTickCount >= 2 && this.prevTick <= ma5 && this.isArmed) {
-            // 5선 하단 3초 이상 체류(isArmed) 후 상향 돌파!
-            breakout = true;
-            this.isArmed = false; // 돌파 발화 즉시 소진
+          // [1단계: 하단 체류 (3초) 판정]
+          if (!this.belowDwellOk) {
+            if (currentTick <= baseline) {
+              // 하단 영역 체류
+              this.aboveEscapeStartMs = null; // 상단 이탈 타이머 해제
+              if (this.belowStartMs === null) {
+                this.belowStartMs = nowMs;
+              }
+              const elapsed = Math.max(0, nowMs - this.belowStartMs);
+              belowDwellMs = elapsed;
+              if (elapsed >= this.minDwellMs) {
+                this.belowDwellOk = true;
+              }
+            } else {
+              // currentTick > baseline (상단으로 일시 벗어남)
+              if (this.belowStartMs !== null) {
+                if (this.aboveEscapeStartMs === null) {
+                  this.aboveEscapeStartMs = nowMs;
+                }
+                const escapeTime = nowMs - this.aboveEscapeStartMs;
+                if (escapeTime >= this.cancelDebounceMs) {
+                  // 1초 이상 상단 머묾 -> 진짜 이탈로 보고 리셋
+                  this.belowStartMs = null;
+                  this.aboveEscapeStartMs = null;
+                } else {
+                  // 1초 미만 일시적 튐 -> 잔파동으로 무시하고 기존 하단 체류 시간 유지
+                  belowDwellMs = Math.max(0, nowMs - this.belowStartMs);
+                }
+              }
+            }
           }
-          // 5선 위이므로 체류 타이머 리셋 (엄격한 연속 체류)
-          this.belowStartMs = null;
+
+          // [2단계: 상단 체류 (3초) 및 돌파 발화 판정]
+          if (this.belowDwellOk) {
+            if (currentTick > baseline) {
+              // 상단 영역 체류
+              this.belowDipStartMs = null; // 하단 침범 타이머 해제
+              if (this.aboveStartMs === null) {
+                this.aboveStartMs = nowMs;
+              }
+              const elapsed = Math.max(0, nowMs - this.aboveStartMs);
+              aboveDwellMs = elapsed;
+              if (elapsed >= this.minDwellMs) {
+                this.isArmed = true;
+              }
+            } else {
+              // currentTick <= baseline (하단으로 일시 밀림)
+              if (this.aboveStartMs !== null) {
+                if (this.belowDipStartMs === null) {
+                  this.belowDipStartMs = nowMs;
+                }
+                const dipTime = nowMs - this.belowDipStartMs;
+                if (dipTime >= this.cancelDebounceMs) {
+                  // 1초 이상 하단 머묾 -> 상단 체류 취소 및 리셋
+                  this.aboveStartMs = null;
+                  this.belowDipStartMs = null;
+                  this.isArmed = false;
+                  // 하단에 1초 이상 머물렀으므로 다시 하단 체류로 전환
+                  this.belowDwellOk = false;
+                  this.belowStartMs = nowMs - this.cancelDebounceMs;
+                  belowDwellMs = this.cancelDebounceMs;
+                } else {
+                  // 1초 미만 일시적 눌림 -> 잔파동으로 무시하고 기존 상단 체류 시간 유지
+                  aboveDwellMs = Math.max(0, nowMs - this.aboveStartMs);
+                }
+              }
+            }
+
+            // [3단계: 돌파 발화]
+            if (this.isArmed && this.liveTickCount >= 2) {
+              breakout = true;
+              // 1회 발화 후 상태 소진
+              this.isArmed = false;
+              this.belowDwellOk = false;
+              this.belowStartMs = null;
+              this.aboveStartMs = null;
+              this.aboveEscapeStartMs = null;
+              this.belowDipStartMs = null;
+            }
+          }
         }
       } else {
-        this.belowStartMs = null;
-        this.isArmed = false;
+        this.reset();
       }
 
       this.prevTick = currentTick;
     }
 
-    return { ma5, slope, breakout, refClose5, belowDwellMs, isArmed: this.isArmed };
+    return {
+      ma5,
+      slope,
+      breakout,
+      refClose5,
+      belowDwellMs,
+      aboveDwellMs,
+      belowDwellOk: this.belowDwellOk,
+      isArmed: this.isArmed,
+      lowerBb,
+      ma20,
+      upperBb,
+    };
   }
 
   reset(): void {
     this.prevTick = null;
     this.liveTickCount = 0;
     this.belowStartMs = null;
+    this.aboveEscapeStartMs = null;
+    this.belowDwellOk = false;
+    this.aboveStartMs = null;
+    this.belowDipStartMs = null;
     this.isArmed = false;
   }
 }

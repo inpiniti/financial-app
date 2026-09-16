@@ -1,7 +1,7 @@
 # 전략 (Strategy) 도메인
 
 > **전략 도메인**은 실시간으로 유입되는 틱 데이터와 캔들(Candle)을 분석하여 매수(진입), 매도(청산), 물타기 시그널을 판정하는 핵심 비즈니스 로직 영역입니다.
-> 현재 프로젝트는 **`realtime-ma5` (실시간 5선 돌파 단일 전략)**을 정본으로 삼고 있습니다.
+> 현재 프로젝트는 **`realtime-ma5` (실시간 1분봉 볼린저 하단선 돌파 단일 전략)**을 정본으로 삼고 있습니다.
 
 ---
 
@@ -19,6 +19,10 @@
 - **`SignalDecision`**: 전략의 판단 결과 (`type`: BUY / SELL / HOLD / NONE, `reason`, `suggestedQty`, `targetPrice`).
 - **`Slope`**: 실시간 기울기 방향 (`'up'` | `'down'` | `null`).
 - **`Ma5Value`**: 실시간 5선 값 = `(직전 확정 4개 분봉 종가합 + 현재틱) / 5`.
+- **`RealtimeBb`**: 실시간 볼린저 밴드 (직전 확정 19개 분봉 종가 + 현재틱 = 20개 표본).
+  - `lowerBb`: 20선 - 2σ (하단선)
+  - `ma20`: 20선 (중심선)
+  - `upperBb`: 20선 + 2σ (상단선)
 
 ### 애그리게잇 (Aggregate)
 - **`RealtimeCandleBuilder` (Root)**:
@@ -27,12 +31,12 @@
   - **시드 오염 방지**: REST 분봉 시드(`seed`) 시점의 `probe` 계산은 순수 스냅샷 계산으로만 격리하고, 실시간 틱 계산기의 `prevLiveTick` 및 라이브 틱 카운트를 오염시키지 않습니다.
 
 ### 도메인 서비스 (Domain Service)
-- **`RealtimeMa5Calculator`**: 무지연 MA5 및 실시간 상태 연산
+- **`RealtimeMa5Calculator`**: 무지연 MA5, 실시간 볼린저 밴드(Realtime BB) 및 실시간 상태 연산
   $$\text{MA5}_{\text{realtime}} = \frac{\text{Close}_{n-4} + \text{Close}_{n-3} + \text{Close}_{n-2} + \text{Close}_{n-1} + \text{Tick}_{\text{current}}}{5}$$
-  $$\text{Slope} = \begin{cases} \text{'up'} & \text{if } \text{Tick}_{\text{current}} > \text{Close}_{n-5} \\ \text{'down'} & \text{if } \text{Tick}_{\text{current}} < \text{Close}_{n-5} \\ \text{null} & \text{otherwise} \end{cases}$$
-  *(참고: 5분 전 종가 비교 Slope는 보조 지표이며, 급락 후 바닥 반등 시 지연을 방지하기 위해 물타기/진입 돌파 판정을 차단하지 않습니다)*
-- **`BreakoutDetector`**: 무지연 상향 돌파 판정
-  $$\text{PrevLiveTick} \le \text{MA5}_{\text{realtime}} \quad \land \quad \text{CurrentLiveTick} > \text{MA5}_{\text{realtime}}$$
+  $$\text{LowerBB}_{\text{realtime}} = \text{MA20}_{\text{realtime}} - 2\sigma$$
+- **`BreakoutDetector`**: 무지연 볼린저 하단선 상향 돌파 판정
+  - 하단 3초 체류(`belowDwellOk`) + 상단 3초 체류(`isArmed`) 충족 시 돌파 발화.
+  - 반대편 영역 이탈 취소는 **1초(1,000ms) 이상 연속 머물러야 취소**되며 1초 미만 잔파동(Noise)은 무시.
   - **라이브 틱 관측 요건**: 최소 2회 이상의 라이브 틱(`liveTickCount >= 2`)이 연속 관측된 상태에서만 돌파 판정 가능 (시작 첫 틱 또는 과거 데이터 비교 돌파 원천 방지).
 
 ---
