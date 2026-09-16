@@ -555,8 +555,41 @@ export function entryQty(
 }
 
 /**
+ * 계좌 총자산 대비 종목 투입 금액 비중에 따른 동적 익절 목표 수익률(소수) 계산.
+ * - 1~5% 이하: +3.0% (0.03)
+ * - 5% 초과 ~ 16% 이하: +2.0% (0.02)
+ * - 16% 초과 ~ 50% 이하: +1.0% (0.01)
+ * - 50% 초과: +0.5% (0.005)
+ * - 비정상 자산(totalEquityUsd <= 0, NaN, 미조회 등) 시 기본값 3.0%(0.03) 안전 폴백.
+ */
+export function calculateDynamicTpRate(investedUsd: number, totalEquityUsd: number): number {
+  if (!Number.isFinite(totalEquityUsd) || totalEquityUsd <= 0 || !Number.isFinite(investedUsd) || investedUsd <= 0) {
+    return 0.03;
+  }
+  const ratio = investedUsd / totalEquityUsd;
+  if (ratio <= 0.05) {
+    return 0.03;
+  }
+  if (ratio <= 0.16) {
+    return 0.02;
+  }
+  if (ratio <= 0.50) {
+    return 0.01;
+  }
+  return 0.005;
+}
+
+/**
+ * 계좌 투입 비중에 따른 매도 목표가 배율(1 + tpRate).
+ */
+export function dynamicSellTargetMultiplier(investedUsd: number, totalEquityUsd: number): number {
+  return 1 + calculateDynamicTpRate(investedUsd, totalEquityUsd);
+}
+
+/**
  * 매도 목표가 = 평단가 × sellTargetMultiplier.
  */
 export function sellTargetPrice(avgPrice: number, multiplier: number = 1.03): number {
   return avgPrice * multiplier;
 }
+

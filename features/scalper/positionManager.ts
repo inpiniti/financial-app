@@ -41,6 +41,8 @@ import { TrendExitRule } from '../../core/trend/exitRule';
 import {
   DEFAULT_REALTIME_MA5_CONFIG,
   REALTIME_MA5_AVERAGING_DOWN_THRESHOLD_PCT,
+  calculateDynamicTpRate,
+  dynamicSellTargetMultiplier,
   sellTargetPrice,
   shouldAverageDown,
   averagingDownQty,
@@ -379,6 +381,8 @@ export interface PositionManagerDeps {
   isAveragingDownAllowed?: (nowMs: number) => boolean;
   /** 매수가능금액 사전 조회(물타기 매수) — null/미지정/throw면 판정 없이 진행(fail-open). */
   fetchBuyableUsd?: (price: number) => Promise<number | null>;
+  /** 계좌 총평가자산(USD) 사전 조회 — 투입 비중별 동적 익절 목표가 산출용. */
+  fetchEquityUsd?: () => Promise<number | null>;
   /** 진입 실측(우리가 산 포지션) — 입양이면 null. 정산 기록의 entryTs·entrySnapshot. */
   entry: { entryTs: number; entrySnapshot: SignalSnapshot } | null;
   /** 잔고에서 주워 온 포지션인가 — 인계 문구(등록/인계)용. */
@@ -1337,6 +1341,8 @@ export class RealtimeMa5PositionManager implements PositionManager {
   /** 잔고 재대조(Reconciliation): 브로커 체결 응답 유실 시 유령 포지션 방지용. */
   private manualCheckAt = 0;
   private manualMisses = 0;
+  /** 계좌 총평가자산(USD) 최근 조회 캐시 */
+  private lastEquityUsd: number | null = null;
 
   constructor(deps: PositionManagerDeps, cfg: RealtimeMa5Config) {
     this.deps = deps;
@@ -1353,8 +1359,9 @@ export class RealtimeMa5PositionManager implements PositionManager {
     this.entryQty = seed.qty;
     this.armed = true;
     // 매도 주문 즉시 선등록
-    this.placeSellOrder(seed.avgPrice);
-    this.event(`실시간 MA5 관리 ${this.deps.adopted ? '등록' : '인계'} · ${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} · 매도 목표 ${this.sellTargetPrice.toFixed(2)}(+${((this.cfg.sellTargetMultiplier - 1) * 100).toFixed(1)}%)`);
+    await this.placeSellOrder(seed.avgPrice);
+    const tpPct = ((this.sellTargetPrice / seed.avgPrice - 1) * 100).toFixed(1);
+    this.event(`실시간 MA5 관리 ${this.deps.adopted ? '등록' : '인계'} · ${seed.qty}주 · 평단 ${seed.avgPrice.toFixed(2)} · 매도 목표 ${this.sellTargetPrice.toFixed(2)}(+${tpPct}%)`);
     return { ok: true };
   }
 
@@ -1481,11 +1488,11 @@ export class RealtimeMa5PositionManager implements PositionManager {
       if (r.kind === 'cancelled') {
         this.sellExec = null;
         // 매도 취소 — 매수 체결 후 다시 선등록
-        if (this.qty > 0 && !this.released) this.placeSellOrder(this.avgPrice);
+        if (this.qty > 0 && !this.released) await this.placeSellOrder(this.avgPrice);
       }
       if (r.kind === 'fault') {
         this.sellExec = null;
-        if (this.qty > 0 && !this.released) this.placeSellOrder(this.avgPrice);
+        if (this.qty > 0 && !this.released) await this.placeSellOrder(this.avgPrice);
       }
     }
 
@@ -1511,7 +1518,7 @@ export class RealtimeMa5PositionManager implements PositionManager {
           ts: this.deps.clock.now(),
         });
         // 매도 주문 수정 — 새 평단 기준
-        this.placeSellOrder(this.avgPrice);
+        await this.placeSellOrder(this.avgPrice);
         return { kind: 'holding' };
       }
       if (r.kind === 'cancelled' || r.kind === 'fault') {
@@ -1593,13 +1600,29 @@ export class RealtimeMa5PositionManager implements PositionManager {
 
   // ---- 내부 ----
 
-  private placeSellOrder(avgPrice: number): void {
+  private async placeSellOrder(avgPrice: number): Promise<void> {
     // 기존 매도 주문 취소
     if (this.sellExec !== null) {
       void this.sellExec.release();
       this.sellExec = null;
     }
-    const target = sellTargetPrice(avgPrice, this.cfg.sellTargetMultiplier);
+    const investedUsd = avgPrice * this.qty;
+    let equityUsd = this.lastEquityUsd;
+    if (this.deps.fetchEquityUsd) {
+      try {
+        const fetched = await this.deps.fetchEquityUsd();
+        if (fetched !== null && Number.isFinite(fetched) && fetched > 0) {
+          equityUsd = fetched;
+          this.lastEquityUsd = fetched;
+        }
+      } catch {
+        // 실패 시 직전 캐시(lastEquityUsd) 유지
+      }
+    }
+    const multiplier = equityUsd !== null && equityUsd > 0
+      ? dynamicSellTargetMultiplier(investedUsd, equityUsd)
+      : this.cfg.sellTargetMultiplier;
+    const target = sellTargetPrice(avgPrice, multiplier);
     this.sellTargetPrice = target;
     if (this.qty <= 0) return;
     const exec = new Execution({
@@ -1611,7 +1634,9 @@ export class RealtimeMa5PositionManager implements PositionManager {
     });
     void exec.start(target);
     this.sellExec = exec;
-    this.event(`매도 지정가 선등록 · ${this.qty}주 @ ${target.toFixed(2)}(+${((this.cfg.sellTargetMultiplier - 1) * 100).toFixed(1)}%)`);
+    const tpRate = multiplier - 1;
+    const ratioText = equityUsd !== null && equityUsd > 0 ? ` · 비중 ${((investedUsd / equityUsd) * 100).toFixed(1)}%` : '';
+    this.event(`매도 지정가 선등록 · ${this.qty}주 @ ${target.toFixed(2)}(+${(tpRate * 100).toFixed(1)}%${ratioText})`);
   }
 
   private startBuy(qty: number, price: number): void {

@@ -660,5 +660,88 @@ describe('OcoGridPositionManager — OCO 매도그리드 어댑터(롤백 보존
       expect(nowSell?.price).toBe(101);
       expect(nowSell?.qty).toBe(10);
     });
+
+    it('계좌 총평가자산 대비 투입 비중에 따라 동적으로 목표 익절률(+0.5%~+3%)을 적용하여 매도 선등록한다', async () => {
+      const clock = fakeClock(1_000);
+      const broker = new FakeBroker({ autoFill: false });
+      const events: string[] = [];
+      const pm = makePositionManager(
+        'realtimeMa5',
+        { realtimeMa5: DEFAULT_REALTIME_MA5_CONFIG },
+        adapterDeps(broker, clock, events, {
+          fetchEquityUsd: async () => 10_000,
+        }),
+      );
+
+      // 4% 비중 투입 ($400 / $10,000) -> 3% 익절 (103)
+      await pm.arm({ qty: 4, avgPrice: 100 });
+      await flush();
+      expect(broker.placed[0].price).toBe(103);
+      expect(events.some((e) => e.includes('매도 지정가 선등록 · 4주 @ 103.00(+3.0% · 비중 4.0%)'))).toBe(true);
+    });
+
+    it('투입 비중이 50%를 초과할 경우 0.5% 목표가로 매도 선등록한다', async () => {
+      const clock = fakeClock(1_000);
+      const broker = new FakeBroker({ autoFill: false });
+      const events: string[] = [];
+      const pm = makePositionManager(
+        'realtimeMa5',
+        { realtimeMa5: DEFAULT_REALTIME_MA5_CONFIG },
+        adapterDeps(broker, clock, events, {
+          fetchEquityUsd: async () => 10_000,
+        }),
+      );
+
+      // 60% 비중 투입 ($6,000 / $10,000) -> 0.5% 익절 (100.5)
+      await pm.arm({ qty: 60, avgPrice: 100 });
+      await flush();
+      expect(broker.placed[0].price).toBeCloseTo(100.5);
+      expect(events.some((e) => e.includes('매도 지정가 선등록 · 60주 @ 100.50(+0.5% · 비중 60.0%)'))).toBe(true);
+    });
+
+    it('물타기(추가 매수) 체결 후 증가한 투입 비중에 맞추어 새 목표가로 매도 주문을 교체 선등록한다', async () => {
+      const clock = fakeClock(1_000);
+      const broker = new FakeBroker({ autoFill: false });
+      const events: string[] = [];
+      const pm = makePositionManager(
+        'realtimeMa5',
+        { realtimeMa5: DEFAULT_REALTIME_MA5_CONFIG },
+        adapterDeps(broker, clock, events, {
+          fetchEquityUsd: async () => 10_000,
+          fetchBuyableUsd: async () => 10_000,
+        }),
+      );
+
+      // 1) 초기 진입: 4주 @ $100 -> 투입 $400 (4%) -> +3.0% 익절가 $103
+      await pm.arm({ qty: 4, avgPrice: 100 });
+      await flush();
+      expect(broker.placed[0].price).toBe(103);
+
+      // 2) 물타기 트리거 (가격 $94로 하락, gapRate = -6% <= -3%)
+      // averagingDownQty: gapRate = 6, desiredQty = (6-1)*4 = 20주
+      const ma5State = { ma5: 93, slope: 'up' as const, breakout: true, refClose5: 93 };
+      pm.onSignal?.('BUY', 94, ma5State);
+      await flush();
+
+      // 물타기 매수 발주 확인 (20주 @ 94)
+      const buyOrder = broker.placed.find((p) => p.side === 'buy');
+      expect(buyOrder).toBeDefined();
+      expect(buyOrder?.qty).toBe(20);
+
+      // 물타기 체결 (20주 @ 94)
+      // 새 총수량 = 4 + 20 = 24주
+      // 새 평단 = (400 + 1880) / 24 = 2280 / 24 = 95
+      // 새 투입액 = 24 * 95 = $2280
+      // 새 비중 = 2280 / 10,000 = 22.8% (16~50% 구간 -> +1.0% 익절)
+      // 새 목표가 = 95 * 1.01 = 95.95
+      broker.fill(buyOrder!.odno, 94);
+      await pm.poll();
+      await flush();
+
+      const latestSell = broker.placed.filter((p) => p.side === 'sell').at(-1);
+      expect(latestSell?.qty).toBe(24);
+      expect(latestSell?.price).toBeCloseTo(95.95);
+      expect(events.some((e) => e.includes('매도 지정가 선등록 · 24주 @ 95.95(+1.0% · 비중 22.8%)'))).toBe(true);
+    });
   });
 });

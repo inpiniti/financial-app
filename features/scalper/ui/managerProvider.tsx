@@ -278,6 +278,20 @@ async function buildManager(): Promise<ManagerBootstrap> {
       .map((p) => p.pdno);
   };
 
+  // 실시간 계좌 총평가자산(USD) 조회 — 포지션 투입 비중별 동적 익절 목표가 산출용.
+  const fetchEquityUsd = async (): Promise<number | null> => {
+    try {
+      const accessToken = await getTokenStr();
+      const res = await inquireOverseasBalance(environment, credentials, accessToken, { account });
+      const totKrw = Number(res.output3?.tot_asst_amt);
+      const exrt = res.output1.map((p) => Number(p.bass_exrt)).find((v) => Number.isFinite(v) && v > 0);
+      if (!Number.isFinite(totKrw) || totKrw <= 0 || exrt === undefined) return null;
+      return totKrw / exrt;
+    } catch {
+      return null;
+    }
+  };
+
   // 현금 부족 PAUSED 사전 판정 — 조회 실패 시 null(판정 생략, FAULT 인터록이 최후 방어선).
   const fetchBuyableUsd = async (ticker: string, price: number, exchange: OverseasExchangeCode): Promise<number | null> => {
     try {
@@ -356,18 +370,6 @@ async function buildManager(): Promise<ManagerBootstrap> {
       storage: AsyncStorage,
     });
     const accountNo = approvedAccountNo;
-    const fetchEquityUsd = async (): Promise<number | null> => {
-      try {
-        const accessToken = await getTokenStr();
-        const res = await inquireOverseasBalance(environment, credentials, accessToken, { account });
-        const totKrw = Number(res.output3?.tot_asst_amt);
-        const exrt = res.output1.map((p) => Number(p.bass_exrt)).find((v) => Number.isFinite(v) && v > 0);
-        if (!Number.isFinite(totKrw) || totKrw <= 0 || exrt === undefined) return null;
-        return totKrw / exrt;
-      } catch {
-        return null;
-      }
-    };
     const recorder = tradeRecorder;
     recordTradeResult = async ({ record, strategy, market, name }) => {
       const equityUsd = await fetchEquityUsd();
@@ -398,6 +400,7 @@ async function buildManager(): Promise<ManagerBootstrap> {
       }),
     fetchSnapshot,
     fetchBuyableUsd,
+    fetchEquityUsd,
     fetchRestPrice,
     fetchHoldings,
     // 매도 관리 그리드 인계(D5) — 매수폭·매도폭·매수배율은 설정 탭(매매파라미터)에서 조절한다.

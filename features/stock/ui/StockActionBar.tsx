@@ -1,7 +1,7 @@
 // 종목 상세화면 하단 고정 매수/매도 액션바 — 토스증권 스타일 UI.
 // - 보유 종목: 매수 버튼 비활성화, 매도 버튼 활성화
 // - 미보유 종목: 매수 버튼 활성화, 매도 버튼 비활성화
-// - 매수: 진입 규칙(startAmountUsd/fixedQty, 현재가 지정가)에 따라 발주, 체결 시 +3% 익절 선등록 자동 인계
+// - 매수: 진입 규칙(startAmountUsd/fixedQty, 현재가 지정가)에 따라 발주, 체결 시 비중별 익절(+0.5%~+3%) 선등록 자동 인계
 // - 매도: 청산 규칙(전량 현재가 추격 매도)에 따라 발주, 기존 선등록 매도 취소 후 즉시 교체
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, Text, View } from 'react-native';
@@ -118,7 +118,7 @@ export function StockActionBar({ ticker, market, name, livePrice, autopilot }: S
     // 이미 실행 중인 경우: 일반 확인 다이얼로그
     Alert.alert(
       '매수 확인',
-      `${name ?? ticker} 종목을 진입 규칙에 따라 매수할까요?${priceText}\n\n체결 즉시 +3% 익절 선등록 및 물타기 감시가 시작돼요.`,
+      `${name ?? ticker} 종목을 진입 규칙에 따라 매수할까요?${priceText}\n\n체결 즉시 비중별 익절 선등록(+0.5%~+3%) 및 물타기 감시가 시작돼요.`,
       [
         { text: '취소', style: 'cancel' },
         {

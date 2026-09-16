@@ -234,6 +234,10 @@ export interface AutoPilotDeps {
    */
   fetchBuyableUsd?: (ticker: string, price: number) => Promise<number | null>;
   /**
+   * 계좌 총평가자산(USD) 사전 조회 — 포지션 투입 비중별 동적 익절 목표가 산출용.
+   */
+  fetchEquityUsd?: () => Promise<number | null>;
+  /**
    * REST 현재가 조회(2026-09-01) — 보유 종목의 WS 틱이 끊겼을 때(구독 거절·무음 정지) 포지션 관리자가
    * 청산 감시를 잇는 폴백. 실패/미주입이면 null(폴백 없음 — 이벤트로만 알린다).
    */
@@ -1477,6 +1481,7 @@ export class AutoPilot {
         regularSession: isUsRegularSession,
         isAveragingDownAllowed: isUsAveragingDownAllowed,
         fetchBuyableUsd: this.deps.fetchBuyableUsd ? (price) => this.deps.fetchBuyableUsd!(ticker, price) : undefined,
+        fetchEquityUsd: this.deps.fetchEquityUsd,
         entry: pos ? { entryTs: pos.entryTs, entrySnapshot: pos.entrySnapshot } : null,
         adopted: active.adopted,
         onScaleIn: (info: ScaleInExecution) => {

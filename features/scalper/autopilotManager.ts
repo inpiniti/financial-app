@@ -111,6 +111,8 @@ export interface AutoPilotManagerDeps {
   fetchSnapshot: () => Promise<RankingSnapshot>;
   /** 매수가능금액(USD) 사전 조회 — 현금 부족 PAUSED 판정. 실패/미주입 시 판정 생략. */
   fetchBuyableUsd?: (ticker: string, price: number, exchange: OverseasExchangeCode) => Promise<number | null>;
+  /** 계좌 총평가자산(USD) 사전 조회 — 포지션 투입 비중별 동적 익절 목표가 산출용. */
+  fetchEquityUsd?: () => Promise<number | null>;
   /**
    * REST 현재가 조회(2026-09-01) — 보유 종목의 WS 틱이 끊겼을 때(구독 거절·무음 정지) 포지션 관리자가
    * 청산 감시를 잇는 폴백. market은 채용 거래소(주간거래 창이면 주간 코드로 바꿔 조회하는 건 구현 몫).
@@ -371,6 +373,7 @@ export class AutoPilotManager {
       fetchBuyableUsd: deps.fetchBuyableUsd
         ? (t, price) => deps.fetchBuyableUsd!(t, price, MARKET_TO_EXCHANGE[this.marketOf(t)])
         : undefined,
+      fetchEquityUsd: deps.fetchEquityUsd,
       fetchRestPrice: deps.fetchRestPrice ? (t) => deps.fetchRestPrice!(t, this.marketOf(t)) : undefined,
       positionManagement: {
         bbDip: (deps.exitStrategy ? deps.exitStrategy === 'bbDip' : this.bbDipActive) ? (deps.bbDip ?? BBDIP_POSITION_CONFIG) : undefined,

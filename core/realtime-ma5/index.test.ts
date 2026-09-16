@@ -3,6 +3,8 @@ import {
   RealtimeMa5Calculator,
   calculateRealtimeBb,
   averagingDownQty,
+  calculateDynamicTpRate,
+  dynamicSellTargetMultiplier,
   shouldEnter,
   shouldAverageDown,
   isUsRegularSession,
@@ -296,3 +298,50 @@ describe('averagingDownQty', () => {
     expect(averagingDownQty(95, 100, 10, 10_000)).toBe(40);
   });
 });
+
+describe('calculateDynamicTpRate & dynamicSellTargetMultiplier — 계좌 투입 비중별 동적 익절률', () => {
+  it('투입 비중 1~5% 이하 구간은 3.0% (배율 1.03)를 적용한다', () => {
+    // 10,000 USD 자산 중 400 USD 투입 (4%)
+    expect(calculateDynamicTpRate(400, 10_000)).toBe(0.03);
+    expect(dynamicSellTargetMultiplier(400, 10_000)).toBe(1.03);
+    // 경계값 5%
+    expect(calculateDynamicTpRate(500, 10_000)).toBe(0.03);
+    expect(dynamicSellTargetMultiplier(500, 10_000)).toBe(1.03);
+  });
+
+  it('투입 비중 5% 초과 ~ 16% 이하 구간은 2.0% (배율 1.02)를 적용한다', () => {
+    // 10,000 USD 중 1,000 USD 투입 (10%)
+    expect(calculateDynamicTpRate(1_000, 10_000)).toBe(0.02);
+    expect(dynamicSellTargetMultiplier(1_000, 10_000)).toBe(1.02);
+    // 경계값 16%
+    expect(calculateDynamicTpRate(1_600, 10_000)).toBe(0.02);
+    expect(dynamicSellTargetMultiplier(1_600, 10_000)).toBe(1.02);
+  });
+
+  it('투입 비중 16% 초과 ~ 50% 이하 구간은 1.0% (배율 1.01)를 적용한다', () => {
+    // 10,000 USD 중 3,000 USD 투입 (30%)
+    expect(calculateDynamicTpRate(3_000, 10_000)).toBe(0.01);
+    expect(dynamicSellTargetMultiplier(3_000, 10_000)).toBe(1.01);
+    // 경계값 50%
+    expect(calculateDynamicTpRate(5_000, 10_000)).toBe(0.01);
+    expect(dynamicSellTargetMultiplier(5_000, 10_000)).toBe(1.01);
+  });
+
+  it('투입 비중 50% 초과 구간은 0.5% (배율 1.005)를 적용한다', () => {
+    // 10,000 USD 중 7,000 USD 투입 (70%)
+    expect(calculateDynamicTpRate(7_000, 10_000)).toBe(0.005);
+    expect(dynamicSellTargetMultiplier(7_000, 10_000)).toBe(1.005);
+    // 95% 투입
+    expect(calculateDynamicTpRate(9_500, 10_000)).toBe(0.005);
+    expect(dynamicSellTargetMultiplier(9_500, 10_000)).toBe(1.005);
+  });
+
+  it('자산이 0 이하이거나 조회 실패(비정상) 시 기본값 3.0% (배율 1.03)로 안전하게 폴백한다', () => {
+    expect(calculateDynamicTpRate(500, 0)).toBe(0.03);
+    expect(calculateDynamicTpRate(500, -1000)).toBe(0.03);
+    expect(calculateDynamicTpRate(500, NaN)).toBe(0.03);
+    expect(calculateDynamicTpRate(-100, 10_000)).toBe(0.03);
+    expect(dynamicSellTargetMultiplier(500, 0)).toBe(1.03);
+  });
+});
+
