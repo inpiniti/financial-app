@@ -295,6 +295,16 @@ function markerPosition(value: number | null, lo: number, hi: number): number | 
   return normalizeGridPosition(value, lo, hi);
 }
 
+function ma5Of(row: AutoPilotSlotRow): number | null {
+  const realtimeMa5 = row.view.realtimeMa5?.ma5;
+  if (realtimeMa5 !== null && realtimeMa5 !== undefined && Number.isFinite(realtimeMa5)) return realtimeMa5;
+  const martingaleLiveMa5 = row.view.martingaleLive?.ma5;
+  if (martingaleLiveMa5 !== null && martingaleLiveMa5 !== undefined && Number.isFinite(martingaleLiveMa5)) return martingaleLiveMa5;
+  const martingaleMa5 = row.view.martingale?.ma5;
+  if (martingaleMa5 !== null && martingaleMa5 !== undefined && Number.isFinite(martingaleMa5)) return martingaleMa5;
+  return null;
+}
+
 function lowerBbOf(row: AutoPilotSlotRow): number | null {
   const lowerBb = row.view.lowerBb;
   if (lowerBb !== null && lowerBb !== undefined && Number.isFinite(lowerBb)) return lowerBb;
@@ -303,6 +313,7 @@ function lowerBbOf(row: AutoPilotSlotRow): number | null {
 
 function InlineGrid({
   min,
+  ma5,
   lowerBb,
   current,
   avg,
@@ -310,6 +321,7 @@ function InlineGrid({
   showAverage,
 }: {
   min: number | null;
+  ma5: number | null;
   lowerBb: number | null;
   current: number | null;
   avg: number | null;
@@ -319,14 +331,15 @@ function InlineGrid({
   const [trackWidth, setTrackWidth] = useState(0);
   const onTrackLayout = (e: LayoutChangeEvent) => setTrackWidth(e.nativeEvent.layout.width);
 
-  const fallbackLo = min ?? current ?? lowerBb ?? avg ?? 1;
-  const fallbackHi = max ?? current ?? lowerBb ?? avg ?? fallbackLo * 1.001;
-  const scale = gaugeScaleOf([min, lowerBb, current, avg, max], fallbackLo, fallbackHi);
+  const fallbackLo = min ?? current ?? lowerBb ?? ma5 ?? avg ?? 1;
+  const fallbackHi = max ?? current ?? lowerBb ?? ma5 ?? avg ?? fallbackLo * 1.001;
+  const scale = gaugeScaleOf([min, lowerBb, ma5, current, avg, max], fallbackLo, fallbackHi);
 
   // 최소/최대는 양끝 고정
   const minPos = min !== null ? 0 : markerPosition(min, scale.lo, scale.hi);
   const maxPos = max !== null ? 1 : markerPosition(max, scale.lo, scale.hi);
   const lowerBbPos = markerPosition(lowerBb, scale.lo, scale.hi);
+  const ma5Pos = markerPosition(ma5, scale.lo, scale.hi);
   const currentPos = markerPosition(current, scale.lo, scale.hi);
   const avgPos = showAverage ? markerPosition(avg, scale.lo, scale.hi) : null;
 
@@ -371,6 +384,26 @@ function InlineGrid({
       useNativeDriver: true,
     }).start();
   }, [lowerBbTargetX, lowerBbAnimX]);
+
+  // 5선 지시자 부드러운 글라이딩 (Animated translateX)
+  const ma5TargetX = ma5Pos !== null && trackWidth > 0 ? ma5Pos * trackWidth : null;
+  const ma5AnimX = useRef(new Animated.Value(0)).current;
+  const ma5Init = useRef(false);
+
+  useEffect(() => {
+    if (ma5TargetX === null) return;
+    if (!ma5Init.current) {
+      ma5Init.current = true;
+      ma5AnimX.setValue(ma5TargetX);
+      return;
+    }
+    Animated.timing(ma5AnimX, {
+      toValue: ma5TargetX,
+      duration: 250,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start();
+  }, [ma5TargetX, ma5AnimX]);
 
   return (
     <View className="mt-2.5">
@@ -453,6 +486,35 @@ function InlineGrid({
           >
             <Svg width={9} height={7}>
               <Polygon points="0,0 9,0 4.5,7" fill="#191f28" />
+            </Svg>
+          </View>
+        ) : null}
+
+        {/* 5선 지시자 (▲ 노란색 정삼각형) - 트랙 하단 표면에 정확히 맞닿음 (끝점 y=9) */}
+        {ma5TargetX !== null ? (
+          <Animated.View
+            style={{
+              position: 'absolute',
+              left: 0,
+              top: 9,
+              transform: [{ translateX: ma5AnimX }, { translateX: -4.5 }],
+            }}
+          >
+            <Svg width={9} height={7}>
+              <Polygon points="4.5,0 0,7 9,7" fill="#f59e0b" />
+            </Svg>
+          </Animated.View>
+        ) : ma5Pos !== null ? (
+          <View
+            style={{
+              position: 'absolute',
+              left: pctLeft(ma5Pos),
+              top: 9,
+              transform: [{ translateX: -4.5 }],
+            }}
+          >
+            <Svg width={9} height={7}>
+              <Polygon points="4.5,0 0,7 9,7" fill="#f59e0b" />
             </Svg>
           </View>
         ) : null}
@@ -541,6 +603,7 @@ const SlotRow = memo(function SlotRow({
 
   const currentPrice = grid?.currentPrice ?? item.view.price;
   const lowerBb = lowerBbOf(item);
+  const ma5 = ma5Of(item);
   const min = item.view.dayLow ?? grid?.sinceEntryLow ?? grid?.buyPrice ?? null;
   const max = item.view.dayHigh ?? grid?.sinceEntryHigh ?? grid?.sellPrice ?? null;
   const currentKrw = currentPrice !== null && usdKrw !== null ? formatKrw(currentPrice * usdKrw) : null;
@@ -622,6 +685,7 @@ const SlotRow = memo(function SlotRow({
 
             <InlineGrid
               min={min}
+              ma5={ma5}
               lowerBb={lowerBb}
               current={currentPrice}
               avg={grid?.avgPrice ?? null}
