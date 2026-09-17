@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   RealtimeMa5Calculator,
   calculateRealtimeBb,
+  calculateRealtimeMa,
   averagingDownQty,
   calculateDynamicTpRate,
   dynamicSellTargetMultiplier,
@@ -10,6 +11,7 @@ import {
   isUsRegularSession,
   isUsInitialEntryAllowed,
   isUsAveragingDownAllowed,
+  isBeforeKst2Am,
 } from './index';
 
 describe('calculateRealtimeBb — 실시간 1분봉 20선 볼린저 밴드 계산', () => {
@@ -49,7 +51,6 @@ describe('RealtimeMa5Calculator — 양방향 3초 체류 및 잔파동(1초 디
     expect(second.ma5).toBeCloseTo(99.2);
     expect(second.breakout).toBe(true);
     expect(second.slope).toBe('up');
-    expect(shouldEnter(second)).toBe(true);
   });
 
   it('하단 3초 체류 중 1초 미만(0.5초)으로 상단으로 튄 잔파동은 무시되고 하단 체류가 유지된다', () => {
@@ -128,7 +129,6 @@ describe('RealtimeMa5Calculator — 양방향 3초 체류 및 잔파동(1초 디
     // 5. 상단 3초 도달 (t = 6100, 총 상단 3000ms) -> 돌파 발화!
     const s4 = calc.evaluate(closes, 105, true, 6100);
     expect(s4.breakout).toBe(true);
-    expect(shouldEnter(s4)).toBe(true);
     // 발화 즉시 소진
     expect(s4.isArmed).toBe(false);
     expect(s4.belowDwellOk).toBe(false);
@@ -287,15 +287,14 @@ describe('세션 시간 판정 (미국 정규장 및 진입 허용 창)', () => 
   });
 });
 
-describe('averagingDownQty', () => {
+describe('averagingDownQty — 기본 설정', () => {
   it('희망수량이 가능최대수량보다 크면 가용자본 기준으로 캡핑한다', () => {
-    // gapRate = -5% → 희망수량 = (5 - 1) * 10 = 40주
-    // 가능최대수량 = floor(2000 / 95) = 21주
-    expect(averagingDownQty(95, 100, 10, 2000)).toBe(21);
+    // 기본 orderQty = 1주, 가용자본 50, 현재가 95 -> 최대 0주
+    expect(averagingDownQty(95, 100, 10, 50)).toBe(0);
   });
 
-  it('가용자본이 충분하면 희망수량 그대로 산다', () => {
-    expect(averagingDownQty(95, 100, 10, 10_000)).toBe(40);
+  it('가용자본이 충분하면 기본 설정 수량(1주)을 산다 (배수 제거)', () => {
+    expect(averagingDownQty(95, 100, 10, 10_000)).toBe(1);
   });
 });
 
@@ -344,4 +343,161 @@ describe('calculateDynamicTpRate & dynamicSellTargetMultiplier — 계좌 투입
     expect(dynamicSellTargetMultiplier(500, 0)).toBe(1.03);
   });
 });
+
+describe('calculateRealtimeMa — 실시간 60선 및 120선 계산 및 상승 판정', () => {
+  it('봉 수가 period 미만이면 null과 isRising: false를 반환한다', () => {
+    const closes = Array(50).fill(100);
+    const res60 = calculateRealtimeMa(closes, 100, 60);
+    expect(res60.ma).toBeNull();
+    expect(res60.isRising).toBe(false);
+
+    const res120 = calculateRealtimeMa(closes, 100, 120);
+    expect(res120.ma).toBeNull();
+    expect(res120.isRising).toBe(false);
+  });
+
+  it('확정봉 60개 이상에서 현재틱이 60봉 전보다 높고 확정봉 기울기도 우상향이면 isRising이 true다', () => {
+    // 60개 봉: 1부터 60까지 점진적 상승 (우상향)
+    const rising60 = Array.from({ length: 60 }, (_, i) => 100 + i * 0.5);
+    // 현재틱이 직전 60봉 전(rising60[0]=100)보다 훨씬 높은 150
+    const res = calculateRealtimeMa(rising60, 150, 60);
+    expect(res.ma).not.toBeNull();
+    expect(res.isRising).toBe(true);
+  });
+
+  it('현재틱이 과거 N봉 전보다 낮아 MA가 꺾이면 isRising이 false다', () => {
+    // 60개 봉: 100
+    const flat60 = Array(60).fill(100);
+    // 현재틱 90 (100보다 낮으므로 MA 하락)
+    const res = calculateRealtimeMa(flat60, 90, 60);
+    expect(res.isRising).toBe(false);
+  });
+});
+
+describe('isBeforeKst2Am — 한국시간 새벽 02:00 진입 차단 게이트', () => {
+  it('한국시간 01:59 (새벽 2시 전)에는 진입이 허용된다', () => {
+    // 2026-09-17 01:59 KST = 2026-09-16 16:59 UTC
+    const t = new Date('2026-09-16T16:59:00Z').getTime();
+    expect(isBeforeKst2Am(t)).toBe(true);
+  });
+
+  it('한국시간 02:00 (새벽 2시 정각) 및 02:01에는 진입이 차단된다', () => {
+    // 2026-09-17 02:00 KST = 2026-09-16 17:00 UTC
+    const t2 = new Date('2026-09-16T17:00:00Z').getTime();
+    expect(isBeforeKst2Am(t2)).toBe(false);
+
+    const t201 = new Date('2026-09-16T17:01:00Z').getTime();
+    expect(isBeforeKst2Am(t201)).toBe(false);
+  });
+
+  it('한국시간 03:00 및 낮 시간대(14:00)에도 2시 이후이므로 차단된다', () => {
+    const t3 = new Date('2026-09-16T18:00:00Z').getTime(); // 03:00 KST
+    expect(isBeforeKst2Am(t3)).toBe(false);
+
+    const t14 = new Date('2026-09-17T05:00:00Z').getTime(); // 14:00 KST
+    expect(isBeforeKst2Am(t14)).toBe(false);
+  });
+
+  it('한국시간 밤 23:00 (정규장 오픈 전후)에는 진입이 허용된다', () => {
+    const t23 = new Date('2026-09-16T14:00:00Z').getTime(); // 23:00 KST
+    expect(isBeforeKst2Am(t23)).toBe(true);
+  });
+});
+
+describe('averagingDownQty — 설정 수량/금액 기반 고정 분할 매수 (배수 제거)', () => {
+  it('orderQty가 설정되어 있으면(예: 1주) 낙폭과 무관하게 1주만 매수한다', () => {
+    const config = { orderQty: 1, sellTargetMultiplier: 1.03, averagingDownThresholdPct: -3, startAmountUsd: 100 };
+    // 낙폭 -10%여도 1주만 매수
+    expect(averagingDownQty(90, 100, 5, 10_000, config)).toBe(1);
+    // orderQty가 2주면 2주만 매수
+    expect(averagingDownQty(90, 100, 5, 10_000, { ...config, orderQty: 2 })).toBe(2);
+  });
+
+  it('가용자본이 부족하면 가용자본 한도로 캡핑된다', () => {
+    const config = { orderQty: 5, sellTargetMultiplier: 1.03, averagingDownThresholdPct: -3, startAmountUsd: 100 };
+    // 현재가 100, 가용자본 250 -> 최대 2주
+    expect(averagingDownQty(100, 120, 5, 250, config)).toBe(2);
+  });
+});
+
+describe('RealtimeMa5Calculator — 볼린저 상단 상향 돌파(upperBreakout) 및 중심선 상향 돌파(middleCross) 익절 신호', () => {
+  it('상단선 미만에서 상단선 이상으로 상향 돌파 시 upperBreakout=true가 1회 발화된다', () => {
+    const calc = new RealtimeMa5Calculator(0);
+    const closes = Array(19).fill(100);
+    // 1) 95 (상단선 미만)
+    const s1 = calc.evaluate(closes, 95, true);
+    expect(s1.upperBreakout).toBe(false);
+
+    // 2) 105 (상단선 이상으로 상향 돌파) -> upperBreakout 발화!
+    const s2 = calc.evaluate(closes, 105, true);
+    expect(s2.upperBreakout).toBe(true);
+
+    // 3) 다음 틱 (105 유지) -> 1회 발화 후 소진
+    const s3 = calc.evaluate(closes, 105, true);
+    expect(s3.upperBreakout).toBe(false);
+  });
+
+  it('중심선(MA20) 미만에서 중심선 이상으로 상향 돌파 시 middleCross=true가 1회 발화된다', () => {
+    const calc = new RealtimeMa5Calculator(0);
+    const closes = Array(19).fill(100);
+    // 1) 90 (MA20 미만)
+    const s1 = calc.evaluate(closes, 90, true);
+    expect(s1.middleCross).toBe(false);
+
+    // 2) 100 (MA20 이상으로 상향 돌파) -> middleCross 발화!
+    const s2 = calc.evaluate(closes, 100, true);
+    expect(s2.middleCross).toBe(true);
+
+    // 3) 다음 틱 (100 유지) -> 1회 발화 후 소진
+    const s3 = calc.evaluate(closes, 100, true);
+    expect(s3.middleCross).toBe(false);
+  });
+});
+
+describe('shouldEnter & shouldAverageDown — 60/120선 동시 상승 및 KST 2시 세션 게이트', () => {
+  it('breakout이 발생해도 60선 또는 120선이 상승 중이 아니면 shouldEnter가 false다', () => {
+    const state = {
+      ma5: 100,
+      slope: 'up' as const,
+      breakout: true,
+      refClose5: 90,
+      ma60Up: false,
+      ma120Up: true,
+    };
+    expect(shouldEnter(state)).toBe(false);
+  });
+
+  it('breakout이 발생하고 60선과 120선이 모두 상승 중이면 shouldEnter가 true다', () => {
+    const state = {
+      ma5: 100,
+      slope: 'up' as const,
+      breakout: true,
+      refClose5: 90,
+      ma60Up: true,
+      ma120Up: true,
+    };
+    expect(shouldEnter(state)).toBe(true);
+  });
+
+  it('nowMs가 한국시간 02:00 이후이면 shouldEnter 및 shouldAverageDown이 false다', () => {
+    const state = {
+      ma5: 100,
+      slope: 'up' as const,
+      breakout: true,
+      refClose5: 90,
+      ma60Up: true,
+      ma120Up: true,
+    };
+    // 02:30 KST = 2026-09-16 17:30 UTC
+    const after2Am = new Date('2026-09-16T17:30:00Z').getTime();
+    expect(shouldEnter(state, after2Am)).toBe(false);
+    expect(shouldAverageDown(90, 100, state, -3, after2Am)).toBe(false);
+
+    // 01:30 KST = 2026-09-16 16:30 UTC
+    const before2Am = new Date('2026-09-16T16:30:00Z').getTime();
+    expect(shouldEnter(state, before2Am)).toBe(true);
+    expect(shouldAverageDown(90, 100, state, -3, before2Am)).toBe(true);
+  });
+});
+
 

@@ -172,6 +172,58 @@ export function calculateRealtimeBb(
   };
 }
 
+export interface RealtimeMaResult {
+  ma: number | null;
+  isRising: boolean;
+}
+
+/**
+ * 실시간 N선 이동평균 및 상승 판정 계산.
+ * 확정된 최근 (period - 1)개 봉 종가 + 현재 틱 = 총 period개 표본.
+ * 상승 판정 (isRising):
+ * - 현재 틱을 반영한 실시간 MA가 직전 확정봉의 MA보다 크고 (즉, currentTick > confirmedCloses[n - period])
+ * - 직전 확정봉 기준 SMA도 이전 확정봉 기준 SMA보다 크거나 같은 경우 (우상향 추세 확인)
+ * 봉 수가 period 미만이면 { ma: null, isRising: false } (워밍업 fail-closed)
+ */
+export function calculateRealtimeMa(
+  confirmedCloses: readonly number[],
+  currentTick: number,
+  period: number,
+): RealtimeMaResult {
+  const n = confirmedCloses.length;
+  if (n < period || !Number.isFinite(currentTick) || currentTick <= 0) {
+    return { ma: null, isRising: false };
+  }
+
+  const startIdx = n - (period - 1);
+  let sum = currentTick;
+  for (let i = startIdx; i < n; i++) {
+    sum += confirmedCloses[i];
+  }
+  const ma = sum / period;
+
+  let lastSum = 0;
+  for (let i = n - period; i < n; i++) {
+    lastSum += confirmedCloses[i];
+  }
+  const lastMa = lastSum / period;
+
+  const currentRising = currentTick > confirmedCloses[n - period];
+
+  let prevTrendRising = true;
+  if (n >= period + 1) {
+    let prevSum = 0;
+    for (let i = n - period - 1; i < n - 1; i++) {
+      prevSum += confirmedCloses[i];
+    }
+    const prevMa = prevSum / period;
+    prevTrendRising = lastMa >= prevMa;
+  }
+
+  const isRising = currentRising && prevTrendRising;
+  return { ma, isRising };
+}
+
 export interface RealtimeMa5State {
   /** MA5 실시간 값 = (직전 확정 4봉 종가 + 현재틱) / 5. 계산 불가면 null. */
   ma5: number | null;
@@ -195,6 +247,18 @@ export interface RealtimeMa5State {
   ma20?: number | null;
   /** 실시간 1분봉 20선 볼린저 상단선(2σ). */
   upperBb?: number | null;
+  /** 실시간 1분봉 60선 값. */
+  ma60?: number | null;
+  /** 실시간 1분봉 120선 값. */
+  ma120?: number | null;
+  /** 실시간 60선 상승 중 여부. */
+  ma60Up?: boolean;
+  /** 실시간 120선 상승 중 여부. */
+  ma120Up?: boolean;
+  /** 볼린저 상단선 상향 돌파(전량 익절 신호) 발화 여부. */
+  upperBreakout?: boolean;
+  /** 볼린저 중심선(MA20) 상향 돌파(반익절 신호) 발화 여부. */
+  middleCross?: boolean;
 }
 
 /** 하단/상단 최소 연속 체류 시간 기본값(3초 = 3,000ms). */
@@ -216,6 +280,7 @@ export class RealtimeMa5Calculator {
   private aboveStartMs: number | null = null;
   private belowDipStartMs: number | null = null;
   private isArmed = false;
+
   private readonly minDwellMs: number;
   private readonly cancelDebounceMs: number;
 
@@ -228,10 +293,10 @@ export class RealtimeMa5Calculator {
   }
 
   /**
-   * 현재 틱으로 MA5·실시간BB·기울기·돌파를 계산한다.
-   * confirmedCloses = 확정된 봉 종가 배열 (오름차순, 최소 5개 이상 권장, 19개 이상 시 BB 계산 활성).
+   * 현재 틱으로 MA5·실시간BB·MA60·MA120·기울기·돌파·상단돌파·중심선돌파를 계산한다.
+   * confirmedCloses = 확정된 봉 종가 배열 (오름차순).
    * currentTick = 현재 틱 가격.
-   * isLiveTick = 실제 수신된 라이브 틱 여부 (기본 true). 시드/프로브 조회 시 false로 전달하여 돌파 오판정 방지.
+   * isLiveTick = 실제 수신된 라이브 틱 여부 (기본 true). 시드/프로브 조회 시 false로 전달하여 오판정 방지.
    * tsMs = 체결 시각(epoch ms). 미전달 시 Date.now() 사용.
    */
   evaluate(
@@ -254,6 +319,10 @@ export class RealtimeMa5Calculator {
     const bb = calculateRealtimeBb(confirmedCloses, currentTick);
     const { lowerBb, ma20, upperBb } = bb;
 
+    // 2-1. 실시간 60선 및 120선 계산 및 상승 판정
+    const ma60Res = calculateRealtimeMa(confirmedCloses, currentTick, 60);
+    const ma120Res = calculateRealtimeMa(confirmedCloses, currentTick, 120);
+
     // 3. 기울기: 현재틱 vs 5개전 확정분봉 종가
     let slope: 'up' | 'down' | null = null;
     let refClose5: number | null = null;
@@ -266,12 +335,15 @@ export class RealtimeMa5Calculator {
     const baseline = lowerBb ?? ma5;
 
     let breakout = false;
+    let upperBreakout = false;
+    let middleCross = false;
     let belowDwellMs: number | null = null;
     let aboveDwellMs: number | null = null;
 
     if (isLiveTick) {
       this.liveTickCount++;
 
+      // [A. 하단 상향 돌파 (BUY)]
       if (baseline !== null) {
         if (this.minDwellMs === 0) {
           // minDwellMs = 0이면 지연 없이 즉시 교차 돌파 (테스트 및 하위 호환)
@@ -282,8 +354,7 @@ export class RealtimeMa5Calculator {
           // [1단계: 하단 체류 (3초) 판정]
           if (!this.belowDwellOk) {
             if (currentTick <= baseline) {
-              // 하단 영역 체류
-              this.aboveEscapeStartMs = null; // 상단 이탈 타이머 해제
+              this.aboveEscapeStartMs = null;
               if (this.belowStartMs === null) {
                 this.belowStartMs = nowMs;
               }
@@ -293,18 +364,15 @@ export class RealtimeMa5Calculator {
                 this.belowDwellOk = true;
               }
             } else {
-              // currentTick > baseline (상단으로 일시 벗어남)
               if (this.belowStartMs !== null) {
                 if (this.aboveEscapeStartMs === null) {
                   this.aboveEscapeStartMs = nowMs;
                 }
                 const escapeTime = nowMs - this.aboveEscapeStartMs;
                 if (escapeTime >= this.cancelDebounceMs) {
-                  // 1초 이상 상단 머묾 -> 진짜 이탈로 보고 리셋
                   this.belowStartMs = null;
                   this.aboveEscapeStartMs = null;
                 } else {
-                  // 1초 미만 일시적 튐 -> 잔파동으로 무시하고 기존 하단 체류 시간 유지
                   belowDwellMs = Math.max(0, nowMs - this.belowStartMs);
                 }
               }
@@ -314,8 +382,7 @@ export class RealtimeMa5Calculator {
           // [2단계: 상단 체류 (3초) 및 돌파 발화 판정]
           if (this.belowDwellOk) {
             if (currentTick > baseline) {
-              // 상단 영역 체류
-              this.belowDipStartMs = null; // 하단 침범 타이머 해제
+              this.belowDipStartMs = null;
               if (this.aboveStartMs === null) {
                 this.aboveStartMs = nowMs;
               }
@@ -325,23 +392,19 @@ export class RealtimeMa5Calculator {
                 this.isArmed = true;
               }
             } else {
-              // currentTick <= baseline (하단으로 일시 밀림)
               if (this.aboveStartMs !== null) {
                 if (this.belowDipStartMs === null) {
                   this.belowDipStartMs = nowMs;
                 }
                 const dipTime = nowMs - this.belowDipStartMs;
                 if (dipTime >= this.cancelDebounceMs) {
-                  // 1초 이상 하단 머묾 -> 상단 체류 취소 및 리셋
                   this.aboveStartMs = null;
                   this.belowDipStartMs = null;
                   this.isArmed = false;
-                  // 하단에 1초 이상 머물렀으므로 다시 하단 체류로 전환
                   this.belowDwellOk = false;
                   this.belowStartMs = nowMs - this.cancelDebounceMs;
                   belowDwellMs = this.cancelDebounceMs;
                 } else {
-                  // 1초 미만 일시적 눌림 -> 잔파동으로 무시하고 기존 상단 체류 시간 유지
                   aboveDwellMs = Math.max(0, nowMs - this.aboveStartMs);
                 }
               }
@@ -350,7 +413,6 @@ export class RealtimeMa5Calculator {
             // [3단계: 돌파 발화]
             if (this.isArmed && this.liveTickCount >= 2) {
               breakout = true;
-              // 1회 발화 후 상태 소진
               this.isArmed = false;
               this.belowDwellOk = false;
               this.belowStartMs = null;
@@ -362,6 +424,22 @@ export class RealtimeMa5Calculator {
         }
       } else {
         this.reset();
+      }
+
+      // [B. 볼린저 상단선 상향 돌파 (SELL: upperBreakout — 전량 익절)]
+      // prevTick이 상단선 아래였다가 현재 틱이 상단선 이상으로 올라오면 발화 (단순 교차).
+      if (upperBb !== null && this.prevTick !== null && this.liveTickCount >= 2) {
+        if (this.prevTick < upperBb && currentTick >= upperBb) {
+          upperBreakout = true;
+        }
+      }
+
+      // [C. 볼린저 중심선(MA20) 상향 돌파 (SELL: middleCross — 반익절)]
+      // prevTick이 MA20 아래였다가 현재 틱이 MA20 이상으로 올라오면 발화.
+      if (ma20 !== null && this.prevTick !== null && this.liveTickCount >= 2) {
+        if (this.prevTick < ma20 && currentTick >= ma20) {
+          middleCross = true;
+        }
       }
 
       this.prevTick = currentTick;
@@ -379,6 +457,12 @@ export class RealtimeMa5Calculator {
       lowerBb,
       ma20,
       upperBb,
+      ma60: ma60Res.ma,
+      ma120: ma120Res.ma,
+      ma60Up: ma60Res.isRising,
+      ma120Up: ma120Res.isRising,
+      upperBreakout,
+      middleCross,
     };
   }
 
@@ -407,6 +491,25 @@ const NY_WEEKDAY_HOUR_MINUTE_DTF = new Intl.DateTimeFormat('en-US', {
   minute: '2-digit',
   hour12: false,
 });
+
+const KST_HOUR_MINUTE_DTF = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'Asia/Seoul',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
+
+/**
+ * 한국시간 기준 진입 가능 시간 창 (새벽 02:00 KST 이전 및 오후 17:00 KST 이후).
+ * 한국시간 02:00 ~ 17:00 (미국 프리마켓 개장 전) 구간은 진입(신규/추가) 전면 차단.
+ */
+export function isBeforeKst2Am(epochMs: number): boolean {
+  const parts = KST_HOUR_MINUTE_DTF.formatToParts(new Date(epochMs));
+  const h = Number(parts.find((p) => p.type === 'hour')?.value ?? '0') % 24;
+  const m = Number(parts.find((p) => p.type === 'minute')?.value ?? '0');
+  const kstMins = h * 60 + m;
+  return !(kstMins >= 2 * 60 && kstMins < 17 * 60);
+}
 
 function getUsEtWeekdayAndMinutes(epochMs: number): { isWeekend: boolean; mins: number } | null {
   const parts = NY_WEEKDAY_HOUR_MINUTE_DTF.formatToParts(new Date(epochMs));
@@ -492,50 +595,59 @@ export const DEFAULT_REALTIME_MA5_CONFIG: RealtimeMa5Config = {
 };
 
 /**
- * 진입 조건 판정 — 상향 돌파 시 진입.
- * (5분 전 종가 비교 C_-5는 급락 후 바닥 반등 시 심각한 매수 지연을 유발하므로 돌파 자체를 트리거로 함)
+ * 진입 조건 판정 — 상향 돌파 ∧ 60선/120선 동시 상승 ∧ 한국시간 02:00 전 시 진입.
  */
-export function shouldEnter(state: RealtimeMa5State): boolean {
-  return state.breakout;
+export function shouldEnter(state: RealtimeMa5State, nowMs?: number): boolean {
+  if (!state.breakout) return false;
+  if (state.ma60Up !== true || state.ma120Up !== true) return false;
+  if (nowMs !== undefined && !isBeforeKst2Am(nowMs)) return false;
+  return true;
 }
 
 /**
  * 물타기 조건 판정.
  * gapRate = (현재가 - 평단가) / 평단가 × 100.
- * 조건: gapRate ≤ thresholdPct AND 돌파.
- * (바닥에서 5선을 뚫는 즉시 추가 매수하여 평단을 낮추고 반등 탈출)
+ * 조건: gapRate ≤ thresholdPct AND 돌파 AND 60선/120선 상승 AND 한국시간 02:00 전.
  */
 export function shouldAverageDown(
   currentPrice: number,
   avgPrice: number,
   state: RealtimeMa5State,
   thresholdPct: number = DEFAULT_REALTIME_MA5_CONFIG.averagingDownThresholdPct,
+  nowMs?: number,
 ): boolean {
   if (avgPrice <= 0 || currentPrice <= 0) return false;
   const gapRate = ((currentPrice - avgPrice) / avgPrice) * 100;
-  return gapRate <= thresholdPct && state.breakout;
+  if (gapRate > thresholdPct) return false;
+  if (!state.breakout) return false;
+  if (state.ma60Up !== true || state.ma120Up !== true) return false;
+  if (nowMs !== undefined && !isBeforeKst2Am(nowMs)) return false;
+  return true;
 }
 
 /**
  * 물타기 매수 수량 계산.
- * gapRate = (현재가 - 평단가) / 평단가 × 100.
- * 희망매수량 = (|gapRate| - 1) × 보유수량.
+ * 설정 수량(orderQty) 또는 설정 금액(startAmountUsd) 기반 1배수 고정 수량 (마틴게일 배수 제거).
  * 가능최대수량 = 가용자본 / 현재가.
- * 실제매수량 = min(희망매수량, 가능최대수량).
+ * 실제매수량 = min(희망수량, 가능최대수량).
  */
 export function averagingDownQty(
   currentPrice: number,
   avgPrice: number,
   holdingQty: number,
   availableCash: number,
+  config: RealtimeMa5Config = DEFAULT_REALTIME_MA5_CONFIG,
 ): number {
   if (currentPrice <= 0 || avgPrice <= 0 || holdingQty <= 0 || availableCash <= 0) return 0;
-  const gapRate = Math.abs(((currentPrice - avgPrice) / avgPrice) * 100);
-  const desiredQty = Math.floor((gapRate - 1) * holdingQty);
-  if (desiredQty < 1) return 0;
+  const desired = config.orderQty > 0
+    ? config.orderQty
+    : config.startAmountUsd > 0
+      ? Math.floor(config.startAmountUsd / currentPrice)
+      : 1;
+  if (desired < 1) return 0;
   const maxQty = Math.floor(availableCash / currentPrice);
   if (maxQty < 1) return 0;
-  return Math.min(desiredQty, maxQty);
+  return Math.min(desired, maxQty);
 }
 
 /**

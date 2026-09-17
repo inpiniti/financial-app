@@ -189,6 +189,8 @@ export interface SlotSignalContext {
   readonly entryEvent?: MartingaleEntryEvent;
   /** 실시간 MA5 모드 상태 (MA5값, 기울기, 돌파여부) */
   readonly realtimeMa5State?: RealtimeMa5State;
+  /** 신호 시점의 진행 중 1분봉 저점 (진입봉 저점 손절용) */
+  readonly currentBarLow?: number | null;
 }
 
 export interface FeedSlotView {
@@ -261,6 +263,14 @@ export interface FeedSlotView {
    * 실시간 볼린저 하단선 (1분봉 20선 2σ) — 워밍업 전이면 null.
    */
   readonly lowerBb: number | null;
+  /**
+   * 실시간 볼린저 중심선 (1분봉 20선) — 워밍업 전이면 null.
+   */
+  readonly ma20Bb: number | null;
+  /**
+   * 실시간 볼린저 상단선 (1분봉 20선 2σ) — 워밍업 전이면 null.
+   */
+  readonly upperBb: number | null;
 }
 
 /** 화면용 모델 판정 스냅샷 — ModelEval에서 화면이 쓰는 것만 + 판정 시각. */
@@ -838,24 +848,66 @@ export class FeedSlot {
     return this.bbMeter.ma20;
   }
 
+  /** 현재 진행 중인 1분봉의 저점(진입봉 저점 손절 기준선) — 없으면 null. */
+  getCurrentBarLow(): number | null {
+    return this.realtimeCandleBuilder.inProgress?.low ?? null;
+  }
+
   /**
-   * 실시간 MA5 틱 판정 — 매 틱마다 MA5·돌파를 재고 신호를 낸다.
-   * 실시간 상향 돌파면 지체 없이 즉시 BUY(kind='realtimeMa5').
+   * 실시간 MA5 틱 판정 — 매 틱마다 MA5·기울기·돌파·상단돌파·중심선돌파를 재고 신호를 낸다.
+   * 실시간 하단 상향 돌파면 즉시 BUY(kind='realtimeMa5').
+   * 실시간 볼린저 상단 상향 돌파(전량 익절) 또는 중심선 상향 돌파(반익절)면 즉시 SELL(kind='realtimeMa5').
    */
   private evaluateRealtimeMa5Tick(price: number): void {
     if (this.trendListener === null) return;
     const state = this.realtimeMa5State;
-    if (!shouldEnter(state)) return;
-    this.lastSignal = 'BUY';
-    this.trendListener('BUY', {
-      ticker: this.ticker,
-      price,
-      slope: 0,
-      accel: 0,
-      at: this.lastTickAt ?? this.clock.now(),
-      kind: 'realtimeMa5',
-      realtimeMa5State: state,
-    });
+    const now = this.lastTickAt ?? this.clock.now();
+    const curLow = this.realtimeCandleBuilder.inProgress?.low ?? price;
+
+    // [BUY] 하단 상향 돌파 — 60선/120선 상승 ∧ KST 02:00 전 조건은 shouldEnter 내부
+    if (shouldEnter(state, now)) {
+      this.lastSignal = 'BUY';
+      this.trendListener('BUY', {
+        ticker: this.ticker,
+        price,
+        slope: 0,
+        accel: 0,
+        at: now,
+        kind: 'realtimeMa5',
+        realtimeMa5State: state,
+        currentBarLow: curLow,
+      });
+    }
+
+    // [SELL] BB 상단선 상향 돌파 — 전량 익절
+    if (state.upperBreakout === true) {
+      this.lastSignal = 'SELL';
+      this.trendListener('SELL', {
+        ticker: this.ticker,
+        price,
+        slope: 0,
+        accel: 0,
+        at: now,
+        kind: 'realtimeMa5',
+        realtimeMa5State: state,
+        currentBarLow: curLow,
+      });
+    }
+
+    // [SELL] BB 중심선(MA20) 상향 돌파 — 반익절
+    if (state.middleCross === true) {
+      this.lastSignal = 'SELL';
+      this.trendListener('SELL', {
+        ticker: this.ticker,
+        price,
+        slope: 0,
+        accel: 0,
+        at: now,
+        kind: 'realtimeMa5',
+        realtimeMa5State: state,
+        currentBarLow: curLow,
+      });
+    }
   }
 
   /**
@@ -965,6 +1017,8 @@ export class FeedSlot {
       martingaleLive: this.martingaleMode ? this.martingaleLiveEval : null,
       realtimeMa5: this.realtimeMa5State,
       lowerBb: this.realtimeMa5State?.lowerBb ?? this.bbMeter.lowerBb ?? null,
+      ma20Bb: this.realtimeMa5State?.ma20 ?? this.bbMeter.ma20 ?? null,
+      upperBb: this.realtimeMa5State?.upperBb ?? this.bbMeter.upperBb ?? null,
     };
   }
 }

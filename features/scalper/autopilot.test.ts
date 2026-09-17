@@ -1494,12 +1494,14 @@ describe('AutoPilot — 세션 전환(정규장↔주간거래) 그리드 주문
     });
 
     it('진입, 추가진입, 청산 시 onTradeAction이 올바른 정보와 함께 순서대로 발행된다', async () => {
+      const KST_NIGHT_MS = new Date('2026-09-16T14:00:00Z').getTime();
       const h = makeHarness(['A'], {
         config: CONFIG_100,
         positionManagement: {
           realtimeMa5: REALTIME_MA5_POSITION_CONFIG,
         },
       });
+      h.clock.advance(KST_NIGHT_MS - 1000);
       h.pilot.start();
 
       // 1. 진입 (buyNow)
@@ -1521,37 +1523,24 @@ describe('AutoPilot — 세션 전환(정규장↔주간거래) 그리드 주문
       expect(entryAction?.qty).toBe(1);
       expect(entryAction?.amountUsd).toBe(100);
 
-      // 2. 추가진입 (신호 발송: 평단 100 대비 -5% = 95)
+      // 2. 추가진입 시도 (물타기 봉인 검증: BUY 신호 무시)
       const pm = (h.pilot as unknown as { actives: Map<string, { cond: { onSignal: (sig: string, p: number) => void } }> })
         .actives.get('A')!.cond;
       pm.onSignal('BUY', 95);
       await flush();
 
-      const buy2 = broker.placed.filter((p) => p.side === 'buy').at(-1);
-      expect(buy2).toBeDefined();
-      expect(buy2?.qty).toBe(4);
-
-      broker.fill(buy2!.odno, 95);
-      await h.pilot.pollCycle();
-      await flush();
-
-      // SCALE_IN 액션 확인
-      const scaleInAction = h.actions.find((a) => a.action === 'SCALE_IN');
-      expect(scaleInAction).toBeDefined();
-      expect(scaleInAction?.ticker).toBe('A');
-      expect(scaleInAction?.price).toBe(95);
-      expect(scaleInAction?.qty).toBe(4);
-      expect(scaleInAction?.prevAvgPrice).toBe(100);
-      expect(scaleInAction?.newAvgPrice).toBe(96);
-      expect(scaleInAction?.totalQty).toBe(5);
+      // 추가 매수 주문이 나가지 않아야 함
+      const buys = broker.placed.filter((p) => p.side === 'buy');
+      expect(buys).toHaveLength(1); // 최초 1주 외 추가 매수 없음
+      expect(h.actions.find((a) => a.action === 'SCALE_IN')).toBeUndefined();
 
       // 3. 청산 (sellNow)
-      await h.pilot.sellNow('A', 100);
+      await h.pilot.sellNow('A', 105);
       await flush();
       const sell = broker.placed.filter((p) => p.side === 'sell').at(-1);
       expect(sell).toBeDefined();
 
-      broker.fill(sell!.odno, 100);
+      broker.fill(sell!.odno, 105);
       await h.pilot.pollCycle();
       await flush();
 
@@ -1559,10 +1548,10 @@ describe('AutoPilot — 세션 전환(정규장↔주간거래) 그리드 주문
       const exitAction = h.actions.find((a) => a.action === 'EXIT');
       expect(exitAction).toBeDefined();
       expect(exitAction?.ticker).toBe('A');
-      expect(exitAction?.price).toBe(100);
-      expect(exitAction?.qty).toBe(5);
-      expect(exitAction?.entryAvgPrice).toBe(96);
-      expect(exitAction?.pnl).toBeCloseTo(20); // (100 - 96) * 5
+      expect(exitAction?.price).toBe(105);
+      expect(exitAction?.qty).toBe(1);
+      expect(exitAction?.entryAvgPrice).toBe(100);
+      expect(exitAction?.pnl).toBeCloseTo(5); // (105 - 100) * 1
     });
   });
 });

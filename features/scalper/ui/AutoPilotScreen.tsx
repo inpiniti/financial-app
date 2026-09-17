@@ -43,6 +43,7 @@ import { loadModel } from '../../../core/model';
 import { MARTINGALE_CONFIG, MARTINGALE_MIN_BARS, type MartingaleBarEval } from '../../../core/martingale';
 import { etMinuteOfDay, TRADING_DAY_START_MIN } from '../../../core/model/session';
 import { TREND_MODE } from '../trendMode';
+import type { RealtimeMa5State } from '../../../core/realtime-ma5';
 import type { TrendEval } from '../../../core/trend/signal';
 import { AdoptSheet } from './AdoptSheet';
 import { refreshLiveSettings } from './managerProvider';
@@ -243,6 +244,42 @@ function formatModelLine(v: ModelVerdictView | null): string {
 }
 
 /**
+ * 실시간 볼린저 밴드 분할 매매 상태 한 줄 (2026-09-17)
+ * - 미보유: 하단 체류(3초) 및 돌파 준비 진행도
+ * - 보유 중: 중심선(MA20) 반익절 대기 또는 상단선(UpperBB) 전량 익절 대기
+ */
+function formatRealtimeBbLine(
+  state: RealtimeMa5State | null | undefined,
+  isHolding: boolean,
+  currentPrice: number | null,
+): string | null {
+  if (!state) return null;
+  const ma20 = state.ma20;
+  if (isHolding) {
+    if (ma20 !== null && ma20 !== undefined && currentPrice !== null && currentPrice >= ma20) {
+      return '중심선 도달 · 상단선(UpperBB) 전량익절 대기';
+    }
+    return '중심선(MA20) 반익절 대기 (상향 돌파 시 50% 매도)';
+  }
+
+  // 미보유: 진입 감시
+  if (state.isArmed) {
+    return '하단 반등 완료 · 상향 돌파 발화 대기';
+  }
+  if (state.belowDwellOk) {
+    return '하단 3초 체류 완료 · 반등 3초 대기 중';
+  }
+  if (state.belowDwellMs && state.belowDwellMs > 0) {
+    const sec = (state.belowDwellMs / 1000).toFixed(1);
+    return `볼린저 하단 체류 중 (${sec}초 / 3초)`;
+  }
+  if (state.ma60Up === false || state.ma120Up === false) {
+    return '볼린저 하단 대기 (60선·120선 우상향 확인 중)';
+  }
+  return '볼린저 하단선(20선) 돌파 대기';
+}
+
+/**
  * 리스트 행의 우측 상태 표시 — 보유 > 매수 후보 > 핀(정리 대기) 순으로 하나만.
  *
  * ⚠ 2026-08-24: 후보 판정은 `candidates`(오토파일럿의 watchedTickers)로 한다. 예전엔 `row.view.watched`
@@ -306,8 +343,20 @@ function ma5Of(row: AutoPilotSlotRow): number | null {
 }
 
 function lowerBbOf(row: AutoPilotSlotRow): number | null {
-  const lowerBb = row.view.lowerBb;
+  const lowerBb = row.view.lowerBb ?? row.view.realtimeMa5?.lowerBb;
   if (lowerBb !== null && lowerBb !== undefined && Number.isFinite(lowerBb)) return lowerBb;
+  return null;
+}
+
+function ma20BbOf(row: AutoPilotSlotRow): number | null {
+  const ma20 = row.view.ma20Bb ?? row.view.realtimeMa5?.ma20;
+  if (ma20 !== null && ma20 !== undefined && Number.isFinite(ma20)) return ma20;
+  return null;
+}
+
+function upperBbOf(row: AutoPilotSlotRow): number | null {
+  const upperBb = row.view.upperBb ?? row.view.realtimeMa5?.upperBb;
+  if (upperBb !== null && upperBb !== undefined && Number.isFinite(upperBb)) return upperBb;
   return null;
 }
 
@@ -315,6 +364,8 @@ function InlineGrid({
   min,
   ma5,
   lowerBb,
+  ma20,
+  upperBb,
   current,
   avg,
   max,
@@ -323,6 +374,8 @@ function InlineGrid({
   min: number | null;
   ma5: number | null;
   lowerBb: number | null;
+  ma20: number | null;
+  upperBb: number | null;
   current: number | null;
   avg: number | null;
   max: number | null;
@@ -331,14 +384,16 @@ function InlineGrid({
   const [trackWidth, setTrackWidth] = useState(0);
   const onTrackLayout = (e: LayoutChangeEvent) => setTrackWidth(e.nativeEvent.layout.width);
 
-  const fallbackLo = min ?? current ?? lowerBb ?? ma5 ?? avg ?? 1;
-  const fallbackHi = max ?? current ?? lowerBb ?? ma5 ?? avg ?? fallbackLo * 1.001;
-  const scale = gaugeScaleOf([min, lowerBb, ma5, current, avg, max], fallbackLo, fallbackHi);
+  const fallbackLo = min ?? current ?? lowerBb ?? ma5 ?? ma20 ?? upperBb ?? avg ?? 1;
+  const fallbackHi = max ?? current ?? upperBb ?? ma20 ?? lowerBb ?? ma5 ?? avg ?? fallbackLo * 1.001;
+  const scale = gaugeScaleOf([min, lowerBb, ma5, ma20, upperBb, current, avg, max], fallbackLo, fallbackHi);
 
   // 최소/최대는 양끝 고정
   const minPos = min !== null ? 0 : markerPosition(min, scale.lo, scale.hi);
   const maxPos = max !== null ? 1 : markerPosition(max, scale.lo, scale.hi);
   const lowerBbPos = markerPosition(lowerBb, scale.lo, scale.hi);
+  const ma20Pos = markerPosition(ma20, scale.lo, scale.hi);
+  const upperBbPos = markerPosition(upperBb, scale.lo, scale.hi);
   const ma5Pos = markerPosition(ma5, scale.lo, scale.hi);
   const currentPos = markerPosition(current, scale.lo, scale.hi);
   const avgPos = showAverage ? markerPosition(avg, scale.lo, scale.hi) : null;
@@ -384,6 +439,46 @@ function InlineGrid({
       useNativeDriver: true,
     }).start();
   }, [lowerBbTargetX, lowerBbAnimX]);
+
+  // 실시간 볼린저 중단선(MA20) 지시자 부드러운 글라이딩 (Animated translateX)
+  const ma20TargetX = ma20Pos !== null && trackWidth > 0 ? ma20Pos * trackWidth : null;
+  const ma20AnimX = useRef(new Animated.Value(0)).current;
+  const ma20Init = useRef(false);
+
+  useEffect(() => {
+    if (ma20TargetX === null) return;
+    if (!ma20Init.current) {
+      ma20Init.current = true;
+      ma20AnimX.setValue(ma20TargetX);
+      return;
+    }
+    Animated.timing(ma20AnimX, {
+      toValue: ma20TargetX,
+      duration: 250,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start();
+  }, [ma20TargetX, ma20AnimX]);
+
+  // 실시간 볼린저 상단선 지시자 부드러운 글라이딩 (Animated translateX)
+  const upperBbTargetX = upperBbPos !== null && trackWidth > 0 ? upperBbPos * trackWidth : null;
+  const upperBbAnimX = useRef(new Animated.Value(0)).current;
+  const upperBbInit = useRef(false);
+
+  useEffect(() => {
+    if (upperBbTargetX === null) return;
+    if (!upperBbInit.current) {
+      upperBbInit.current = true;
+      upperBbAnimX.setValue(upperBbTargetX);
+      return;
+    }
+    Animated.timing(upperBbAnimX, {
+      toValue: upperBbTargetX,
+      duration: 250,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start();
+  }, [upperBbTargetX, upperBbAnimX]);
 
   // 5선 지시자 부드러운 글라이딩 (Animated translateX)
   const ma5TargetX = ma5Pos !== null && trackWidth > 0 ? ma5Pos * trackWidth : null;
@@ -490,35 +585,6 @@ function InlineGrid({
           </View>
         ) : null}
 
-        {/* 5선 지시자 (▲ 노란색 정삼각형) - 트랙 하단 표면에 정확히 맞닿음 (끝점 y=9) */}
-        {ma5TargetX !== null ? (
-          <Animated.View
-            style={{
-              position: 'absolute',
-              left: 0,
-              top: 9,
-              transform: [{ translateX: ma5AnimX }, { translateX: -4.5 }],
-            }}
-          >
-            <Svg width={9} height={7}>
-              <Polygon points="4.5,0 0,7 9,7" fill="#f59e0b" />
-            </Svg>
-          </Animated.View>
-        ) : ma5Pos !== null ? (
-          <View
-            style={{
-              position: 'absolute',
-              left: pctLeft(ma5Pos),
-              top: 9,
-              transform: [{ translateX: -4.5 }],
-            }}
-          >
-            <Svg width={9} height={7}>
-              <Polygon points="4.5,0 0,7 9,7" fill="#f59e0b" />
-            </Svg>
-          </View>
-        ) : null}
-
         {/* 실시간 볼린저 하단선 지시자 (▲ 빨간색 정삼각형) - 트랙 하단 표면에 정확히 맞닿음 (끝점 y=9) */}
         {lowerBbTargetX !== null ? (
           <Animated.View
@@ -544,6 +610,93 @@ function InlineGrid({
           >
             <Svg width={9} height={7}>
               <Polygon points="4.5,0 0,7 9,7" fill="#f04452" />
+            </Svg>
+          </View>
+        ) : null}
+
+        {/* 실시간 볼린저 중단선(MA20) 지시자 (◆ 빨간색 다이아몬드) - 트랙 하단 표면에 꼭지점이 정확히 맞닿음 (끝점 y=9) */}
+        {ma20TargetX !== null ? (
+          <Animated.View
+            style={{
+              position: 'absolute',
+              left: 0,
+              top: 9,
+              transform: [{ translateX: ma20AnimX }, { translateX: -3.5 }],
+            }}
+          >
+            <Svg width={7} height={7}>
+              <Polygon points="3.5,0 7,3.5 3.5,7 0,3.5" fill="#f04452" />
+            </Svg>
+          </Animated.View>
+        ) : ma20Pos !== null ? (
+          <View
+            style={{
+              position: 'absolute',
+              left: pctLeft(ma20Pos),
+              top: 9,
+              transform: [{ translateX: -3.5 }],
+            }}
+          >
+            <Svg width={7} height={7}>
+              <Polygon points="3.5,0 7,3.5 3.5,7 0,3.5" fill="#f04452" />
+            </Svg>
+          </View>
+        ) : null}
+
+        {/* 실시간 볼린저 상단선 지시자 (▲ 빨간색 정삼각형) - 트랙 하단 표면에 정확히 맞닿음 (끝점 y=9) */}
+        {upperBbTargetX !== null ? (
+          <Animated.View
+            style={{
+              position: 'absolute',
+              left: 0,
+              top: 9,
+              transform: [{ translateX: upperBbAnimX }, { translateX: -4.5 }],
+            }}
+          >
+            <Svg width={9} height={7}>
+              <Polygon points="4.5,0 0,7 9,7" fill="#f04452" />
+            </Svg>
+          </Animated.View>
+        ) : upperBbPos !== null ? (
+          <View
+            style={{
+              position: 'absolute',
+              left: pctLeft(upperBbPos),
+              top: 9,
+              transform: [{ translateX: -4.5 }],
+            }}
+          >
+            <Svg width={9} height={7}>
+              <Polygon points="4.5,0 0,7 9,7" fill="#f04452" />
+            </Svg>
+          </View>
+        ) : null}
+
+        {/* 5선 지시자 (▲ 노란색 정삼각형) - 트랙 하단 표면에 정확히 맞닿음 (끝점 y=9) */}
+        {ma5TargetX !== null ? (
+          <Animated.View
+            style={{
+              position: 'absolute',
+              left: 0,
+              top: 9,
+              transform: [{ translateX: ma5AnimX }, { translateX: -4.5 }],
+            }}
+          >
+            <Svg width={9} height={7}>
+              <Polygon points="4.5,0 0,7 9,7" fill="#f59e0b" />
+            </Svg>
+          </Animated.View>
+        ) : ma5Pos !== null ? (
+          <View
+            style={{
+              position: 'absolute',
+              left: pctLeft(ma5Pos),
+              top: 9,
+              transform: [{ translateX: -4.5 }],
+            }}
+          >
+            <Svg width={9} height={7}>
+              <Polygon points="4.5,0 0,7 9,7" fill="#f59e0b" />
             </Svg>
           </View>
         ) : null}
@@ -589,6 +742,7 @@ const SlotRow = memo(function SlotRow({
   // 종목명이 있으면 이름을 제목으로, 티커는 부제 맨 앞으로 — 이름 없이 티커만 보이면 무슨 종목인지
   // 알 수 없어 조회 탭 리스트(종목명 · 티커)와 읽는 방식이 달랐다.
   const { ticker, name } = item.entry;
+  const currentPrice = grid?.currentPrice ?? item.view.price;
   const statusLine = item.feedRejected
     ? formatFeedRejectedLine(item.feedRejected)
     : SLOPE_MODE && getActiveEngineMode() === 'slope'
@@ -597,12 +751,15 @@ const SlotRow = memo(function SlotRow({
         ? formatMartingaleLine(item.view.martingaleLive ?? item.view.martingale)
         : MODEL_MODE && getActiveEngineMode() === 'model'
           ? formatModelLine(item.view.modelVerdict) + (item.view.entryFilterPass === false ? ' · 옵션 조건 미충족' : '')
-          : TREND_MODE
-            ? formatTrendLine(item.view.trend, item.view.trendLive)
-            : null;
+          : getActiveEngineMode() === 'realtimeMa5'
+            ? formatRealtimeBbLine(item.view.realtimeMa5, grid !== null, currentPrice)
+            : TREND_MODE
+              ? formatTrendLine(item.view.trend, item.view.trendLive)
+              : null;
 
-  const currentPrice = grid?.currentPrice ?? item.view.price;
   const lowerBb = lowerBbOf(item);
+  const ma20 = ma20BbOf(item);
+  const upperBb = upperBbOf(item);
   const ma5 = ma5Of(item);
   const min = item.view.dayLow ?? grid?.sinceEntryLow ?? grid?.buyPrice ?? null;
   const max = item.view.dayHigh ?? grid?.sinceEntryHigh ?? grid?.sellPrice ?? null;
@@ -687,6 +844,8 @@ const SlotRow = memo(function SlotRow({
               min={min}
               ma5={ma5}
               lowerBb={lowerBb}
+              ma20={ma20}
+              upperBb={upperBb}
               current={currentPrice}
               avg={grid?.avgPrice ?? null}
               max={max}

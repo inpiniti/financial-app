@@ -19,6 +19,7 @@ import type { RankingSnapshot } from '../../features/scalper/watchlist';
 import { getAccessToken } from '../../kis/token';
 import type { WebSocketLike, StorageLike, KisAccount, KisCredentials } from '../../kis/types';
 import type { OverseasExchangeCode } from '../../kis/trId';
+import { DEFAULT_REALTIME_MA5_CONFIG } from '../../core/realtime-ma5';
 
 export { flush };
 
@@ -276,6 +277,7 @@ export interface MakeHarnessOptions {
   autoFillOrders?: boolean;
   /** 종목당 진입금액(USD) — qty = ⌊금액÷가격⌋. */
   startAmountUsd?: number;
+  orderQty?: number;
 }
 
 export interface Harness {
@@ -345,6 +347,12 @@ export function makeHarness(opts: MakeHarnessOptions = {}): Harness {
     // 짧은 역V 시퀀스로 "전환 즉시 매도"를 검증하므로 매도 문턱 0(끔)을 명시해 의미를 보존한다.
     minSellMomentum: 0,
     isInitialEntryAllowed: () => true,
+    realtimeMa5: {
+      kind: 'realtimeMa5',
+      ...DEFAULT_REALTIME_MA5_CONFIG,
+      orderQty: opts.orderQty ?? 0,
+      startAmountUsd: opts.startAmountUsd ?? 100,
+    },
   });
   // WS 단일 연결 공유 — 허브의 라우터가 오토파일럿 슬롯으로 흘려보낸다(managerProvider와 동일 배선).
   manager.setAuxRoutes(autopilot.routeTick, autopilot.routeQuote);

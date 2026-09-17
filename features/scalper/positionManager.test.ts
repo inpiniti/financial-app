@@ -356,9 +356,42 @@ describe('makePositionManager — 규칙형 어댑터(추세·변곡점)', () =>
   });
 });
 
-describe('RealtimeMa5PositionManager — 매도 선등록 루프 방지', () => {
-  it('목표가 미도달 구간에서는 매도 선등록 로그를 반복 생성하지 않는다', async () => {
-    const clock = fakeClock(1_000);
+describe('RealtimeMa5PositionManager — 중심선 반익절·상단선 전량익절·진입봉 저점 손절·물타기 봉인', () => {
+  const KST_NIGHT_MS = new Date('2026-09-16T14:00:00Z').getTime(); // 23:00 KST
+
+  it('arm 시점에는 매도 주문을 선등록하지 않고 진입봉 저점 손절과 익절을 대기한다', async () => {
+    const clock = fakeClock(KST_NIGHT_MS);
+    const broker = new FakeBroker({ autoFill: false });
+    const events: string[] = [];
+    const pm = makePositionManager(
+      'realtimeMa5',
+      { realtimeMa5: { kind: 'realtimeMa5', ...DEFAULT_REALTIME_MA5_CONFIG } },
+      {
+        ticker: 'A',
+        broker,
+        clock,
+        price: () => ({ price: 100, lastTradeAt: clock.now() }),
+        regularSession: () => true,
+        entry: null,
+        adopted: false,
+        onEvent: (t) => events.push(t),
+      },
+    );
+
+    expect(await pm.arm({ qty: 10, avgPrice: 100, entryBarLow: 96 })).toEqual({ ok: true });
+    await flush();
+
+    // 선등록 매도 주문 없음
+    expect(broker.placed.filter((p) => p.side === 'sell')).toHaveLength(0);
+    expect(events.some((e) => e.includes('중심선 반익절 / 상단선 전량익절 대기'))).toBe(true);
+    expect(events.some((e) => e.includes('손절선(진입봉 저점) 96.00'))).toBe(true);
+
+    const g = pm.gaugeView();
+    expect(g.buyPrice).toBe(96); // 게이지 하단에 손절선(진입봉 저점) 표기
+  });
+
+  it('손절: 현재가가 진입봉 저점을 하향 이탈하면 전량 손절(STOP_LOSS)을 발주하고 정산 종결된다', async () => {
+    const clock = fakeClock(KST_NIGHT_MS);
     const broker = new FakeBroker({ autoFill: false });
     const events: string[] = [];
     let price = 100;
@@ -377,28 +410,81 @@ describe('RealtimeMa5PositionManager — 매도 선등록 루프 방지', () => 
       },
     );
 
-    expect(await pm.arm({ qty: 1, avgPrice: 100 })).toEqual({ ok: true });
+    await pm.arm({ qty: 4, avgPrice: 100, entryBarLow: 97 });
     await flush();
 
-    const before = events.filter((e) => e.includes('매도 지정가 선등록')).length;
-    for (let i = 0; i < 5; i += 1) {
-      price = 99;
-      await pm.tick({ canStart: true });
-      await pm.poll();
-      clock.advance(1_000);
-      await flush();
-    }
+    // 저점 97 아래로 하향 이탈 (현재가 96.5)
+    price = 96.5;
+    await pm.tick({ canStart: true });
+    await flush();
 
-    const after = events.filter((e) => e.includes('매도 지정가 선등록')).length;
-    expect(after).toBe(before);
+    const sell = broker.placed.filter((p) => p.side === 'sell').at(-1);
+    expect(sell).toBeDefined();
+    expect(sell?.qty).toBe(4); // 4주 전량 손절
+    expect(sell?.price).toBe(96.5);
+
+    broker.fill(sell!.odno, 96.5);
+    await flush();
+    const pollRes = await pm.poll();
+    expect(pollRes.kind).toBe('sold');
+    if (pollRes.kind === 'sold') {
+      expect(pollRes.record.exitReason).toBe('STOP_LOSS');
+      expect(pollRes.record.exitPrice).toBe(96.5);
+    }
+  });
+
+  it('중심선(MA20) 돌파 시 반익절(qty=4 -> 2주 매도) 체결 후 잔량이 남으면 holding을 유지하고 중복 신호는 무시한다', async () => {
+    const clock = fakeClock(KST_NIGHT_MS);
+    const broker = new FakeBroker({ autoFill: false });
+    const events: string[] = [];
+    let price = 103;
+    const pm = makePositionManager(
+      'realtimeMa5',
+      { realtimeMa5: { kind: 'realtimeMa5', ...DEFAULT_REALTIME_MA5_CONFIG } },
+      {
+        ticker: 'A',
+        broker,
+        clock,
+        price: () => ({ price, lastTradeAt: clock.now() }),
+        regularSession: () => true,
+        entry: null,
+        adopted: false,
+        onEvent: (t) => events.push(t),
+      },
+    );
+
+    await pm.arm({ qty: 4, avgPrice: 100 });
+    await flush();
+
+    // 중심선 상향 돌파 신호 수신
+    pm.onSignal('SELL', 103, { middleCross: true } as any);
+    await flush();
+
+    const sell = broker.placed.filter((p) => p.side === 'sell').at(-1);
+    expect(sell).toBeDefined();
+    expect(sell?.qty).toBe(2); // 4주 중 반인 2주 분할 매도
+    expect(sell?.price).toBe(103);
+
+    // 2주 체결
+    broker.fill(sell!.odno, 103);
+    await flush();
+    const pollRes = await pm.poll();
+    expect(pollRes).toEqual({ kind: 'holding' }); // 잔여 2주 유지
+
+    const g = pm.gaugeView();
+    expect(g.holdingQty).toBe(2);
+
+    // 같은 포지션에서 중심선 돌파 신호 재수신 -> 무시(이미 반익절 완료)
+    pm.onSignal('SELL', 104, { middleCross: true } as any);
+    await flush();
     expect(broker.placed.filter((p) => p.side === 'sell')).toHaveLength(1);
   });
 
-  it('매도 정정은 목표가 이상 구간에서만 상향으로 수행한다', async () => {
-    const clock = fakeClock(1_000);
+  it('상단선 상향 돌파 시 잔여 수량 전량 익절 발주하고 체결 시 sold 정산된다', async () => {
+    const clock = fakeClock(KST_NIGHT_MS);
     const broker = new FakeBroker({ autoFill: false });
     const events: string[] = [];
-    let price = 100;
+    let price = 108;
     const pm = makePositionManager(
       'realtimeMa5',
       { realtimeMa5: { kind: 'realtimeMa5', ...DEFAULT_REALTIME_MA5_CONFIG } },
@@ -414,27 +500,30 @@ describe('RealtimeMa5PositionManager — 매도 선등록 루프 방지', () => 
       },
     );
 
-    expect(await pm.arm({ qty: 1, avgPrice: 100 })).toEqual({ ok: true });
+    await pm.arm({ qty: 3, avgPrice: 100 });
     await flush();
 
-    price = 102; // 목표가(103) 미만
-    clock.advance(1_100);
-    await pm.tick({ canStart: true });
-    expect(broker.amended).toHaveLength(0);
-
-    price = 104; // 목표가 이상
-    clock.advance(1_100);
-    await pm.tick({ canStart: true });
+    // 볼린저 상단선 상향 돌파 -> 전량 익절
+    pm.onSignal('SELL', 108, { upperBreakout: true } as any);
     await flush();
-    expect(broker.amended).toHaveLength(1);
-    expect(broker.amended[0]?.price).toBe(104);
+
+    const sell = broker.placed.filter((p) => p.side === 'sell').at(-1);
+    expect(sell?.qty).toBe(3); // 잔여 3주 전량 익절
+    expect(sell?.price).toBe(108);
+
+    broker.fill(sell!.odno, 108);
+    await flush();
+    const pollRes = await pm.poll();
+    expect(pollRes.kind).toBe('sold');
+    if (pollRes.kind === 'sold') {
+      expect(pollRes.record.exitReason).toBe('TAKE_PROFIT');
+      expect(pollRes.record.qty).toBe(3);
+    }
   });
 
-  it('추가진입 매수 체결 후에는 새 평단 기준 +3%로 매도 주문을 다시 건다', async () => {
-    const clock = fakeClock(1_000);
+  it('물타기 봉인: 포지션 보유 중 BUY 신호가 들어와도 매수를 발주하지 않는다', async () => {
+    const clock = fakeClock(KST_NIGHT_MS);
     const broker = new FakeBroker({ autoFill: false });
-    const events: string[] = [];
-    const scaleIns: unknown[] = [];
     let price = 95;
     const pm = makePositionManager(
       'realtimeMa5',
@@ -447,100 +536,18 @@ describe('RealtimeMa5PositionManager — 매도 선등록 루프 방지', () => 
         regularSession: () => true,
         entry: null,
         adopted: false,
-        onEvent: (t) => events.push(t),
-        onScaleIn: (info) => scaleIns.push(info),
       },
     );
 
-    expect(await pm.arm({ qty: 1, avgPrice: 100 })).toEqual({ ok: true });
+    await pm.arm({ qty: 2, avgPrice: 100 });
     await flush();
 
-    const firstSell = broker.placed.filter((p) => p.side === 'sell').at(-1);
-    expect(firstSell?.price).toBe(103);
-
-    pm.onSignal('BUY', 95); // 평단 -5% 구간, 추가진입 조건 충족
-    await flush();
-
-    const buy = broker.placed.filter((p) => p.side === 'buy').at(-1);
-    expect(buy?.qty).toBe(4); // (5-1) * 1주
-    expect(buy?.price).toBe(95);
-
-    broker.fill(buy!.odno, 95);
-    await flush();
-    expect(await pm.poll()).toEqual({ kind: 'holding' });
-
-    expect(scaleIns).toHaveLength(1);
-    expect(scaleIns[0]).toEqual({
-      ticker: 'A',
-      price: 95,
-      qty: 4,
-      prevAvgPrice: 100,
-      newAvgPrice: 96,
-      totalQty: 5,
-      ts: 1_000,
-    });
-
-    const latestSell = broker.placed.filter((p) => p.side === 'sell').at(-1);
-    expect(latestSell?.price).toBeCloseTo(98.88); // 새 평단 96 * 1.03
-    expect(latestSell?.odno).not.toBe(firstSell?.odno);
-  });
-
-  it('정규장 세션이 아니면 추가진입(물타기) 신호가 와도 매수 발주하지 않는다', async () => {
-    const clock = fakeClock(1_000);
-    const broker = new FakeBroker({ autoFill: false });
-    let price = 95;
-    const pm = makePositionManager(
-      'realtimeMa5',
-      { realtimeMa5: { kind: 'realtimeMa5', ...DEFAULT_REALTIME_MA5_CONFIG } },
-      {
-        ticker: 'A',
-        broker,
-        clock,
-        price: () => ({ price, lastTradeAt: clock.now() }),
-        regularSession: () => false, // 정규장 아님
-        entry: null,
-        adopted: false,
-      },
-    );
-
-    expect(await pm.arm({ qty: 1, avgPrice: 100 })).toEqual({ ok: true });
-    await flush();
-
+    // BUY 신호 수신 -> 물타기 봉인이므로 무시
     pm.onSignal('BUY', 95);
     await flush();
 
     const buys = broker.placed.filter((p) => p.side === 'buy');
-    expect(buys).toHaveLength(0);
-  });
-
-  it('프리마켓/애프터마켓이라도 isAveragingDownAllowed가 true이면 추가진입(물타기) 매수를 발주한다', async () => {
-    const clock = fakeClock(1_000);
-    const broker = new FakeBroker({ autoFill: false });
-    let price = 95;
-    const pm = makePositionManager(
-      'realtimeMa5',
-      { realtimeMa5: { kind: 'realtimeMa5', ...DEFAULT_REALTIME_MA5_CONFIG } },
-      {
-        ticker: 'A',
-        broker,
-        clock,
-        price: () => ({ price, lastTradeAt: clock.now() }),
-        regularSession: () => false, // 정규장은 아님 (프리 또는 애프터마켓)
-        isAveragingDownAllowed: () => true, // 추가진입 허용
-        entry: null,
-        adopted: false,
-      },
-    );
-
-    expect(await pm.arm({ qty: 1, avgPrice: 100 })).toEqual({ ok: true });
-    await flush();
-
-    pm.onSignal('BUY', 95);
-    await flush();
-
-    const buys = broker.placed.filter((p) => p.side === 'buy');
-    expect(buys).toHaveLength(1);
-    expect(buys[0].qty).toBeGreaterThan(0);
+    expect(buys).toHaveLength(0); // 추가 매수 없음
   });
 });
 
@@ -628,7 +635,7 @@ describe('OcoGridPositionManager — OCO 매도그리드 어댑터(롤백 보존
       expect(pm.gaugeView().holdingQty).toBe(0);
     });
 
-    it('선등록 매도 주문이 있는 상태에서 sellNow 호출 시 기존 주문을 취소하고 현재가 매도 주문을 발주한다', async () => {
+    it('sellNow 호출 시 남은 전량을 현재가로 즉시 매도 발주하고 체결 시 sold 정산 종결된다', async () => {
       const clock = fakeClock(1_000);
       const broker = new FakeBroker({ autoFill: false });
       const events: string[] = [];
@@ -640,108 +647,61 @@ describe('OcoGridPositionManager — OCO 매도그리드 어댑터(롤백 보존
 
       await pm.arm({ qty: 10, avgPrice: 100 });
       await flush();
-      // arm 시점에 +3% 지정가 매도 주문이 선등록되어 있어야 한다.
-      expect(broker.placed).toHaveLength(1);
-      const preSell = broker.placed[0];
-      expect(preSell.side).toBe('sell');
-      expect(preSell.price).toBe(103);
+      expect(broker.placed).toHaveLength(0); // 선등록 매도 없음
 
       // 사용자 즉시 매도 요청 (현재가 $101)
       const res = pm.sellNow?.(101);
       expect(res).toBe(true);
       await flush();
+
+      const sellOrder = broker.placed.find((p) => p.side === 'sell');
+      expect(sellOrder).toBeDefined();
+      expect(sellOrder?.price).toBe(101);
+      expect(sellOrder?.qty).toBe(10);
+
+      broker.fill(sellOrder!.odno, 101);
       await flush();
 
-      // 기존 선등록 주문이 취소되고, $101로 새 매도 주문이 발주되어야 함
-      expect(broker.canceled).toContain(preSell.odno);
-      const nowSell = broker.placed.find((p) => p.odno !== preSell.odno);
-      expect(nowSell).toBeDefined();
-      expect(nowSell?.side).toBe('sell');
-      expect(nowSell?.price).toBe(101);
-      expect(nowSell?.qty).toBe(10);
+      const pollRes = await pm.poll();
+      expect(pollRes.kind).toBe('sold');
+      if (pollRes.kind === 'sold') {
+        expect(pollRes.record.qty).toBe(10);
+        expect(pollRes.record.exitPrice).toBe(101);
+        expect(pollRes.record.exitReason).toBe('USER_SELL');
+      }
     });
 
-    it('계좌 총평가자산 대비 투입 비중에 따라 동적으로 목표 익절률(+0.5%~+3%)을 적용하여 매도 선등록한다', async () => {
+    it('분할 매도로 보유 수량이 모두 소진되면 sold 정산 종결된다', async () => {
       const clock = fakeClock(1_000);
       const broker = new FakeBroker({ autoFill: false });
       const events: string[] = [];
       const pm = makePositionManager(
         'realtimeMa5',
-        { realtimeMa5: DEFAULT_REALTIME_MA5_CONFIG },
-        adapterDeps(broker, clock, events, {
-          fetchEquityUsd: async () => 10_000,
-        }),
+        { realtimeMa5: { ...DEFAULT_REALTIME_MA5_CONFIG, orderQty: 2 } },
+        adapterDeps(broker, clock, events, { feeRate: 0 }),
       );
 
-      // 4% 비중 투입 ($400 / $10,000) -> 3% 익절 (103)
-      await pm.arm({ qty: 4, avgPrice: 100 });
-      await flush();
-      expect(broker.placed[0].price).toBe(103);
-      expect(events.some((e) => e.includes('매도 지정가 선등록 · 4주 @ 103.00(+3.0% · 비중 4.0%)'))).toBe(true);
-    });
-
-    it('투입 비중이 50%를 초과할 경우 0.5% 목표가로 매도 선등록한다', async () => {
-      const clock = fakeClock(1_000);
-      const broker = new FakeBroker({ autoFill: false });
-      const events: string[] = [];
-      const pm = makePositionManager(
-        'realtimeMa5',
-        { realtimeMa5: DEFAULT_REALTIME_MA5_CONFIG },
-        adapterDeps(broker, clock, events, {
-          fetchEquityUsd: async () => 10_000,
-        }),
-      );
-
-      // 60% 비중 투입 ($6,000 / $10,000) -> 0.5% 익절 (100.5)
-      await pm.arm({ qty: 60, avgPrice: 100 });
-      await flush();
-      expect(broker.placed[0].price).toBeCloseTo(100.5);
-      expect(events.some((e) => e.includes('매도 지정가 선등록 · 60주 @ 100.50(+0.5% · 비중 60.0%)'))).toBe(true);
-    });
-
-    it('물타기(추가 매수) 체결 후 증가한 투입 비중에 맞추어 새 목표가로 매도 주문을 교체 선등록한다', async () => {
-      const clock = fakeClock(1_000);
-      const broker = new FakeBroker({ autoFill: false });
-      const events: string[] = [];
-      const pm = makePositionManager(
-        'realtimeMa5',
-        { realtimeMa5: DEFAULT_REALTIME_MA5_CONFIG },
-        adapterDeps(broker, clock, events, {
-          fetchEquityUsd: async () => 10_000,
-          fetchBuyableUsd: async () => 10_000,
-        }),
-      );
-
-      // 1) 초기 진입: 4주 @ $100 -> 투입 $400 (4%) -> +3.0% 익절가 $103
-      await pm.arm({ qty: 4, avgPrice: 100 });
-      await flush();
-      expect(broker.placed[0].price).toBe(103);
-
-      // 2) 물타기 트리거 (가격 $94로 하락, gapRate = -6% <= -3%)
-      // averagingDownQty: gapRate = 6, desiredQty = (6-1)*4 = 20주
-      const ma5State = { ma5: 93, slope: 'up' as const, breakout: true, refClose5: 93 };
-      pm.onSignal?.('BUY', 94, ma5State);
+      await pm.arm({ qty: 2, avgPrice: 100 });
       await flush();
 
-      // 물타기 매수 발주 확인 (20주 @ 94)
-      const buyOrder = broker.placed.find((p) => p.side === 'buy');
-      expect(buyOrder).toBeDefined();
-      expect(buyOrder?.qty).toBe(20);
-
-      // 물타기 체결 (20주 @ 94)
-      // 새 총수량 = 4 + 20 = 24주
-      // 새 평단 = (400 + 1880) / 24 = 2280 / 24 = 95
-      // 새 투입액 = 24 * 95 = $2280
-      // 새 비중 = 2280 / 10,000 = 22.8% (16~50% 구간 -> +1.0% 익절)
-      // 새 목표가 = 95 * 1.01 = 95.95
-      broker.fill(buyOrder!.odno, 94);
-      await pm.poll();
+      // BB 상단 이탈 SELL 수신 (보유 2주, orderQty 2주 -> 전량 소진)
+      pm.onSignal('SELL', 105);
       await flush();
 
-      const latestSell = broker.placed.filter((p) => p.side === 'sell').at(-1);
-      expect(latestSell?.qty).toBe(24);
-      expect(latestSell?.price).toBeCloseTo(95.95);
-      expect(events.some((e) => e.includes('매도 지정가 선등록 · 24주 @ 95.95(+1.0% · 비중 22.8%)'))).toBe(true);
+      const sellOrder = broker.placed.find((p) => p.side === 'sell');
+      expect(sellOrder).toBeDefined();
+      expect(sellOrder?.qty).toBe(2);
+
+      broker.fill(sellOrder!.odno, 105);
+      await flush();
+
+      const pollRes = await pm.poll();
+      expect(pollRes.kind).toBe('sold');
+      if (pollRes.kind === 'sold') {
+        expect(pollRes.record.qty).toBe(2);
+        expect(pollRes.record.exitPrice).toBe(105);
+        expect(pollRes.record.exitReason).toBe('TAKE_PROFIT');
+      }
     });
   });
 });

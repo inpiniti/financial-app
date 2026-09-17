@@ -14,6 +14,8 @@
 export interface ConditionalPosition {
   qty: number;
   avgPrice: number;
+  /** 진입 시점의 분봉 저점 (실시간 MA5 손절 기준가) */
+  entryBarLow?: number;
 }
 
 export interface ConditionalGridConfig {

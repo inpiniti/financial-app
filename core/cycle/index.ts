@@ -55,6 +55,8 @@ export interface SignalSnapshot {
   line?: number;
   peak?: number;
   kind?: string;
+  /** 진입 신호 시점의 분봉 저점 (실시간 MA5 손절선용) */
+  barLow?: number;
 }
 
 export interface OrderRequest {

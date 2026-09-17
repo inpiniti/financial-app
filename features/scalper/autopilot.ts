@@ -1444,7 +1444,13 @@ export class AutoPilot {
     active.arming = true;
     try {
       const entry = active.cycle?.position;
-      let seed: ConditionalPosition | null = entry ? { qty: entry.qty, avgPrice: entry.entryPrice } : null;
+      let seed: ConditionalPosition | null = entry
+        ? {
+            qty: entry.qty,
+            avgPrice: entry.entryPrice,
+            entryBarLow: entry.entrySnapshot?.barLow ?? active.slot?.getCurrentBarLow() ?? undefined,
+          }
+        : null;
       if (!seed) {
         try {
           seed = await active.broker.fetchPosition();
@@ -1476,6 +1482,8 @@ export class AutoPilot {
         slopeRate: active.slot ? () => active.slot!.slopeRate(this.deps.clock.now()) : undefined,
         // 볼린저 투매 반등(bbDip) — 슬롯의 최근 20틱 이동평균(MA20). 슬롯 없으면 미주입.
         ma20: active.slot ? () => active.slot!.getMa20() : undefined,
+        // 실시간 MA5 손절 기준선(진입봉 저점)
+        currentBarLow: active.slot ? () => active.slot!.getCurrentBarLow() : undefined,
         // 주문 전략(2026-09-03) — 틱마다 읽는다(실행 중 설정 변경 즉시 반영). null이면 옛 동작(1호가 크로스·추격).
         orderStrategy: () => this.orderStrategy,
         regularSession: isUsRegularSession,
@@ -1912,7 +1920,13 @@ export class AutoPilot {
   }
 
   private toSnapshot(ctx: SlotSignalContext): SignalSnapshot {
-    return { price: ctx.price, slope: ctx.slope, accel: ctx.accel, ts: ctx.at };
+    return {
+      price: ctx.price,
+      slope: ctx.slope,
+      accel: ctx.accel,
+      ts: ctx.at,
+      barLow: ctx.currentBarLow ?? undefined,
+    };
   }
 
   private startPollTimer(): void {

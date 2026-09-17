@@ -69,4 +69,28 @@ describe('gaugeScaleOf — 게이지 축 범위(2026-09-02)', () => {
     expect(lowerBbPos).toBeGreaterThan(0);
     expect(ma5Pos).toBeLessThan(1);
   });
+
+  it('5선(ma5)과 볼린저 하단/중단/상단(lowerBb, ma20, upperBb)이 함께 주어지면 모든 지표를 축 범위에 수용한다', () => {
+    const min = 85;
+    const max = 115;
+    const lowerBb = 90;
+    const ma5 = 95;
+    const ma20 = 100;
+    const upperBb = 110;
+    const current = 98;
+    const avg = 100;
+    const s = gaugeScaleOf([min, lowerBb, ma5, ma20, upperBb, current, avg, max], 85, 115);
+    const lowerBbPos = normalizeGridPosition(lowerBb, s.lo, s.hi);
+    const ma5Pos = normalizeGridPosition(ma5, s.lo, s.hi);
+    const ma20Pos = normalizeGridPosition(ma20, s.lo, s.hi);
+    const upperBbPos = normalizeGridPosition(upperBb, s.lo, s.hi);
+
+    expect(s.lo).toBeLessThan(min);
+    expect(s.hi).toBeGreaterThan(max);
+    expect(lowerBbPos).toBeLessThan(ma5Pos);
+    expect(ma5Pos).toBeLessThan(ma20Pos);
+    expect(ma20Pos).toBeLessThan(upperBbPos);
+    expect(lowerBbPos).toBeGreaterThan(0);
+    expect(upperBbPos).toBeLessThan(1);
+  });
 });
